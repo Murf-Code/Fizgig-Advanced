@@ -165,3 +165,80 @@ def test_fit_all_too_big_is_skipped_and_one_word_crops_alone(tmp_path):
 def test_fit_all_is_on_unless_turned_off_in_the_page():
     js = open(os.path.join(os.path.dirname(prep.__file__), "..", "web", "static", "app.js"), encoding="utf-8").read()
     assert '$("prepFitAll").checked = saved.fitAll !== false' in js
+
+
+# ---- a too-big box is ignored; YOLO beats SAM for the same word (Chris's 'pussy, anus, ass' run, 30 Oct 2026:
+# SAM's near-whole-picture 'ass' boxes made the fit-all crop too big, so 43 of 58 pictures were skipped) ----
+class _Fixed(prep.ThingFinder):
+    def __init__(self, hits, words, fit_all=True):
+        super().__init__(None, words, fit_all=fit_all)
+        self.hits = hits
+
+    def find(self, img):
+        return list(self.hits)
+
+
+def _hit(box, word, source):
+    return F._face_info(*box, gender=word, score=0.9, source=source)
+
+
+def _prep_fixed(d, hits, words, mode="Face Crop Only", fit_all=True):
+    log = []
+    prep.Prep(log.append, None, _Fixed(hits, words, fit_all)).run(mode, str(d), 0.05, prep.OTHER_TARGET, 20.0, False)
+    return "".join(log)
+
+
+def test_sam_giant_box_ignored_crop_fits_yolo_boxes(tmp_path):
+    _pic(tmp_path / "a.png", 1000, 800, seed=6)
+    hits = [_hit((300, 300, 360, 360), "pussy", "yolo"), _hit((380, 380, 420, 430), "anus", "yolo"),
+            _hit((0, 0, 1000, 790), "ass", "sam3")]
+    text = _prep_fixed(tmp_path, hits, ["pussy", "anus", "ass"])
+    assert "ass box too big (99%), ignored" in text
+    assert [c for c in os.listdir(tmp_path / "crops") if c.endswith(".png")] == ["Crop_pussy_anus_001.png"]
+    full = Image.open(tmp_path / "a.png").convert("RGB")
+    want, _ = prep.resize_image(F.crop_to_face(full, F._face_info(300, 300, 420, 430), 20.0), prep.target_area(0.05))
+    assert np.array_equal(np.asarray(Image.open(tmp_path / "crops" / "Crop_pussy_anus_001.png")), np.asarray(want))
+
+
+def test_yolo_preferred_over_sam_for_the_same_word(tmp_path):
+    _pic(tmp_path / "a.png", 1000, 800, seed=7)
+    hits = [_hit((100, 100, 500, 500), "pussy", "sam3"), _hit((300, 300, 360, 360), "pussy", "yolo")]
+    _prep_fixed(tmp_path, hits, ["pussy"], fit_all=False)
+    full = Image.open(tmp_path / "a.png").convert("RGB")
+    want, _ = prep.resize_image(F.crop_to_face(full, F._face_info(300, 300, 360, 360), 20.0), prep.target_area(0.05))
+    assert np.array_equal(np.asarray(Image.open(tmp_path / "crops" / "Crop_pussy_001.png")), np.asarray(want))
+
+
+def test_only_a_giant_box_is_skipped_with_the_reason(tmp_path):
+    _pic(tmp_path / "a.png", 1000, 800, seed=8)
+    _prep_fixed(tmp_path, [_hit((0, 0, 1000, 800), "ass", "sam3")], ["pussy", "anus", "ass"])
+    assert "only boxes covering most of the picture" in (tmp_path / "skipped" / "skipped.txt").read_text()
+    assert not (tmp_path / "crops").exists() or not os.listdir(tmp_path / "crops")
+
+
+def test_chris_run_replayed_every_picture_cropped(tmp_path):
+    """58 pictures; YOLO finds pussy and/or anus in each, SAM an 'ass' box over nearly all of it: all get a crop."""
+    words = ["pussy", "anus", "ass"]
+
+    class PerPic(prep.ThingFinder):
+        def __init__(self):
+            super().__init__(None, words, fit_all=True)
+            self.n = 0
+
+        def find(self, img):
+            self.n += 1
+            out = [_hit((5, 5, 395, 315), "ass", "sam3")]
+            if self.n % 3:
+                out.append(_hit((150, 150, 200, 200), "pussy", "yolo"))
+            if self.n % 2:
+                out.append(_hit((190, 200, 230, 240), "anus", "yolo"))
+            if not self.n % 6:                           # neither: SAM's own small find is used
+                out.append(_hit((100, 100, 160, 160), "ass", "sam3"))
+            return out
+    for i in range(58):
+        _pic(tmp_path / f"p{i:02d}.png", seed=i)
+    log = []
+    prep.Prep(log.append, None, PerPic()).run("Auto Prep (Face Crops)", str(tmp_path), 0.05, prep.OTHER_TARGET,
+                                             20.0, False)
+    crops = [c for c in os.listdir(tmp_path / "crops") if c.endswith(".png")]
+    assert len(crops) == 58 and not (tmp_path / "skipped").exists()

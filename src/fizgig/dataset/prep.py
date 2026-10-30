@@ -30,6 +30,7 @@ OTHER_TARGET = "Other…"           # the Face dropdown's Other…: crop to what
 FIND_SCORE = 0.5                  # SAM 3.1's cutoff for a hit: the same as Make masks uses
 FIND_MIN_SIDE = 16                # a hit smaller than this (pixels, either side) is too small to crop
 FACE_CROP_PREFIX = "FaceCrop_"     # face close-ups: FaceCrop_001.png
+HIT_MAX_SHARE = 0.60              # a single find covering more of the picture than this is ignored
 FIT_ALL_MAX_SHARE = 0.85          # Fit all words in one crop: a crop over this share of the picture is skipped
 
 
@@ -555,7 +556,7 @@ class Prep:
         """[(sel, crop name stem)] of what to cut from img: the face, or each word found (only the biggest in
         Close-up crops only)."""
         if self.finder is not None:
-            found = self.finder.find(img)
+            found = self._sane(self.finder.find(img), img.size)
             if getattr(self.finder, "fit_all", False) and len(self.finder.words) > 1:
                 return self._fit_all(img, found)
             if single:
@@ -567,6 +568,26 @@ class Prep:
         if note:
             self.log(note)
         return [sel] if sel else []
+
+    def _sane(self, hits, size):
+        """Hits worth cropping: a word the YOLO model found keeps only YOLO's boxes (SAM's are dropped), and any box
+        over HIT_MAX_SHARE of the picture is ignored (logged) - a crop of it adds nothing. Raises _NothingToAdd when
+        every hit was too big."""
+        by_yolo = {f.gender for f in hits if getattr(f, "source", "") == "yolo"}
+        hits = [f for f in hits if getattr(f, "source", "") == "yolo" or f.gender not in by_yolo]
+        area = float(size[0] * size[1]) or 1.0
+        kept, big = [], []
+        for f in hits:
+            x1, y1, x2, y2 = f.bbox
+            share = (x2 - x1) * (y2 - y1) / area
+            if share > HIT_MAX_SHARE:
+                big.append(f"{f.gender} ({100 * share:.0f}%)")
+                self.log(f"  {f.gender} box too big ({100 * share:.0f}%), ignored\n")
+            else:
+                kept.append(f)
+        if big and not kept:
+            raise _NothingToAdd("only boxes covering most of the picture were found: " + ", ".join(big))
+        return kept
 
     def _fit_all(self, img, found):
         """Fit all words in one crop: the biggest hit of each word, one box around them all. One word found: just
