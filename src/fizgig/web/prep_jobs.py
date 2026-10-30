@@ -86,7 +86,24 @@ def face_settings():
                          "identity": F.FACE_SETTING_DEFAULTS["face_identity"]},
             "finder": det.describe(), "has_gender": det.has_gender,
             "insightface": F.is_insightface_available(), "local_model": F.LOCAL_YOLO_DEFAULT,
-            **_class_info()}
+            "detector_models": _detector_info(saved), "synonyms": _synonyms(), **_class_info()}
+
+
+def _synonyms():
+    from fizgig.dataset import detectors
+    return detectors.SYNONYMS
+
+
+def _detector_info(saved):
+    """The Body-part and watermark detectors for the page, each with the class names it finds when installed."""
+    from fizgig.dataset import detectors
+    out = detectors.info(saved)
+    for m in out:
+        m["names"] = []
+        if m["installed"] and m["kind"] == "body":
+            b = detectors.load(m["key"], detectors.model_path(m["key"], saved))
+            m["names"] = list((b.all_classes() if b is not None else {}).values())
+    return out
 
 
 def _class_info():
@@ -120,6 +137,12 @@ def save_face_settings(b):
             raise ValueError("Pick an .onnx face model on the Fizgig computer. docs/FACE_BACKENDS.md explains how to "
                              "make one from a .pt file.")
         ch["face_yolo_model"] = m
+    if isinstance(b.get("detectors"), dict):        # Body-part and watermark detectors: {key: .onnx path or ""}
+        from fizgig.dataset import detectors
+        for k, p in b["detectors"].items():
+            if k not in detectors.MODELS:
+                raise ValueError("Unknown detector.")
+            ch[f"detector_{k}"] = detectors.check_path(p)
     if "auto_threshold" in b:
         try:
             v = float(b["auto_threshold"])
@@ -184,6 +207,10 @@ def yolo_words(words, backend=None):
     return {w: keys[F.class_key(w)] for w in words if F.class_key(w) in keys}
 
 
+def _log_quiet(_t):
+    pass
+
+
 def find_words(face_label, find, backend=None):
     """With the Face dropdown on Other…: (the phrases to find, the SAM 3.1 file), checked - ValueError with a plain
     note when the box is empty, or SAM 3.1 is needed (a phrase that isn't one of the YOLO face model's classes) and
@@ -197,10 +224,11 @@ def find_words(face_label, find, backend=None):
     words = sammask.split_words(find)
     if not words:
         raise ValueError("Type what to find in Find this (e.g. hat, tail, hand).")
-    by_yolo = yolo_words(words, backend)
-    if all(w in by_yolo for w in words):
-        return words, ""
+    from fizgig.dataset import detectors
+    routes = detectors.route(words, detectors.stages(_log_quiet, backend if backend is not None else _yolo()))
     path = sammask.find_model(MODELS_DIR)
+    if all(routes[w] for w in words):
+        return words, path or ""            # SAM 3.1 (when downloaded) only as the last resort
     if not path:
         raise ValueError("Finding by words needs SAM 3.1: press Download on the Masks card (further down this tab) "
                          "first.")
@@ -210,11 +238,11 @@ def find_words(face_label, find, backend=None):
 def thing_finder(words, sam_path, log=print, backend=None):
     """The ThingFinder for these phrases: the YOLO face model for the ones it has a class for, SAM 3.1 for the rest
     (loaded only when some phrase needs it). The caller holds sammask._use when sam_path is set."""
-    from fizgig.dataset import sammask
+    from fizgig.dataset import detectors, sammask
     b = backend if backend is not None else _yolo()
-    by_yolo = yolo_words(words, b)
-    seg = sammask.segmenter(sam_path, log) if sam_path and any(w not in by_yolo for w in words) else None
-    return prep.ThingFinder(seg, words, yolo=b if by_yolo else None, yolo_words=by_yolo)
+    st = detectors.stages(log, b)
+    factory = (lambda: sammask.segmenter(sam_path, log)) if sam_path else None
+    return detectors.chain_finder(words, st, log=log, seg_factory=factory)
 
 
 def keep_score(v, default=None):
@@ -321,7 +349,7 @@ def _tagger(folder, name=None):
     return taggers.get(name).Tagger(folder, log=_log)
 
 
-def start(folder, mode, mp, face_label, padding, replace, find="", captions=None, fit_all=True):
+def start(folder, mode, mp, face_label, padding, replace, find="", captions=None, fit_all=True, watermarks=False):
     face_label, find = prep.migrate_target(face_label, find)    # an older build's "YOLO class: penis": Other…
     if not folder or not os.path.isdir(folder):
         raise ValueError("Choose the training folder on the Start tab first.")
@@ -341,13 +369,19 @@ def start(folder, mode, mp, face_label, padding, replace, find="", captions=None
     def work():
         try:
             tagger = _tagger(tagger_dir, cap_settings["tagger"]) if tagger_dir else None
+            wm = None
+            if watermarks:
+                from fizgig.dataset import detectors
+                wm = detectors.watermark_models(log=_log)
+                if not wm:
+                    _log("Mask watermarks is on, but neither watermark model is installed - no masks made.\n")
             try:
                 caps = crop_captions(cap_settings, tagger)
                 if words:
-                    _things(words, sam_path, mode, folder, mp, face_label, padding, replace, caps, fit_all)
+                    _things(words, sam_path, mode, folder, mp, face_label, padding, replace, caps, fit_all, wm)
                 else:
                     det = _face_detector() if mode != "Resize Only" else None
-                    prep.Prep(_log, det, captions=caps).run(mode, folder, float(mp), face_label, float(padding),
+                    prep.Prep(_log, det, captions=caps, watermarks=wm).run(mode, folder, float(mp), face_label, float(padding),
                                                             bool(replace))
             finally:
                 if tagger is not None:
@@ -363,21 +397,23 @@ def start(folder, mode, mp, face_label, padding, replace, find="", captions=None
     return {"ok": True}
 
 
-def _things(words, sam_path, mode, folder, mp, face_label, padding, replace, caps=None, fit_all=False):
+def _things(words, sam_path, mode, folder, mp, face_label, padding, replace, caps=None, fit_all=False, wm=None):
     """A prep run with Other…: the YOLO face model finds the phrases it has a class for, SAM 3.1 the other words; SAM is
     freed from memory when the run ends."""
     from fizgig.dataset import sammask
     if not sam_path:                                   # the YOLO model finds it all: SAM 3.1 isn't touched
         finder = thing_finder(words, "", _log)
         finder.fit_all = bool(fit_all)
-        prep.Prep(_log, None, finder, caps).run(mode, folder, float(mp), face_label, float(padding), bool(replace))
+        prep.Prep(_log, None, finder, caps, watermarks=wm).run(mode, folder, float(mp), face_label, float(padding),
+                                                               bool(replace))
         return
     if not sammask._use.acquire(blocking=False):
         raise ValueError("SAM 3.1 is busy with a mask preview. Try again in a moment.")
     try:
         finder = thing_finder(words, sam_path, _log)
         finder.fit_all = bool(fit_all)
-        prep.Prep(_log, None, finder, caps).run(mode, folder, float(mp), face_label, float(padding), bool(replace))
+        prep.Prep(_log, None, finder, caps, watermarks=wm).run(mode, folder, float(mp), face_label, float(padding),
+                                                               bool(replace))
     finally:
         sammask._use.release()
         sammask.unload()

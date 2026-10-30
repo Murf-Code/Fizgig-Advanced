@@ -4656,7 +4656,7 @@ const thumbOf = (p) => `/api/thumb?path=${encodeURIComponent(p)}&t=${encodeURICo
 const prepSettings = () => ({
   mode: (document.querySelector('input[name="prepMode"]:checked') || {}).value || "Auto Prep (Face Crops)",
   mp: $("prepMp").value || "1.0", face: $("prepFace").value || "Largest Face", padding: $("prepPadding").value || "20",
-  find: $("prepFind").value || "", fitAll: $("prepFitAll").checked, capCopy: $("prepCapCopy").checked, capTrim: $("prepCapTrim").checked,
+  find: $("prepFind").value || "", fitAll: $("prepFitAll").checked, watermarks: $("prepWatermarks").checked, capCopy: $("prepCapCopy").checked, capTrim: $("prepCapTrim").checked,
   capCloseup: $("prepCapCloseup").checked, capAdd: $("prepCapAdd").checked, addScore: $("prepAddScore").value || "0.90",
   tagger: $("prepTagger").value || "wd-eva02", keepScore: $("prepKeepScore").value || TAGGER_KEEP[$("prepTagger").value] || "0.35",
   replace: (document.querySelector('input[name="prepReplace"]:checked') || {}).value === "1"});
@@ -4680,6 +4680,7 @@ async function loadPrep() {
     $("prepMp").value = saved.mp || "1.0";
     $("prepFind").value = saved.find || "";
     $("prepFitAll").checked = saved.fitAll !== false;               // on unless turned off
+    $("prepWatermarks").checked = !!saved.watermarks;               // off unless turned on
     $("prepCapCopy").checked = saved.capCopy !== false;             // on unless turned off
     $("prepCapTrim").checked = !!saved.capTrim;
     $("prepCapCloseup").checked = saved.capCloseup !== false;       // on unless turned off
@@ -5281,9 +5282,17 @@ function prepMigrate(saved, f) {
 // it finds those itself, so SAM 3.1 is only needed for the rest
 const classKey = (t) => String(t || "").toLowerCase().replace(/[\s_-]+/g, "");
 function prepYoloWords() {
-  const names = new Set((((S.prep || {}).face || {}).yolo_names || []).map(classKey));
+  const f = (S.prep || {}).face || {}, syn = f.synonyms || {};
+  const stages = [["your YOLO face model", f.yolo_names || []]].concat((f.detector_models || [])
+    .filter((m) => m.kind === "body" && m.installed).map((m) => [m.label, m.names || []]));
   const words = prepSettings().find.split(/[,\n]/).map((w) => w.trim()).filter(Boolean);
-  return {words, yolo: words.filter((w) => names.has(classKey(w)))};
+  const who = {};
+  for (const w of words) {
+    const want = new Set([w, ...(syn[classKey(w)] || [])].map(classKey));
+    const s = stages.find(([, names]) => names.some((n) => want.has(classKey(n))));
+    who[w] = s ? s[0] : "SAM 3.1";
+  }
+  return {words, who, yolo: words.filter((w) => who[w] !== "SAM 3.1")};
 }
 
 // the Face dropdown's Other…: a Find this box, found with SAM 3.1 (the Masks card's download). The note why Prepare
@@ -5316,11 +5325,13 @@ function prepFindShow() {
   const find = prepFindBlocked(), trim = prepTrimBlocked();
   prepTaggerShow();
   $("prepTrimNote").textContent = trim;
-  const yw = prepYoloWords(), who = !yw.yolo.length ? "SAM 3.1 finds what you type." :
-    yw.yolo.length === yw.words.length ? "Your YOLO face model finds these, so SAM 3.1 isn't needed." :
-    `Your YOLO face model finds ${yw.yolo.join(", ")}; SAM 3.1 finds the rest.`;
-  $("prepFindHint").textContent = find || who + " Separate things with commas; each gets its " +
-    "own close-up (the biggest one found). Pictures where nothing is found are left whole.";
+  const yw = prepYoloWords(), who = yw.words.length ?
+    yw.words.map((w) => `${w}: ${yw.who[w]}`).join("; ") + "." : "Each word goes to the first detector that knows it, SAM 3.1 last.";
+  $("prepFindHint").textContent = find || who + " Separate things with commas. " +
+    ($("prepFitAll").checked ? "Fit all words in one crop: one close-up around everything found." :
+      "Each word gets its own close-up (the biggest one found).") +
+    " A box covering most of the picture is ignored. Pictures where nothing usable is found are copied to 'skipped' " +
+    "with the reason; your pictures are never changed.";
   $("prepFindHint").classList.toggle("problems", !!find);
   if (!S.prep.running) { $("prepRun").disabled = !!(find || trim); $("prepRun").title = find || trim; }
   // the Test button: its words follow Crop to, and when it's greyed out, hovering says why (the one place it's set)
@@ -5461,8 +5472,35 @@ function faceSettingsShow(f, msg) {
   $("prepYoloHint").textContent = `Blank: Fdetailer if it's saved as ${f.local_model}, otherwise a free anime head ` +
     "finder that downloads the first time it's used. docs/FACE_BACKENDS.md explains how to get Fdetailer.";
   $("prepFaceMsg").textContent = msg || "";
+  detectorsShow(f.detector_models || []);
   const custom = f.defaults && (f.detector !== f.defaults.detector || f.identity !== f.defaults.identity);
   if (custom) $("prepChars").open = true;              // never hide a choice that is changing what you get
+}
+// Body-part and watermark detectors: a path row per model (Choose… / Upload…, booru_yolo also Download)
+function detectorsShow(models) {
+  const box = $("prepDetectors");
+  if (box.contains(document.activeElement)) return;          // never redraw under the typing
+  box.replaceChildren();
+  for (const m of models) {
+    const input = el("input", {type: "text", class: "w-path", value: m.saved || "", placeholder: `Blank: ${m.default}`});
+    const set = (p) => faceSettingsSave({detectors: {[m.key]: p}});
+    input.addEventListener("change", () => set(input.value.trim()));
+    const row = el("div", {class: "field-row prep-opts"}, el("span", {class: "field-label", text: `${m.label}:`}), input,
+      el("button", {class: "btn", text: "Choose…", title: "Pick the .onnx on the machine running Fizgig",
+        onclick: () => pick(input.value || m.default.replace(/[\\/][^\\/]*$/, ""), false, (p) => { input.value = p; set(p); })}));
+    const up = uploadButton({kind: "path", key: `DETECTOR_${m.key}`, accept: ".onnx"}, input, set);
+    row.append(up.btn);
+    if (m.download && !m.installed) row.append(el("button", {class: "btn", text: "Download",
+      title: "From Hugging Face (deepghs/booru_yolo, about 45 MB). The weights are under Ultralytics' AGPL-3.0 licence.",
+      onclick: async () => {
+        $("prepFaceMsg").textContent = `Downloading ${m.label}…`;
+        try { faceSettingsShow(await api("/api/prep/detector_download", {}), `${m.label} downloaded.`); }
+        catch (e) { $("prepFaceMsg").textContent = e.message; }
+      }}));
+    const note = el("div", {class: "field-hint", text: `Finds ${m.finds}. ` + (m.installed ? "Installed." :
+      `Not installed: ${m.download ? "press Download" : "get the .pt from " + m.page + ", convert it, then Choose… or Upload…"}.`)});
+    box.append(row, up.status, note);
+  }
 }
 async function faceSettingsSave(changes, msg) {
   try { faceSettingsShow(await api("/api/prep/face_settings", changes), msg); prepSummary(); }
@@ -5700,7 +5738,8 @@ function wirePrep() {
   for (const id of ["prepMp", "prepFace", "prepPadding"]) $(id).addEventListener("change", () => { prepSummary(); savePrepSoon(); });
   $("prepFace").addEventListener("change", () => { if (prepOther() && !$("prepFind").value.trim()) $("prepFind").focus(); });
   $("prepFind").addEventListener("input", () => { prepFindShow(); savePrepSoon(); });
-  $("prepFitAll").addEventListener("change", () => savePrepSoon());
+  $("prepFitAll").addEventListener("change", () => { prepFindShow(); savePrepSoon(); });
+  $("prepWatermarks").addEventListener("change", () => savePrepSoon());
   $("prepCapCopy").addEventListener("change", () => { $("prepCapTrim").disabled = $("prepCapCloseup").disabled = !$("prepCapCopy").checked; prepFindShow(); savePrepSoon(); });
   $("prepCapCloseup").addEventListener("change", savePrepSoon);
   $("prepCapTrim").addEventListener("change", () => { prepFindShow(); savePrepSoon(); });

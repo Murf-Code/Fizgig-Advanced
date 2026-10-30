@@ -245,7 +245,7 @@ def test_page_find_box():
     assert out["empty"]["row"] and "Type what to find" in out["empty"]["hint"] and out["empty"]["run"]
     assert not out["empty"]["finder"]
     assert "Download on the Masks card" in out["nosam"]["hint"] and out["nosam"]["run"]
-    assert out["ready"]["block"] == "" and not out["ready"]["run"] and "SAM 3.1 finds" in out["ready"]["hint"]
+    assert out["ready"]["block"] == "" and not out["ready"]["run"] and "paw: SAM 3.1" in out["ready"]["hint"]
     assert out["settings"]["face"] == "Other…" and out["settings"]["find"] == "paw, tail"
     assert out["settings"]["capCopy"] is True and out["settings"]["capTrim"] is False     # the defaults
     assert out["settings"]["keepScore"] == "0.35"

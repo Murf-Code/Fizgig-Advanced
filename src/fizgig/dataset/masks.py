@@ -11,6 +11,7 @@ mask needs no re-encode."""
 import os
 
 MASK_SUFFIX = "-masklabel"
+MASKS_DIR = "masks"              # Image Prep's watermark masks: <folder>/masks/<stem>-masklabel.png
 _EXTS = (".png", ".webp", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
 ASPECT_TOLERANCE = 0.02          # a mask whose shape is further off than this from its picture's is not used
 
@@ -27,8 +28,14 @@ def mask_for(image_path, names=None):
 
 
 def mask_for_stem(folder, stem, names=None):
-    """The mask of the image called `stem` (no extension) in `folder`, or None."""
+    """The mask of the image called `stem` (no extension) in `folder`, or None. One in the folder's masks/ sub-folder
+    (Image Prep's watermark masks, already merged with the mask beside the picture) comes first."""
     stem = stem + MASK_SUFFIX
+    sub = os.path.join(str(folder), MASKS_DIR)
+    if os.path.isdir(sub):
+        for ext in _EXTS:
+            if os.path.isfile(os.path.join(sub, stem + ext)):
+                return os.path.join(sub, stem + ext)
     for ext in _EXTS:
         if names is not None:
             real = names.get((stem + ext).lower())

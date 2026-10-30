@@ -352,12 +352,20 @@
                     <div class="field-hint" id="prepYoloHint"></div>
                   </div>
                   <div class="field-hint" id="prepFaceMsg"></div>
+                  <div class="tc-box" id="prepDetectorsBox">
+                    <div class="field-label">Body-part and watermark detectors</div>
+                    <div class="field-hint">Other… sends each word to the first of these that knows it (after your
+                      YOLO face model), and to SAM 3.1 last. Optional: a missing one is skipped. Civitai models come as
+                      .pt files: convert each once with tools/convert_detector_to_onnx.py (docs/FACE_BACKENDS.md).</div>
+                    <div id="prepDetectors"></div>
+                  </div>
                 </details>
                 <div class="field-hint" id="prepNoFaces" style="display:none">Face detection isn't installed on the
                   Fizgig computer: run install_fizgig.py there to add it. Resize only still works.</div>
                 <div class="field-hint">Sizing is by target area (megapixels), not longest side: this matches how
-                  training buckets your images, so prepping costs you no resolution. Aspect ratio is kept; nothing is
-                  cropped.</div>
+                  training buckets your images, so prepping costs you no resolution. The resized copies keep their
+                  aspect ratio; close-ups are cut from the full-size pictures, then sized the same way.</div>
+                <label class="prep-opts" title="Finds watermarks with the two watermark detectors (Anime/furry/drawn characters) and masks them out, so masked training ignores them. Masks go in a 'masks' sub-folder, merged with any mask a picture has."><input type="checkbox" id="prepWatermarks"> Mask watermarks</label>
                 <div class="problems" id="prepMpWarn"></div>
               </div>
             </div>

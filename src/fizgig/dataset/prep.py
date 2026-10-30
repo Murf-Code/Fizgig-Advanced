@@ -326,8 +326,9 @@ class Prep:
     (needed by the face modes). finder: a ThingFinder instead, when the Face dropdown is on Other…. captions: a
     crop_captions.CropCaptions - crops get their picture's caption (None: captions aren't touched, as before)."""
 
-    def __init__(self, log, detector=None, finder=None, captions=None):
+    def __init__(self, log, detector=None, finder=None, captions=None, watermarks=None):
         self.log = log
+        self.watermarks = watermarks or []         # detectors.watermark_models(): mask the watermarks found
         self.detector = detector
         self.finder = finder
         self.captions = captions
@@ -639,7 +640,7 @@ class Prep:
         from fizgig.face_utils import crop_to_face
         rdir, cdir, sdir = dirs.get("resized"), dirs.get("crops"), dirs.get("skipped")
         resized_n = crops_n = errors = 0
-        skipped = []
+        skipped, wm_found = [], []
         index = {}
         for filepath in image_files(source):
             filename = os.path.basename(filepath)
@@ -650,6 +651,11 @@ class Prep:
             try:
                 original_img = load_image(filepath)
                 original = original_img.size
+                if self.watermarks:
+                    from fizgig.dataset import detectors
+                    share = detectors.watermark_mask(filepath, original_img, self.watermarks)
+                    if share:
+                        wm_found.append((filename, share))
                 if cdir:
                     try:
                         picks = self._picks(original_img, face_mode, single)
@@ -717,6 +723,12 @@ class Prep:
                      (f" - copies and the reasons (skipped.txt) in {sdir}\n" if skipped else "\n"))
         if errors:
             self.log(f"Errors: {errors}\n")
+        if self.watermarks:
+            from fizgig.dataset import detectors
+            self.log(f"Watermarks masked: {len(wm_found)} picture(s), masks in {os.path.join(source, 'masks')}\n")
+            big = [f"{n} ({100 * s:.0f}%)" for n, s in wm_found if s > detectors.WM_WARN]
+            if big:
+                self.log("Watermarks cover a lot of these - worth a look: " + ", ".join(big) + "\n")
         self.log("Training uses the resized copies and crops in place of the full-size pictures. "
                  "To undo, delete those folders.\n")
 

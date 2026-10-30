@@ -290,3 +290,49 @@ on the GPU when onnxruntime's CUDA provider is there. A general tag it scores un
 (0.35 by default) is dropped. Nothing is ever added. The first tag, the trigger word, character, rating and meta
 tags, and tags it doesn't know (species, artists, your own) always stay. Sentence captions are copied as written.
 The tagger is freed when the prep run ends.
+
+## Body-part and watermark detectors (Image Prep → Other…)
+
+Image Prep's Other… sends each Find this word to the first detector that knows it, then SAM 3.1 last:
+
+1. your YOLO face model (Fdetailer, if you set it up above)
+2. **booru_yolo** (`yolov8s_aa11`): head, bust, boob, belly, butt, ass, hip, wing, feral and animal heads
+3. **Anime NSFW All-in-One v5.0**: nipples, pussy, anus, penis, testicles and more
+4. **assDetailer v2**: butt
+5. SAM 3.1 (the Masks card's download)
+
+Words are matched with a few synonyms (ass = butt, breasts = boob, …). A box covering more than 60% of the picture
+is ignored; if a model finds only such boxes, the word goes on to the next one. A model you haven't installed is
+skipped (the log says so once). All of them run with onnxruntime on the CPU; Fizgig never loads ultralytics or a `.pt`.
+
+Where the files go: `user_data/models/detectors/` in the Fizgig folder, under these names (or anywhere, picked with
+Choose… / Upload… under Anime/furry/drawn characters → Body-part and watermark detectors):
+
+| Model | File name | Get it |
+|---|---|---|
+| booru_yolo | `booru_yolov8s_aa11.onnx` | press **Download** (Hugging Face `deepghs/booru_yolo`, about 45 MB; the weights are under Ultralytics' AGPL-3.0, so Fizgig doesn't ship them) |
+| Anime NSFW All-in-One v5.0 | `anime_nsfw_aio_v5.onnx` | https://civitai.com/models/1313556?modelVersionId=2266294 (.pt, convert below) |
+| assDetailer v2 (segm) | `assdetailer_v2.onnx` | https://civitai.com/models/1156687?modelVersionId=1309631 (.pt, convert below) |
+| Watermark (s) | `watermark_s.onnx` | https://civitai.com/models/311866?modelVersionId=350000 (.pt, convert below) |
+| NSFW Watermark (s) | `nsfw_watermark_s.onnx` | https://civitai.com/models/311869?modelVersionId=350003 (.pt, convert below) |
+
+### Converting a Civitai .pt once
+
+Download the .pt from the model page in your browser, then from the Fizgig folder:
+
+    python tools\convert_detector_to_onnx.py aio            C:\Users\you\Downloads\<file>.pt
+    python tools\convert_detector_to_onnx.py assdetailer    C:\Users\you\Downloads\<file>.pt
+    python tools\convert_detector_to_onnx.py watermark      C:\Users\you\Downloads\<file>.pt
+    python tools\convert_detector_to_onnx.py nsfw_watermark C:\Users\you\Downloads\<file>.pt
+
+The script makes a throwaway venv in your temp folder, installs ultralytics + onnx there (never into Fizgig's venv;
+about 1 GB, needs internet), writes the `.onnx` into `user_data/models/detectors/`, and deletes the venv (add
+`--keep-venv` to convert several in a row, the last one without it). A `.pt` is a pickle that can run code when
+loaded: only convert files you downloaded yourself from these pages.
+
+### Mask watermarks
+
+Image Prep's **Mask watermarks** tick (off by default) runs both watermark models on each picture (boxes scored 0.3 or
+more, padded 8 px) and saves a mask with them blacked out in the folder's `masks/` sub-folder, merged with a mask the
+picture already had. Masked training uses a mask in `masks/` first. The run's log lists pictures where watermarks
+cover more than 15%.

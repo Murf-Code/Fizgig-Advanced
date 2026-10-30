@@ -4392,7 +4392,8 @@ class Handler(BaseHTTPRequestHandler):
                                                          str(b.get("face") or "Largest Face"),
                                                          b.get("padding") or 20, bool(b.get("replace")),
                                                          str(b.get("find") or ""), b.get("captions"),
-                                                         b.get("fitAll") is not False))   # on unless turned off
+                                                         b.get("fitAll") is not False,    # on unless turned off
+                                                         bool(b.get("watermarks"))))
                     if path == "/api/look/scan":
                         return self.json(prep_jobs.look_scan(folder, b.get("baselines") or []))
                     if path == "/api/masks/edit/save":
@@ -4411,6 +4412,13 @@ class Handler(BaseHTTPRequestHandler):
                                                          captions.caption_ext(b.get("ext"))))
                 except ValueError as e:
                     return self.json({"error": str(e)}, 400)
+            if path == "/api/prep/detector_download":   # booru_yolo, when the user presses its Download button
+                try:
+                    from fizgig.dataset import detectors
+                    p = detectors.download_booru()
+                    return self.json({"path": p, **prep_jobs.face_settings()})
+                except Exception as e:
+                    return self.json({"error": f"Download failed: {e}"}, 400)
             if path == "/api/prep/face_settings":     # the face finder / YOLO model / look match (prefs.json face_*)
                 try:
                     update_prefs(prep_jobs.save_face_settings(b))

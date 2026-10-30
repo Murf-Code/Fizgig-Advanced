@@ -1,0 +1,306 @@
+"""Extra body-part and watermark detectors for Image Prep, run with onnxruntime only (no ultralytics in Fizgig).
+
+Other…'s Find this words go down a chain, each word to the first model that has a class for it (or a synonym, e.g.
+butt for ass): the YOLO face model (Fdetailer) first, then booru_yolo, then Anime NSFW All-in-One, then assDetailer,
+then SAM 3.1 last. A box covering more than prep.HIT_MAX_SHARE of the picture is dropped; a model that finds only such
+boxes for a word hands the word on to the next one. A model whose file isn't there is skipped (said once).
+
+Weights are the user's: booru_yolo has a Download button (Hugging Face, deepghs/booru_yolo; the weights' own licence
+is Ultralytics' AGPL-3.0, so Fizgig never ships them). The Civitai models are .pt files the user downloads and turns
+into .onnx once with tools/convert_detector_to_onnx.py (docs/FACE_BACKENDS.md).
+
+Watermark masks: both watermark models' boxes (score >= WM_SCORE, padded WM_PAD px) are painted black on a white mask
+saved in the folder's masks/ sub-folder, merged with a mask already there; masked training then leaves them out."""
+import json
+import os
+import threading
+
+import numpy as np
+
+BODY = [
+    {"key": "booru", "label": "booru_yolo", "file": "booru_yolov8s_aa11.onnx",
+     "hf": {"repo_id": "deepghs/booru_yolo", "filename": "yolov8s_aa11/model.onnx",
+            "revision": "0b38996f5c4dd9c391596c5d5579f44b1b8bc083"},
+     "page": "https://huggingface.co/deepghs/booru_yolo",
+     "finds": "head, bust, boob, belly, butt, ass, hip, wing, feral and animal heads (anime and furry art)"},
+    {"key": "aio", "label": "Anime NSFW All-in-One v5.0", "file": "anime_nsfw_aio_v5.onnx",
+     "page": "https://civitai.com/models/1313556?modelVersionId=2266294",
+     "finds": "nipples, pussy, anus, penis, testicles and more (anime art)"},
+    {"key": "assdetailer", "label": "assDetailer v2", "file": "assdetailer_v2.onnx",
+     "page": "https://civitai.com/models/1156687?modelVersionId=1309631", "finds": "butt"},
+]
+WATERMARK = [
+    {"key": "watermark", "label": "Watermark (s)", "file": "watermark_s.onnx",
+     "page": "https://civitai.com/models/311866?modelVersionId=350000", "finds": "watermarks, signatures, text"},
+    {"key": "nsfw_watermark", "label": "NSFW Watermark (s)", "file": "nsfw_watermark_s.onnx",
+     "page": "https://civitai.com/models/311869?modelVersionId=350003", "finds": "watermarks on NSFW art"},
+]
+MODELS = {m["key"]: m for m in BODY + WATERMARK}
+CONF = 0.35
+WM_SCORE, WM_PAD, WM_WARN = 0.3, 8, 0.15
+
+# a typed word -> class names that count as it (compared by face_utils.class_key: case, spaces, _ and - ignored)
+SYNONYMS = {
+    "ass": ["ass", "butt", "buttocks"], "butt": ["butt", "ass", "buttocks"], "buttocks": ["butt", "ass"],
+    "breasts": ["breasts", "breast", "boob", "boobs"], "breast": ["breast", "breasts", "boob"],
+    "boobs": ["boob", "breasts", "breast"], "boob": ["boob", "breasts", "breast"], "chest": ["bust", "chest"],
+    "bust": ["bust"], "belly": ["belly", "stomach"], "stomach": ["belly"], "navel": ["navel", "belly"],
+    "hips": ["hip", "hips"], "hip": ["hip"], "wings": ["wing", "wings"], "wing": ["wing"],
+    "head": ["head"], "nipples": ["nipples", "nipple"], "nipple": ["nipple", "nipples"],
+    "pussy": ["pussy", "vagina", "vulva"], "vagina": ["vagina", "pussy"], "anus": ["anus", "anal"],
+    "penis": ["penis", "dick"], "testicles": ["testicles", "balls"], "balls": ["testicles", "balls"],
+    "paws": ["pawpads", "paw"], "pawpads": ["pawpads"],
+}
+
+_said = set()
+_said_lock = threading.Lock()
+
+
+def _once(log, key, text):
+    with _said_lock:
+        if key in _said:
+            return
+        _said.add(key)
+    log(text)
+
+
+def models_dir():
+    from fizgig.user_data import MODELS_DIR
+    return os.path.join(MODELS_DIR, "detectors")
+
+
+def _prefs():
+    from fizgig import face_utils as F
+    try:
+        with open(F.PREFS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def model_path(key, prefs=None):
+    """The model's .onnx: the path saved for it (prefs.json detector_<key>), else user_data/models/detectors/<file>.
+    "" when it isn't there."""
+    p = str((prefs if prefs is not None else _prefs()).get(f"detector_{key}") or "").strip().strip('"')
+    p = p or os.path.join(models_dir(), MODELS[key]["file"])
+    return p if p.lower().endswith(".onnx") and os.path.isfile(p) else ""
+
+
+def saved_paths(prefs=None):
+    pr = prefs if prefs is not None else _prefs()
+    return {k: str(pr.get(f"detector_{k}") or "") for k in MODELS}
+
+
+def check_path(p):
+    """A path the page sends for a model: "" (the default place) or an .onnx file that is there."""
+    p = str(p or "").strip().strip('"')
+    if p and not (p.lower().endswith(".onnx") and os.path.isfile(p)):
+        raise ValueError("Pick an .onnx model on the Fizgig computer. A Civitai .pt file needs converting once: "
+                         "tools/convert_detector_to_onnx.py (docs/FACE_BACKENDS.md).")
+    return p
+
+
+def _backend_class():
+    from fizgig.face_utils import YoloOnnxBackend
+
+    class DetectorModel(YoloOnnxBackend):
+        """A YOLO detect or segment model (yolov8 / yolo11, ultralytics export) - every class, boxes only."""
+        name = "yolo"
+
+        def _pick_classes(self):
+            return None
+    return DetectorModel
+
+
+def load(key, path=None, conf=CONF):
+    """The model, loaded; None when its file isn't there or it can't load."""
+    p = path or model_path(key)
+    if not p:
+        return None
+    b = _backend_class()(p, conf=conf)
+    b.label = MODELS[key]["label"] if key in MODELS else os.path.basename(p)
+    try:
+        b.load()
+    except Exception:
+        return None
+    return b if b.names else None
+
+
+def classes_for(word, names):
+    """The class ids of names ({id: name}) that count as word (itself or a SYNONYMS entry)."""
+    from fizgig.face_utils import class_key
+    k = class_key(word)
+    want = {class_key(w) for w in [word] + SYNONYMS.get(k, [])}
+    return [i for i, n in sorted((names or {}).items()) if class_key(n) in want]
+
+
+def stages(log=print, face_backend=None, loader=load):
+    """[(label, backend)] in chain order: the YOLO face model (when it is the face finder), then the body models whose
+    files are there. A missing one is said once and skipped."""
+    out = []
+    if face_backend is not None:
+        out.append((getattr(face_backend, "label", "") or "YOLO face model", face_backend))
+    for m in BODY:
+        b = loader(m["key"])
+        if b is None:
+            _once(log, ("missing", m["key"]), f"[detectors] {m['label']} isn't installed - skipped "
+                                              f"(Anime/furry/drawn characters -> Body-part detectors)\n")
+            continue
+        out.append((m["label"], b))
+    return out
+
+
+def route(words, stage_list):
+    """{word: [(stage index, class ids), ...]} - the models that can find each word, in chain order."""
+    out = {}
+    for w in words:
+        r = []
+        for i, (_label, b) in enumerate(stage_list):
+            try:
+                ids = classes_for(w, b.all_classes())
+            except Exception:
+                ids = []
+            if ids:
+                r.append((i, ids))
+        out[w] = r
+    return out
+
+
+def chain_finder(words, stage_list, seg=None, log=print, fit_all=False, max_share=None, seg_factory=None):
+    """A prep.ThingFinder that sends each word down the chain (SAM 3.1 last: seg, or seg_factory() made the first time
+    a word needs it - SAM 3.1 is only loaded when a model couldn't find the word)."""
+    from fizgig.dataset import prep
+
+    class ChainFinder(prep.ThingFinder):
+        def __init__(self):
+            super().__init__(seg, words, fit_all=fit_all)
+            self.stages = stage_list
+            self.routes = route(self.words, stage_list)
+            self.yolo_words = {w: 0 for w, r in self.routes.items() if r}
+            self.sam_words = [w for w in self.words if not self.routes[w]]
+            self.max_share = prep.HIT_MAX_SHARE if max_share is None else max_share
+
+        def describe(self):
+            parts = []
+            for w in self.words:
+                r = self.routes[w]
+                who = [self.stages[i][0] for i, _ in r] + (["SAM 3.1"] if self.seg is not None or seg_factory else [])
+                parts.append(f"{w}: {' then '.join(who) if who else 'nothing installed finds it'}")
+            return "; ".join(parts)
+
+        def _ok(self, b, w, h):
+            x1, y1, x2, y2 = b
+            return (x2 - x1) * (y2 - y1) <= self.max_share * w * h
+
+        def find(self, img):
+            from fizgig.face_utils import _face_info
+            arr = np.asarray(img.convert("RGB"))
+            h, w = arr.shape[:2]
+            cache, out = {}, []
+            for word in self.words:
+                got = False
+                for i, ids in self.routes[word]:
+                    if i not in cache:
+                        need = sorted({c for r in self.routes.values() for j, cs in r if j == i for c in cs})
+                        try:
+                            cache[i] = self.stages[i][1].find_classes(arr, need)
+                        except Exception as e:
+                            _once(log, ("err", i), f"[detectors] {self.stages[i][0]} failed: {e}\n")
+                            cache[i] = []
+                    hits = [t for t in cache[i] if int(t[5]) in ids]
+                    kept = []
+                    for x1, y1, x2, y2, s, _c in hits:
+                        b = self._clamped((x1, y1, x2, y2), w, h)
+                        if b and self._ok(b, w, h):
+                            kept.append(_face_info(*b, gender=word, score=float(s), source="yolo"))
+                    if kept:
+                        out += sorted(kept, key=lambda f: -f.score)
+                        got = True
+                        break
+                if not got and self.seg is None and seg_factory is not None:
+                    self.seg = seg_factory()
+                if not got and self.seg is not None:
+                    for f in self.seg.masks(arr, [word], threshold=self.threshold, refine=0):
+                        if f.get("score", 1.0) < self.threshold:
+                            continue
+                        b = self._clamped(f["box"], w, h)
+                        if b:
+                            out.append(_face_info(*b, gender=word, score=f.get("score", 1.0), source="sam3"))
+            return out
+
+    return ChainFinder()
+
+
+# ---- watermark masks ----
+def watermark_models(loader=None, log=print):
+    loader = loader or (lambda k: load(k, conf=WM_SCORE))
+    out = []
+    for m in WATERMARK:
+        b = loader(m["key"])
+        if b is None:
+            _once(log, ("missing", m["key"]), f"[watermarks] {m['label']} isn't installed - skipped\n")
+            continue
+        out.append(b)
+    return out
+
+
+def watermark_boxes(arr, models):
+    h, w = arr.shape[:2]
+    out = []
+    for b in models:
+        try:
+            ids = sorted((b.all_classes() or {}).keys())
+            for x1, y1, x2, y2, s, _c in b.find_classes(arr, ids):
+                if s >= WM_SCORE:
+                    out.append((max(0, int(x1) - WM_PAD), max(0, int(y1) - WM_PAD),
+                                min(w, int(np.ceil(x2)) + WM_PAD), min(h, int(np.ceil(y2)) + WM_PAD)))
+        except Exception:
+            continue
+    return out
+
+
+def watermark_mask(image_path, img, models):
+    """Paint the watermarks black on the picture's mask (masks/<stem>-masklabel.png, merged with the mask it already
+    has). Returns the share of the picture covered (0 when none found: nothing written)."""
+    from PIL import Image
+    from fizgig.dataset.masks import MASK_SUFFIX, mask_for
+    arr = np.asarray(img.convert("RGB"))
+    boxes = watermark_boxes(arr, models)
+    if not boxes:
+        return 0.0
+    h, w = arr.shape[:2]
+    m = np.full((h, w), 255, np.uint8)
+    old = mask_for(image_path)
+    if old:
+        with Image.open(old) as o:
+            m = np.asarray(o.convert("L").resize((w, h))).copy()
+    cover = np.zeros((h, w), bool)
+    for x1, y1, x2, y2 in boxes:
+        cover[y1:y2, x1:x2] = True
+    m[cover] = 0
+    d = os.path.join(os.path.dirname(image_path), "masks")
+    os.makedirs(d, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(image_path))[0]
+    Image.fromarray(m, "L").save(os.path.join(d, stem + MASK_SUFFIX + ".png"))
+    return float(cover.mean())
+
+
+def download_booru():
+    """booru_yolo's .onnx into user_data/models/detectors (the page's Download button - the user asks for it)."""
+    from fizgig.utils import hf_public
+    import shutil
+    m = MODELS["booru"]
+    os.makedirs(models_dir(), exist_ok=True)
+    p = hf_public.download(**m["hf"])
+    dest = os.path.join(models_dir(), m["file"])
+    shutil.copyfile(p, dest)
+    return dest
+
+
+def info(prefs=None):
+    """For the page: each model, what it finds, where its file goes, whether it's there."""
+    pr = prefs if prefs is not None else _prefs()
+    return [{"key": m["key"], "label": m["label"], "finds": m["finds"], "page": m["page"],
+             "kind": "watermark" if m in WATERMARK else "body", "download": "hf" in m,
+             "default": os.path.join(models_dir(), m["file"]), "saved": saved_paths(pr)[m["key"]],
+             "installed": bool(model_path(m["key"], pr))} for m in BODY + WATERMARK]

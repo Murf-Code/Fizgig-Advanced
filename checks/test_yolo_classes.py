@@ -190,7 +190,7 @@ def test_find_words_needs_sam_only_for_what_yolo_cant_find(tmp_path, monkeypatch
     assert prep.migrate_target("YOLO class: pawpads", "tail") == (prep.OTHER_TARGET, "pawpads")
     assert prep.migrate_target("Largest Face", "paw") == ("Largest Face", "paw")
     assert prep.migrate_target(prep.OTHER_TARGET, "paw") == (prep.OTHER_TARGET, "paw")
-    assert prep_jobs.find_words("YOLO class: pawpads", "ignored", y) == (["pawpads"], "")
+    assert prep_jobs.find_words("YOLO class: pawpads", "ignored", y)[0] == ["pawpads"]   # SAM 3.1 only as a fallback
     (tmp_path / sammask.NAME).unlink()
     monkeypatch.setattr(prep_jobs, "_yolo", lambda: None)             # not the YOLO finder now: SAM, like Other…
     with pytest.raises(ValueError, match="needs SAM 3.1"):
@@ -222,7 +222,7 @@ def test_class_choice_runs_without_sam(tmp_path, monkeypatch):
     st = prep_jobs.status()
     assert st["state"] == "done", st["log"]
     assert (data / "crops" / "Crop_penis_001.png").exists() and not (data / "crops" / "Crop_penis_002.png").exists()  # 10x16: too small
-    assert "fdetailer_v11.onnx (YOLO), finding penis" in st["log"] and "Close-ups made: 1" in st["log"]
+    assert "penis: fdetailer_v11.onnx" in st["log"] and "Close-ups made: 1" in st["log"]
     assert not sammask._use.locked()
     log = []
     _pic(tmp_path / "b.png", 200, 160, 2)
@@ -341,14 +341,14 @@ def test_page_menu_and_other_routing():
     assert out["untouched"] == {"face": "Largest Female Face", "find": "paw"}
     m = out["migShown"]
     assert m["face"] == "Other…" and m["find"] == "paw pads" and m["row"] and m["block"] == "" and not m["test"]
-    assert m["testLabel"] == "Test finding this on one photo…" and "SAM 3.1 isn't needed" in m["hint"]
+    assert m["testLabel"] == "Test finding this on one photo…" and "paw pads: your YOLO face model" in m["hint"]
     assert out["fallback"] == "Largest Face"                  # "YOLO class: ..." isn't a choice any more
     assert out["oldSaved"] == "Largest Female Face"           # old saved values unchanged
     a = out["allYolo"]
-    assert a["block"] == "" and not a["test"] and "SAM 3.1 isn't needed" in a["hint"]
+    assert a["block"] == "" and not a["test"] and "Penis: your YOLO face model" in a["hint"]
     m = out["mixedNoSam"]
     assert m["test"] and m["testTitle"].startswith("Finding by words needs SAM 3.1") and "needs SAM 3.1" in m["block"]
-    assert out["mixed"]["block"] == "" and "finds penis; SAM 3.1 finds the rest" in out["mixed"]["hint"]
+    assert out["mixed"]["block"] == "" and "penis: your YOLO face model; tail: SAM 3.1" in out["mixed"]["hint"]
     assert "needs SAM 3.1" in out["notYolo"]["block"]          # not the YOLO finder: SAM, as before
 
 
