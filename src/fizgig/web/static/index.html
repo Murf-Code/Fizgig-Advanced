@@ -364,10 +364,14 @@
             <div class="section-card">
               <div class="card-title">2 · Your originals</div>
               <div class="card-content">
-                <label class="radio-label"><input type="radio" name="prepReplace" value="0" checked>
-                  Keep them safe — moved to an 'originals' subfolder</label>
-                <label class="radio-label"><input type="radio" name="prepReplace" value="1">
-                  Replace them ⚠ originals are gone after this</label>
+                <div class="field-hint">Your pictures and captions are never changed. Resized copies go in a
+                  'resized' sub-folder, close-ups in 'crops', and pictures the cropping skipped are copied to
+                  'skipped' with the reason. Training uses the resized copies in place of the full-size pictures.
+                  Running prep again replaces those folders; to undo, delete them.</div>
+                <div style="display:none">
+                <label class="radio-label"><input type="radio" name="prepReplace" value="0" checked> Keep</label>
+                <label class="radio-label"><input type="radio" name="prepReplace" value="1"> Replace</label>
+                </div>
               </div>
             </div>
             <div class="section-card accent-card">
