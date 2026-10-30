@@ -321,7 +321,7 @@ def _tagger(folder, name=None):
     return taggers.get(name).Tagger(folder, log=_log)
 
 
-def start(folder, mode, mp, face_label, padding, replace, find="", captions=None):
+def start(folder, mode, mp, face_label, padding, replace, find="", captions=None, fit_all=True):
     face_label, find = prep.migrate_target(face_label, find)    # an older build's "YOLO class: penis": Other…
     if not folder or not os.path.isdir(folder):
         raise ValueError("Choose the training folder on the Start tab first.")
@@ -344,7 +344,7 @@ def start(folder, mode, mp, face_label, padding, replace, find="", captions=None
             try:
                 caps = crop_captions(cap_settings, tagger)
                 if words:
-                    _things(words, sam_path, mode, folder, mp, face_label, padding, replace, caps)
+                    _things(words, sam_path, mode, folder, mp, face_label, padding, replace, caps, fit_all)
                 else:
                     det = _face_detector() if mode != "Resize Only" else None
                     prep.Prep(_log, det, captions=caps).run(mode, folder, float(mp), face_label, float(padding),
@@ -363,18 +363,20 @@ def start(folder, mode, mp, face_label, padding, replace, find="", captions=None
     return {"ok": True}
 
 
-def _things(words, sam_path, mode, folder, mp, face_label, padding, replace, caps=None):
+def _things(words, sam_path, mode, folder, mp, face_label, padding, replace, caps=None, fit_all=False):
     """A prep run with Other…: the YOLO face model finds the phrases it has a class for, SAM 3.1 the other words; SAM is
     freed from memory when the run ends."""
     from fizgig.dataset import sammask
     if not sam_path:                                   # the YOLO model finds it all: SAM 3.1 isn't touched
         finder = thing_finder(words, "", _log)
+        finder.fit_all = bool(fit_all)
         prep.Prep(_log, None, finder, caps).run(mode, folder, float(mp), face_label, float(padding), bool(replace))
         return
     if not sammask._use.acquire(blocking=False):
         raise ValueError("SAM 3.1 is busy with a mask preview. Try again in a moment.")
     try:
         finder = thing_finder(words, sam_path, _log)
+        finder.fit_all = bool(fit_all)
         prep.Prep(_log, None, finder, caps).run(mode, folder, float(mp), face_label, float(padding), bool(replace))
     finally:
         sammask._use.release()

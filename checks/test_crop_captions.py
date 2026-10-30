@@ -146,10 +146,10 @@ def test_auto_prep_copies_and_trims(tmp_path):
     caps = C.CropCaptions(ext=".txt", keep=["ruaidri"], tagger=tagger)
     prep.Prep(log.append, _Det([F._face_info(20, 10, 60, 58)]), captions=caps).run(
         "Auto Prep (Face Crops)", str(tmp_path), 4.2, "Largest Face", 20.0, False)
-    assert (tmp_path / "FaceCrop_004.txt").read_text() == "ruaidri, wolf, smile"      # numbering goes on after 003
-    assert (tmp_path / "FaceCrop_005.txt").read_text() == "A wolf standing in a forest. He smiles."
-    assert (tmp_path / "FaceCrop_006.txt").read_text() == "ruaidri, wolf, smile"
-    assert (tmp_path / "FaceCrop_003.txt").read_text() == "mine" and not (tmp_path / "FaceCrop_003.png").exists()
+    assert (tmp_path / "crops" / "FaceCrop_001.txt").read_text() == "ruaidri, wolf, smile"      # crops/ starts afresh
+    assert (tmp_path / "crops" / "FaceCrop_002.txt").read_text() == "A wolf standing in a forest. He smiles."
+    assert (tmp_path / "crops" / "FaceCrop_003.txt").read_text() == "ruaidri, wolf, smile"
+    assert (tmp_path / "FaceCrop_003.txt").read_text() == "mine"      # the training folder is never touched
     assert (tmp_path / "a.txt").read_text() == CAP                  # the picture's own caption is untouched
     assert tagger.seen == [(66, 66), (66, 66)]                       # the crops are what get tagged, not the pictures
     text = "".join(log)
@@ -164,7 +164,7 @@ def test_copy_only_by_default_and_off_switch(tmp_path):
         (d / "a.txt").write_text(CAP)
         prep.Prep(lambda _t: None, _Det([F._face_info(20, 10, 60, 58)]), captions=caps).run(
             "Auto Prep (Face Crops)", str(d), 4.2, "Largest Face", 20.0, False)
-        crop_cap = d / "FaceCrop_001.txt"
+        crop_cap = d / "crops" / "FaceCrop_001.txt"
         assert crop_cap.exists() == (sub == "on")
         if sub == "on":
             assert crop_cap.read_text() == CAP                       # no tagger: copied as is
@@ -176,8 +176,8 @@ def test_crop_only_trims_in_place_and_keeps_the_original(tmp_path):
     prep.Prep(lambda _t: None, _Det([F._face_info(20, 10, 60, 58)]),
               captions=C.CropCaptions(keep=["ruaidri"], tagger=FakeTagger(SEEN))).run(
         "Face Crop Only", str(tmp_path), 4.2, "Largest Face", 20.0, False)
-    assert (tmp_path / "FaceCrop_001.txt").read_text() == "ruaidri, wolf, smile"     # named like Auto Prep's crops
-    assert (tmp_path / "FaceCrop_001.png").exists() and (tmp_path / "a.txt").read_text() == CAP   # left as it was
+    assert (tmp_path / "crops" / "FaceCrop_001.txt").read_text() == "ruaidri, wolf, smile"     # named like Auto Prep's crops
+    assert (tmp_path / "crops" / "FaceCrop_001.png").exists() and (tmp_path / "a.txt").read_text() == CAP   # left as it was
     assert (tmp_path / "a.jpg").exists() and not (tmp_path / "originals").exists()
 
 
@@ -198,7 +198,7 @@ def test_other_crops_get_trimmed_captions(tmp_path):
     prep.Prep(lambda _t: None, None, prep.ThingFinder(seg, ["paw"]),
               C.CropCaptions(keep=["ruaidri"], tagger=FakeTagger({"wolf": 0.5, "tail": 0.4}))).run(
         "Auto Prep (Face Crops)", str(tmp_path), 4.2, prep.OTHER_TARGET, 20.0, False)
-    assert (tmp_path / "Crop_paw_001.txt").read_text() == "ruaidri, wolf, tail"
+    assert (tmp_path / "crops" / "Crop_paw_001.txt").read_text() == "ruaidri, wolf, tail"
 
 
 def test_page_settings_checked(tmp_path, monkeypatch):
@@ -256,4 +256,4 @@ def test_run_frees_the_tagger(tmp_path, monkeypatch):
             break
         time.sleep(0.05)
     assert prep_jobs.status()["state"] == "done", prep_jobs.status()["log"]
-    assert (data / "FaceCrop_001.txt").read_text() == "ruaidri, wolf, smile, close-up" and closed == [1]
+    assert (data / "crops" / "FaceCrop_001.txt").read_text() == "ruaidri, wolf, smile, close-up" and closed == [1]

@@ -550,7 +550,10 @@ def _media_count(folder):
     from fizgig.dataset.image_dataset import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
     exts = {e.lower() for e in (*IMAGE_EXTENSIONS, *VIDEO_EXTENSIONS, *AUDIO_EXTENSIONS)}
     try:
-        return sum(1 for n in os.listdir(folder) if os.path.splitext(n)[1].lower() in exts and not is_mask_file(n))
+        from fizgig.dataset.image_dataset import superseded_stems
+        gone = superseded_stems(folder)
+        return sum(1 for n in os.listdir(folder) if os.path.splitext(n)[1].lower() in exts and not is_mask_file(n)
+                   and os.path.splitext(n)[0] not in gone)
     except OSError:
         return 0
 
@@ -558,7 +561,10 @@ def _media_count(folder):
 # Folders Fizgig itself makes inside a training folder: never trained on as sub-folders. Image Prep's Keep them safe
 # (originals, then originals_2, _3... on later runs; crop tag trimming backs captions up there too), Exclude by look,
 # and the desktop's Remove. Matched in any case.
-OWN_SUBFOLDERS = {"excluded_by_look", "originals", "removed"}
+OWN_SUBFOLDERS = {"excluded_by_look", "originals", "removed", "skipped"}
+# Image Prep's outputs (resized copies, close-ups): always trained, even with Include sub-folders off; a picture with
+# a copy in resized/ trains from that copy only (the full-size one beside it is left out - no duplicates).
+PREP_OUTPUTS = ("resized", "crops")
 _OWN_NUMBERED = re.compile(r"originals(_\d+)?", re.IGNORECASE)
 
 
@@ -596,10 +602,22 @@ def subfolders(folder, skip=(), skipped=None):
     return out
 
 
+def prep_subfolders(folder):
+    """[(name, folder)] of Image Prep's outputs (resized, crops) directly inside folder that hold pictures."""
+    out = []
+    for n in PREP_OUTPUTS:
+        d = os.path.join(folder, n) if folder else ""
+        if d and os.path.isdir(d) and _media_count(d):
+            out.append((n, d))
+    return out
+
+
 def run_subfolders(desc, st, skipped=None):
     """The run's sub-folders (subfolders), or [] when the tick is off or doesn't apply."""
     if not subfolders_on(desc, st):
-        return []
+        if edit_on(desc, st) or slider_on(desc, st):              # paired files: no prep outputs
+            return []
+        return prep_subfolders(_s(st.get("image_folder")))
     return subfolders(_s(st.get("image_folder")), (_s(st.get("LORA_OUTPUT_DIR")), _s(st.get("cache_root")),
                                                    ft_reg_dir(desc, st)), skipped)
 

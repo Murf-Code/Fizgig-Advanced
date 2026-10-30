@@ -946,7 +946,9 @@ SUBFOLDERS_LABEL = "Include sub-folders"
 SUBFOLDERS_HINT = ("Off: only the pictures directly in the training folder are used.\nOn: the pictures in its "
                    "sub-folders are trained on too, at any depth, each sub-folder as its own set with its own captions "
                    "and cache, so a big dataset can stay organised. Every picture trains once an epoch, wherever it "
-                   "is. Fizgig's own folders (originals, excluded_by_look, removed) are never trained on.\nImage Prep "
+                   "is. Fizgig's own folders (originals, excluded_by_look, removed, skipped) are never trained on. Image Prep's "
+                   "'resized' and 'crops' folders are always trained, even with this off; a picture with a resized "
+                   "copy trains from the copy only.\nImage Prep "
                    "and Captions work on one folder at a time: to caption or mask a sub-folder, choose it as the "
                    "training folder here.")
 

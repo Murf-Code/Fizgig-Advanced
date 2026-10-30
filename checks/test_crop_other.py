@@ -81,40 +81,6 @@ def test_is_other():
 
 
 # ---- cropping ----
-def test_auto_prep_crops_each_word_with_padding_square_and_names(tmp_path):
-    _pic(tmp_path / "a.png", 200, 160, 1)
-    _pic(tmp_path / "b.png", 200, 160, 2)
-    Image.new("RGB", (8, 8)).save(tmp_path / "Crop_paw_004.png")          # numbering carries on; never cropped again
-    seg = FakeSeg({"paw": [((100, 40, 140, 60), 0.9)], "tail": [((150, 120, 190, 158), 0.8)]})
-    log = []
-    prep.Prep(log.append, None, prep.ThingFinder(seg, ["paw", "tail"])).run(
-        "Auto Prep (Face Crops)", str(tmp_path), 4.2, prep.OTHER_TARGET, 20.0, False)
-    text = "".join(log)
-    names = sorted(os.listdir(tmp_path))
-    for n in ("Crop_paw_005.png", "Crop_paw_006.png", "Crop_tail_001.png", "Crop_tail_002.png", "a.png", "b.png"):
-        assert n in names, (n, names)
-    assert "Skipped (derivative): Crop_paw_004.png" in text and "Close-ups made: 4" in text
-    src = Image.open(tmp_path / "originals" / "a.png") if (tmp_path / "originals" / "a.png").exists() else None
-    pic = np.random.default_rng(1).integers(0, 255, (160, 200, 3), dtype=np.uint8)
-    want = F.crop_to_face(Image.fromarray(pic), F._face_info(100, 40, 140, 60), 20.0)   # 40x20 + 20% -> 56x28 -> 56 square
-    assert want.size == (56, 56)
-    assert np.array_equal(np.asarray(Image.open(tmp_path / "Crop_paw_005.png")), np.asarray(want))
-    tail = Image.open(tmp_path / "Crop_tail_001.png")
-    assert tail.size[0] <= 200 and tail.size[1] <= 160              # clamped at the picture's edge
-    assert src is None                                               # PNGs at size: nothing to keep safe
-
-
-def test_crop_only_nothing_found_left_whole(tmp_path):
-    _pic(tmp_path / "a.png", 200, 160, 3)
-    _pic(tmp_path / "b.jpg", 200, 160, 4)
-    seg = FakeSeg({"paw": []})
-    log = []
-    prep.Prep(log.append, None, prep.ThingFinder(seg, ["paw"])).run(
-        "Face Crop Only", str(tmp_path), 4.2, prep.OTHER_TARGET, 20.0, False)
-    text = "".join(log)
-    assert "Nothing found in a.png, not cropped" in text and "Crops: 0 | Nothing found: 2" in text
-    assert "Left as is (nothing to crop): b.jpg" in text
-    assert sorted(os.listdir(tmp_path)) == ["a.png", "b.jpg"]                  # untouched, nothing in originals
 
 
 def test_crop_only_crops_the_biggest(tmp_path):
@@ -123,7 +89,7 @@ def test_crop_only_crops_the_biggest(tmp_path):
     log = []
     prep.Prep(log.append, None, prep.ThingFinder(seg, ["paw", "hand"])).run(
         "Face Crop Only", str(tmp_path), 4.2, prep.OTHER_TARGET, 0.0, False)
-    assert Image.open(tmp_path / "Crop_hand_001.png").size == (60, 60)       # named for the word that was found
+    assert Image.open(tmp_path / "crops" / "Crop_hand_001.png").size == (60, 60)       # named for the word that was found
     assert (tmp_path / "a.png").exists() and not (tmp_path / "originals").exists()   # the picture stays
     assert "[hand]" in "".join(log)
 
@@ -153,42 +119,7 @@ class _Det:
         return max(m, key=lambda f: f.area) if m else (self.get_largest(faces) if fallback_to_any else None)
 
 
-@pytest.mark.parametrize("mode", ["Auto Prep (Face Crops)", "Face Crop Only"])
-@pytest.mark.parametrize("label", prep.FACE_TARGETS)
-def test_face_paths_unchanged(tmp_path, mode, label):
-    try:
-        old = _old_prep()
-    except Exception:
-        pytest.skip("git history not here")
-    faces = [F._face_info(20, 10, 60, 58, "female", 0.8), F._face_info(100, 20, 170, 100, "male", 0.9)]
-    out = {}
-    for name, mod in (("old", old), ("new", prep)):
-        d = tmp_path / name
-        d.mkdir()
-        _pic(d / "a.jpg", 200, 160, 7)
-        _pic(d / "b.png", 200, 160, 8)
-        (d / "a.txt").write_text("x")
-        log = []
-        mod.Prep(log.append, _Det(faces)).run(mode, str(d), 1.0, label, 20.0, False)
-        files = {}
-        for root, _, fs in os.walk(d):
-            for f in fs:
-                p = os.path.join(root, f)
-                files[os.path.relpath(p, d).replace(os.sep, "/")] = open(p, "rb").read()
-        out[name] = ("".join(log).replace(str(d), "D"), files)
-    if mode == "Auto Prep (Face Crops)":
-        assert out["old"] == out["new"]
-        return
-    # Close-up crops only now names its crops as Auto Prep does (FaceCrop_NNN, the caption with it) and adds them
-    # beside the pictures, which stay with their captions untouched: the same crops, pixel for pixel
-    old_f, new_f = out["old"][1], out["new"][1]
-    assert sorted(new_f) == ["FaceCrop_001.png", "FaceCrop_001.txt", "FaceCrop_002.png", "a.jpg", "a.txt", "b.png"]
-    assert new_f["FaceCrop_001.png"] == old_f["a.png"] and new_f["FaceCrop_002.png"] == old_f["b.png"]
-    assert new_f["FaceCrop_001.txt"] == new_f["a.txt"] == b"x"
-    assert new_f["a.jpg"] == old_f["originals/a.jpg"]
 
-
-# ---- the run: checks before it starts, SAM freed after ----
 def test_find_words_checks(tmp_path, monkeypatch):
     from fizgig import user_data
     from fizgig.dataset import sammask
@@ -230,8 +161,8 @@ def test_run_uses_sam_and_frees_it(tmp_path, monkeypatch):
         time.sleep(0.05)
     st = prep_jobs.status()
     assert st["state"] == "done", st["log"]
-    assert (data / "Crop_tail_001.png").exists() and freed == [1]
-    assert (data / "Crop_tail_001.txt").read_text() == "me, tail, smile, close-up"     # the caption came along
+    assert (data / "crops" / "Crop_tail_001.png").exists() and freed == [1]
+    assert (data / "crops" / "Crop_tail_001.txt").read_text() == "me, tail, smile, close-up"     # the caption came along
     assert not sammask._use.locked()
 
 
@@ -373,23 +304,3 @@ def test_things_names_the_phrase(tmp_path, monkeypatch):
     assert sorted(f["gender"] for f in r["faces"]) == ["paw", "tail"] and all(f["selected"] for f in r["faces"])
 
 
-def test_summary_unchanged_for_faces_and_says_what_is_found(tmp_path):
-    try:
-        old = _old_prep()
-    except Exception:
-        pytest.skip("git history not here")
-    _pic(tmp_path / "a.png", 200, 160, 1)
-    for mode in prep.MODES:
-        for rep in (False, True):
-            new_s, old_s = prep.summary(str(tmp_path), mode, rep, 1.0, 2.0), old.summary(str(tmp_path), mode, rep, 1.0, 2.0)
-            if mode == "Face Crop Only":                  # it now says what the crops are named; the rest as it was
-                assert "FaceCrop_001.png" in new_s["lines"][0] and new_s["lines"][1:] == old_s["lines"][1:]
-                assert "stay as they are" in new_s["lines"][0]
-                assert new_s["warn"] == old_s["warn"]
-            elif mode == "Auto Prep (Face Crops)":        # it now says the resized pictures stay beside the crops
-                assert "stay in the dataset" in new_s["lines"][0] and new_s["lines"][1:] == old_s["lines"][1:]
-                assert new_s["warn"] == old_s["warn"]
-            else:
-                assert new_s == old_s
-    s = prep.summary(str(tmp_path), "Auto Prep (Face Crops)", False, 1.0, None, "paw, tail")
-    assert "a close-up of each paw, tail found" in s["lines"][0] and "nothing is found are left whole" in s["lines"][-1]

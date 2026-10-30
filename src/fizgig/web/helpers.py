@@ -3518,9 +3518,9 @@ def _move_extras(values):
 
 def _run_subfolders(folder, values):
     """[(relative path, folder)] of the run's sub-folders when it trains them (Include sub-folders)."""
-    if not (values or {}).get("TRAIN_SUBFOLDERS"):
-        return []
     from fizgig.families import launch
+    if not (values or {}).get("TRAIN_SUBFOLDERS"):
+        return launch.prep_subfolders(folder)          # Image Prep's resized/ and crops/ always train
     return launch.subfolders(folder, (str(values.get("LORA_OUTPUT_DIR") or ""),
                                       str(values.get("FAMILY_FT_REG_DIR") or "")))
 

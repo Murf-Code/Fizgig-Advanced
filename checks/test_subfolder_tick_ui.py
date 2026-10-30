@@ -50,7 +50,7 @@ def test_one_tick_placed_on_the_start_tab_with_its_hint_on_hover():
         _sec, r = rows[0]
         assert r["place"] == "start_folder" and r["label"] == "Include sub-folders" and r["kind"] == "check"
         assert r["hint"] == "" and r["tip"] == form.SUBFOLDERS_HINT
-        assert "Fizgig's own folders (originals, excluded_by_look, removed) are never trained on" in r["tip"]
+        assert "Fizgig's own folders (originals, excluded_by_look, removed, skipped) are never trained on" in r["tip"]
     assert form.DEFAULTS["TRAIN_SUBFOLDERS"] is False           # the saved key and value are unchanged
     inp = form.inputs(get_family("krea2"), {**form.DEFAULTS, "TRAIN_SUBFOLDERS": True}, models={}, python=sys.executable,
                       repo_dir=".", image_folder="", cache_root="", samples_dir="")

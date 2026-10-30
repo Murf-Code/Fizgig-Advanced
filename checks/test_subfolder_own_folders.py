@@ -57,21 +57,20 @@ def test_numbered_originals_removed_and_nested_ones_are_skipped_and_named(tmp_pa
     assert launch.own_skipped_line(get_family("krea2"), _st(d, subfolders=False)) == ""      # tick off: no line
 
 
-def test_a_real_keep_safe_prep_twice_then_remove_trains_none_of_them(tmp_path):
+def test_a_real_prep_twice_then_remove_trains_resized_only(tmp_path):
     d = tmp_path / "data"
     for n in "abc":
         _pic(str(d / f"{n}.jpg"), size=(1600, 1200))
     _pic(str(d / "outfits" / "red" / "r.jpg"))
-    Prep(lambda s: None).run("Resize Only", str(d), 1.0, replace=False)      # Keep them safe -> originals/
+    Prep(lambda s: None).run("Resize Only", str(d), 1.0)                     # copies -> resized/
     for n in "de":
         _pic(str(d / f"{n}.jpg"), size=(1600, 1200))
-    Prep(lambda s: None).run("Resize Only", str(d), 1.0, replace=False)      # the next prep -> originals_2/
-    from fizgig.web import server
-    server.remove_from_dataset(str(d), "a.png", ".txt")                      # the desktop's Remove -> removed/
-    assert sorted(os.listdir(d / "originals")) == ["a.jpg", "b.jpg", "c.jpg"]
-    assert sorted(os.listdir(d / "originals_2")) == ["d.jpg", "e.jpg"]
-    assert os.path.isfile(d / "removed" / "a.png")
-    assert [r for r, _f in launch.run_subfolders(get_family("krea2"), _st(d))] == ["outfits/red"]
+    Prep(lambda s: None).run("Resize Only", str(d), 1.0)                     # a re-run replaces resized/
+    assert sorted(f for f in os.listdir(d) if f.endswith(".jpg")) == ["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"]
+    assert sorted(f for f in os.listdir(d / "resized") if f.endswith(".png")) == [f"{n}.png" for n in "abcde"]
+    assert not (d / "originals").exists()
+    assert [r for r, _f in launch.run_subfolders(get_family("krea2"), _st(d))] == ["outfits/red", "resized"]
+    assert launch._media_count(str(d)) == 0                    # every full-size picture trains from its copy
 
 
 def test_masks_and_captions_in_an_included_subfolder_still_count(tmp_path):

@@ -286,7 +286,7 @@ def test_run_loads_the_chosen_tagger(tmp_path, monkeypatch):
         time.sleep(0.05)
     assert prep_jobs.status()["state"] == "done", prep_jobs.status()["log"]
     assert asked == [(os.path.join(str(tmp_path / "models"), J.FOLDER), "jtp3")] and closed == [1]
-    caps = [open(os.path.join(data, f)).read() for f in os.listdir(data) if f.endswith(".txt")]
+    caps = [open(os.path.join(data, "crops", f)).read() for f in os.listdir(data / "crops") if f.endswith(".txt")]
     assert "ruaidri, solo, close-up" in caps          # Tag crops as close-up is on unless turned off
 
 

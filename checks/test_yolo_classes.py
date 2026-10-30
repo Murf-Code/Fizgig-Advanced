@@ -221,14 +221,14 @@ def test_class_choice_runs_without_sam(tmp_path, monkeypatch):
         time.sleep(0.05)
     st = prep_jobs.status()
     assert st["state"] == "done", st["log"]
-    assert (data / "Crop_penis_001.png").exists() and not (data / "Crop_penis_002.png").exists()  # 10x16: too small
+    assert (data / "crops" / "Crop_penis_001.png").exists() and not (data / "crops" / "Crop_penis_002.png").exists()  # 10x16: too small
     assert "fdetailer_v11.onnx (YOLO), finding penis" in st["log"] and "Close-ups made: 1" in st["log"]
     assert not sammask._use.locked()
     log = []
     _pic(tmp_path / "b.png", 200, 160, 2)
     prep.Prep(log.append, None, prep.ThingFinder(None, ["penis"], yolo=y, yolo_words={"penis": 1})).run(
         "Face Crop Only", str(tmp_path), 4.2, prep.OTHER_TARGET, 0.0, False)
-    assert Image.open(tmp_path / "Crop_penis_001.png").size == (40, 40) and "[penis]" in "".join(log)
+    assert Image.open(tmp_path / "crops" / "Crop_penis_001.png").size == (40, 40) and "[penis]" in "".join(log)
     y.boxes = []
     _pic(tmp_path / "b.png", 200, 160, 2)
     log = []

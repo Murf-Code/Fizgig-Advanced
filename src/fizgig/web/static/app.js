@@ -4656,7 +4656,7 @@ const thumbOf = (p) => `/api/thumb?path=${encodeURIComponent(p)}&t=${encodeURICo
 const prepSettings = () => ({
   mode: (document.querySelector('input[name="prepMode"]:checked') || {}).value || "Auto Prep (Face Crops)",
   mp: $("prepMp").value || "1.0", face: $("prepFace").value || "Largest Face", padding: $("prepPadding").value || "20",
-  find: $("prepFind").value || "", capCopy: $("prepCapCopy").checked, capTrim: $("prepCapTrim").checked,
+  find: $("prepFind").value || "", fitAll: $("prepFitAll").checked, capCopy: $("prepCapCopy").checked, capTrim: $("prepCapTrim").checked,
   capCloseup: $("prepCapCloseup").checked, capAdd: $("prepCapAdd").checked, addScore: $("prepAddScore").value || "0.90",
   tagger: $("prepTagger").value || "wd-eva02", keepScore: $("prepKeepScore").value || TAGGER_KEEP[$("prepTagger").value] || "0.35",
   replace: (document.querySelector('input[name="prepReplace"]:checked') || {}).value === "1"});
@@ -4679,6 +4679,7 @@ async function loadPrep() {
     prepFaceOptions(o.face_settings, saved.face);
     $("prepMp").value = saved.mp || "1.0";
     $("prepFind").value = saved.find || "";
+    $("prepFitAll").checked = saved.fitAll !== false;               // on unless turned off
     $("prepCapCopy").checked = saved.capCopy !== false;             // on unless turned off
     $("prepCapTrim").checked = !!saved.capTrim;
     $("prepCapCloseup").checked = saved.capCloseup !== false;       // on unless turned off
@@ -5699,6 +5700,7 @@ function wirePrep() {
   for (const id of ["prepMp", "prepFace", "prepPadding"]) $(id).addEventListener("change", () => { prepSummary(); savePrepSoon(); });
   $("prepFace").addEventListener("change", () => { if (prepOther() && !$("prepFind").value.trim()) $("prepFind").focus(); });
   $("prepFind").addEventListener("input", () => { prepFindShow(); savePrepSoon(); });
+  $("prepFitAll").addEventListener("change", () => savePrepSoon());
   $("prepCapCopy").addEventListener("change", () => { $("prepCapTrim").disabled = $("prepCapCloseup").disabled = !$("prepCapCopy").checked; prepFindShow(); savePrepSoon(); });
   $("prepCapCloseup").addEventListener("change", savePrepSoon);
   $("prepCapTrim").addEventListener("change", () => { prepFindShow(); savePrepSoon(); });

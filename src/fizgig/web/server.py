@@ -3532,9 +3532,11 @@ class Handler(BaseHTTPRequestHandler):
             os.listdir(folder)
         except OSError:
             return self.json({"items": []})
-        for rel, d in [("", folder)] + (launch.subfolders(folder, skip) if subs else []):
+        from fizgig.dataset.image_dataset import superseded_stems
+        for rel, d in [("", folder)] + (launch.subfolders(folder, skip) if subs else launch.prep_subfolders(folder)):
             try:
-                names = sorted(os.listdir(d))
+                gone = superseded_stems(d)              # shown (and trained) from Image Prep's resized/ copy
+                names = sorted(n for n in os.listdir(d) if os.path.splitext(n)[0] not in gone)
             except OSError:
                 continue
             keep = _caption_media_filter(names, family)
@@ -4389,7 +4391,8 @@ class Handler(BaseHTTPRequestHandler):
                         return self.json(prep_jobs.start(folder, str(b.get("mode") or ""), b.get("mp") or 1.0,
                                                          str(b.get("face") or "Largest Face"),
                                                          b.get("padding") or 20, bool(b.get("replace")),
-                                                         str(b.get("find") or ""), b.get("captions")))
+                                                         str(b.get("find") or ""), b.get("captions"),
+                                                         b.get("fitAll") is not False))   # on unless turned off
                     if path == "/api/look/scan":
                         return self.json(prep_jobs.look_scan(folder, b.get("baselines") or []))
                     if path == "/api/masks/edit/save":

@@ -167,6 +167,16 @@ def str_to_dtype(s: Optional[str], default_dtype: Optional[torch.dtype] = None) 
     raise ValueError(f"Unsupported dtype string: {s}")
 
 
+def superseded_stems(directory: str) -> set:
+    """Stems of pictures in *directory* that Image Prep made a resized copy of (in its resized/ sub-folder): those
+    train from the copy, so the full-size picture is left out here (no duplicates)."""
+    d = os.path.join(directory or "", "resized")
+    if not directory or not os.path.isdir(d):
+        return set()
+    return {os.path.splitext(f)[0] for f in os.listdir(d)
+            if os.path.splitext(f)[1].lower() in {e.lower() for e in IMAGE_EXTENSIONS} and not is_mask_file(f)}
+
+
 def glob_images(directory: str, base: str = "*", caption_extension: Optional[str] = None,
                 extra_extensions: tuple = ()) -> list[str]:
     """Glob image files in *directory*, optionally filtering to those with captions.
@@ -182,6 +192,8 @@ def glob_images(directory: str, base: str = "*", caption_extension: Optional[str
         else:
             img_paths.extend(glob.glob(glob.escape(os.path.join(directory, base + ext))))
     img_paths = [p for p in set(img_paths) if not is_mask_file(p)]      # photo-masklabel.png is photo.png's mask
+    _gone = superseded_stems(directory)                 # trained from Image Prep's resized/ copy instead
+    img_paths = [p for p in img_paths if os.path.splitext(os.path.basename(p))[0] not in _gone]
 
     if caption_extension is not None:
         caption_paths = glob.glob(os.path.join(glob.escape(directory), "*" + caption_extension))
