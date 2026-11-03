@@ -35,4 +35,7 @@ def test_folder(tmp_path):
     c = D.watermarks_only_folder(str(tmp_path), [Stub([])], log=lambda m: None)
     assert c["kept"] == 2 and c["made"] == 0
     c = D.watermarks_only_folder(str(tmp_path), [Stub([])], overwrite=True, log=lambda m: None)
-    assert c["no_person"] == 2 and c["made"] == 0
+    assert c["removed"] == 2 and c["made"] == 0 and not mask_for(str(tmp_path / "a.png"))
+    assert sorted(f.name for f in tmp_path.iterdir()) == ["a.png", "b.png"]    # only the masks went
+    c = D.watermarks_only_folder(str(tmp_path), [Stub([])], overwrite=True, log=lambda m: None)
+    assert c["no_person"] == 2 and c["removed"] == 0

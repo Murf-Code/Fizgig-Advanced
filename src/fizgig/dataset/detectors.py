@@ -357,11 +357,12 @@ def watermarks_only(shape, boxes):
 def watermarks_only_folder(folder, models, overwrite=False, log=print):
     """Make masks' Just hide the watermarks: every picture (top level) gets a fresh mask, white except its
     watermarks. A picture with a mask already is kept unless overwrite; one with no watermark found gets none.
-    Returns the counts {"made", "kept", "skipped", "no_person"} (no_person: no watermark found)."""
+    Returns the counts {"made", "kept", "skipped", "no_person", "removed"} (no_person: no watermark found;
+    removed: none found and the old mask deleted, with overwrite)."""
     from PIL import Image
     from fizgig.dataset import prep
     from fizgig.dataset.masks import MASK_SUFFIX, mask_for
-    c = {"made": 0, "kept": 0, "skipped": 0, "no_person": 0}
+    c = {"made": 0, "kept": 0, "skipped": 0, "no_person": 0, "removed": 0}
     for p in prep.image_files(folder):
         name = os.path.basename(p)
         if mask_for(p) and not overwrite:
@@ -379,8 +380,17 @@ def watermarks_only_folder(folder, models, overwrite=False, log=print):
             c["skipped"] += 1
             continue
         if m is None:
-            c["no_person"] += 1
-            log(f"  {name}: no watermark found - no mask, trains as normal\n")
+            old, gone = mask_for(p), 0
+            while old and gone < 2:            # Replace: the old mask goes too (beside it, and in masks/)
+                os.remove(old)
+                gone += 1
+                old = mask_for(p)
+            if gone:
+                c["removed"] += 1
+                log(f"  {name}: no watermark found - old mask removed, trains as normal\n")
+            else:
+                c["no_person"] += 1
+                log(f"  {name}: no watermark found - no mask, trains as normal\n")
             continue
         stem = os.path.splitext(name)[0]
         Image.fromarray(m, "L").save(os.path.join(os.path.dirname(p), stem + MASK_SUFFIX + ".png"))

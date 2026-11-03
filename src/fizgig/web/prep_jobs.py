@@ -783,6 +783,8 @@ def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who
                  + (f", {c['kept']} already there kept" if c["kept"] else "")
                  + (f", {c['no_person']} picture(s) with " + ("no watermark found (no mask, they train as normal)"
                     if wm_only else "nothing to mask") if c["no_person"] else "")
+                 + (f", {c['removed']} old mask(s) removed (no watermark found, they train as normal)"
+                    if c.get("removed") else "")
                  + (f", {c['skipped']} skipped" if c["skipped"] else "")
                  + ". Check them on the Captions tab (Show mask); paint over any that are wrong.\n"
                  + ("To remake the ones kept, tick Replace masks already there and press Make masks again.\n"
