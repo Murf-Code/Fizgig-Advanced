@@ -10323,7 +10323,7 @@ function wireLightbox() {
     else if (e.key === "Escape") lightboxClose();
     else if (typing) return;                     // the arrows move the cursor in the caption
     else if (e.key.startsWith("Arrow")) {
-      // previews: ↑ ↓ the prompt before / after at the same epoch
+      // previews: ↑ ↓ the same prompt an epoch earlier / later
       const d = {ArrowLeft: -1, ArrowRight: 1, ArrowUp: -1, ArrowDown: 1}[e.key];
       if (/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || "")) return;
       const cur = S.lb.list[S.lb.at], across = e.key === "ArrowLeft" || e.key === "ArrowRight";
@@ -10331,8 +10331,7 @@ function wireLightbox() {
       if (across) { e.preventDefault(); lightboxStep(S.lb.at + d); return; }
       if (!cur || cur.ep == null) return;
       e.preventDefault();
-      const same = across ? (p) => p.idx === cur.idx : (p) => p.ep === cur.ep;
-      const key = across ? (p) => p.ep : (p) => p.idx;
+      const same = (p) => p.idx === cur.idx, key = (p) => p.ep;
       let best = -1;
       S.lb.list.forEach((p, i) => {
         if (p.ep == null || !same(p) || (key(p) - key(cur)) * d <= 0) return;
