@@ -40,6 +40,7 @@ See upstream's `docs/RELEASE_NOTES_v8.9.96.md` to `docs/RELEASE_NOTES_v9.0.2.md`
 ### Masks (with ADetailer-style YOLO detectors)
 - **Mask watermarks too** tick on the Masks card ("Make masks"). Two YOLO watermark detectors (Watermark and NSFW Watermark) find watermarks, signatures and text, and black them out of each mask, so masked training ignores them.
 - They're merged with any mask a picture already has. Image Prep's watermark masks go in a `masks` sub-folder, and training uses that one first.
+- **Just hide the watermarks**, a new choice under "What the masks show". Each mask is all white, with only watermarks, signatures and text blacked out. It uses the same watermark detectors (your own Watermarks models too, switched-off ones skipped) and needs no character finder or SAM, in either mode. Mask watermarks too shows ticked while it's chosen. A picture with no watermark gets no mask and trains as normal; with Replace masks already there ticked, its old mask is removed. Preview on 2 random pictures works, and changes nothing.
 - Watermark boxes over 10% of the picture are dropped, because the detector sometimes fires on big blank areas.
 - The detectors run with onnxruntime only, so nothing new needs installing. Missing models are skipped, and the log says so.
 - See-through PNGs are laid on white for Make masks (automatic and SAM), SAM's preview and the Look filter, instead of on their hidden colour.
