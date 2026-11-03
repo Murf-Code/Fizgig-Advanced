@@ -371,13 +371,15 @@
                     <div class="field-hint" id="prepYoloHint"></div>
                   </div>
                   <div class="field-hint" id="prepFaceMsg"></div>
-                  <div class="tc-box" id="prepDetectorsBox">
-                    <div class="field-label">Body-part and watermark detectors</div>
+                  <details class="tc-box det-box" id="prepDetectorsBox">
+                    <summary class="field-label">YOLO detectors (body parts and watermarks)</summary>
                     <div class="field-hint">Other… tries these in order (after your YOLO face model), SAM 3.1 last;
                       a missing one is skipped. Civitai's .pt files need converting once:
                       tools/convert_detector_to_onnx.py (docs/FACE_BACKENDS.md).</div>
+                    <div class="field-hint">Switch a model off to leave it out. Add model puts your own YOLO or
+                      ADetailer .onnx in the list; Remove only takes it off the list (your file stays put).</div>
                     <div id="prepDetectors"></div>
-                  </div>
+                  </details>
                 </details>
                 <div class="field-hint" id="prepNoFaces" style="display:none">Face detection isn't installed on the
                   Fizgig computer: run install_fizgig.py there to add it. Resize only still works.</div>

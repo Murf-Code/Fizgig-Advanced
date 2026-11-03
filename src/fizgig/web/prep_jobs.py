@@ -144,6 +144,34 @@ def save_face_settings(b):
             if k not in detectors.MODELS:
                 raise ValueError("Unknown detector.")
             ch[f"detector_{k}"] = detectors.check_path(p)
+    if any(k in b for k in ("detector_on", "detector_add", "detector_remove")):
+        from fizgig.dataset import detectors
+        pr = detectors._prefs()
+        off, custom = list(pr.get("detector_off") or []), list(pr.get("detector_custom") or [])
+        known = set(detectors.MODELS) | {m.get("key") for m in custom if isinstance(m, dict)}
+        if isinstance(b.get("detector_on"), dict):    # {key: true/false} - the per-model toggles
+            for k, on in b["detector_on"].items():
+                if k not in known:
+                    raise ValueError("Unknown detector.")
+                off = [x for x in off if x != k] + ([] if on else [k])
+        if isinstance(b.get("detector_add"), dict):   # {path, label, kind} - Add model (a file or a folder)
+            a = b["detector_add"]
+            path = detectors.resolve_model_file(a.get("path"))
+            if any(isinstance(m, dict) and m.get("path") == path for m in custom):
+                raise ValueError("That model is already in the list.")
+            n = 1
+            while f"custom{n}" in known:
+                n += 1
+            label = str(a.get("label") or "").strip() or os.path.splitext(os.path.basename(path))[0]
+            custom.append({"key": f"custom{n}", "label": label[:60], "path": path,
+                           "kind": "watermark" if a.get("kind") == "watermark" else "body"})
+        if b.get("detector_remove"):                  # only takes it off the list - the file is never touched
+            k = str(b["detector_remove"])
+            if k in detectors.MODELS:
+                raise ValueError("Built-in detectors can't be removed - switch them off instead.")
+            custom = [m for m in custom if not (isinstance(m, dict) and m.get("key") == k)]
+            off = [x for x in off if x != k]
+        ch["detector_off"], ch["detector_custom"] = off, custom
     if "auto_threshold" in b:
         try:
             v = float(b["auto_threshold"])

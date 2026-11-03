@@ -81,10 +81,59 @@ def _prefs():
         return {}
 
 
+def custom_models(prefs=None):
+    """Your own YOLO / ADetailer models added with Add model (prefs.json detector_custom: [{key, label, path, kind}])."""
+    pr = prefs if prefs is not None else _prefs()
+    out = []
+    for m in pr.get("detector_custom") or []:
+        if isinstance(m, dict) and m.get("key") and m.get("path"):
+            out.append({"key": str(m["key"]), "label": str(m.get("label") or os.path.basename(m["path"])),
+                        "path": str(m["path"]), "kind": "watermark" if m.get("kind") == "watermark" else "body"})
+    return out
+
+
+def is_on(key, prefs=None):
+    """A model is used unless its toggle was switched off (prefs.json detector_off: [keys])."""
+    pr = prefs if prefs is not None else _prefs()
+    return key not in (pr.get("detector_off") or [])
+
+
+def _chain(kind, prefs=None):
+    """[(key, label)] of the switched-on models of a kind, built-in ones first, then yours in the order added."""
+    pr = prefs if prefs is not None else _prefs()
+    base = BODY if kind == "body" else WATERMARK
+    out = [(m["key"], m["label"]) for m in base] + [(m["key"], m["label"]) for m in custom_models(pr) if m["kind"] == kind]
+    return [(k, lab) for k, lab in out if is_on(k, pr)]
+
+
+def resolve_model_file(p):
+    """An Add model path: an .onnx file, or a folder holding one (model.onnx first, else the only .onnx in it)."""
+    p = str(p or "").strip().strip('"')
+    if os.path.isdir(p):
+        found = sorted(f for f in os.listdir(p) if f.lower().endswith(".onnx"))
+        if "model.onnx" in found:
+            found = ["model.onnx"]
+        if len(found) != 1:
+            raise ValueError("That folder needs exactly one .onnx model in it (or a model.onnx)." if found else
+                             "There's no .onnx model in that folder.")
+        p = os.path.join(p, found[0])
+    if p.lower().endswith(".pt"):
+        raise ValueError("A .pt model needs converting to .onnx once first: tools/convert_detector_to_onnx.py "
+                         "(docs/FACE_BACKENDS.md). Then add the .onnx.")
+    if not p:
+        raise ValueError("Pick a model file or folder first.")
+    return check_path(p)
+
+
 def model_path(key, prefs=None):
     """The model's .onnx: the path saved for it (prefs.json detector_<key>), else user_data/models/detectors/<file>.
     "" when it isn't there."""
-    p = str((prefs if prefs is not None else _prefs()).get(f"detector_{key}") or "").strip().strip('"')
+    pr = prefs if prefs is not None else _prefs()
+    if key not in MODELS:
+        c = next((m for m in custom_models(pr) if m["key"] == key), None)
+        p = c["path"] if c else ""
+        return p if p.lower().endswith(".onnx") and os.path.isfile(p) else ""
+    p = str(pr.get(f"detector_{key}") or "").strip().strip('"')
     p = p or os.path.join(models_dir(), MODELS[key]["file"])
     return p if p.lower().endswith(".onnx") and os.path.isfile(p) else ""
 
@@ -121,7 +170,8 @@ def load(key, path=None, conf=CONF):
     if not p:
         return None
     b = _backend_class()(p, conf=conf)
-    b.label = MODELS[key]["label"] if key in MODELS else os.path.basename(p)
+    c = {m["key"]: m["label"] for m in custom_models()}
+    b.label = MODELS[key]["label"] if key in MODELS else c.get(key) or os.path.basename(p)
     try:
         b.load()
     except Exception:
@@ -143,13 +193,13 @@ def stages(log=print, face_backend=None, loader=load):
     out = []
     if face_backend is not None:
         out.append((getattr(face_backend, "label", "") or "YOLO face model", face_backend))
-    for m in BODY:
-        b = loader(m["key"])
+    for key, label in _chain("body"):           # switched-off models are left out
+        b = loader(key)
         if b is None:
-            _once(log, ("missing", m["key"]), f"[detectors] {m['label']} isn't installed - skipped "
-                                              f"(Anime/furry/drawn characters -> Body-part detectors)\n")
+            _once(log, ("missing", key), f"[detectors] {label} isn't installed - skipped "
+                                         f"(Anime/furry/drawn characters -> Body-part detectors)\n")
             continue
-        out.append((m["label"], b))
+        out.append((label, b))
     return out
 
 
@@ -244,10 +294,10 @@ def chain_finder(words, stage_list, seg=None, log=print, fit_all=False, max_shar
 def watermark_models(loader=None, log=print):
     loader = loader or (lambda k: load(k, conf=WM_SCORE))
     out = []
-    for m in WATERMARK:
-        b = loader(m["key"])
+    for key, label in _chain("watermark"):
+        b = loader(key)
         if b is None:
-            _once(log, ("missing", m["key"]), f"[watermarks] {m['label']} isn't installed - skipped\n")
+            _once(log, ("missing", key), f"[watermarks] {label} isn't installed - skipped\n")
             continue
         out.append(b)
     return out
@@ -334,4 +384,9 @@ def info(prefs=None):
     return [{"key": m["key"], "label": m["label"], "finds": m["finds"], "page": m["page"],
              "kind": "watermark" if m in WATERMARK else "body", "download": "hf" in m,
              "default": os.path.join(models_dir(), m["file"]), "saved": saved_paths(pr)[m["key"]],
-             "installed": bool(model_path(m["key"], pr))} for m in BODY + WATERMARK]
+             "installed": bool(model_path(m["key"], pr)), "on": is_on(m["key"], pr), "custom": False}
+            for m in BODY + WATERMARK] + [
+            {"key": m["key"], "label": m["label"], "finds": "your own model" + (" (watermarks)" if m["kind"] == "watermark"
+             else ""), "page": "", "kind": m["kind"], "download": False, "default": m["path"], "saved": m["path"],
+             "installed": bool(model_path(m["key"], pr)), "on": is_on(m["key"], pr), "custom": True}
+            for m in custom_models(pr)]

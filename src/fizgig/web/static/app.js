@@ -5749,10 +5749,36 @@ function detectorsShow(models) {
   box.replaceChildren();
   const table = el("table", {class: "det-table"}), paths = el("div", {});
   for (const m of models) {
+    const tog = el("input", {type: "checkbox", title: m.on ? "On: used in the chain. Untick to leave it out" :
+      "Off: left out. Tick to use it"});
+    tog.checked = m.on !== false;
+    tog.addEventListener("change", () => faceSettingsSave({detector_on: {[m.key]: tog.checked}},
+      `${m.label} switched ${tog.checked ? "on" : "off"}.`));
     const input = el("input", {type: "text", class: "w-path", value: m.saved || "", placeholder: `Blank: ${m.default}`});
     const set = (p) => faceSettingsSave({detectors: {[m.key]: p}});
     input.addEventListener("change", () => set(input.value.trim()));
     const up = uploadButton({kind: "path", key: `DETECTOR_${m.key}`, accept: ".onnx"}, input, set);
+    if (m.custom) {
+      // Remove asks twice, like Stop: the first click turns it into "Confirm remove" for 5 s
+      const rm = el("button", {class: "btn btn-sm det-remove", text: "Remove",
+        title: "Take it off the list (the file isn't deleted)"});
+      let timer = null;
+      rm.addEventListener("click", () => {
+        if (!timer) {
+          rm.textContent = "Confirm remove"; rm.classList.add("det-confirm");
+          timer = setTimeout(() => { timer = null; rm.textContent = "Remove"; rm.classList.remove("det-confirm"); }, 5000);
+          return;
+        }
+        clearTimeout(timer); timer = null;
+        faceSettingsSave({detector_remove: m.key}, `${m.label} removed from the list. Its file wasn't touched.`);
+      });
+      table.append(el("tr", {class: m.on === false ? "det-off" : ""}, el("td", {}, tog),
+        el("td", {class: "det-name", text: m.label, title: m.saved}),
+        el("td", {class: "field-hint", text: m.finds}),
+        el("td", {class: "det-state", text: m.installed ? "✓ Found" : "– File missing"}),
+        el("td", {class: "det-acts"}, rm)));
+      continue;
+    }
     const acts = el("td", {class: "det-acts"},
       el("button", {class: "btn btn-sm", text: "Choose…", title: "Pick the .onnx on the machine running Fizgig",
         onclick: () => pick(input.value || m.default.replace(/[\\/][^\\/]*$/, ""), false, (p) => { input.value = p; set(p); })}),
@@ -5766,21 +5792,38 @@ function detectorsShow(models) {
       }}));
     else if (!m.installed) acts.append(el("a", {href: m.page, target: "_blank", rel: "noopener", text: "Get it",
       title: "The model's page: download the .pt, convert it once, then Choose… or Upload…"}));
-    table.append(el("tr", {},
+    table.append(el("tr", {class: m.on === false ? "det-off" : ""}, el("td", {}, tog),
       el("td", {class: "det-name", text: m.label, title: m.saved || m.default}),
       el("td", {class: "field-hint", text: m.finds}),
       el("td", {class: "det-state", text: m.installed ? "✓ Installed" : "– Missing"}), acts));
     paths.append(el("div", {class: "field-row prep-opts"}, el("span", {class: "field-label", text: `${m.label}:`}), input), up.status);
   }
+  // Add model: your own YOLO / ADetailer .onnx (a file or a folder holding one), body parts or watermarks
+  const addPath = el("input", {type: "text", class: "w-path", placeholder: "Your model's .onnx, or its folder"});
+  const addName = el("input", {type: "text", placeholder: "Name (optional)"});
+  const addKind = el("select", {}, el("option", {value: "body", text: "Body parts"}),
+    el("option", {value: "watermark", text: "Watermarks"}));
+  const add = el("div", {class: "field-row prep-opts det-add"}, el("span", {class: "field-label", text: "Add model:"}),
+    addPath, el("button", {class: "btn btn-sm", text: "Choose…", title: "Pick the .onnx on the machine running Fizgig",
+      onclick: () => pick(addPath.value, false, (p) => { addPath.value = p; })}),
+    addName, addKind, el("button", {class: "btn btn-sm", text: "Add model", onclick: () => {
+      if (!addPath.value.trim()) { $("prepFaceMsg").textContent = "Pick a model file or folder first."; return; }
+      faceSettingsSave({detector_add: {path: addPath.value.trim(), label: addName.value.trim(), kind: addKind.value}},
+        "Model added to the list.");
+    }}));
   const more = el("details", {}, el("summary", {class: "field-hint", text: "Use files from somewhere else (paths)"}), paths);
   more.open = wasOpen;
-  box.append(table, more);
+  box.append(table, add, more);
 }
 async function faceSettingsSave(changes, msg) {
   try { faceSettingsShow(await api("/api/prep/face_settings", changes), msg); prepSummary(); }
   catch (e) { $("prepFaceMsg").textContent = e.message; }
 }
 function faceSettingsWire() {
+  // the YOLO detectors section remembers whether it was open (closed the first time)
+  const db = $("prepDetectorsBox");
+  db.open = localStorage.getItem("fizgig.prepDetectorsOpen") === "1";
+  db.addEventListener("toggle", () => localStorage.setItem("fizgig.prepDetectorsOpen", db.open ? "1" : "0"));
   $("prepDetector").addEventListener("change", () => {
     const det = $("prepDetector").value, f = S.prep.face || {};
     // a YOLO face finder with the people-only look match would score nothing: the look match follows, said aloud

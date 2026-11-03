@@ -2764,3 +2764,7 @@ label[title]:has(.tip-mark) { cursor: help; }
 .det-table .det-state { white-space: nowrap; }
 .det-table .det-acts { white-space: nowrap; text-align: right; }
 .det-table .det-acts .btn { margin-left: 4px; }
+.det-box > summary { cursor: pointer; }
+.det-table tr.det-off td:not(:first-child) { opacity: .55; }
+.det-table .det-remove.det-confirm { color: var(--danger-text); border-color: var(--danger); }
+.det-add { flex-wrap: wrap; gap: 6px; margin-top: 8px; }
