@@ -475,6 +475,12 @@
                 <div id="maskWmTraceBox" style="display:none">
                   <label class="checkbox-label"><input type="checkbox" id="maskWmTrace"> Trace watermark shape with SAM 3.1</label>
                   <div class="field-hint radio-hint" id="maskWmTraceHint"></div>
+                  <div class="field-row"><span class="field-label">Watermark detector sureness:</span>
+                    <input type="range" id="maskWmScore" min="0.2" max="0.9" step="0.05" value="0.5">
+                    <span id="maskWmScoreVal">0.50</span></div>
+                  <div class="field-hint radio-hint">How sure the watermark detectors must be before a box counts.
+                    Lower finds faint signatures but also blacks out things that aren't watermarks; 0.50 suits most
+                    sets.</div>
                 </div>
                 <label class="checkbox-label"><input type="checkbox" id="maskReplace"> Replace masks already there</label>
                 <div class="field-hint radio-hint">Off: masks already in the folder, including any you painted

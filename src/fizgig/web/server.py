@@ -4565,6 +4565,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json({"ok": True, "chars": _char_info()})
             if path == "/api/masks/stop":          # Make masks' Stop (asked twice on the page)
                 return self.json(prep_jobs.stop_masks())
+            if path in ("/api/masks/quick_preview", "/api/masks/make") and b.get("wm_score") is not None:
+                from fizgig.dataset import detectors
+                detectors.set_wm_score(b.get("wm_score"))
             if path == "/api/masks/quick_preview":  # the quick finder on two random pictures, nothing written
                 import base64
                 import io

@@ -147,7 +147,7 @@ def test_a_watermark_box_over_a_tenth_of_the_picture_is_dropped(tmp_path):
     """watermark_s fires on big plain areas (35-60% boxes at 0.3-0.7 on Chris's Puss set); real ones are small."""
     p = tmp_path / "a.png"
     Image.new("RGB", (600, 400), "white").save(p)
-    wm = Stub({0: "watermark"}, [(0, 0, 500, 300, 0.9, 0), (10, 360, 130, 390, 0.4, 0)])
+    wm = Stub({0: "watermark"}, [(0, 0, 500, 300, 0.9, 0), (10, 360, 130, 390, 0.6, 0)])
     boxes = D.watermark_boxes(np.asarray(Image.open(p)), [wm])
     assert boxes == [(2, 352, 138, 398)]
 

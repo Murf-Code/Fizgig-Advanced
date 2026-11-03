@@ -40,7 +40,19 @@ WATERMARK = [
 ]
 MODELS = {m["key"]: m for m in BODY + WATERMARK}
 CONF = 0.35
-WM_SCORE, WM_PAD, WM_WARN, WM_MAX_SHARE = 0.3, 8, 0.15, 0.10
+WM_SCORE, WM_PAD, WM_WARN, WM_MAX_SHARE = 0.5, 8, 0.15, 0.10
+# WM_SCORE: Make masks' "Watermark detector sureness" (set_wm_score). 0.5 from a real set (Cat-With-Horns, 9 pictures):
+# every signature scored 0.61-0.83 on one model or the other, the misfires (a palette, a comic panel, a sketch's
+# corner, a stray square) 0.33-0.57; 0.3 let them all through, 0.5 drops all but the palette (0.57).
+
+
+def set_wm_score(v):
+    """The masks card's sureness slider: boxes the watermark models are less sure of than this are left out."""
+    global WM_SCORE
+    try:
+        WM_SCORE = float(min(0.95, max(0.1, float(v))))
+    except (TypeError, ValueError):
+        pass
 
 # a typed word -> class names that count as it (compared by face_utils.class_key: case, spaces, _ and - ignored)
 SYNONYMS = {
@@ -299,7 +311,7 @@ TRACE_CLOSE = 5         # px: the morphological close that joins letters and fil
 TRACE_SPECK = 0.004     # a piece under this share of the box (and under 6 px) is a speck: dropped
 TRACE_MIN = 0.03        # a cleaned shape under this share of the box is not trusted: the padded box is used
 TRACE_MAX = 0.85        # ... nor one covering more than this of the padded area (SAM took the picture's texture)
-TRACE_PIECES = 12       # ... nor one in more pieces than this (speckled)
+TRACE_PIECES = 25       # ... nor one in more pieces than this (speckled; a signature with its letters apart is ~15-20)
 
 
 def padded_box(box, w, h):
@@ -310,7 +322,7 @@ def padded_box(box, w, h):
     return max(0, x1 - px), max(0, y1 - py), min(w, x2 + px), min(h, y2 + py)
 
 
-def clean_trace(t, box_area):
+def clean_trace(t, box_area, grow=TRACE_GROW):
     """SAM's raw shape (bool crop) -> cleaned bool, or None when it's too noisy to trust: specks dropped, letters joined
     and small holes filled (close), then judged by its pieces and how much it covers."""
     import cv2
@@ -326,9 +338,36 @@ def clean_trace(t, box_area):
         return None
     if cv2.connectedComponents(t, connectivity=8)[0] - 1 > TRACE_PIECES:
         return None
-    if TRACE_GROW:
-        t = cv2.dilate(t, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * TRACE_GROW + 1, 2 * TRACE_GROW + 1)))
+    if grow:
+        t = cv2.dilate(t, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1, 2 * grow + 1)))
     return t.astype(bool)
+
+
+STROKE_BG = 0.6         # the local background's window, as a share of the box's height (median, odd, 15-101 px)
+STROKE_GROW = 0.07      # strokes found this way are grown by this share of the box's height: faint letter parts
+#                         Otsu misses sit between the ones it finds, so the text is covered as one shape
+STROKE_NOISE = 2.0      # ... (see stroke_trace)
+STROKE_FLOOR = 10.0     # colour difference (Lab units) under this is never a stroke, whatever Otsu says
+
+
+def stroke_trace(crop, box_hw):
+    """bool (h, w): strokes in a crop that differ from their local background - a faint or low-contrast signature SAM
+    missed. The background is a median of the crop's Lab colours over a window wider than a stroke; Otsu on the colour
+    difference splits strokes from it. None when there's no clear stroke."""
+    import cv2
+    bh = max(1, box_hw[0])
+    k = int(np.clip(STROKE_BG * bh, 15, 101)) | 1
+    lab = cv2.cvtColor(np.ascontiguousarray(crop[..., :3]), cv2.COLOR_RGB2LAB).astype(np.float32)
+    bg = np.stack([cv2.medianBlur(np.ascontiguousarray(lab[..., c]).astype(np.uint8), k) for c in range(3)], -1)
+    diff = np.sqrt(((lab - bg) ** 2).sum(-1))
+    if float(diff.max()) < STROKE_FLOOR:
+        return None
+    scale = 255.0 / max(float(diff.max()), 1.0)
+    t, _ = cv2.threshold(np.clip(diff * scale, 0, 255).astype(np.uint8), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Otsu alone splits on the strongest edges (a comic panel's outline) and misses a faint signature beside them:
+    # never ask more than STROKE_NOISE x the crop's typical difference, its noise level
+    thr = max(STROKE_FLOOR, min(t / scale, STROKE_NOISE * float(np.median(diff)) + STROKE_FLOOR))
+    return diff > thr
 
 
 def trace_box(arr, box, tracer):
@@ -343,13 +382,20 @@ def trace_box(arr, box, tracer):
         return out
     cx1, cy1, cx2, cy2 = padded_box(box, w, h)
     out[cy1:cy2, cx1:cx2] = True
+    crop = arr[cy1:cy2, cx1:cx2]
     try:
-        t = tracer(arr[cy1:cy2, cx1:cx2])
+        t = tracer(crop)
     except Exception:
         t = None
-    if t is None or np.asarray(t).shape != (cy2 - cy1, cx2 - cx1):
-        return out
-    t = clean_trace(t, (x2 - x1) * (y2 - y1))
+    ok = t is not None and np.asarray(t).shape == crop.shape[:2]
+    t = clean_trace(t, (x2 - x1) * (y2 - y1)) if ok else None
+    if t is None:                                # SAM missed it or traced texture: try the strokes themselves
+        try:
+            s2 = stroke_trace(crop, (y2 - y1, x2 - x1))
+            t = clean_trace(s2, (x2 - x1) * (y2 - y1), max(TRACE_GROW, int(STROKE_GROW * (y2 - y1)))) \
+                if s2 is not None else None
+        except Exception:
+            t = None
     if t is None:
         return out
     traced = np.zeros((h, w), bool)

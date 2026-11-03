@@ -117,3 +117,26 @@ def test_stop(tmp_path):
     finally:
         STOP.clear()
     assert c["stopped"] == (1, 3) and c["made"] == 1 and len(calls) == 1
+
+
+def test_stroke_fallback():
+    # SAM misses a faint grey signature on cream: the stroke trace finds it instead of the whole box
+    arr = np.full((200, 400, 3), (245, 238, 220), np.uint8)
+    arr[95:105, 120:280] = (200, 195, 185)          # one faint stroke of "text"
+    box = (100, 80, 300, 120)
+    m = D.trace_box(arr, box, lambda c: None)
+    x1, y1, x2, y2 = D.padded_box(box, 400, 200)
+    assert m[100, 200] and m.sum() < 0.6 * (x2 - x1) * (y2 - y1) and not m[y1 + 1, x1 + 1]
+    # a flat crop: nothing to trace, the padded box
+    flat = np.full((200, 400, 3), 128, np.uint8)
+    assert D.trace_box(flat, box, lambda c: None).sum() == (x2 - x1) * (y2 - y1)
+
+
+def test_wm_score():
+    old = D.WM_SCORE
+    try:
+        D.set_wm_score("0.7"); assert D.WM_SCORE == 0.7
+        D.set_wm_score(5); assert D.WM_SCORE == 0.95
+        D.set_wm_score("x"); assert D.WM_SCORE == 0.95
+    finally:
+        D.WM_SCORE = old

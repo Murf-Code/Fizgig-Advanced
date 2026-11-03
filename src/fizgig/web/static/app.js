@@ -5005,7 +5005,13 @@ async function maskInfo() {
     $("maskSamPreview").addEventListener("click", maskSamPreview);
     // Just hide the watermarks: its own radio, beside the finder's kinds (quick) or the words (SAM 3.1)
     $("maskWmOnly").checked = !!sv.maskWmOnly;
-    $("maskWmTrace").checked = sv.maskWmTrace !== false;          // on unless turned off (needs SAM 3.1)
+    $("maskWmTrace").checked = sv.maskWmTrace !== false;
+    if (sv.maskWmScore != null) $("maskWmScore").value = sv.maskWmScore;
+    $("maskWmScoreVal").textContent = Number($("maskWmScore").value).toFixed(2);
+    $("maskWmScore").addEventListener("input", () => {
+      $("maskWmScoreVal").textContent = Number($("maskWmScore").value).toFixed(2); });
+    $("maskWmScore").addEventListener("change", () => { S.prepSaved = {...(S.prepSaved || {}),
+      maskWmScore: Number($("maskWmScore").value)}; api("/api/state", {prep: S.prepSaved}).catch(() => {}); });          // on unless turned off (needs SAM 3.1)
     $("maskWmTrace").addEventListener("change", () => { S.prepSaved = {...(S.prepSaved || {}),
       maskWmTrace: $("maskWmTrace").checked}; api("/api/state", {prep: S.prepSaved}).catch(() => {}); });
     $("maskWatermarks").addEventListener("change", () => maskShow(S.prep.maskOpts || r));
@@ -5131,7 +5137,7 @@ async function maskSamPreview() {
     const r = sam ? await api("/api/masks/sam_preview", {folder: S.imageFolder, include: $("maskSamInclude").value,
       exclude: $("maskSamExclude").value, drawn: $("maskSamDrawn").checked, shown: S.prep.samShown}) :
       await api("/api/masks/quick_preview", {folder: S.imageFolder, kind, who: maskWho(), shown: S.prep.samShown,
-        wm_only: wm, overwrite: $("maskReplace").checked, wm_trace: wmTrace()});
+        wm_only: wm, overwrite: $("maskReplace").checked, wm_trace: wmTrace(), wm_score: Number($("maskWmScore").value)});
     S.prep.samShown = r.fresh ? r.fresh : [...S.prep.samShown, ...r.pictures.map((p) => p.name)];
     const by = (p) => !sam && !wm && maskWho() === "auto" ? (p.by === "photo" ? " · photo" : " · character") : "";
     $("maskSamPreviews").replaceChildren(...r.pictures.map((p) => el("figure", {class: "mask-sam-shot"},
@@ -5235,7 +5241,8 @@ async function maskRun() {
     await api("/api/masks/make", {folder: S.imageFolder, kind, subject_only: $("maskSubject").checked,
       sam: $("maskSam").checked, include: $("maskSamInclude").value, exclude: $("maskSamExclude").value,
       drawn: $("maskSamDrawn").checked, who: maskWho(), overwrite: $("maskReplace").checked,
-      watermarks: $("maskWatermarks").checked, wm_only: $("maskWmOnly").checked, wm_trace: wmTrace()});
+      watermarks: $("maskWatermarks").checked, wm_only: $("maskWmOnly").checked, wm_trace: wmTrace(),
+      wm_score: Number($("maskWmScore").value)});
     S.prep.masking = true;
     $("maskLog").textContent = ""; $("maskLog").style.display = "";
     $("prepLog").textContent = ""; S.prep.logSize = 0;
