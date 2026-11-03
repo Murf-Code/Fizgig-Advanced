@@ -48,7 +48,13 @@ See upstream's `docs/RELEASE_NOTES_v8.9.96.md` to `docs/RELEASE_NOTES_v9.0.2.md`
 - The YOLO body-part and watermark models now sit in their own **YOLO detectors** section in Image Prep. It starts closed and remembers if you open it.
 - **On/off tick for each model:** a model that's off is greyed out and skipped.
 - **Add model:** add your own YOLO or ADetailer `.onnx` (a file or its folder), with an optional name, as Body parts or Watermarks. Added models run after the built-in ones and before SAM 3.1. `.pt` files point you to the converter.
+- **No paths box:** Choose... and Upload... set each model's file, and the row just shows the model name. Paths you saved before still work.
 - **Remove** needs two clicks ("Confirm remove", which goes back after 5 seconds). It only takes the model off the list and never deletes your file. Built-in models can only be switched off.
+
+### Name and file picker
+- The app is now called **Fizgig Advanced** in the browser tab, the header and the About window. About still credits Peter Neill.
+- The repo is renamed to [Murf-Code/Fizgig-Advanced](https://github.com/Murf-Code/Fizgig-Advanced). Old links redirect.
+- Every **Choose...** button opens the normal Windows file and folder window. If Fizgig is opened from another computer, or that window isn't available, you get Fizgig's own picker instead.
 
 ### Previews and tabs
 - **Sample now** sends a prompt you just typed, and the override sees the sample picture.
