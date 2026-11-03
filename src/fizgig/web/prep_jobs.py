@@ -697,16 +697,20 @@ def _heads_for(kind):
     return _head_finder() if kind in charmask.HEAD_KINDS else _LazyHeads()
 
 
-def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who="photo", watermarks=False):
+def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who="photo", watermarks=False,
+                wm_only=False):
     """Masks for every picture in the training folder (dataset/automask.py), as a prep run: the same log and state.
     sam: {"path", "include", "exclude", "drawn"} to make them with SAM 3.1 from words instead (dataset/sammask.py).
     who: the quick finder's "Who's in your pictures" (dataset/charmask.py WHO). watermarks: Mask watermarks - after the
-    masks are made, the watermark detectors' finds are painted out of each picture's mask (dataset/detectors.py)."""
+    masks are made, the watermark detectors' finds are painted out of each picture's mask (dataset/detectors.py).
+    wm_only: Just hide the watermarks - all white with the watermarks black, no finder or SAM loaded."""
     from fizgig.dataset import automask, charmask
     from fizgig.user_data import MODELS_DIR
     if not folder or not os.path.isdir(folder):
         raise ValueError("Choose the training folder on the Start tab first.")
-    if sam is not None:
+    if wm_only:
+        sam, subject_only, watermarks = None, False, False
+    elif sam is not None:
         if not sam.get("path"):
             raise ValueError("SAM 3.1 isn't here yet: press Download on the masks card.")
         if not sam.get("include"):
@@ -730,7 +734,7 @@ def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who
 
     def work():
         try:
-            what = (f"with SAM 3.1, {', '.join(sam['include'])}"
+            what = "just the watermarks hidden (everything else is learned)" if wm_only else (f"with SAM 3.1, {', '.join(sam['include'])}"
                     + (f" without {', '.join(sam['exclude'])}" if sam["exclude"] else "")
                     + (" (drawn or furry characters)" if sam.get("drawn") else "")) if sam is not None \
                 else (charmask.KIND_LABELS_DRAWN[kind] if who == "drawn" else automask.KINDS[kind]).lower() \
@@ -746,7 +750,13 @@ def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who
                 if not vecs:
                     raise ValueError("no face found in the Look Filter's baselines")
                 subject, det = ((lambda crop: emb.embed_pil(crop)[0]), vecs), _face_detector()
-            if sam is not None:
+            if wm_only:
+                from fizgig.dataset import detectors
+                wm = detectors.watermark_models(log=_log)
+                if not wm:
+                    raise ValueError("no watermark detector is installed or switched on (YOLO detectors section)")
+                c = detectors.watermarks_only_folder(folder, wm, overwrite=overwrite, log=_log)
+            elif sam is not None:
                 from fizgig.dataset import sammask
                 c = sammask.make_folder(folder, sam["include"], sam["exclude"], sam["path"], overwrite=overwrite,
                                         subject=subject, detector=det, log=_log, drawn=bool(sam.get("drawn")))
@@ -771,7 +781,8 @@ def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who
                     _log("\nMask watermarks is on, but neither watermark model is installed - none masked.\n")
             _log(f"\nDone: {c['made']} mask(s) written"
                  + (f", {c['kept']} already there kept" if c["kept"] else "")
-                 + (f", {c['no_person']} picture(s) with nothing to mask" if c["no_person"] else "")
+                 + (f", {c['no_person']} picture(s) with " + ("no watermark found (no mask, they train as normal)"
+                    if wm_only else "nothing to mask") if c["no_person"] else "")
                  + (f", {c['skipped']} skipped" if c["skipped"] else "")
                  + ". Check them on the Captions tab (Show mask); paint over any that are wrong.\n"
                  + ("To remake the ones kept, tick Replace masks already there and press Make masks again.\n"
@@ -819,6 +830,27 @@ def quick_preview(folder, kind, who, shown=()):
             if m is None:
                 m = np.zeros(char.shape, np.float32)
         out.append((*sammask.overlay(os.path.basename(p), img, m), "character" if drawn else "photo", note))
+    return out, fresh
+
+
+def wm_preview(folder, shown=()):
+    """Just hide the watermarks on 2 random pictures, nothing written: like quick_preview's shots."""
+    from fizgig.dataset import detectors, sammask
+    import numpy as np
+    from PIL import Image
+    wm = detectors.watermark_models(log=lambda m: None)
+    if not wm:
+        raise ValueError("No watermark detector is installed or switched on (see the YOLO detectors section).")
+    pics, fresh = sammask.preview_pictures(folder, shown)
+    out = []
+    for p in pics:
+        with Image.open(p) as im:
+            img = upright(im).convert("RGB")
+        arr = np.asarray(img)
+        m = detectors.watermarks_only(arr.shape, detectors.watermark_boxes(arr, wm))
+        note = "" if m is not None else "no watermark found: no mask, trains as normal"
+        m = np.ones(arr.shape[:2], np.float32) if m is None else m.astype(np.float32) / 255
+        out.append((*sammask.overlay(os.path.basename(p), img, m), "photo", note))
     return out, fresh
 
 

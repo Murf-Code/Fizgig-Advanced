@@ -4570,8 +4570,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not folder or not os.path.isdir(folder):
                     return self.json({"error": "Choose the training folder on the Start tab first."}, 400)
                 try:
-                    shots, fresh = prep_jobs.quick_preview(folder, str(b.get("kind") or "person"),
-                                                           str(b.get("who") or "photo"), shown=b.get("shown") or [])
+                    shots, fresh = prep_jobs.wm_preview(folder, shown=b.get("shown") or []) if b.get("wm_only") \
+                        else prep_jobs.quick_preview(folder, str(b.get("kind") or "person"),
+                                                     str(b.get("who") or "photo"), shown=b.get("shown") or [])
                 except ValueError as e:
                     return self.json({"error": str(e)}, 400)
                 except Exception as e:
@@ -4650,14 +4651,15 @@ class Handler(BaseHTTPRequestHandler):
                         return self.json(mask_edit.save(folder, str(b.get("name") or ""), str(b.get("png") or "")))
                     if path == "/api/masks/make":
                         sam = None
-                        if b.get("sam"):
+                        if b.get("sam") and not b.get("wm_only"):
                             from fizgig.dataset import sammask
                             sam = {"path": _sam_info()["path"], "include": sammask.split_words(b.get("include")),
                                    "exclude": sammask.split_words(b.get("exclude")), "drawn": bool(b.get("drawn"))}
                         return self.json(prep_jobs.start_masks(folder, str(b.get("kind") or ""),
                                                                bool(b.get("subject_only")), bool(b.get("overwrite")),
                                                                sam=sam, who=str(b.get("who") or "photo"),
-                                                               watermarks=bool(b.get("watermarks"))))
+                                                               watermarks=bool(b.get("watermarks")),
+                                                               wm_only=bool(b.get("wm_only"))))
                     return self.json(prep_jobs.look_move(folder, b.get("paths") or [],
                                                          captions.caption_ext(b.get("ext"))))
                 except ValueError as e:

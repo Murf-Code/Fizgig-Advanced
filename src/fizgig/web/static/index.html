@@ -441,6 +441,8 @@
                 </div>
                 <div class="mask-sam-state" id="maskSamState" style="display:none"></div>
                 <div class="mask-step">2. What the masks show</div>
+                <label class="radio-label" id="maskSamWordsRow" style="display:none"><input type="radio"
+                  id="maskSamWords"> What I type below</label>
                 <div id="maskSamBox" style="display:none">
                   <div class="field-row"><span class="field-label">Mask these:</span>
                     <input type="text" id="maskSamInclude" class="w-path" placeholder="e.g. person" value="person"></div>
@@ -453,6 +455,10 @@
                   <div class="field-hint radio-hint" id="maskSamDrawnHint"></div>
                 </div>
                 <div id="maskKinds"></div>
+                <label class="radio-label"><input type="radio" id="maskWmOnly"> Just hide the watermarks</label>
+                <div class="field-hint radio-hint">Everything is learned except watermarks, signatures and text, which
+                  are blacked out. No character finder needed. A picture with no watermark found gets no mask, so it
+                  trains as normal (the summary counts them).</div>
                 <div class="field-row"><button class="btn" id="maskSamPreview">Preview on 2 random pictures</button>
                   <span class="field-hint" id="maskSamPrevState"></span></div>
                 <div class="mask-sam-previews" id="maskSamPreviews"></div>
@@ -462,7 +468,7 @@
                 <div class="field-hint radio-hint" id="maskSubjectHint">Finds your subject by their face, with the
                   Look Filter's 3 baselines (the last card on this tab); everyone else counts as background.</div>
                 <label class="checkbox-label"><input type="checkbox" id="maskWatermarks"> Mask watermarks too</label>
-                <div class="field-hint radio-hint">Finds watermarks and signatures with the two watermark detectors
+                <div class="field-hint radio-hint" id="maskWmHint">Finds watermarks and signatures with the two watermark detectors
                   (Anime/furry/drawn characters, Body-part and watermark detectors) and blacks them out of each mask,
                   so training ignores them.</div>
                 <label class="checkbox-label"><input type="checkbox" id="maskReplace"> Replace masks already there</label>

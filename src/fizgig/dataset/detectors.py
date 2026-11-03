@@ -342,6 +342,54 @@ def watermark_mask(image_path, img, models):
     return float(cover.mean())
 
 
+def watermarks_only(shape, boxes):
+    """Just hide the watermarks: an all-white mask (h, w) uint8 with each watermark box black, or None when there are
+    no boxes (the picture then gets no mask and trains as normal)."""
+    if not boxes:
+        return None
+    h, w = shape[:2]
+    m = np.full((h, w), 255, np.uint8)
+    for x1, y1, x2, y2 in boxes:
+        m[max(0, y1):min(h, y2), max(0, x1):min(w, x2)] = 0
+    return m
+
+
+def watermarks_only_folder(folder, models, overwrite=False, log=print):
+    """Make masks' Just hide the watermarks: every picture (top level) gets a fresh mask, white except its
+    watermarks. A picture with a mask already is kept unless overwrite; one with no watermark found gets none.
+    Returns the counts {"made", "kept", "skipped", "no_person"} (no_person: no watermark found)."""
+    from PIL import Image
+    from fizgig.dataset import prep
+    from fizgig.dataset.masks import MASK_SUFFIX, mask_for
+    c = {"made": 0, "kept": 0, "skipped": 0, "no_person": 0}
+    for p in prep.image_files(folder):
+        name = os.path.basename(p)
+        if mask_for(p) and not overwrite:
+            c["kept"] += 1
+            continue
+        try:
+            img = prep.load_image(p)
+            try:
+                arr = np.asarray(img.convert("RGB"))
+            finally:
+                img.close()
+            m = watermarks_only(arr.shape, watermark_boxes(arr, models))
+        except Exception as e:
+            log(f"  {name}: not checked ({e})\n")
+            c["skipped"] += 1
+            continue
+        if m is None:
+            c["no_person"] += 1
+            log(f"  {name}: no watermark found - no mask, trains as normal\n")
+            continue
+        stem = os.path.splitext(name)[0]
+        Image.fromarray(m, "L").save(os.path.join(os.path.dirname(p), stem + MASK_SUFFIX + ".png"))
+        c["made"] += 1
+        share = float((m == 0).mean())
+        log(f"  {name}: {100 * share:.1f}% hidden" + (" - worth a look" if share > WM_WARN else "") + "\n")
+    return c
+
+
 def watermark_folder(folder, models, log=print):
     """Make masks' Mask watermarks: every picture in the folder (top level) gets its watermarks masked. Returns
     [(name, share covered)] of the pictures with any."""

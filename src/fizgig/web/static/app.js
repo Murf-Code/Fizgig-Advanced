@@ -5003,10 +5003,23 @@ async function maskInfo() {
     $("maskSamDrawn").addEventListener("change", () => { maskSamDrawnWords(S.prep.maskOpts || r); maskSamSave();
       maskShow(S.prep.maskOpts || r); });
     $("maskSamPreview").addEventListener("click", maskSamPreview);
+    // Just hide the watermarks: its own radio, beside the finder's kinds (quick) or the words (SAM 3.1)
+    $("maskWmOnly").checked = !!sv.maskWmOnly;
+    const wmPick = (on) => { $("maskWmOnly").checked = on;
+      if (on) document.querySelectorAll('input[name="maskKind"]').forEach((i) => { i.checked = false; });
+      else if (!document.querySelector('input[name="maskKind"]:checked')) {
+        const k = document.querySelector(`input[name="maskKind"][value="${(S.prepSaved || {}).maskKind || "person"}"]`);
+        if (k) k.checked = true;
+      }
+      S.prepSaved = {...(S.prepSaved || {}), maskWmOnly: on};
+      api("/api/state", {prep: S.prepSaved}).catch(() => {}); maskShow(S.prep.maskOpts || r); };
+    $("maskWmOnly").addEventListener("change", () => wmPick(true));
+    $("maskSamWords").addEventListener("change", () => wmPick(false));
     const saved = (S.prepSaved || {}).maskKind || "person";
     for (const [k, label] of Object.entries(r.kinds)) {
       $("maskKinds").append(el("label", {class: "radio-label"}, el("input", {type: "radio", name: "maskKind", value: k,
-        checked: k === saved, onchange: () => { S.prepSaved = {...(S.prepSaved || {}), maskKind: k};
+        checked: k === saved && !sv.maskWmOnly, onchange: () => { $("maskWmOnly").checked = false;
+          S.prepSaved = {...(S.prepSaved || {}), maskKind: k, maskWmOnly: false};
           api("/api/state", {prep: S.prepSaved}).catch(() => {}); maskShow(r); }}), " ",
         el("span", {class: "mask-kind-label", "data-kind": k, text: label})),
         el("div", {class: "field-hint radio-hint", "data-kind-hint": k, text: MASK_HINTS[k] || ""}));
@@ -5029,18 +5042,21 @@ function maskSamDrawnWords(r) {
 }
 // SAM 3.1 on the masks card: words instead of the quick finder's choices; its file is downloaded from here
 function maskSamShow(r) {
-  const on = $("maskSam").checked, sam = r.sam || {}, f = sam.fetch || {};
-  $("maskSamBox").style.display = on ? "" : "none";
+  const on = $("maskSam").checked, sam = r.sam || {}, f = sam.fetch || {}, wm = $("maskWmOnly").checked;
+  $("maskSamBox").style.display = on && !wm ? "" : "none";
+  $("maskSamWordsRow").style.display = on ? "" : "none";
+  $("maskSamWords").checked = on && !wm;
   $("maskKinds").style.display = on ? "none" : "";
-  $("maskWhoBox").style.display = on ? "none" : "";
+  $("maskWhoBox").style.display = on || wm ? "none" : "";
   $("maskMethod").querySelectorAll("button").forEach((b) => b.classList.toggle("active", (b.dataset.sam === "1") === on));
   const who = maskWho();
   $("maskMethodHint").textContent = on ? "Meta's Segment Anything: type what to mask (\"person\", \"hair\", " +
     "\"the dog\") and it finds it, with sharper edges. A 1.75 GB download, once; it runs on the GPU." :
     "Finds the person or character for you, no typing: pick who's in your pictures, then what the masks show. " +
-    "Small and quick, on the CPU.";
+    "Small and quick, on the CPU." + (wm ? " Just hide the watermarks uses only the watermark detectors, either way." : "");
   $("maskWhoHint").textContent = MASK_WHO_HINTS[who] || "";
-  $("maskRunHint").textContent = on ? "It runs on the GPU, a fraction of a second a picture once loaded (several " +
+  $("maskRunHint").textContent = wm ? "It runs the watermark detectors on the CPU, a fraction of a second a picture." :
+    on ? "It runs on the GPU, a fraction of a second a picture once loaded (several " +
     "seconds a picture without a GPU). Make masks when nothing is training." :
     who === "drawn" ? "It runs on the CPU, about half a second a picture." :
     who === "auto" ? "It runs both finders on the CPU, under a second a picture. The first time, it downloads " +
@@ -5050,7 +5066,7 @@ function maskSamShow(r) {
     "outlines each figure as a character instead of a person. Ticked while Mask these says \"person\", it fills in \"" +
     (sam.drawn_words || []).join(", ") + "\".";
   const st = $("maskSamState");
-  st.style.display = on ? "" : "none";
+  st.style.display = on && !wm ? "" : "none";
   if (f.state === "running") {
     st.replaceChildren(`Downloading SAM 3.1: ${f.gb} of ${f.of} GB …`);
     clearTimeout(S.prep.samTimer);
@@ -5070,7 +5086,7 @@ function maskSamShow(r) {
 // the character finder's file (drawn and furry pictures): downloaded from here, like SAM 3.1
 function maskCharShow(r) {
   const ch = r.chars || {}, f = ch.fetch || {}, st = $("maskCharState");
-  const want = !$("maskSam").checked && maskWho() !== "photo";
+  const want = !$("maskSam").checked && !$("maskWmOnly").checked && maskWho() !== "photo";
   st.style.display = want ? "" : "none";
   if (!want) return;
   if (f.state === "running") {
@@ -5091,6 +5107,7 @@ function maskCharShow(r) {
 // why Make masks / Preview can't go yet ("" when they can)
 function maskBlocked(r) {
   if (!r.pictures) return "No pictures in the training folder.";
+  if ($("maskWmOnly").checked) return "";
   if ($("maskSam").checked) return (r.sam || {}).path ? "" : "Download SAM 3.1 first.";
   const who = maskWho(), kind = (document.querySelector('input[name="maskKind"]:checked') || {}).value || "person";
   if (who !== "drawn" && !r.available) return "Needs the ai-edge-litert package (run update_fizgig).";
@@ -5099,8 +5116,8 @@ function maskBlocked(r) {
   return "";
 }
 async function maskSamPreview() {
-  const sam = $("maskSam").checked;
-  $("maskSamPrevState").textContent = sam ? "Finding them (the first time loads SAM 3.1, a few seconds) …" :
+  const wm = $("maskWmOnly").checked, sam = $("maskSam").checked && !wm;
+  $("maskSamPrevState").textContent = wm ? "Finding watermarks …" : sam ? "Finding them (the first time loads SAM 3.1, a few seconds) …" :
     "Finding them …";
   $("maskSamPreview").disabled = true;
   try {
@@ -5109,9 +5126,10 @@ async function maskSamPreview() {
     const kind = (document.querySelector('input[name="maskKind"]:checked') || {}).value || "person";
     const r = sam ? await api("/api/masks/sam_preview", {folder: S.imageFolder, include: $("maskSamInclude").value,
       exclude: $("maskSamExclude").value, drawn: $("maskSamDrawn").checked, shown: S.prep.samShown}) :
-      await api("/api/masks/quick_preview", {folder: S.imageFolder, kind, who: maskWho(), shown: S.prep.samShown});
+      await api("/api/masks/quick_preview", {folder: S.imageFolder, kind, who: maskWho(), shown: S.prep.samShown,
+        wm_only: wm});
     S.prep.samShown = r.fresh ? r.fresh : [...S.prep.samShown, ...r.pictures.map((p) => p.name)];
-    const by = (p) => !sam && maskWho() === "auto" ? (p.by === "photo" ? " · photo" : " · character") : "";
+    const by = (p) => !sam && !wm && maskWho() === "auto" ? (p.by === "photo" ? " · photo" : " · character") : "";
     $("maskSamPreviews").replaceChildren(...r.pictures.map((p) => el("figure", {class: "mask-sam-shot"},
       el("img", {src: p.src, alt: p.name}),
       el("figcaption", {text: (p.cover ? `${p.name} · ${Math.round(p.cover * 100)}% masked` : `${p.name} · ${p.note || "nothing found"}`) +
@@ -5146,18 +5164,24 @@ function maskKindsShow(r) {
   }
 }
 function maskShow(r) {
+  const wm = $("maskWmOnly").checked;
   if (!$("maskSam").checked) maskKindsShow(r);
+  if (wm) document.querySelectorAll('input[name="maskKind"]').forEach((i) => { i.checked = false; });
   const kind = (document.querySelector('input[name="maskKind"]:checked') || {}).value || "person";
   maskSamShow(r);
   const sam = $("maskSam").checked, who = maskWho();
-  $("maskInfo").textContent = !r.available && !sam && who !== "drawn" ? "Making masks needs an update: run update_fizgig to add its one new " +
+  $("maskInfo").textContent = !r.available && !sam && !wm && who !== "drawn" ? "Making masks needs an update: run update_fizgig to add its one new " +
     "package (ai-edge-litert)." : r.pictures ? `${r.with_mask} of ${r.pictures} pictures have a mask.` : "";
   const subj = $("maskSubject");
-  subj.disabled = !r.baselines || !r.faces || (!sam && (kind === "not_faces" || kind === "background"));
+  subj.disabled = wm || !r.baselines || !r.faces || (!sam && (kind === "not_faces" || kind === "background"));
   if (subj.disabled) subj.checked = false;
   const chars = (sam ? $("maskSamDrawn").checked : who !== "photo") ? " For characters, also set the face finder and " +
     "look match to Anime/furry/drawn (under 1 · What to do, Anime/furry/drawn characters)." : "";
-  $("maskSubjectHint").textContent = (sam ? (!r.faces ? "Needs face detection, which isn't installed here (run install_fizgig.py)." :
+  const wmBox = $("maskWatermarks"), wmHint = $("maskWmHint");
+  wmHint.dataset.text = wmHint.dataset.text || wmHint.textContent;
+  wmBox.disabled = wm;
+  wmHint.textContent = wm ? "Already part of Just hide the watermarks." : wmHint.dataset.text;
+  $("maskSubjectHint").textContent = wm ? "Not for Just hide the watermarks: nobody is looked for." : (sam ? (!r.faces ? "Needs face detection, which isn't installed here (run install_fizgig.py)." :
     r.baselines ? "Finds your subject by their face, with the Look Filter's 3 baselines, and keeps only what's on them." :
     "Needs the Look Filter's 3 baselines: choose them and scan the folder (the last card on this tab), then come back.") :
     kind === "not_faces" ? "Not for Everything but the faces: every face is left out." :
@@ -5175,7 +5199,7 @@ async function maskRun() {
     await api("/api/masks/make", {folder: S.imageFolder, kind, subject_only: $("maskSubject").checked,
       sam: $("maskSam").checked, include: $("maskSamInclude").value, exclude: $("maskSamExclude").value,
       drawn: $("maskSamDrawn").checked, who: maskWho(), overwrite: $("maskReplace").checked,
-      watermarks: $("maskWatermarks").checked});
+      watermarks: $("maskWatermarks").checked, wm_only: $("maskWmOnly").checked});
     S.prep.masking = true;
     $("maskLog").textContent = ""; $("maskLog").style.display = "";
     $("prepLog").textContent = ""; S.prep.logSize = 0;
