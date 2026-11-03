@@ -1743,17 +1743,11 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
             except (OSError, ValueError):
                 pass
         opt_params = params
-<<<<<<< HEAD
         if str(optimizer_type or "").lower() == "polora":   # trains each LoRA's down/up pair together
             from fizgig.training.optimizers import polora_pairs
             opt_params = polora_pairs(net)
             logger.info(f"[optimizer] PoLoRA: {len(opt_params)} down/up pairs")
-        if str(optimizer_type or "").lower() == "automagic3":
-||||||| 2821f636
-        if str(optimizer_type or "").lower() == "automagic3":
-=======
         if str(optimizer_type or "").lower() in ("automagic3", "automagic4"):
->>>>>>> new-optimizers
             groups = _optimizer_family_groups(desc, net, learning_rate)
             if groups:                   # one rate per group: each family of modules finds its own
                 opt_params = groups
