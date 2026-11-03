@@ -4896,7 +4896,7 @@ const thumbOf = (p) => `/api/thumb?path=${encodeURIComponent(p)}&t=${encodeURICo
 const prepSettings = () => ({
   mode: (document.querySelector('input[name="prepMode"]:checked') || {}).value || "Auto Prep (Face Crops)",
   mp: $("prepMp").value || "1.0", face: $("prepFace").value || "Largest Face", padding: $("prepPadding").value || "20",
-  find: $("prepFind").value || "", fitAll: $("prepFitAll").checked, separate: $("prepSeparate").checked, maskWatermarks: !!($("maskWatermarks") || {}).checked, capCopy: $("prepCapCopy").checked, capTrim: $("prepCapTrim").checked,
+  find: $("prepFind").value || "", fitAll: $("prepFitAll").checked, separate: $("prepSeparate").checked, maskWatermarks: (($("maskWatermarks") || {}).dataset || {}).before != null ? $("maskWatermarks").dataset.before === "1" : !!($("maskWatermarks") || {}).checked, capCopy: $("prepCapCopy").checked, capTrim: $("prepCapTrim").checked,
   capCloseup: $("prepCapCloseup").checked, capAdd: $("prepCapAdd").checked, addScore: $("prepAddScore").value || "0.90",
   tagger: $("prepTagger").value || "wd-eva02", keepScore: $("prepKeepScore").value || TAGGER_KEEP[$("prepTagger").value] || "0.35",
   replace: (document.querySelector('input[name="prepReplace"]:checked') || {}).value === "1",
@@ -5179,8 +5179,11 @@ function maskShow(r) {
     "look match to Anime/furry/drawn (under 1 · What to do, Anime/furry/drawn characters)." : "";
   const wmBox = $("maskWatermarks"), wmHint = $("maskWmHint");
   wmHint.dataset.text = wmHint.dataset.text || wmHint.textContent;
+  // Just hide the watermarks ticks it and locks it on; any other choice gives back what it was before
+  if (wm && wmBox.dataset.before == null) { wmBox.dataset.before = wmBox.checked ? "1" : ""; wmBox.checked = true; }
+  else if (!wm && wmBox.dataset.before != null) { wmBox.checked = wmBox.dataset.before === "1"; delete wmBox.dataset.before; }
   wmBox.disabled = wm;
-  wmHint.textContent = wm ? "Already part of Just hide the watermarks." : wmHint.dataset.text;
+  wmHint.textContent = wm ? "On, as part of Just hide the watermarks." : wmHint.dataset.text;
   $("maskSubjectHint").textContent = wm ? "Not for Just hide the watermarks: nobody is looked for." : (sam ? (!r.faces ? "Needs face detection, which isn't installed here (run install_fizgig.py)." :
     r.baselines ? "Finds your subject by their face, with the Look Filter's 3 baselines, and keeps only what's on them." :
     "Needs the Look Filter's 3 baselines: choose them and scan the folder (the last card on this tab), then come back.") :
