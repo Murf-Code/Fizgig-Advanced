@@ -1061,14 +1061,13 @@ def train_command(desc, inputs, plan):
         cmd += ["--context_lora_path", ctx,
                 "--context_lora_strength", _s(st.get("CONTEXT_LORA_STRENGTH") or "1.0") or "1.0"]
     mp_subs = [x[1] for x in multi_person_subjects(desc, st) if x[1]] if multi_person_on(desc, st) else []
-    # Caption dropout is one percent setting (Fizgig Advanced's): cached tag variants carry it when they apply,
-    # else upstream's --caption_dropout share of steps takes it - never both
-    try:
-        _cd = _pct(st.get("CAPTION_DROPOUT")) / 100.0
-    except ValueError:
-        _cd = 0.0
-    if _cd > 0 and desc.caption_dropout and not tags_apply(desc, st) and not slider_on(desc, st, "prompts"):
-        cmd += ["--caption_dropout", f"{min(0.5, _cd):g}"]
+    # Caption dropout is upstream's one share-of-steps setting. --caption_dropout drops the caption for the whole
+    # step, so at Batch Size > 1 Fizgig Advanced's cached empty-caption variant carries it instead (each image in the
+    # batch rolls its own) - never both
+    _cd = _cd_share(st.get("CAPTION_DROPOUT"))
+    if _cd > 0 and desc.caption_dropout and not variant_caption_dropout(st, desc) \
+            and not slider_on(desc, st, "prompts"):
+        cmd += ["--caption_dropout", f"{_cd:g}"]
     if masked_on(desc, st):
         cmd += ["--masked_training", "--mask_floor", f"{mask_floor(st):g}"]
         if mask_prior(desc, st):
@@ -1325,12 +1324,8 @@ def _preview_flags(desc, st, plan, cmd):
         if st.get("LORA_NAME"):          # paired likeness (off by default): prompt -> its training image, by the previews
             from fizgig.web import sample_pairs
             side = sample_pairs.sidecar(samples_dir, _s(st.get("LORA_NAME")))
-            # the Style score (on with Paired likeness): the training folder and the run's sub-folders
-            sdirs = ([_s(st.get("image_folder"))] + [f for _r, f in run_subfolders(desc, st)]
-                     if sm.get("style") and _s(st.get("image_folder")) else None)
-            text = sample_pairs.sidecar_text(sm.get("pairs"), sm.get("prompts") or [], _s(st.get("image_folder")),
-                                             sdirs)
-            if json.loads(text)["pairs"] or sdirs:
+            text = sample_pairs.sidecar_text(sm.get("pairs"), sm.get("prompts") or [], _s(st.get("image_folder")))
+            if json.loads(text)["pairs"]:
                 plan.files.append((side, text))
             elif os.path.exists(side):    # turned off (or nothing paired): an earlier run's pairings stop scoring
                 plan.files.append((side, text))
@@ -1446,7 +1441,7 @@ def _sample_image(desc, sm):
 
 
 # ---------------------------------------------------------------------------------------------------- tag shuffle
-TAG_KEYS = ("TAG_SHUFFLE", "TAG_KEEP_FIRST", "TAG_DROPOUT", "CAPTION_DROPOUT", "TAG_VARIANTS")
+TAG_KEYS = ("TAG_SHUFFLE", "TAG_KEEP_FIRST", "TAG_DROPOUT", "TAG_VARIANTS")
 TAG_VARIANT_CHOICES = ("2", "4", "8", "16")
 
 
@@ -1469,6 +1464,36 @@ def tags_apply(desc, inputs):
             and not multi_person_on(desc, inputs))
 
 
+def _cd_share(value):
+    """A Caption dropout value (upstream's share) as a share of steps, 0..0.5; an old Fizgig Advanced percent ("5")
+    reads as 0.05."""
+    try:
+        v = float(str(value or "0").split(" ")[0])
+    except ValueError:
+        return 0.0
+    return max(0.0, min(0.5, v / 100.0 if v >= 1 else v))
+
+
+def _batch_size(desc, inputs):
+    """Batch Size from a run's settings (batch_size) or the form's values (DATASET_BATCH_SIZE)."""
+    if desc is not None and not getattr(desc, "supports_batch", False):
+        return 1
+    try:
+        return int(float(_s(inputs.get("batch_size") or inputs.get("DATASET_BATCH_SIZE")) or 1))
+    except ValueError:
+        return 1
+
+
+def variant_caption_dropout(inputs, desc=None):
+    """Caption dropout as the percent the cached tag variants take: the setting at Batch Size > 1 on a run that can
+    use them (each image in the batch drops its own caption), else 0 (upstream's whole-step --caption_dropout)."""
+    if desc is not None and not (getattr(desc, "caption_dropout", True) and tags_apply(desc, inputs)):
+        return 0.0
+    if _batch_size(desc, inputs) <= 1:
+        return 0.0
+    return _cd_share(inputs.get("CAPTION_DROPOUT")) * 100.0
+
+
 def tag_settings(desc, inputs):
     """The run's tag settings as the dataset TOML takes them - {tag_shuffle, keep_first_tags, tag_dropout,
     caption_dropout (percent), caption_variants} - or None when none is on (or the run can't use them). ValueError
@@ -1476,7 +1501,7 @@ def tag_settings(desc, inputs):
     if not tags_apply(desc, inputs):
         return None
     shuffle = bool(inputs.get("TAG_SHUFFLE"))
-    td, cd = _pct(inputs.get("TAG_DROPOUT")), _pct(inputs.get("CAPTION_DROPOUT"))
+    td, cd = _pct(inputs.get("TAG_DROPOUT")), variant_caption_dropout(inputs, desc)
     if not (shuffle or td > 0 or cd > 0):
         return None
     keep = int(float(_s(inputs.get("TAG_KEEP_FIRST")) or 1))

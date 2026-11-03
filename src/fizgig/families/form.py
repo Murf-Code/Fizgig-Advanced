@@ -59,11 +59,21 @@ CAPTION_DROPOUT_HINT = ("Trains this share of steps with no caption, so the LoRA
 
 
 def caption_dropout_share(label):
-    """The Caption dropout choice as a share of steps (0 = off)."""
+    """The Caption dropout choice as a share of steps (0 = off). A Fizgig Advanced percent saved before it took
+    upstream's choice ("5", "10") reads as that percent, not 5 or 10 whole shares."""
     try:
-        return max(0.0, min(0.5, float(str(label or "0").split(" ")[0])))
+        v = float(str(label or "0").split(" ")[0])
     except ValueError:
         return 0.0
+    if v >= 1:
+        v /= 100.0
+    return max(0.0, min(0.5, v))
+
+
+def caption_dropout_label(value):
+    """A saved Caption dropout value (an old percent too) as the nearest choice's label."""
+    v = caption_dropout_share(value)
+    return CAPTION_DROPOUTS[0] if v <= 0 else min(CAPTION_DROPOUTS[1:], key=lambda c: abs(caption_dropout_share(c) - v))
 
 # the desktop app's self.settings defaults (lora_trainer_gui.py), for the keys these forms carry
 DEFAULTS = {
@@ -99,10 +109,10 @@ DEFAULTS = {
     "FAMILY_FT_FUSED": True, "FAMILY_FT_REG_DIR": "", "FAMILY_FT_REG_MULT": "0.2",
     "DATASET_MEGAPIXELS": "0.25", "DATASET_CAPTION_EXT": ".txt", "ENABLE_BUCKET": True, "BUCKET_NO_UPSCALE": True,
     "ENABLE_CACHE": True, "MASKED_TRAINING": False, "MASK_FLOOR": "0.1 (recommended)", "MASK_PRIOR": "Off",
-    "TAG_SHUFFLE": False, "TAG_KEEP_FIRST": "1", "TAG_DROPOUT": "0", "CAPTION_DROPOUT": "0", "TAG_VARIANTS": "4",
+    "TAG_SHUFFLE": False, "TAG_KEEP_FIRST": "1", "TAG_DROPOUT": "0", "CAPTION_DROPOUT": "Off", "TAG_VARIANTS": "4",
     "METADATA_TITLE": "", "METADATA_AUTHOR": "", "METADATA_DESCRIPTION": "", "METADATA_LICENSE": "",
     "METADATA_TAGS": "", "METADATA_TRIGGER_PHRASE": "", "METADATA_THUMBNAIL": "",
-    "SAMPLE_ENABLED": True, "SAMPLE_PROMPT": "A high quality photo", "SAMPLE_PAIRS": "", "SAMPLE_PAIRED": False, "SAMPLE_STYLE": True, "SAMPLE_SEED": "1234",
+    "SAMPLE_ENABLED": True, "SAMPLE_PROMPT": "A high quality photo", "SAMPLE_PAIRS": "", "SAMPLE_PAIRED": False, "SAMPLE_SEED": "1234",
     "SAMPLE_EVERY_N_EPOCHS": "1", "SAMPLE_LATER": False, "SAMPLE_UNTIL_EPOCH": "10",
     "SAMPLE_EVERY_AFTER": "1", "SAMPLE_AT_FIRST": True, "SAMPLE_CHECKPOINT": True, "CACHE_SAMPLE_MODEL": "auto",
 }
@@ -509,8 +519,6 @@ def form(desc):
             _row("TAG_DROPOUT", "Tag dropout %", "combo", "Each tag after the kept ones is left out of a variant at "
                  "this rate, so the LoRA learns the picture's other details without leaning on every tag. 5-10 is "
                  "usual; 0 = off.", ("0", "5", "10", "15", "20")),
-            _row("CAPTION_DROPOUT", "Caption dropout %", "combo", "Trains a few percent of steps with no caption, "
-                 "so the LoRA does not lean entirely on the trigger word. 5 is usual; 0 = off.", ("0", "5", "10")),
             _row("TAG_VARIANTS", "Variants per caption", "combo", "How many shuffled / dropped versions of each "
                  "caption are cached; each step picks one at random (by the run's seed, so a resume picks the same). "
                  "More variants = more variety, a longer first cache and more disk.", launch.TAG_VARIANT_CHOICES),
@@ -669,6 +677,8 @@ def form(desc):
         _row("LR_SCHEDULER", "LR Scheduler", "choice", choices=["constant", "constant_with_warmup", "cosine",
                                                                  "cosine_with_restarts", "linear", "polynomial"]),
         _row("LR_WARMUP_STEPS", "Warmup steps"),
+        _row("CAPTION_DROPOUT", "Caption dropout", "choice", CAPTION_DROPOUT_HINT, CAPTION_DROPOUTS,
+             default=CAPTION_DROPOUTS[0]) if desc.caption_dropout and pictures else None,
         _row("DATASET_BATCH_SIZE", "Batch Size", hint="Images trained together in one step (same size, from one "
              "bucket). Faster per image when the card has room; more memory. 2 or 3 is the most a 12 GB card "
              "usually fits at 1 MP - above that, expect block swap. Above 1, these switch off: " +
@@ -876,6 +886,9 @@ def migrate_values(desc, values):
             values["TIMESTEP_SPREAD"] = TS.LABELS[k]
         else:
             values.pop("TIMESTEP_SPREAD")
+    if isinstance(values, dict) and values.get("CAPTION_DROPOUT") not in (None, "") \
+            and values["CAPTION_DROPOUT"] not in CAPTION_DROPOUTS:
+        values["CAPTION_DROPOUT"] = caption_dropout_label(values["CAPTION_DROPOUT"])   # Fizgig Advanced's old percent
     return values
 LEGACY_AREAS = {"All Layers": "Full Model", "Identity Blocks": "Identity",
                 "Style+Composition Blocks": "Style+Composition", "Details Blocks": "Details"}
@@ -1541,7 +1554,7 @@ def tag_cost_note(values, pictures):
     """The extra caching the tag settings cost, for the line under Variants per caption ("" when off)."""
     shuffle = bool(values.get("TAG_SHUFFLE"))
     try:
-        td, cd = launch._pct(values.get("TAG_DROPOUT")), launch._pct(values.get("CAPTION_DROPOUT"))
+        td, cd = launch._pct(values.get("TAG_DROPOUT")), launch.variant_caption_dropout(values)
         k = int(float(str(values.get("TAG_VARIANTS") or "4").split(" ")[0]))
     except (TypeError, ValueError):
         return ""
@@ -1575,10 +1588,6 @@ def _tag_state(desc, values, image_folder, kind, hidden, disabled, notes):
     except ValueError:
         varies = True
         notes["TAG_DROPOUT"] = "A percentage from 0 to 100."
-    try:
-        launch._pct(values.get("CAPTION_DROPOUT"))
-    except ValueError:
-        notes["CAPTION_DROPOUT"] = "A percentage from 0 to 100."
     if not varies:
         disabled.update({"TAG_KEEP_FIRST", "TAG_VARIANTS"})
     cost = tag_cost_note(values, _picture_count(image_folder) if image_folder else 0)
@@ -1750,7 +1759,7 @@ def inputs(desc, values, *, models, python, repo_dir, image_folder, cache_root, 
         FAMILY_TRAINING_ADAPTER=b("FAMILY_TRAINING_ADAPTER"),
         FAMILY_TURBO_STRENGTH=s("FAMILY_TURBO_STRENGTH"), FAMILY_TURBO_STEPS=s("FAMILY_TURBO_STEPS"),
         FAMILY_TURBO_PACE=s("FAMILY_TURBO_PACE"), FAMILY_PREVIEW_LOOK=b("FAMILY_PREVIEW_LOOK"),
-        CAPTION_DROPOUT=s("CAPTION_DROPOUT"),   # Fizgig Advanced's percent (tag variants; launch's --caption_dropout otherwise)
+        CAPTION_DROPOUT=caption_dropout_share(s("CAPTION_DROPOUT")) if desc.caption_dropout else 0.0,
         MASKED_TRAINING=b("MASKED_TRAINING") and desc.masked_training, MASK_FLOOR=s("MASK_FLOOR"),
         MASK_PRIOR=s("MASK_PRIOR"),
         python=python, repo_dir=repo_dir, models=models, image_folder=image_folder,
@@ -1772,7 +1781,7 @@ def inputs(desc, values, *, models, python, repo_dir, image_folder, cache_root, 
                  "until": s("SAMPLE_UNTIL_EPOCH"), "after": s("SAMPLE_EVERY_AFTER"), "width": s("SAMPLE_WIDTH"),
                  "height": s("SAMPLE_HEIGHT"), "steps": s("SAMPLE_STEPS"), "cfg": s("SAMPLE_CFG_SCALE") or
                  str(desc.preview_cfg), "negative": s("SAMPLE_NEGATIVE"), "seed": s("SAMPLE_SEED"),
-                 "at_first": b("SAMPLE_AT_FIRST"), "prompts": s("SAMPLE_PROMPT").splitlines(), "pairs": s("SAMPLE_PAIRS") if b("SAMPLE_PAIRED") else "", "style": b("SAMPLE_PAIRED") and b("SAMPLE_STYLE"), "reference": s("SAMPLE_REFERENCE"),
+                 "at_first": b("SAMPLE_AT_FIRST"), "prompts": s("SAMPLE_PROMPT").splitlines(), "pairs": s("SAMPLE_PAIRS") if b("SAMPLE_PAIRED") else "", "reference": s("SAMPLE_REFERENCE"),
                  "strengths": list(desc.preview_strengths) if desc.preview_strengths and
                  v.get("SAMPLE_STRENGTHS", True) else [],
                  **({"checkpoint": b("SAMPLE_CHECKPOINT"), "checkpoint_cache": s("CACHE_SAMPLE_MODEL") or "auto",
