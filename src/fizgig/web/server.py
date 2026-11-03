@@ -4393,7 +4393,7 @@ class Handler(BaseHTTPRequestHandler):
                                                          b.get("padding") or 20, bool(b.get("replace")),
                                                          str(b.get("find") or ""), b.get("captions"),
                                                          b.get("fitAll") is not False,    # on unless turned off
-                                                         bool(b.get("watermarks"))))
+                                                         bool(b.get("separate"))))
                     if path == "/api/look/scan":
                         return self.json(prep_jobs.look_scan(folder, b.get("baselines") or []))
                     if path == "/api/masks/edit/save":
@@ -4407,7 +4407,8 @@ class Handler(BaseHTTPRequestHandler):
                                    "exclude": sammask.split_words(b.get("exclude")), "drawn": bool(b.get("drawn"))}
                         return self.json(prep_jobs.start_masks(folder, str(b.get("kind") or ""),
                                                                bool(b.get("subject_only")), bool(b.get("overwrite")),
-                                                               sam=sam, who=str(b.get("who") or "photo")))
+                                                               sam=sam, who=str(b.get("who") or "photo"),
+                                                               watermarks=bool(b.get("watermarks"))))
                     return self.json(prep_jobs.look_move(folder, b.get("paths") or [],
                                                          captions.caption_ext(b.get("ext"))))
                 except ValueError as e:

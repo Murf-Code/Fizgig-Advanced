@@ -4479,7 +4479,7 @@ function valueOrDefault(key) {
 // the Samples tab's "Change the previews of the run going now": its prompts, seed, size, steps, CFG and Turbo
 // strength go to the run as the
 // trainer's sample override while ticked (sent again on every change), and come off when it's unticked
-const sampleLiveSoon = debounce(async () => {
+async function sampleLiveSend() {
   const v = S.values, note = $("note___SAMPLE_LIVE");
   try {
     const r = await api("/api/run/sample_override", {on: !!v.__SAMPLE_LIVE, prompts: v.SAMPLE_PROMPT || "",
@@ -4491,7 +4491,8 @@ const sampleLiveSoon = debounce(async () => {
   } catch (e) {
     if (note) note.textContent = S.run && (S.run.running || S.run.state === "starting") ? e.message : liveIdleText();
   }
-}, 700);
+}
+const sampleLiveSoon = debounce(sampleLiveSend, 700);
 
 // the tick's note follows the run: what a change would do now, never an old message from before the run started
 const liveIdleText = () => "On: a change here goes to a run while it trains, from its next preview.";
@@ -4656,7 +4657,7 @@ const thumbOf = (p) => `/api/thumb?path=${encodeURIComponent(p)}&t=${encodeURICo
 const prepSettings = () => ({
   mode: (document.querySelector('input[name="prepMode"]:checked') || {}).value || "Auto Prep (Face Crops)",
   mp: $("prepMp").value || "1.0", face: $("prepFace").value || "Largest Face", padding: $("prepPadding").value || "20",
-  find: $("prepFind").value || "", fitAll: $("prepFitAll").checked, watermarks: $("prepWatermarks").checked, capCopy: $("prepCapCopy").checked, capTrim: $("prepCapTrim").checked,
+  find: $("prepFind").value || "", fitAll: $("prepFitAll").checked, separate: $("prepSeparate").checked, maskWatermarks: !!($("maskWatermarks") || {}).checked, capCopy: $("prepCapCopy").checked, capTrim: $("prepCapTrim").checked,
   capCloseup: $("prepCapCloseup").checked, capAdd: $("prepCapAdd").checked, addScore: $("prepAddScore").value || "0.90",
   tagger: $("prepTagger").value || "wd-eva02", keepScore: $("prepKeepScore").value || TAGGER_KEEP[$("prepTagger").value] || "0.35",
   replace: (document.querySelector('input[name="prepReplace"]:checked') || {}).value === "1"});
@@ -4680,7 +4681,8 @@ async function loadPrep() {
     $("prepMp").value = saved.mp || "1.0";
     $("prepFind").value = saved.find || "";
     $("prepFitAll").checked = saved.fitAll !== false;               // on unless turned off
-    $("prepWatermarks").checked = !!saved.watermarks;               // off unless turned on
+    $("prepSeparate").checked = !!saved.separate;                   // off unless turned on
+    $("maskWatermarks").checked = !!(saved.maskWatermarks ?? saved.watermarks);   // off unless turned on
     $("prepCapCopy").checked = saved.capCopy !== false;             // on unless turned off
     $("prepCapTrim").checked = !!saved.capTrim;
     $("prepCapCloseup").checked = saved.capCloseup !== false;       // on unless turned off
@@ -4931,7 +4933,8 @@ async function maskRun() {
   try {
     await api("/api/masks/make", {folder: S.imageFolder, kind, subject_only: $("maskSubject").checked,
       sam: $("maskSam").checked, include: $("maskSamInclude").value, exclude: $("maskSamExclude").value,
-      drawn: $("maskSamDrawn").checked, who: maskWho(), overwrite: $("maskReplace").checked});
+      drawn: $("maskSamDrawn").checked, who: maskWho(), overwrite: $("maskReplace").checked,
+      watermarks: $("maskWatermarks").checked});
     S.prep.masking = true;
     $("maskLog").textContent = ""; $("maskLog").style.display = "";
     $("prepLog").textContent = ""; S.prep.logSize = 0;
@@ -5285,7 +5288,9 @@ function prepYoloWords() {
   const f = (S.prep || {}).face || {}, syn = f.synonyms || {};
   const stages = [["your YOLO face model", f.yolo_names || []]].concat((f.detector_models || [])
     .filter((m) => m.kind === "body" && m.installed).map((m) => [m.label, m.names || []]));
-  const words = prepSettings().find.split(/[,\n]/).map((w) => w.trim()).filter(Boolean);
+  // 'ass OR pussy' is one word with two choices (the first found wins): each choice is routed on its own
+  const words = [...new Set(prepSettings().find.split(/[,\n]/).flatMap((w) => w.split(/\s+or\s+|\|/i))
+    .map((w) => w.trim()).filter(Boolean))];
   const who = {};
   for (const w of words) {
     const want = new Set([w, ...(syn[classKey(w)] || [])].map(classKey));
@@ -5327,10 +5332,13 @@ function prepFindShow() {
   $("prepTrimNote").textContent = trim;
   const yw = prepYoloWords(), who = yw.words.length ?
     yw.words.map((w) => `${w}: ${yw.who[w]}`).join("; ") + "." : "Each word goes to the first detector that knows it, SAM 3.1 last.";
-  $("prepFindHint").textContent = find || who + " Separate things with commas. " +
-    ($("prepFitAll").checked ? "Fit all words in one crop: one close-up around everything found." :
+  const fit = $("prepFitAll").checked, sep = $("prepSeparate").checked;
+  $("prepFindHint").textContent = find || who + " Separate things with commas; use OR for either one (ass OR pussy " +
+    "crops the first one it finds). " +
+    (fit && sep ? "You get one close-up around everything found, plus one for each word." :
+      fit ? "Fit all words in one crop: one close-up around everything found." :
       "Each word gets its own close-up (the biggest one found).") +
-    " A box covering most of the picture is ignored. Pictures where nothing usable is found are copied to 'skipped' " +
+    " The detectors' boxes are trusted; a SAM 3.1 box covering most of the picture is ignored. Pictures where nothing usable is found are copied to 'skipped' " +
     "with the reason; your pictures are never changed.";
   $("prepFindHint").classList.toggle("problems", !!find);
   if (!S.prep.running) { $("prepRun").disabled = !!(find || trim); $("prepRun").title = find || trim; }
@@ -5476,31 +5484,41 @@ function faceSettingsShow(f, msg) {
   const custom = f.defaults && (f.detector !== f.defaults.detector || f.identity !== f.defaults.identity);
   if (custom) $("prepChars").open = true;              // never hide a choice that is changing what you get
 }
-// Body-part and watermark detectors: a path row per model (Choose… / Upload…, booru_yolo also Download)
+// Body-part and watermark detectors: one compact row per model (name, what it finds, Installed / Missing, buttons);
+// the path boxes for your own files sit folded away under "Use files from somewhere else"
 function detectorsShow(models) {
   const box = $("prepDetectors");
   if (box.contains(document.activeElement)) return;          // never redraw under the typing
+  const wasOpen = !!(box.querySelector("details") || {}).open;
   box.replaceChildren();
+  const table = el("table", {class: "det-table"}), paths = el("div", {});
   for (const m of models) {
     const input = el("input", {type: "text", class: "w-path", value: m.saved || "", placeholder: `Blank: ${m.default}`});
     const set = (p) => faceSettingsSave({detectors: {[m.key]: p}});
     input.addEventListener("change", () => set(input.value.trim()));
-    const row = el("div", {class: "field-row prep-opts"}, el("span", {class: "field-label", text: `${m.label}:`}), input,
-      el("button", {class: "btn", text: "Choose…", title: "Pick the .onnx on the machine running Fizgig",
-        onclick: () => pick(input.value || m.default.replace(/[\\/][^\\/]*$/, ""), false, (p) => { input.value = p; set(p); })}));
     const up = uploadButton({kind: "path", key: `DETECTOR_${m.key}`, accept: ".onnx"}, input, set);
-    row.append(up.btn);
-    if (m.download && !m.installed) row.append(el("button", {class: "btn", text: "Download",
+    const acts = el("td", {class: "det-acts"},
+      el("button", {class: "btn btn-sm", text: "Choose…", title: "Pick the .onnx on the machine running Fizgig",
+        onclick: () => pick(input.value || m.default.replace(/[\\/][^\\/]*$/, ""), false, (p) => { input.value = p; set(p); })}),
+      up.btn);
+    if (m.download && !m.installed) acts.append(el("button", {class: "btn btn-sm", text: "Download",
       title: "From Hugging Face (deepghs/booru_yolo, about 45 MB). The weights are under Ultralytics' AGPL-3.0 licence.",
       onclick: async () => {
         $("prepFaceMsg").textContent = `Downloading ${m.label}…`;
         try { faceSettingsShow(await api("/api/prep/detector_download", {}), `${m.label} downloaded.`); }
         catch (e) { $("prepFaceMsg").textContent = e.message; }
       }}));
-    const note = el("div", {class: "field-hint", text: `Finds ${m.finds}. ` + (m.installed ? "Installed." :
-      `Not installed: ${m.download ? "press Download" : "get the .pt from " + m.page + ", convert it, then Choose… or Upload…"}.`)});
-    box.append(row, up.status, note);
+    else if (!m.installed) acts.append(el("a", {href: m.page, target: "_blank", rel: "noopener", text: "Get it",
+      title: "The model's page: download the .pt, convert it once, then Choose… or Upload…"}));
+    table.append(el("tr", {},
+      el("td", {class: "det-name", text: m.label, title: m.saved || m.default}),
+      el("td", {class: "field-hint", text: m.finds}),
+      el("td", {class: "det-state", text: m.installed ? "✓ Installed" : "– Missing"}), acts));
+    paths.append(el("div", {class: "field-row prep-opts"}, el("span", {class: "field-label", text: `${m.label}:`}), input), up.status);
   }
+  const more = el("details", {}, el("summary", {class: "field-hint", text: "Use files from somewhere else (paths)"}), paths);
+  more.open = wasOpen;
+  box.append(table, more);
 }
 async function faceSettingsSave(changes, msg) {
   try { faceSettingsShow(await api("/api/prep/face_settings", changes), msg); prepSummary(); }
@@ -5739,7 +5757,8 @@ function wirePrep() {
   $("prepFace").addEventListener("change", () => { if (prepOther() && !$("prepFind").value.trim()) $("prepFind").focus(); });
   $("prepFind").addEventListener("input", () => { prepFindShow(); savePrepSoon(); });
   $("prepFitAll").addEventListener("change", () => { prepFindShow(); savePrepSoon(); });
-  $("prepWatermarks").addEventListener("change", () => savePrepSoon());
+  $("prepSeparate").addEventListener("change", () => { prepFindShow(); savePrepSoon(); });
+  $("maskWatermarks").addEventListener("change", () => savePrepSoon());
   $("prepCapCopy").addEventListener("change", () => { $("prepCapTrim").disabled = $("prepCapCloseup").disabled = !$("prepCapCopy").checked; prepFindShow(); savePrepSoon(); });
   $("prepCapCloseup").addEventListener("change", savePrepSoon);
   $("prepCapTrim").addEventListener("change", () => { prepFindShow(); savePrepSoon(); });
@@ -9217,6 +9236,14 @@ function tabsMenu(open) {
   $("tabsToggle").setAttribute("aria-expanded", open ? "true" : "false");
 }
 
+// while a run trains, the Training tab opens at its Run card (the loss graph) and the Samples tab at Previews so far
+const TAB_RUN_SPOT = {training: "#tab-training .run-card", samples: "#galleryCard"};
+function tabRunScroll(name) {
+  const live = S.run && (S.run.running || S.run.state === "starting");
+  const spot = live && TAB_RUN_SPOT[name] && document.querySelector(TAB_RUN_SPOT[name]);
+  if (spot) requestAnimationFrame(() => spot.scrollIntoView({block: "start", behavior: "smooth"}));
+  return !!spot;
+}
 function showTab(name) {
   if (name !== "prep" && S.me && S.me.dirty) meSave();      // leaving Image Prep saves the mask being edited
   const tb = document.querySelector(`.tab-item[data-tab="${name}"] span`);
@@ -9715,7 +9742,9 @@ function wire() {
     try { imageLossPanel(box, await api("/api/runs/image_loss?id=" + encodeURIComponent(id)), {...S.run, id}); }
     catch (e) { box.replaceChildren(el("div", {class: "problems", text: e.message})); }
   });
-  document.querySelectorAll(".tab-item").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
+  document.querySelectorAll(".tab-item").forEach((b) => b.addEventListener("click", () => {
+    showTab(b.dataset.tab); tabRunScroll(b.dataset.tab);
+  }));
   document.querySelectorAll("[data-goto]").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.goto)));
   // the sidebar's run opens the run card itself (it sits under the Training form)
   $("sideRun").addEventListener("click", () => setTimeout(() =>
@@ -9932,8 +9961,9 @@ function wire() {
   $("btnMove").addEventListener("click", () => { if (S.moveOpen) { S.moveOpen = false; pollRun(); } else moveOpen(); });
   const now = (what, say) => api("/api/run/now", {what}).then(() => { $("runNowSay").textContent = say; })
     .catch((e) => { $("runNowSay").textContent = e.message; });
-  $("btnSampleNow").addEventListener("click", () => now("sample", "Previews are made after the current step - " +
-    "they show with the others, under the epoch in progress."));
+  // a prompt typed a moment ago is sent first (the live change waits 700 ms for the typing to stop)
+  $("btnSampleNow").addEventListener("click", async () => { if (S.values.__SAMPLE_LIVE) await sampleLiveSend(); now("sample", "Previews are made after the current step - " +
+    "they show with the others, under the epoch in progress."); });
   $("btnSaveNow").addEventListener("click", () => now("save", "The LoRA is saved after the current step, as " +
     "<name>-step<step>.safetensors beside its checkpoints."));
   $("btnReclaimNow").addEventListener("click", () => now("reclaim", "After the current step the run's memory " +

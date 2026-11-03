@@ -30,8 +30,9 @@ OTHER_TARGET = "Other…"           # the Face dropdown's Other…: crop to what
 FIND_SCORE = 0.5                  # SAM 3.1's cutoff for a hit: the same as Make masks uses
 FIND_MIN_SIDE = 16                # a hit smaller than this (pixels, either side) is too small to crop
 FACE_CROP_PREFIX = "FaceCrop_"     # face close-ups: FaceCrop_001.png
-HIT_MAX_SHARE = 0.60              # a single find covering more of the picture than this is ignored
-FIT_ALL_MAX_SHARE = 0.85          # Fit all words in one crop: a crop over this share of the picture is skipped
+HIT_MAX_SHARE = 0.60              # a single SAM 3.1 find covering more of the picture than this is ignored
+FIT_ALL_MAX_SHARE = 0.85          # Fit all words in one crop: a crop with SAM 3.1 boxes over this share is skipped
+DETECTOR_KEEP_SHARE = 0.95        # ... one from the detectors alone is kept while it still trims this much off
 
 
 class _NothingToAdd(Exception):
@@ -111,6 +112,12 @@ def migrate_target(face_label, find=""):
     return (OTHER_TARGET, cls) if cls else (face_label, find)
 
 
+def split_or(phrase):
+    """'ass OR butt' -> ['ass', 'butt']: the choices for one word, first found wins (OR or | between them)."""
+    import re
+    return [p.strip() for p in re.split(r"\s+or\s+|\|", str(phrase or ""), flags=re.I) if p.strip()]
+
+
 def word_slug(word):
     """'the left paw' -> 'the_left_paw': a phrase as a file-name part (letters, digits, _ and -; at most 24)."""
     import re
@@ -139,7 +146,9 @@ class ThingFinder:
     def __init__(self, seg, words, threshold=FIND_SCORE, min_side=FIND_MIN_SIDE, yolo=None, yolo_words=None,
                  fit_all=False):
         self.fit_all = fit_all            # Fit all words in one crop: one close-up around every word found
-        self.seg, self.words = seg, list(dict.fromkeys(w for w in words if w))
+        self.separate = False             # Separate crop for each word (as well, when Fit all is on too)
+        self.groups = [g for g in (split_or(w) for w in words if w) if g]   # 'ass OR pussy': one group, in order
+        self.seg, self.words = seg, list(dict.fromkeys(a for g in self.groups for a in g))
         self.threshold, self.min_side = threshold, min_side
         self.yolo = yolo
         self.yolo_words = {w: int(c) for w, c in (yolo_words or {}).items() if w in self.words} if yolo else {}
@@ -191,6 +200,20 @@ class ThingFinder:
             order = {wd: i for i, wd in enumerate(self.words)}
             out.sort(key=lambda f: (order.get(f.gender, len(order)), -f.score))
         return out
+
+    def pick_or(self, hits):
+        """Each group's hits from its first choice that was found ('ass OR pussy': pussy only when no ass)."""
+        found = {f.gender for f in hits}
+        keep = set()
+        for g in getattr(self, "groups", None) or [[w] for w in self.words]:
+            for alt in g:
+                if alt in found:
+                    keep.add(alt)
+                    break
+        return [f for f in hits if f.gender in keep]
+
+    def group_count(self):
+        return len(getattr(self, "groups", None) or self.words)
 
     @staticmethod
     def largest(hits):
@@ -326,9 +349,8 @@ class Prep:
     (needed by the face modes). finder: a ThingFinder instead, when the Face dropdown is on Other…. captions: a
     crop_captions.CropCaptions - crops get their picture's caption (None: captions aren't touched, as before)."""
 
-    def __init__(self, log, detector=None, finder=None, captions=None, watermarks=None):
+    def __init__(self, log, detector=None, finder=None, captions=None):
         self.log = log
-        self.watermarks = watermarks or []         # detectors.watermark_models(): mask the watermarks found
         self.detector = detector
         self.finder = finder
         self.captions = captions
@@ -551,6 +573,7 @@ class Prep:
             if os.path.isdir(d):
                 shutil.rmtree(d)
         self._padding = face_padding
+        self._sel_pad = {}                            # a crop cut with less padding than asked: {(box, word): padding}
         self._go(folder, dirs, area, face_mode, face_padding, single=(mode == "Face Crop Only"))
 
     def _picks(self, img, face_mode, single):
@@ -558,9 +581,18 @@ class Prep:
         Close-up crops only)."""
         if self.finder is not None:
             found = self._sane(self.finder.find(img), img.size)
-            if getattr(self.finder, "fit_all", False) and len(self.finder.words) > 1:
-                return self._fit_all(img, found)
-            if single:
+            if hasattr(self.finder, "pick_or"):
+                found = self.finder.pick_or(found)
+            groups = self.finder.group_count() if hasattr(self.finder, "group_count") else len(self.finder.words)
+            fit = getattr(self.finder, "fit_all", False) and groups > 1
+            sep = getattr(self.finder, "separate", False)
+            if fit:
+                one = self._fit_all(img, found, raise_skip=not sep)
+                if not sep:
+                    return one
+                each = list(self.finder.per_word(found) or [])
+                return (one if one and one[0].source == "union" else []) + each
+            if single and not sep:
                 sel = self.finder.largest(found)
                 return [sel] if sel else []
             return list(self.finder.per_word(found) or [])
@@ -571,9 +603,9 @@ class Prep:
         return [sel] if sel else []
 
     def _sane(self, hits, size):
-        """Hits worth cropping: a word the YOLO model found keeps only YOLO's boxes (SAM's are dropped), and any box
-        over HIT_MAX_SHARE of the picture is ignored (logged) - a crop of it adds nothing. Raises _NothingToAdd when
-        every hit was too big."""
+        """Hits worth cropping: a word a detector found keeps only the detector's boxes (SAM's are dropped), and a SAM
+        3.1 box over HIT_MAX_SHARE of the picture is ignored (logged) - SAM's big boxes are usually wrong. A detector's
+        box is trusted, however big. Raises _NothingToAdd when every hit was too big."""
         by_yolo = {f.gender for f in hits if getattr(f, "source", "") == "yolo"}
         hits = [f for f in hits if getattr(f, "source", "") == "yolo" or f.gender not in by_yolo]
         area = float(size[0] * size[1]) or 1.0
@@ -581,23 +613,30 @@ class Prep:
         for f in hits:
             x1, y1, x2, y2 = f.bbox
             share = (x2 - x1) * (y2 - y1) / area
-            if share > HIT_MAX_SHARE:
+            if share > HIT_MAX_SHARE and getattr(f, "source", "") != "yolo":
                 big.append(f"{f.gender} ({100 * share:.0f}%)")
-                self.log(f"  {f.gender} box too big ({100 * share:.0f}%), ignored\n")
+                self.log(f"  {f.gender}: SAM 3.1's box is too big ({100 * share:.0f}%), ignored\n")
             else:
                 kept.append(f)
         if big and not kept:
             raise _NothingToAdd("only boxes covering most of the picture were found: " + ", ".join(big))
         return kept
 
-    def _fit_all(self, img, found):
+    def _fit_all(self, img, found, raise_skip=True):
         """Fit all words in one crop: the biggest hit of each word, one box around them all. One word found: just
-        that one (the missing ones logged). A box (with padding) covering most of the picture adds nothing: skipped."""
+        that one (the missing ones logged).
+
+        Too big: with padding, a crop over FIT_ALL_MAX_SHARE of the picture. When every box came from a detector
+        (trusted), the padding is left off instead, and the crop is kept while it still trims some background (under
+        DETECTOR_KEEP_SHARE); only a crop that is the whole picture anyway is skipped. With a SAM 3.1 box in it, an
+        over-big crop is skipped as before."""
         from fizgig.face_utils import _face_info, crop_to_face
         picked = list(self.finder.per_word(found) or [])
         if len(picked) <= 1:
             if picked:
-                missing = [w for w in self.finder.words if word_slug(w).lower() != word_slug(picked[0].gender).lower()]
+                groups = getattr(self.finder, "groups", None) or [[w] for w in self.finder.words]
+                missing = [" or ".join(g) for g in groups
+                           if word_slug(picked[0].gender).lower() not in {word_slug(a).lower() for a in g}]
                 self.log(f"  Only {picked[0].gender} found (not {', '.join(missing)}): cropping just that\n")
             return picked
         boxes = [p.bbox for p in picked]
@@ -605,11 +644,23 @@ class Prep:
         x2, y2 = max(b[2] for b in boxes), max(b[3] for b in boxes)
         sel = _face_info(x1, y1, x2, y2, gender="_".join(word_slug(p.gender) for p in picked),
                          score=min(getattr(p, "score", 1.0) for p in picked), source="union")
+        whole = float(img.size[0] * img.size[1]) or 1.0
         w, h = crop_to_face(img, sel, self._padding).size
-        if w * h > FIT_ALL_MAX_SHARE * img.size[0] * img.size[1]:
-            raise _NothingToAdd(f"the crop around {', '.join(p.gender for p in picked)} would cover nearly the "
-                                f"whole picture ({100 * w * h / (img.size[0] * img.size[1]):.0f}%), so it adds nothing")
-        return [sel]
+        if w * h <= FIT_ALL_MAX_SHARE * whole:
+            return [sel]
+        share = w * h / whole
+        if all(getattr(p, "source", "") == "yolo" for p in picked):
+            tw, th = crop_to_face(img, sel, 0).size
+            if tw * th < DETECTOR_KEEP_SHARE * whole:
+                self.__dict__.setdefault("_sel_pad", {})[(sel.bbox, sel.gender)] = 0
+                self.log(f"  Big crop ({100 * share:.0f}% with padding): padding left off, so it still trims some "
+                         f"background ({100 * tw * th / whole:.0f}%)\n")
+                return [sel]
+            share = tw * th / whole
+        if not raise_skip:
+            return []
+        raise _NothingToAdd(f"the crop around {', '.join(p.gender for p in picked)} would cover nearly the "
+                            f"whole picture ({100 * share:.0f}%), so it adds nothing")
 
     def _copy_with_sidecars(self, filepath, dest_dir, new_stem=None):
         """Copy a picture's caption and mask (not the picture) into dest_dir, under new_stem when given."""
@@ -640,7 +691,7 @@ class Prep:
         from fizgig.face_utils import crop_to_face
         rdir, cdir, sdir = dirs.get("resized"), dirs.get("crops"), dirs.get("skipped")
         resized_n = crops_n = errors = 0
-        skipped, wm_found = [], []
+        skipped = []
         index = {}
         for filepath in image_files(source):
             filename = os.path.basename(filepath)
@@ -651,11 +702,6 @@ class Prep:
             try:
                 original_img = load_image(filepath)
                 original = original_img.size
-                if self.watermarks:
-                    from fizgig.dataset import detectors
-                    share = detectors.watermark_mask(filepath, original_img, self.watermarks)
-                    if share:
-                        wm_found.append((filename, share))
                 if cdir:
                     try:
                         picks = self._picks(original_img, face_mode, single)
@@ -663,6 +709,7 @@ class Prep:
                             self.log(f"Nothing found in {filename}, not cropped\n")
                             self._skip(filepath, sdir, "nothing found to crop", skipped)
                         for sel in picks:
+                            pad = getattr(self, "_sel_pad", {}).get((sel.bbox, sel.gender), padding)
                             word = FACE_CROP_PREFIX if self.finder is None else f"{CROP_PREFIX}{word_slug(sel.gender)}_"
                             os.makedirs(cdir, exist_ok=True)
                             if word not in index:
@@ -670,9 +717,9 @@ class Prep:
                                                self.next_crop_index(cdir, sel.gender))
                             crop_path = os.path.join(cdir, f"{word}{index[word]:03d}.png")
                             index[word] += 1
-                            crop, _ = resize_image(crop_to_face(original_img, sel, padding), area)
+                            crop, _ = resize_image(crop_to_face(original_img, sel, pad), area)
                             atomic_png_save(crop, crop_path)
-                            self.crop_mask_for(filepath, original, sel, padding, crop_path)
+                            self.crop_mask_for(filepath, original, sel, pad, crop_path)
                             # Close-up crops only always copies the caption (as before); Auto Prep only with settings
                             caps = self.captions if self.captions is not None else (CropCaptions() if single else None)
                             if caps is not None and find_caption(filepath, caps.ext):
@@ -723,12 +770,6 @@ class Prep:
                      (f" - copies and the reasons (skipped.txt) in {sdir}\n" if skipped else "\n"))
         if errors:
             self.log(f"Errors: {errors}\n")
-        if self.watermarks:
-            from fizgig.dataset import detectors
-            self.log(f"Watermarks masked: {len(wm_found)} picture(s), masks in {os.path.join(source, 'masks')}\n")
-            big = [f"{n} ({100 * s:.0f}%)" for n, s in wm_found if s > detectors.WM_WARN]
-            if big:
-                self.log("Watermarks cover a lot of these - worth a look: " + ", ".join(big) + "\n")
         self.log("Training uses the resized copies and crops in place of the full-size pictures. "
                  "To undo, delete those folders.\n")
 
