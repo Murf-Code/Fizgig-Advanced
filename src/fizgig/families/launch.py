@@ -379,7 +379,8 @@ def start_checks(desc, st, image_folder):
         if lack:
             out.append(f"{len(lack)} detail crop caption{'s' if len(lack) != 1 else ''} in {rel} don't contain the "
                        f"trigger word '{trig}': those crops train without it.")
-    if not st.get("ADAPTIVE_LR") and "automagic" not in _s(st.get("OPTIMIZER_TYPE")).lower():
+    # the presets' LR bands are AdamW numbers: Prodigy, Muon, Automagic and the rest run at very different LRs
+    if not st.get("ADAPTIVE_LR") and "adamw" in (_s(st.get("OPTIMIZER_TYPE")) or "adamw8bit").lower():
         kind = "finetune" if ft_on(desc, st) else "slider" if slider_on(desc, st) else "lora"
         band = next(((lo, hi) for k, lo, hi in (desc.start_lr_bands or ()) if k == kind), None)
         try:
