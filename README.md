@@ -1,13 +1,36 @@
-## Fizgig Advanced
+## Fizgig Advanced 1.4
 
-This is Fizgig with extra features, kept up to date with upstream [shootthesound/Fizgig](https://github.com/shootthesound/Fizgig).
-It adds Batch Size above 1 for MOSS-Image, Anima and SDXL, with the per-image features still working, plus Prodigy and Muon optimizers.
-It also adds loss graph trend views with a fixed Image Validation check, paired likeness scores for style LoRA previews, and Reclaim VRAM on Windows.
-Added in 1.1: Save & stop on a second Pause press, early stopping when validation stops improving, tag shuffle and caption dropout, faster Blocks Swap for Krea 2 and MOSS-Image LoRAs, and Timestep focus presets.
-New in 1.2: crop to anything you type, crops keep their picture's tags (with optional tag trimming, now with the JTP-3 Hydra furry tagger too), masks for drawn and furry characters, clearer Timestep focus names, and a colour for each 0.1 step on paired likeness badges.
-New in 1.3: up to date with Fizgig v8.9.95 (Z-Image Base, a secondary captioning model), WD EVA02 and JTP-3 Hydra tag captions, auto-recaption with the model you picked, sub-folder images in the pickers, steadier Adaptive LR (judged on validation loss when it's on), crops that leave your pictures untouched, and Check warnings for picks from another dataset.
-New in 1.4: up to date with Fizgig v9.0.2 (Detail crops for style LoRAs, transparent pictures, RunPod REST v2), the PoLoRA and Automagic V4 optimizers, detectors trusted for crops (only SAM's oversized boxes ignored), `ass OR pussy` finds and a separate crop per word, watermark masks on the Masks card, the Training / Samples tabs jumping to a running run, a two-click Stop by the loss graph, and upstream's Style score and Caption dropout in place of the fork's own (Caption dropout still drops per picture at Batch Size above 1).
-See the [release notes](https://github.com/Murf-Code/Fizgig/releases/tag/advanced-1.4) for the full list and how to switch to the `fizgig-advanced` branch.
+Fizgig Advanced is Fizgig with extra features. It's kept up to date with upstream [shootthesound/Fizgig](https://github.com/shootthesound/Fizgig), so you get everything in Fizgig plus the extras below. This version matches **Fizgig v9.0.2**.
+
+**How it differs from upstream**
+- **Batch Size above 1** for MOSS-Image, Anima and SDXL, with per-image features still working.
+- **More optimizers:** Prodigy, Muon, Automagic V4 and PoLoRA. Adaptive LR steps aside for optimizers that set their own rate.
+- **Training tools:** fixed Image Validation loss, loss graph trend views, early stopping, Adaptive LR that can follow validation loss, Save & stop on a second Pause, two-click Stop, faster Blocks Swap for Krea 2 and MOSS-Image LoRAs, Timestep focus presets, tag shuffle.
+- **Image Prep:** crop to anything you type (`ass OR pussy`, or a separate crop per word), a trusted detector chain with SAM last, crops that keep their tags (with optional trimming), masks for drawn and furry characters, watermark masks.
+- **Captions:** WD EVA02 and JTP-3 Hydra tag captions, auto-recaption with the model you picked.
+- **Previews:** paired likeness scores, sub-folder images in the pickers, Reclaim VRAM on Windows.
+
+**Install**
+Follow the normal [Fizgig install](#install), but clone this fork's branch:
+```
+git clone -b fizgig-advanced https://github.com/Murf-Code/Fizgig.git
+```
+
+**Update**
+Close Fizgig, then in your Fizgig folder:
+```
+git pull
+```
+Already on upstream Fizgig? Switch with:
+```
+git remote add advanced https://github.com/Murf-Code/Fizgig.git
+git fetch advanced
+git checkout -b fizgig-advanced advanced/fizgig-advanced
+```
+
+**What's new in 1.4:** Fizgig v9.0.2, PoLoRA and Automagic V4, a trusted detector chain, OR finds and a crop per word, YOLO watermark masks on the Masks card, two-click Stop, upstream's Style score and Caption dropout, and Image Prep that never changes your training folder. See the [1.4 release notes](docs/RELEASE_NOTES_advanced-1.4.md).
+
+Several of these features have been offered upstream: [#289](https://github.com/shootthesound/Fizgig/pull/289), [#290](https://github.com/shootthesound/Fizgig/pull/290), [#291](https://github.com/shootthesound/Fizgig/pull/291), [#292](https://github.com/shootthesound/Fizgig/pull/292), [#293](https://github.com/shootthesound/Fizgig/pull/293), [#294](https://github.com/shootthesound/Fizgig/pull/294).
 
 ---
 
