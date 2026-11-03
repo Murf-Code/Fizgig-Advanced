@@ -4563,6 +4563,8 @@ class Handler(BaseHTTPRequestHandler):
                 from fizgig.dataset import charmask
                 charmask.download(user_data.MODELS_DIR)
                 return self.json({"ok": True, "chars": _char_info()})
+            if path == "/api/masks/stop":          # Make masks' Stop (asked twice on the page)
+                return self.json(prep_jobs.stop_masks())
             if path == "/api/masks/quick_preview":  # the quick finder on two random pictures, nothing written
                 import base64
                 import io

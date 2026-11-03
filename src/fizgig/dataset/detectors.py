@@ -465,8 +465,12 @@ def watermarks_only_folder(folder, models, overwrite=False, log=print, tracer=No
     from PIL import Image
     from fizgig.dataset import prep
     from fizgig.dataset.masks import MASK_SUFFIX, mask_for
+    from fizgig.dataset.masks import stop_here
     c = {"made": 0, "merged": 0, "kept": 0, "skipped": 0, "no_person": 0, "removed": 0}
-    for p in prep.image_files(folder):
+    pics = prep.image_files(folder)
+    for i, p in enumerate(pics, 1):
+        if stop_here(i, len(pics), c):
+            break
         name, old = os.path.basename(p), mask_for(p)
         try:
             img = prep.load_image(p)
@@ -514,8 +518,12 @@ def watermark_folder(folder, models, log=print, tracer=None):
     """Make masks' Mask watermarks: every picture in the folder (top level) gets its watermarks masked. Returns
     [(name, share covered)] of the pictures with any."""
     from fizgig.dataset import prep
+    from fizgig.dataset.masks import STOP
     found = []
     for p in prep.image_files(folder):
+        if STOP.is_set():
+            log("Stopped: the rest of the pictures' watermarks weren't checked.\n")
+            break
         try:
             img = prep.load_image(p)
             try:

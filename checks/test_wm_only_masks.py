@@ -100,3 +100,20 @@ def test_merge_boxes():
     assert D.merge_boxes([(0, 0, 20, 20), (25, 0, 45, 20), (50, 0, 70, 20)]) == [(0, 0, 70, 20)]
     # too far apart: kept separate
     assert len(D.merge_boxes([(0, 0, 20, 20), (40, 0, 60, 20)])) == 2
+
+
+def test_stop(tmp_path):
+    from fizgig.dataset.masks import STOP
+    for n in "abc":
+        Image.new("RGB", (100, 100), "red").save(tmp_path / f"{n}.png")
+    calls = []
+
+    class Once(Stub):
+        def find_classes(self, arr, ids):
+            calls.append(1); STOP.set()           # Stop pressed while the first picture is checked
+            return [(10, 10, 40, 40, 0.9, 0)]
+    try:
+        c = D.watermarks_only_folder(str(tmp_path), [Once([])], log=lambda m: None)
+    finally:
+        STOP.clear()
+    assert c["stopped"] == (1, 3) and c["made"] == 1 and len(calls) == 1

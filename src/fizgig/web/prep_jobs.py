@@ -732,6 +732,8 @@ def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who
         if _look["state"] == "running":
             raise ValueError("The Look Filter is scanning. Wait for it to finish.")
         _job.update(state="running", log="", folder=folder, started=time.time())
+    from fizgig.dataset.masks import STOP
+    STOP.clear()
 
     def work():
         try:
@@ -773,7 +775,7 @@ def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who
                                              detector=det, log=_log, who=who, characters=chars, heads=heads)
                 finally:
                     chars.close()
-            if watermarks:
+            if watermarks and not c.get("stopped"):
                 from fizgig.dataset import detectors
                 wm = detectors.watermark_models(log=_log)
                 if wm:
@@ -781,7 +783,8 @@ def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who
                     detectors.watermark_folder(folder, wm, log=_log, tracer=_wm_tracer(wm_trace))
                 else:
                     _log("\nMask watermarks is on, but neither watermark model is installed - none masked.\n")
-            _log(f"\nDone: {c['made']} mask(s) written"
+            st = c.get("stopped")
+            _log((f"\nStopped after {st[0]} of {st[1]} pictures: " if st else "\nDone: ") + f"{c['made']} mask(s) written"
                  + (f", {c['kept']} already there kept" + (" (no watermark found)" if wm_only else "") if c["kept"] else "")
                  + (f", {c['no_person']} picture(s) with " + ("no watermark found (no mask, they train as normal)"
                     if wm_only else "nothing to mask") if c["no_person"] else "")
@@ -850,6 +853,17 @@ def _wm_tracer(path, log=None):
     except Exception as e:
         log(f"SAM 3.1 couldn't load ({type(e).__name__}: {e}) - the full watermark boxes are used.\n")
         return None
+
+
+def stop_masks():
+    """Make masks' Stop: the run finishes the picture it's on and ends, keeping the masks already written."""
+    from fizgig.dataset.masks import STOP
+    with _lock:
+        if _job["state"] != "running":
+            return {"ok": False}
+    STOP.set()
+    _log("\nStopping after this picture...\n")
+    return {"ok": True}
 
 
 def wm_preview(folder, shown=(), overwrite=False, trace=""):
