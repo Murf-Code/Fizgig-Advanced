@@ -194,7 +194,7 @@ def test_detectors_section_is_one_compact_table():
     js = open(os.path.join(here, "app.js"), encoding="utf-8").read()
     body = js[js.index("function detectorsShow("):js.index("async function faceSettingsSave(")]
     assert 'el("table", {class: "det-table"})' in body and "✓ Installed" in body and "– Missing" in body
-    assert "Use files from somewhere else" in body and "Choose…" in body and "uploadButton" in body
+    assert "Use files from somewhere else" not in body and "<details" not in body and "Choose…" in body and "uploadButton" in body
     assert "Not installed: " not in body                     # no long note per model any more
     css = open(os.path.join(here, "style.css"), encoding="utf-8").read()
     rules = css[css.index(".det-table"):]

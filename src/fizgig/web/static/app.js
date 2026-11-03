@@ -5741,22 +5741,21 @@ function faceSettingsShow(f, msg) {
   if (custom) $("prepChars").open = true;              // never hide a choice that is changing what you get
 }
 // Body-part and watermark detectors: one compact row per model (name, what it finds, Installed / Missing, buttons);
-// the path boxes for your own files sit folded away under "Use files from somewhere else"
+// Choose… and Upload… set the file; the saved path is kept in prefs (no path box shown)
 function detectorsShow(models) {
   const box = $("prepDetectors");
   if (box.contains(document.activeElement)) return;          // never redraw under the typing
-  const wasOpen = !!(box.querySelector("details") || {}).open;
   box.replaceChildren();
-  const table = el("table", {class: "det-table"}), paths = el("div", {});
+  const table = el("table", {class: "det-table"});
   for (const m of models) {
     const tog = el("input", {type: "checkbox", title: m.on ? "On: used in the chain. Untick to leave it out" :
       "Off: left out. Tick to use it"});
     tog.checked = m.on !== false;
     tog.addEventListener("change", () => faceSettingsSave({detector_on: {[m.key]: tog.checked}},
       `${m.label} switched ${tog.checked ? "on" : "off"}.`));
-    const input = el("input", {type: "text", class: "w-path", value: m.saved || "", placeholder: `Blank: ${m.default}`});
+    // hidden holder for the saved path: Choose… starts there and Upload… writes into it
+    const input = el("input", {type: "hidden", value: m.saved || ""});
     const set = (p) => faceSettingsSave({detectors: {[m.key]: p}});
-    input.addEventListener("change", () => set(input.value.trim()));
     const up = uploadButton({kind: "path", key: `DETECTOR_${m.key}`, accept: ".onnx"}, input, set);
     if (m.custom) {
       // Remove asks twice, like Stop: the first click turns it into "Confirm remove" for 5 s
@@ -5782,7 +5781,7 @@ function detectorsShow(models) {
     const acts = el("td", {class: "det-acts"},
       el("button", {class: "btn btn-sm", text: "Choose…", title: "Pick the .onnx on the machine running Fizgig",
         onclick: () => pick(input.value || m.default.replace(/[\\/][^\\/]*$/, ""), false, (p) => { input.value = p; set(p); })}),
-      up.btn);
+      up.btn, up.status);
     if (m.download && !m.installed) acts.append(el("button", {class: "btn btn-sm", text: "Download",
       title: "From Hugging Face (deepghs/booru_yolo, about 45 MB). The weights are under Ultralytics' AGPL-3.0 licence.",
       onclick: async () => {
@@ -5796,7 +5795,6 @@ function detectorsShow(models) {
       el("td", {class: "det-name", text: m.label, title: m.saved || m.default}),
       el("td", {class: "field-hint", text: m.finds}),
       el("td", {class: "det-state", text: m.installed ? "✓ Installed" : "– Missing"}), acts));
-    paths.append(el("div", {class: "field-row prep-opts"}, el("span", {class: "field-label", text: `${m.label}:`}), input), up.status);
   }
   // Add model: your own YOLO / ADetailer .onnx (a file or a folder holding one), body parts or watermarks
   const addPath = el("input", {type: "text", class: "w-path", placeholder: "Your model's .onnx, or its folder"});
@@ -5811,9 +5809,7 @@ function detectorsShow(models) {
       faceSettingsSave({detector_add: {path: addPath.value.trim(), label: addName.value.trim(), kind: addKind.value}},
         "Model added to the list.");
     }}));
-  const more = el("details", {}, el("summary", {class: "field-hint", text: "Use files from somewhere else (paths)"}), paths);
-  more.open = wasOpen;
-  box.append(table, add, more);
+  box.append(table, add);
 }
 async function faceSettingsSave(changes, msg) {
   try { faceSettingsShow(await api("/api/prep/face_settings", changes), msg); prepSummary(); }
