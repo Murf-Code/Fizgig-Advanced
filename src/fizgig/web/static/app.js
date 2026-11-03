@@ -4910,7 +4910,7 @@ const TAGGER_HINTS = {
     "(naked, belly, armpits) by ones it does (nude, navel, chest). " +
     "Scores are JTP-3's confidence, from 0 to 1 (its own demo lists tags from 0.30 up). Uses about 2.5 GB of memory while prep runs.",
 };
-const savePrepSoon = debounce(() => { S.prepSaved = prepSettings(); api("/api/state", {prep: S.prepSaved}).catch(() => {}); }, 600);
+const savePrepSoon = debounce(() => { S.prepSaved = {...(S.prepSaved || {}), ...prepSettings()}; api("/api/state", {prep: S.prepSaved}).catch(() => {}); }, 600);
 
 async function loadPrep() {
   if (!S.prep.opts) {
@@ -5005,6 +5005,10 @@ async function maskInfo() {
     $("maskSamPreview").addEventListener("click", maskSamPreview);
     // Just hide the watermarks: its own radio, beside the finder's kinds (quick) or the words (SAM 3.1)
     $("maskWmOnly").checked = !!sv.maskWmOnly;
+    $("maskWmTrace").checked = sv.maskWmTrace !== false;          // on unless turned off (needs SAM 3.1)
+    $("maskWmTrace").addEventListener("change", () => { S.prepSaved = {...(S.prepSaved || {}),
+      maskWmTrace: $("maskWmTrace").checked}; api("/api/state", {prep: S.prepSaved}).catch(() => {}); });
+    $("maskWatermarks").addEventListener("change", () => maskShow(S.prep.maskOpts || r));
     const wmPick = (on) => { $("maskWmOnly").checked = on;
       if (on) document.querySelectorAll('input[name="maskKind"]').forEach((i) => { i.checked = false; });
       else if (!document.querySelector('input[name="maskKind"]:checked')) {
@@ -5127,7 +5131,7 @@ async function maskSamPreview() {
     const r = sam ? await api("/api/masks/sam_preview", {folder: S.imageFolder, include: $("maskSamInclude").value,
       exclude: $("maskSamExclude").value, drawn: $("maskSamDrawn").checked, shown: S.prep.samShown}) :
       await api("/api/masks/quick_preview", {folder: S.imageFolder, kind, who: maskWho(), shown: S.prep.samShown,
-        wm_only: wm, overwrite: $("maskReplace").checked});
+        wm_only: wm, overwrite: $("maskReplace").checked, wm_trace: wmTrace()});
     S.prep.samShown = r.fresh ? r.fresh : [...S.prep.samShown, ...r.pictures.map((p) => p.name)];
     const by = (p) => !sam && !wm && maskWho() === "auto" ? (p.by === "photo" ? " · photo" : " · character") : "";
     $("maskSamPreviews").replaceChildren(...r.pictures.map((p) => el("figure", {class: "mask-sam-shot"},
@@ -5139,6 +5143,7 @@ async function maskSamPreview() {
   } catch (e) { $("maskSamPrevState").textContent = e.message; }
   $("maskSamPreview").disabled = false;
 }
+function wmTrace() { return $("maskWmTrace").checked && !$("maskWmTrace").disabled; }
 function maskSamSave() {
   S.prepSaved = {...(S.prepSaved || {}), maskSam: $("maskSam").checked, maskSamInclude: $("maskSamInclude").value,
     maskSamExclude: $("maskSamExclude").value, maskSamDrawn: $("maskSamDrawn").checked, maskWho: maskWho()};
@@ -5184,6 +5189,16 @@ function maskShow(r) {
   else if (!wm && wmBox.dataset.before != null) { wmBox.checked = wmBox.dataset.before === "1"; delete wmBox.dataset.before; }
   wmBox.disabled = wm;
   wmHint.textContent = wm ? "On, as part of Just hide the watermarks." : wmHint.dataset.text;
+  // Trace watermark shape: for either watermark choice, when SAM 3.1 is downloaded
+  const samHere = !!(r.sam || {}).path, tr = $("maskWmTrace");
+  $("maskWmTraceBox").style.display = wm || wmBox.checked ? "" : "none";
+  tr.disabled = !samHere;
+  if (!samHere) tr.checked = false;
+  else if (tr.dataset.seen == null) { tr.checked = (S.prepSaved || {}).maskWmTrace !== false; tr.dataset.seen = "1"; }
+  $("maskWmTraceHint").textContent = samHere ? "SAM 3.1 outlines the watermark inside each box the detectors find, " +
+    "so only the letters or logo are blacked out, not the whole box. Off, or where SAM finds nothing: the whole box. " +
+    "Fast on a GPU, a few seconds a picture on the CPU." :
+    "Needs SAM 3.1: choose SAM 3.1 under 1 and press Download. Until then the whole box is blacked out.";
   $("maskSubjectHint").textContent = wm ? "Not for Just hide the watermarks: nobody is looked for." : (sam ? (!r.faces ? "Needs face detection, which isn't installed here (run install_fizgig.py)." :
     r.baselines ? "Finds your subject by their face, with the Look Filter's 3 baselines, and keeps only what's on them." :
     "Needs the Look Filter's 3 baselines: choose them and scan the folder (the last card on this tab), then come back.") :
@@ -5202,7 +5217,7 @@ async function maskRun() {
     await api("/api/masks/make", {folder: S.imageFolder, kind, subject_only: $("maskSubject").checked,
       sam: $("maskSam").checked, include: $("maskSamInclude").value, exclude: $("maskSamExclude").value,
       drawn: $("maskSamDrawn").checked, who: maskWho(), overwrite: $("maskReplace").checked,
-      watermarks: $("maskWatermarks").checked, wm_only: $("maskWmOnly").checked});
+      watermarks: $("maskWatermarks").checked, wm_only: $("maskWmOnly").checked, wm_trace: wmTrace()});
     S.prep.masking = true;
     $("maskLog").textContent = ""; $("maskLog").style.display = "";
     $("prepLog").textContent = ""; S.prep.logSize = 0;

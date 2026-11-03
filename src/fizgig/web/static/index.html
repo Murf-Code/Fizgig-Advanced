@@ -472,6 +472,10 @@
                 <div class="field-hint radio-hint" id="maskWmHint">Finds watermarks and signatures with the two watermark detectors
                   (Anime/furry/drawn characters, Body-part and watermark detectors) and blacks them out of each mask,
                   so training ignores them.</div>
+                <div id="maskWmTraceBox" style="display:none">
+                  <label class="checkbox-label"><input type="checkbox" id="maskWmTrace"> Trace watermark shape with SAM 3.1</label>
+                  <div class="field-hint radio-hint" id="maskWmTraceHint"></div>
+                </div>
                 <label class="checkbox-label"><input type="checkbox" id="maskReplace"> Replace masks already there</label>
                 <div class="field-hint radio-hint">Off: masks already in the folder, including any you painted
                   yourself, are kept.</div>

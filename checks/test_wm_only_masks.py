@@ -58,3 +58,25 @@ def test_folder(tmp_path):
     assert sorted(f.name for f in tmp_path.iterdir()) == ["a.png", "b.png"]
     c = D.watermarks_only_folder(str(tmp_path), none, overwrite=True, **q)
     assert c["no_person"] == 2
+
+
+def test_trace():
+    arr = np.zeros((100, 100, 3), np.uint8)
+    box = (20, 20, 60, 50)
+    full = D.trace_box(arr, box, None)
+    assert full.sum() == 40 * 30
+    # SAM finds a thin stroke: kept, grown a little, held to the padded box
+    def stroke(crop):
+        t = np.zeros(crop.shape[:2], bool); t[10:14, :] = True; return t
+    m = D.trace_box(arr, box, stroke)
+    assert 0 < m.sum() < full.sum() and not m[:, :20 - D.TRACE_PAD].any() and not m[:, 60 + D.TRACE_PAD:].any()
+    assert m[20 - D.TRACE_PAD + 12, 40]
+    # empty, tiny, wrong-sized or failing trace -> the full box
+    tiny = lambda c: np.pad(np.ones((1, 1), bool), ((0, c.shape[0] - 1), (0, c.shape[1] - 1)))
+    def boom(c): raise RuntimeError
+    for t in (lambda c: None, lambda c: np.zeros(c.shape[:2], bool), tiny, lambda c: np.ones((3, 3), bool), boom):
+        assert (D.trace_box(arr, box, t) == full).all()
+    # merged through watermarks_only with a cover
+    cov = D.watermark_cover(arr, [box], stroke)
+    out = D.watermarks_only(arr.shape, [box], None, cov)
+    assert (out == 0).sum() == cov.sum()

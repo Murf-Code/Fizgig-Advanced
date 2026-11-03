@@ -206,6 +206,25 @@ def _make_folder(seg, folder, include, exclude, overwrite, subject, detector, lo
     return counts
 
 
+WM_WORDS = ["watermark", "text", "signature"]
+
+
+def watermark_tracer(path, log=print):
+    """Trace watermark shapes (detectors.trace_box): SAM 3.1 loaded once, asked for WM_WORDS on each box's crop;
+    everything it finds there, together -> bool (h, w), or None when nothing."""
+    seg = segmenter(path, log=log)
+
+    def trace(crop):
+        found = seg.masks(np.ascontiguousarray(crop), WM_WORDS, threshold=0.3, refine=1)
+        if not found:
+            return None
+        out = np.zeros(crop.shape[:2], bool)
+        for f in found:
+            out |= np.asarray(f["mask"], bool)
+        return out
+    return trace
+
+
 def point(img, x, y, path):
     """The mask editor's SAM click: the object at (x, y) of the upright picture `img` (PIL) -> bool (H, W)."""
     if not _use.acquire(blocking=False):

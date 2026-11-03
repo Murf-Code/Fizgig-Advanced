@@ -291,6 +291,46 @@ def chain_finder(words, stage_list, seg=None, log=print, fit_all=False, max_shar
 
 
 # ---- watermark masks ----
+TRACE_PAD = 6           # px around a box SAM may look in (and the traced shape may reach)
+TRACE_GROW = 3          # px the traced shape is grown by, to catch soft edges
+TRACE_MIN = 0.03        # a traced shape under this share of its box is not trusted: the full box is used
+
+
+def trace_box(arr, box, tracer):
+    """bool (H, W): the watermark inside `box` traced by tracer(crop uint8 (h, w, 3)) -> bool (h, w) or None, kept to
+    the box (TRACE_PAD around it) and grown TRACE_GROW px; the full box when the trace is empty, tiny or fails."""
+    h, w = arr.shape[:2]
+    x1, y1, x2, y2 = box
+    out = np.zeros((h, w), bool)
+    out[y1:y2, x1:x2] = True
+    if tracer is None or x2 <= x1 or y2 <= y1:
+        return out
+    cx1, cy1, cx2, cy2 = max(0, x1 - TRACE_PAD), max(0, y1 - TRACE_PAD), min(w, x2 + TRACE_PAD), min(h, y2 + TRACE_PAD)
+    try:
+        t = tracer(arr[cy1:cy2, cx1:cx2])
+    except Exception:
+        t = None
+    if t is None or np.asarray(t).shape != (cy2 - cy1, cx2 - cx1):
+        return out
+    t = np.asarray(t, bool)
+    if t.sum() < TRACE_MIN * (x2 - x1) * (y2 - y1):
+        return out
+    if TRACE_GROW:
+        from PIL import Image, ImageFilter
+        t = np.asarray(Image.fromarray(t.astype(np.uint8) * 255).filter(ImageFilter.MaxFilter(2 * TRACE_GROW + 1))) > 127
+    traced = np.zeros((h, w), bool)
+    traced[cy1:cy2, cx1:cx2] = t
+    return traced
+
+
+def watermark_cover(arr, boxes, tracer=None):
+    """bool (H, W): what's blacked out - each box, or its traced shape (trace_box) with a tracer."""
+    cover = np.zeros(arr.shape[:2], bool)
+    for b in boxes:
+        cover |= trace_box(arr, b, tracer)
+    return cover
+
+
 def watermark_models(loader=None, log=print):
     loader = loader or (lambda k: load(k, conf=WM_SCORE))
     out = []
@@ -318,7 +358,7 @@ def watermark_boxes(arr, models):
     return out
 
 
-def watermark_mask(image_path, img, models):
+def watermark_mask(image_path, img, models, tracer=None):
     """Paint the watermarks black on the picture's mask (beside it: <stem>-masklabel.png, merged with the mask it
     already has). Returns the share of the picture covered (0 when none found: nothing written)."""
     from PIL import Image
@@ -333,28 +373,29 @@ def watermark_mask(image_path, img, models):
     if old:
         with Image.open(old) as o:
             m = np.asarray(o.convert("L").resize((w, h))).copy()
-    cover = np.zeros((h, w), bool)
-    for x1, y1, x2, y2 in boxes:
-        cover[y1:y2, x1:x2] = True
+    cover = watermark_cover(arr, boxes, tracer)
     m[cover] = 0
     stem = os.path.splitext(os.path.basename(image_path))[0]
     Image.fromarray(m, "L").save(os.path.join(os.path.dirname(image_path), stem + MASK_SUFFIX + ".png"))
     return float(cover.mean())
 
 
-def watermarks_only(shape, boxes, base=None):
+def watermarks_only(shape, boxes, base=None, cover=None):
     """Just hide the watermarks: the mask (h, w) uint8 - `base` (a mask already there, same size) or all white - with
     each watermark box black (existing AND not-watermark), or None when there are no boxes (nothing to change)."""
     if not boxes:
         return None
     h, w = shape[:2]
     m = np.full((h, w), 255, np.uint8) if base is None else np.array(base, np.uint8)
+    if cover is not None:                       # traced shapes (watermark_cover) instead of the boxes
+        m[cover] = 0
+        return m
     for x1, y1, x2, y2 in boxes:
         m[max(0, y1):min(h, y2), max(0, x1):min(w, x2)] = 0
     return m
 
 
-def watermarks_only_folder(folder, models, overwrite=False, log=print):
+def watermarks_only_folder(folder, models, overwrite=False, log=print, tracer=None):
     """Make masks' Just hide the watermarks. A picture with a mask already (e.g. from a character-mask run) gets its
     watermarks blacked out on top of it (no watermark: the mask is kept as it is). With overwrite, old masks are
     ignored: a fresh all-white mask minus the watermarks, and none (the old one removed) where none is found.
@@ -376,7 +417,7 @@ def watermarks_only_folder(folder, models, overwrite=False, log=print):
             if old and not overwrite:
                 with Image.open(old) as o:
                     base = np.asarray(o.convert("L").resize((arr.shape[1], arr.shape[0]))).copy()
-            m = watermarks_only(arr.shape, boxes, base)
+            m = watermarks_only(arr.shape, boxes, base, watermark_cover(arr, boxes, tracer) if tracer else None)
         except Exception as e:
             log(f"  {name}: not checked ({e})\n")
             c["skipped"] += 1
@@ -400,13 +441,14 @@ def watermarks_only_folder(folder, models, overwrite=False, log=print):
         if base is not None and os.path.normcase(old) != os.path.normcase(os.path.join(where, stem + ".png")):
             os.remove(old)                     # a .jpg/.webp mask replaced by its merged .png
         c["merged" if base is not None else "made"] += 1
-        share = float(sum((x2 - x1) * (y2 - y1) for x1, y1, x2, y2 in boxes)) / (arr.shape[0] * arr.shape[1])
+        share = float((m == 0).mean()) if base is None else \
+            float(sum((x2 - x1) * (y2 - y1) for x1, y1, x2, y2 in boxes)) / (arr.shape[0] * arr.shape[1])
         log(f"  {name}: watermarks {100 * share:.1f}% of it" + (", merged with its mask" if base is not None else "")
             + (" - worth a look" if share > WM_WARN else "") + "\n")
     return c
 
 
-def watermark_folder(folder, models, log=print):
+def watermark_folder(folder, models, log=print, tracer=None):
     """Make masks' Mask watermarks: every picture in the folder (top level) gets its watermarks masked. Returns
     [(name, share covered)] of the pictures with any."""
     from fizgig.dataset import prep
@@ -415,7 +457,7 @@ def watermark_folder(folder, models, log=print):
         try:
             img = prep.load_image(p)
             try:
-                share = watermark_mask(p, img, models)
+                share = watermark_mask(p, img, models, tracer)
             finally:
                 img.close()
         except Exception as e:

@@ -698,12 +698,13 @@ def _heads_for(kind):
 
 
 def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who="photo", watermarks=False,
-                wm_only=False):
+                wm_only=False, wm_trace=""):
     """Masks for every picture in the training folder (dataset/automask.py), as a prep run: the same log and state.
     sam: {"path", "include", "exclude", "drawn"} to make them with SAM 3.1 from words instead (dataset/sammask.py).
     who: the quick finder's "Who's in your pictures" (dataset/charmask.py WHO). watermarks: Mask watermarks - after the
     masks are made, the watermark detectors' finds are painted out of each picture's mask (dataset/detectors.py).
-    wm_only: Just hide the watermarks - all white with the watermarks black, no finder or SAM loaded."""
+    wm_only: Just hide the watermarks - all white with the watermarks black, no finder or SAM loaded.
+    wm_trace: SAM 3.1's file, to trace each watermark's shape inside its box ("" = the full boxes)."""
     from fizgig.dataset import automask, charmask
     from fizgig.user_data import MODELS_DIR
     if not folder or not os.path.isdir(folder):
@@ -755,7 +756,8 @@ def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who
                 wm = detectors.watermark_models(log=_log)
                 if not wm:
                     raise ValueError("no watermark detector is installed or switched on (YOLO detectors section)")
-                c = detectors.watermarks_only_folder(folder, wm, overwrite=overwrite, log=_log)
+                c = detectors.watermarks_only_folder(folder, wm, overwrite=overwrite, log=_log,
+                                                     tracer=_wm_tracer(wm_trace))
             elif sam is not None:
                 from fizgig.dataset import sammask
                 c = sammask.make_folder(folder, sam["include"], sam["exclude"], sam["path"], overwrite=overwrite,
@@ -776,7 +778,7 @@ def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who
                 wm = detectors.watermark_models(log=_log)
                 if wm:
                     _log("\nMasking watermarks...\n")
-                    detectors.watermark_folder(folder, wm, log=_log)
+                    detectors.watermark_folder(folder, wm, log=_log, tracer=_wm_tracer(wm_trace))
                 else:
                     _log("\nMask watermarks is on, but neither watermark model is installed - none masked.\n")
             _log(f"\nDone: {c['made']} mask(s) written"
@@ -836,7 +838,21 @@ def quick_preview(folder, kind, who, shown=()):
     return out, fresh
 
 
-def wm_preview(folder, shown=(), overwrite=False):
+def _wm_tracer(path, log=None):
+    """SAM 3.1 tracing watermark shapes, loaded once (None: full boxes - not asked for, or it couldn't load)."""
+    if not path:
+        return None
+    log = log or _log
+    try:
+        from fizgig.dataset import sammask
+        log("Tracing watermark shapes with SAM 3.1 inside each box.\n")
+        return sammask.watermark_tracer(path, log=log)
+    except Exception as e:
+        log(f"SAM 3.1 couldn't load ({type(e).__name__}: {e}) - the full watermark boxes are used.\n")
+        return None
+
+
+def wm_preview(folder, shown=(), overwrite=False, trace=""):
     """Just hide the watermarks on 2 random pictures, nothing written: like quick_preview's shots."""
     from fizgig.dataset import detectors, sammask
     import numpy as np
@@ -845,6 +861,7 @@ def wm_preview(folder, shown=(), overwrite=False):
     if not wm:
         raise ValueError("No watermark detector is installed or switched on (see the YOLO detectors section).")
     pics, fresh = sammask.preview_pictures(folder, shown)
+    tracer = _wm_tracer(trace, log=lambda m: None)
     out = []
     for p in pics:
         with Image.open(p) as im:
@@ -855,7 +872,9 @@ def wm_preview(folder, shown=(), overwrite=False):
         if old and not overwrite:
             with Image.open(old) as o:
                 base = np.asarray(o.convert("L").resize((arr.shape[1], arr.shape[0]))).copy()
-        m = detectors.watermarks_only(arr.shape, detectors.watermark_boxes(arr, wm), base)
+        boxes = detectors.watermark_boxes(arr, wm)
+        m = detectors.watermarks_only(arr.shape, boxes, base,
+                                      detectors.watermark_cover(arr, boxes, tracer) if tracer else None)
         note = ("merged with its mask" if base is not None else "") if m is not None else \
             ("no watermark found: its mask is kept" if base is not None else "no watermark found: no mask, trains as normal")
         m = (np.ones(arr.shape[:2], np.float32) if base is None else base.astype(np.float32) / 255) if m is None \

@@ -4571,7 +4571,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": "Choose the training folder on the Start tab first."}, 400)
                 try:
                     shots, fresh = prep_jobs.wm_preview(folder, shown=b.get("shown") or [],
-                                                                    overwrite=bool(b.get("overwrite"))) if b.get("wm_only") \
+                                                                    overwrite=bool(b.get("overwrite")),
+                                                                    trace=_sam_info()["path"] if b.get("wm_trace") else "") if b.get("wm_only") \
                         else prep_jobs.quick_preview(folder, str(b.get("kind") or "person"),
                                                      str(b.get("who") or "photo"), shown=b.get("shown") or [])
                 except ValueError as e:
@@ -4660,7 +4661,8 @@ class Handler(BaseHTTPRequestHandler):
                                                                bool(b.get("subject_only")), bool(b.get("overwrite")),
                                                                sam=sam, who=str(b.get("who") or "photo"),
                                                                watermarks=bool(b.get("watermarks")),
-                                                               wm_only=bool(b.get("wm_only"))))
+                                                               wm_only=bool(b.get("wm_only")),
+                                                               wm_trace=_sam_info()["path"] if b.get("wm_trace") else ""))
                     return self.json(prep_jobs.look_move(folder, b.get("paths") or [],
                                                          captions.caption_ext(b.get("ext"))))
                 except ValueError as e:
