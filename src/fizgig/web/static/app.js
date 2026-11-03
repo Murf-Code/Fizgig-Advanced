@@ -5127,7 +5127,7 @@ async function maskSamPreview() {
     const r = sam ? await api("/api/masks/sam_preview", {folder: S.imageFolder, include: $("maskSamInclude").value,
       exclude: $("maskSamExclude").value, drawn: $("maskSamDrawn").checked, shown: S.prep.samShown}) :
       await api("/api/masks/quick_preview", {folder: S.imageFolder, kind, who: maskWho(), shown: S.prep.samShown,
-        wm_only: wm});
+        wm_only: wm, overwrite: $("maskReplace").checked});
     S.prep.samShown = r.fresh ? r.fresh : [...S.prep.samShown, ...r.pictures.map((p) => p.name)];
     const by = (p) => !sam && !wm && maskWho() === "auto" ? (p.by === "photo" ? " · photo" : " · character") : "";
     $("maskSamPreviews").replaceChildren(...r.pictures.map((p) => el("figure", {class: "mask-sam-shot"},

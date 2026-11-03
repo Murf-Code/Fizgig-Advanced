@@ -4570,7 +4570,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not folder or not os.path.isdir(folder):
                     return self.json({"error": "Choose the training folder on the Start tab first."}, 400)
                 try:
-                    shots, fresh = prep_jobs.wm_preview(folder, shown=b.get("shown") or []) if b.get("wm_only") \
+                    shots, fresh = prep_jobs.wm_preview(folder, shown=b.get("shown") or [],
+                                                                    overwrite=bool(b.get("overwrite"))) if b.get("wm_only") \
                         else prep_jobs.quick_preview(folder, str(b.get("kind") or "person"),
                                                      str(b.get("who") or "photo"), shown=b.get("shown") or [])
                 except ValueError as e:

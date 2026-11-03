@@ -342,61 +342,67 @@ def watermark_mask(image_path, img, models):
     return float(cover.mean())
 
 
-def watermarks_only(shape, boxes):
-    """Just hide the watermarks: an all-white mask (h, w) uint8 with each watermark box black, or None when there are
-    no boxes (the picture then gets no mask and trains as normal)."""
+def watermarks_only(shape, boxes, base=None):
+    """Just hide the watermarks: the mask (h, w) uint8 - `base` (a mask already there, same size) or all white - with
+    each watermark box black (existing AND not-watermark), or None when there are no boxes (nothing to change)."""
     if not boxes:
         return None
     h, w = shape[:2]
-    m = np.full((h, w), 255, np.uint8)
+    m = np.full((h, w), 255, np.uint8) if base is None else np.array(base, np.uint8)
     for x1, y1, x2, y2 in boxes:
         m[max(0, y1):min(h, y2), max(0, x1):min(w, x2)] = 0
     return m
 
 
 def watermarks_only_folder(folder, models, overwrite=False, log=print):
-    """Make masks' Just hide the watermarks: every picture (top level) gets a fresh mask, white except its
-    watermarks. A picture with a mask already is kept unless overwrite; one with no watermark found gets none.
-    Returns the counts {"made", "kept", "skipped", "no_person", "removed"} (no_person: no watermark found;
-    removed: none found and the old mask deleted, with overwrite)."""
+    """Make masks' Just hide the watermarks. A picture with a mask already (e.g. from a character-mask run) gets its
+    watermarks blacked out on top of it (no watermark: the mask is kept as it is). With overwrite, old masks are
+    ignored: a fresh all-white mask minus the watermarks, and none (the old one removed) where none is found.
+    Returns {"made", "merged", "kept", "skipped", "no_person", "removed"} (no_person: no watermark, no mask)."""
     from PIL import Image
     from fizgig.dataset import prep
     from fizgig.dataset.masks import MASK_SUFFIX, mask_for
-    c = {"made": 0, "kept": 0, "skipped": 0, "no_person": 0, "removed": 0}
+    c = {"made": 0, "merged": 0, "kept": 0, "skipped": 0, "no_person": 0, "removed": 0}
     for p in prep.image_files(folder):
-        name = os.path.basename(p)
-        if mask_for(p) and not overwrite:
-            c["kept"] += 1
-            continue
+        name, old = os.path.basename(p), mask_for(p)
         try:
             img = prep.load_image(p)
             try:
                 arr = np.asarray(img.convert("RGB"))
             finally:
                 img.close()
-            m = watermarks_only(arr.shape, watermark_boxes(arr, models))
+            boxes = watermark_boxes(arr, models)
+            base = None
+            if old and not overwrite:
+                with Image.open(old) as o:
+                    base = np.asarray(o.convert("L").resize((arr.shape[1], arr.shape[0]))).copy()
+            m = watermarks_only(arr.shape, boxes, base)
         except Exception as e:
             log(f"  {name}: not checked ({e})\n")
             c["skipped"] += 1
             continue
         if m is None:
-            old, gone = mask_for(p), 0
-            while old and gone < 2:            # Replace: the old mask goes too (beside it, and in masks/)
+            if base is not None:
+                c["kept"] += 1
+                log(f"  {name}: no watermark found - its mask is kept as it is\n")
+                continue
+            gone = 0
+            while old and gone < 2:            # Replace: the old mask goes (beside it, and in masks/)
                 os.remove(old)
                 gone += 1
                 old = mask_for(p)
-            if gone:
-                c["removed"] += 1
-                log(f"  {name}: no watermark found - old mask removed, trains as normal\n")
-            else:
-                c["no_person"] += 1
-                log(f"  {name}: no watermark found - no mask, trains as normal\n")
+            c["removed" if gone else "no_person"] += 1
+            log(f"  {name}: no watermark found - " + ("old mask removed" if gone else "no mask") + ", trains as normal\n")
             continue
-        stem = os.path.splitext(name)[0]
-        Image.fromarray(m, "L").save(os.path.join(os.path.dirname(p), stem + MASK_SUFFIX + ".png"))
-        c["made"] += 1
-        share = float((m == 0).mean())
-        log(f"  {name}: {100 * share:.1f}% hidden" + (" - worth a look" if share > WM_WARN else "") + "\n")
+        stem = os.path.splitext(name)[0] + MASK_SUFFIX
+        where = os.path.dirname(old) if base is not None else os.path.dirname(p)
+        Image.fromarray(m, "L").save(os.path.join(where, stem + ".png"))
+        if base is not None and os.path.normcase(old) != os.path.normcase(os.path.join(where, stem + ".png")):
+            os.remove(old)                     # a .jpg/.webp mask replaced by its merged .png
+        c["merged" if base is not None else "made"] += 1
+        share = float(sum((x2 - x1) * (y2 - y1) for x1, y1, x2, y2 in boxes)) / (arr.shape[0] * arr.shape[1])
+        log(f"  {name}: watermarks {100 * share:.1f}% of it" + (", merged with its mask" if base is not None else "")
+            + (" - worth a look" if share > WM_WARN else "") + "\n")
     return c
 
 

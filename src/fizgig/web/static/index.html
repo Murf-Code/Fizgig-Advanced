@@ -457,8 +457,9 @@
                 <div id="maskKinds"></div>
                 <label class="radio-label"><input type="radio" id="maskWmOnly"> Just hide the watermarks</label>
                 <div class="field-hint radio-hint">Everything is learned except watermarks, signatures and text, which
-                  are blacked out. No character finder needed. A picture with no watermark found gets no mask, so it
-                  trains as normal (the summary counts them).</div>
+                  are blacked out. No character finder needed. A picture that already has a mask (from a character run, say) keeps
+                  it, with the watermarks blacked out on top. With Replace masks already there ticked, old masks are
+                  ignored. A picture with no mask and no watermark found gets none, so it trains as normal.</div>
                 <div class="field-row"><button class="btn" id="maskSamPreview">Preview on 2 random pictures</button>
                   <span class="field-hint" id="maskSamPrevState"></span></div>
                 <div class="mask-sam-previews" id="maskSamPreviews"></div>

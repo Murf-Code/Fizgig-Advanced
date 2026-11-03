@@ -780,15 +780,16 @@ def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who
                 else:
                     _log("\nMask watermarks is on, but neither watermark model is installed - none masked.\n")
             _log(f"\nDone: {c['made']} mask(s) written"
-                 + (f", {c['kept']} already there kept" if c["kept"] else "")
+                 + (f", {c['kept']} already there kept" + (" (no watermark found)" if wm_only else "") if c["kept"] else "")
                  + (f", {c['no_person']} picture(s) with " + ("no watermark found (no mask, they train as normal)"
                     if wm_only else "nothing to mask") if c["no_person"] else "")
+                 + (f", {c['merged']} mask(s) merged with watermarks" if c.get("merged") else "")
                  + (f", {c['removed']} old mask(s) removed (no watermark found, they train as normal)"
                     if c.get("removed") else "")
                  + (f", {c['skipped']} skipped" if c["skipped"] else "")
                  + ". Check them on the Captions tab (Show mask); paint over any that are wrong.\n"
                  + ("To remake the ones kept, tick Replace masks already there and press Make masks again.\n"
-                    if c["kept"] else ""))
+                    if c["kept"] and not wm_only else ""))
             end = "done"
         except Exception as e:
             _log(f"\nERROR: making masks failed — {type(e).__name__}: {e}\n")
@@ -835,7 +836,7 @@ def quick_preview(folder, kind, who, shown=()):
     return out, fresh
 
 
-def wm_preview(folder, shown=()):
+def wm_preview(folder, shown=(), overwrite=False):
     """Just hide the watermarks on 2 random pictures, nothing written: like quick_preview's shots."""
     from fizgig.dataset import detectors, sammask
     import numpy as np
@@ -849,9 +850,16 @@ def wm_preview(folder, shown=()):
         with Image.open(p) as im:
             img = upright(im).convert("RGB")
         arr = np.asarray(img)
-        m = detectors.watermarks_only(arr.shape, detectors.watermark_boxes(arr, wm))
-        note = "" if m is not None else "no watermark found: no mask, trains as normal"
-        m = np.ones(arr.shape[:2], np.float32) if m is None else m.astype(np.float32) / 255
+        from fizgig.dataset.masks import mask_for
+        old, base = mask_for(p), None
+        if old and not overwrite:
+            with Image.open(old) as o:
+                base = np.asarray(o.convert("L").resize((arr.shape[1], arr.shape[0]))).copy()
+        m = detectors.watermarks_only(arr.shape, detectors.watermark_boxes(arr, wm), base)
+        note = ("merged with its mask" if base is not None else "") if m is not None else \
+            ("no watermark found: its mask is kept" if base is not None else "no watermark found: no mask, trains as normal")
+        m = (np.ones(arr.shape[:2], np.float32) if base is None else base.astype(np.float32) / 255) if m is None \
+            else m.astype(np.float32) / 255
         out.append((*sammask.overlay(os.path.basename(p), img, m), "photo", note))
     return out, fresh
 

@@ -25,17 +25,36 @@ def test_compose():
     assert D.watermarks_only((10, 20), []) is None
 
 
+def test_merge():
+    base = np.full((10, 20), 255, np.uint8); base[:, :10] = 0
+    m = D.watermarks_only((10, 20, 3), [(12, 0, 15, 2)], base)
+    assert (m[:, :10] == 0).all() and (m[0:2, 12:15] == 0).all() and m[5, 18] == 255 and base[0, 12] == 255
+
+
 def test_folder(tmp_path):
     for n in ("a", "b"):
         Image.new("RGB", (400, 400), "red").save(tmp_path / f"{n}.png")
-    c = D.watermarks_only_folder(str(tmp_path), [Stub([(10, 10, 40, 40, 0.9, 0)])], log=lambda m: None)
-    assert c["made"] == 2 and mask_for(str(tmp_path / "a.png"))
+    wm, none = [Stub([(10, 10, 40, 40, 0.9, 0)])], [Stub([])]
+    q = dict(log=lambda m: None)
+    c = D.watermarks_only_folder(str(tmp_path), wm, **q)
+    assert c["made"] == 2
     m = np.asarray(Image.open(mask_for(str(tmp_path / "a.png"))))
     assert m[200, 200] == 255 and m[20, 20] == 0
-    c = D.watermarks_only_folder(str(tmp_path), [Stub([])], log=lambda m: None)
-    assert c["kept"] == 2 and c["made"] == 0
-    c = D.watermarks_only_folder(str(tmp_path), [Stub([])], overwrite=True, log=lambda m: None)
-    assert c["removed"] == 2 and c["made"] == 0 and not mask_for(str(tmp_path / "a.png"))
-    assert sorted(f.name for f in tmp_path.iterdir()) == ["a.png", "b.png"]    # only the masks went
-    c = D.watermarks_only_folder(str(tmp_path), [Stub([])], overwrite=True, log=lambda m: None)
-    assert c["no_person"] == 2 and c["removed"] == 0
+    # a character mask already there: merged, then no watermark keeps it
+    char = np.full((400, 400), 255, np.uint8); char[:, 300:] = 0
+    Image.fromarray(char).save(mask_for(str(tmp_path / "a.png")))
+    c = D.watermarks_only_folder(str(tmp_path), wm, **q)
+    assert c["merged"] == 2
+    m = np.asarray(Image.open(mask_for(str(tmp_path / "a.png"))))
+    assert m[20, 20] == 0 and m[200, 350] == 0 and m[200, 200] == 255
+    c = D.watermarks_only_folder(str(tmp_path), none, **q)
+    assert c["kept"] == 2 and mask_for(str(tmp_path / "a.png"))
+    # Replace: old ignored (fresh), then no watermark removes it
+    c = D.watermarks_only_folder(str(tmp_path), wm, overwrite=True, **q)
+    m = np.asarray(Image.open(mask_for(str(tmp_path / "a.png"))))
+    assert c["made"] == 2 and m[200, 350] == 255
+    c = D.watermarks_only_folder(str(tmp_path), none, overwrite=True, **q)
+    assert c["removed"] == 2 and not mask_for(str(tmp_path / "a.png"))
+    assert sorted(f.name for f in tmp_path.iterdir()) == ["a.png", "b.png"]
+    c = D.watermarks_only_folder(str(tmp_path), none, overwrite=True, **q)
+    assert c["no_person"] == 2
