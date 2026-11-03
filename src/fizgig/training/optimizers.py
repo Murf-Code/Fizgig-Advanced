@@ -38,6 +38,10 @@ PRODIGY_ONLY_KEYS = ("decouple", "d_coef", "use_bias_correction", "safeguard_war
 # Default Muon LoRA kwargs (RMS-matched to AdamW so standard 1e-4..2e-4 LRs and schedulers apply).
 MUON_DEFAULT_ARGS = "adjust_lr_fn=match_rms_adamw weight_decay=0.01 momentum=0.95 nesterov=True ns_steps=5"
 MUON_ONLY_KEYS = ("adjust_lr_fn", "momentum", "nesterov", "ns_steps", "ns_coefficients")
+# PoLoRA's own Optimizer Args (fizgig/training/polora, Apache-2.0). Nothing is pre-filled: its defaults live in
+# the Polora class. ns_steps is shared with Muon, so it is not stripped when switching between the two.
+POLORA_ONLY_KEYS = ("magnitude_scale", "curvature_beta", "beta1", "delta", "higham_iters", "compile",
+                    "decay_start", "decay_type", "log_norms_every")
 
 
 def _strip_keys(raw: str, default_str: str, only_keys: tuple[str, ...]) -> str:
@@ -68,6 +72,12 @@ def strip_muon_args(raw: str) -> str:
     return _strip_keys(raw, MUON_DEFAULT_ARGS, MUON_ONLY_KEYS)
 
 
+def strip_polora_args(raw: str) -> str:
+    """Remove PoLoRA-specific key=value tokens from an Optimizer Args string when switching to
+    another optimizer."""
+    return _strip_keys(raw, "", POLORA_ONLY_KEYS)
+
+
 # name -> (import to test, one-line description shown in the GUI/CLI help)
 _CATALOG = {
     "adamw8bit":          ("bitsandbytes", "AdamW, 8-bit state (default — the validated recipe)"),
@@ -78,7 +88,10 @@ _CATALOG = {
     "lion8bit":           ("bitsandbytes", "Lion — sign updates; use ~1/10 the AdamW LR"),
     "prodigy":            (None,           "Prodigy — estimates the LR itself (d); Learning Rate is locked to 1.0"),
     "muon":               (None,           "Muon — Newton-Schulz orthogonalized momentum (RMS-matched to AdamW LR)"),
-    "polora":             (None,           "PoLoRA — preconditioned orthogonalized LoRA (product-aware spectral + curvature + magnitude; try ~2e-4; args: magnitude_scale, curvature_beta, beta1, compile, decay_start, decay_type, log_norms_every)"),
+    # PoLoRA, vendored (fizgig/training/polora, Apache-2.0): trains each LoRA's down/up pair together.
+    # Sets its own step size from the Learning Rate (no scheduler, no Adaptive LR). Chris's runs: 2e-2 with
+    # magnitude_scale=2 to 3. Needs a plain LoRA (not LoKR).
+    "polora":             (None,           "PoLoRA - trains each down/up pair together, sets its own step size (no scheduler or Adaptive LR). Try LR 2e-2 with Optimizer Args magnitude_scale=2; log_norms_every=50 prints its sizes"),
     # Ostris's Automagic v3, vendored (fizgig/training/automagic3.py, MIT). One learning rate per
     # parameter group, nudged up while update signs hold steady and down while they alternate;
     # the LR given is only its START (1e-6 is its own default). MiniMax H3 LoRA experiment,
@@ -234,47 +247,38 @@ def _warn_lr(name: str, lr: float) -> None:
     elif (name == "prodigy" or "prodigy" in name) and lr < 0.5:
         logger.warning("[optimizer] Prodigy estimates the LR itself and expects lr=1.0 as a "
                        "multiplier. At %.2e it will barely train.", lr)
+    elif name == "polora":
+        pass                             # scales each step by the factors' size: 2e-2 is a normal LR for it
     elif name not in ("lion8bit", "prodigy") and "prodigy" not in name and lr > 1e-2:
         logger.warning("[optimizer] LR %.2e is very high for %s.", lr, name)
 
 
 
-def _collect_lora_pairs(params):
-    """Collect (A, B) pairs for PoLoRA.
-    Accepts:
-      - a list of (tensor, tensor) tuples already prepared by the caller
-      - a flat list of parameters that have .lora_down / .lora_up modules attached
-    Returns list of (A, B) or None.
-    """
-    if not params:
-        return None
-    # Already pairs?
-    if isinstance(params[0], (tuple, list)) and len(params[0]) == 2 and hasattr(params[0][0], "ndim"):
-        return list(params)
-    # Module-based fallback
+def polora_pairs(net) -> list:
+    """(down, up) weight pairs for PoLoRA, matched by module name: FamilyLoRA's trainable adapter is
+    nn.Sequential(down, up) under each wrapped Linear; a classic LoRANetwork has .lora_down / .lora_up.
+    Frozen pairs are left out. Raises a plain ValueError when the network has none (a LoKR run, say)."""
     pairs = []
-    seen = set()
-    for p in params:
-        mod = getattr(p, "_module", None) or getattr(p, "module", None)
-        if mod is None:
-            continue
-        down = getattr(mod, "lora_down", None)
-        up = getattr(mod, "lora_up", None)
-        if down is None or up is None:
-            continue
-        if isinstance(down, torch.nn.ModuleList):
-            for d, u in zip(down, up):
-                if hasattr(d, "weight") and hasattr(u, "weight"):
-                    key = (id(d.weight), id(u.weight))
-                    if key not in seen:
-                        pairs.append((d.weight, u.weight))
-                        seen.add(key)
-        elif hasattr(down, "weight") and hasattr(up, "weight"):
-            key = (id(down.weight), id(up.weight))
-            if key not in seen:
-                pairs.append((down.weight, up.weight))
-                seen.add(key)
-    return pairs or None
+    wrapped = getattr(net, "wrapped", None)
+    if isinstance(wrapped, dict):
+        from fizgig.families.lora import TRAINABLE
+        for name, w in wrapped.items():
+            ad = w.adapters[TRAINABLE] if TRAINABLE in w.adapters else None
+            if isinstance(ad, torch.nn.Sequential) and len(ad) == 2 and all(hasattr(m, "weight") for m in ad):
+                pairs.append((name, ad[0].weight, ad[1].weight))
+    else:
+        for lora in list(getattr(net, "text_encoder_loras", None) or []) + list(getattr(net, "unet_loras", None) or []):
+            down, up = getattr(lora, "lora_down", None), getattr(lora, "lora_up", None)
+            name = getattr(lora, "lora_name", "?")
+            if isinstance(down, torch.nn.ModuleList) and isinstance(up, torch.nn.ModuleList):
+                pairs += [(f"{name}.{i}", d.weight, u.weight) for i, (d, u) in enumerate(zip(down, up))]
+            elif hasattr(down, "weight") and hasattr(up, "weight"):
+                pairs.append((name, down.weight, up.weight))
+    pairs = [(a, b) for _, a, b in pairs if a.requires_grad and b.requires_grad]
+    if not pairs:
+        raise ValueError("PoLoRA needs a plain LoRA (down/up pairs) and this network has none to train - "
+                         "pick Network Type LoRA, or another optimizer")
+    return pairs
 
 
 def create_optimizer(name: str, params, lr: float, args_str: str = "",
@@ -303,6 +307,10 @@ def create_optimizer(name: str, params, lr: float, args_str: str = "",
             kwargs.pop(k, None)
     if not is_muon:
         for k in MUON_ONLY_KEYS:
+            if not (key == "polora" and k == "ns_steps"):     # PoLoRA has its own ns_steps
+                kwargs.pop(k, None)
+    if key != "polora":
+        for k in POLORA_ONLY_KEYS:
             kwargs.pop(k, None)
 
     if eps_floor_8bit and "8bit" in key and "lion" not in key:
@@ -347,14 +355,11 @@ def create_optimizer(name: str, params, lr: float, args_str: str = "",
                 from fizgig.training.muon import Muon
                 opt = Muon(params_list, lr=lr, **kwargs)
         elif key == "polora":
-            pairs = _collect_lora_pairs(params_list)
-            if not pairs:
-                raise ValueError("PoLoRA requires (lora_down, lora_up) pairs; none found on the supplied parameters")
+            # params is a list of (down, up) pairs from polora_pairs(net); its defaults live in the class
+            pairs = [tuple(p) for p in params_list]
+            if not pairs or not all(len(p) == 2 and hasattr(p[0], "ndim") for p in pairs):
+                raise ValueError("PoLoRA needs (down, up) pairs - build them with polora_pairs(net)")
             from fizgig.training.polora import Polora
-            # Sensible defaults; user can override via Optimizer Args
-            kwargs.setdefault("beta1", 0.9)
-            kwargs.setdefault("curvature_beta", 0.99)
-            kwargs.setdefault("ns_steps", 8)
             opt = Polora(pairs=pairs, lr=lr, **kwargs)
         elif key == "automagic3":
             from fizgig.training.automagic3 import Automagic3

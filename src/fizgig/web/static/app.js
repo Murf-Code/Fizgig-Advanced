@@ -768,6 +768,10 @@ function _stripOptKeys(raw, defaultStr, onlyKeys) {
 
 function stripProdigyArgs(raw) { return _stripOptKeys(raw, PRODIGY_DEFAULT_ARGS, PRODIGY_ONLY_KEYS); }
 function stripMuonArgs(raw) { return _stripOptKeys(raw, MUON_DEFAULT_ARGS, MUON_ONLY_KEYS); }
+// PoLoRA's own args (nothing pre-filled; ns_steps is shared with Muon so it is left alone)
+const POLORA_ONLY_KEYS = new Set(["magnitude_scale", "curvature_beta", "beta1", "delta", "higham_iters", "compile",
+  "decay_start", "decay_type", "log_norms_every"]);
+function stripPoloraArgs(raw) { return _stripOptKeys(raw, "", POLORA_ONLY_KEYS); }
 
 function familyDefaultLr() {
   for (const p of (S.fam && S.fam.form && S.fam.form.presets) || []) {
@@ -791,6 +795,7 @@ function onValue(r, val) {
     let curArgs = String(S.values.OPTIMIZER_ARGS || "").trim();
     if (opt !== "prodigy") curArgs = stripProdigyArgs(curArgs);
     if (opt !== "muon") curArgs = stripMuonArgs(curArgs);
+    if (opt !== "polora") curArgs = stripPoloraArgs(curArgs);
     if (opt === "prodigy") {
       S.values.LEARNING_RATE = "1.0";
       S.values.ADAPTIVE_LR = false;
@@ -810,6 +815,10 @@ function onValue(r, val) {
       if (wasProdigy || parseFloat(S.values.LEARNING_RATE) >= 0.1) {
         S.values.LEARNING_RATE = opt === "automagic3" ? "1e-6" : familyDefaultLr();
         touched.push("LEARNING_RATE");
+      }
+      if (opt === "polora" && S.values.ADAPTIVE_LR) {    // PoLoRA sets its own step size: Adaptive LR stands down
+        S.values.ADAPTIVE_LR = false;
+        touched.push("ADAPTIVE_LR");
       }
       const nextArgs = (wasProdigy || wasMuon) ? "" : curArgs;
       if (wasProdigy || wasMuon || nextArgs !== String(S.values.OPTIMIZER_ARGS || "").trim()) {

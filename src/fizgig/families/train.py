@@ -1743,36 +1743,10 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
             except (OSError, ValueError):
                 pass
         opt_params = params
-        if str(optimizer_type or "").lower() == "polora":
-            # PoLoRA needs explicit (A, B) pairs.
-            # FamilyLoRA (Krea 2 etc.) stores each adapter as nn.Sequential(down, up).
-            # Classic LoRANetwork stores LoRAModule with .lora_down / .lora_up.
-            pairs = []
-            # Prefer FamilyLoRA style
-            if hasattr(net, "trainable_modules"):
-                for ad in net.trainable_modules():
-                    if isinstance(ad, torch.nn.Sequential) and len(ad) == 2:
-                        a, b = ad[0], ad[1]
-                        if hasattr(a, "weight") and hasattr(b, "weight"):
-                            pairs.append((a.weight, b.weight))
-            # Fallback: classic LoRANetwork
-            if not pairs:
-                for lora in getattr(net, "unet_loras", []) or []:
-                    down = getattr(lora, "lora_down", None)
-                    up = getattr(lora, "lora_up", None)
-                    if down is None or up is None:
-                        continue
-                    if isinstance(down, torch.nn.ModuleList):
-                        for d, u in zip(down, up):
-                            if hasattr(d, "weight") and hasattr(u, "weight"):
-                                pairs.append((d.weight, u.weight))
-                    elif hasattr(down, "weight") and hasattr(up, "weight"):
-                        pairs.append((down.weight, up.weight))
-            if pairs:
-                opt_params = pairs
-                logger.info(f"[optimizer] PoLoRA: collected {len(pairs)} (down, up) pairs")
-            else:
-                logger.warning("[optimizer] PoLoRA: no (lora_down, lora_up) pairs found on network")
+        if str(optimizer_type or "").lower() == "polora":   # trains each LoRA's down/up pair together
+            from fizgig.training.optimizers import polora_pairs
+            opt_params = polora_pairs(net)
+            logger.info(f"[optimizer] PoLoRA: {len(opt_params)} down/up pairs")
         if str(optimizer_type or "").lower() == "automagic3":
             groups = _optimizer_family_groups(desc, net, learning_rate)
             if groups:                   # one rate per group: each family of modules finds its own
@@ -1789,11 +1763,11 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
             _oargs = (_oargs + f" weight_decay={desc.optimizer_weight_decay:g}").strip()
         optimizer, opt_label = create_optimizer(optimizer_type, opt_params, learning_rate, _oargs,
                                                 eps_floor_8bit=desc.optimizer_eps_floor_8bit)
-    if owns_its_rate(optimizer):        # Automagic v3 / Prodigy sets its own rate: the watcher and schedulers stand down
+    if owns_its_rate(optimizer):        # Automagic v3 / Prodigy / PoLoRA sets its own rate: the watcher and schedulers stand down
         # Prodigy keeps per-image LR: it weights that image's loss (loss * mult), it never writes the group rate
         _keeps_pilr = str(optimizer_type or "").strip().lower() == "prodigy"
         if adaptive_lr:
-            logger.info(f"[adaptive_lr] off - {optimizer_type} sets its own learning rate (Prodigy/DAdapt/Automagic "
+            logger.info(f"[adaptive_lr] off - {optimizer_type} sets its own learning rate (Prodigy/DAdapt/Automagic/PoLoRA "
                         "style); scaling its estimate would fight it, so the watcher stands down")
         if warmup_look_outliers or (per_image_lr and not _keeps_pilr):
             logger.info(("[per-image LR] the look warm-up is off" if _keeps_pilr else

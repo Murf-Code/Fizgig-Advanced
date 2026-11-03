@@ -21,8 +21,12 @@ length ``d_in``, ``P`` of length ``d_out``) — about half of Adam's state; the
 ``Polora(model, lr=...)`` constructs directly from a PEFT-wrapped model;
 non-PEFT use is supported via ``Polora(pairs=[(A, B), ...], lr=...)``.
 """
+# Modified for Fizgig: one console line per logged step, state_dict() carries the pair state so a
+# resume keeps it, math imported at the top. The update itself is unchanged.
 from __future__ import annotations
 
+import logging
+import math
 from collections import defaultdict
 
 import torch
@@ -67,9 +71,9 @@ class Polora(Optimizer):
     ``rho``. See the module docstring for the full update.
 
     Construct after the model is on its target device; optimizer state is
-    allocated on the params' current device. ``state_dict()`` does not include
-    the momentum/preconditioner state, so saving and restoring the optimizer
-    across runs is not supported.
+    allocated on the params' current device. ``state_dict()`` carries the
+    momentum/preconditioner state and step count (key ``"polora"``), so a
+    resume with the same LoRA layout picks them up.
 
     Args:
         model: PEFT-wrapped model; ``(A, B)`` adapter pairs are discovered
@@ -201,7 +205,6 @@ class Polora(Optimizer):
         if self.decay_type == "linear":
             return 1.0 - 0.5 * progress  # decay to 50%
         if self.decay_type == "cosine":
-            import math
             return 0.5 * (1.0 + math.cos(math.pi * progress))  # decay to 0
         return 1.0
 
@@ -239,6 +242,8 @@ class Polora(Optimizer):
         groups = defaultdict(list)
         for i, (A, B) in enumerate(pairs):
             groups[(A.shape[0], A.shape[1], B.shape[0], A.device)].append(i)
+        log_now = bool(self.log_norms_every) and self._step_count % self.log_norms_every == 0
+        sig_A, sig_B = [], []
         for idxs in groups.values():
             G_A = torch.stack([pairs[i][0].grad.float() for i in idxs])
             G_B = torch.stack([pairs[i][1].grad.float() for i in idxs])
@@ -275,13 +280,9 @@ class Polora(Optimizer):
             # Magnitude scale + optional timestep scale + optional decay
             rho = lr / (sigma_B + sigma_A)
             rho = rho * self.magnitude_scale * self._timestep_scale * self._decay_factor()
-            # Optional factor-norm logging
-            if self.log_norms_every and (self._step_count % self.log_norms_every == 0):
-                import logging
-                logging.getLogger("fizgig.polora").info(
-                    "step %d  avg sigma_A=%.4f  avg sigma_B=%.4f  rho_scale=%.3f",
-                    self._step_count, float(sigma_A.mean()), float(sigma_B.mean()),
-                    self.magnitude_scale * self._timestep_scale * self._decay_factor())
+            if log_now:
+                sig_A.append(sigma_A.detach().reshape(-1))
+                sig_B.append(sigma_B.detach().reshape(-1))
 
             # Whiten -> polar -> unwhiten.
             zA = (C_B_isqrt @ M_hat_A) * Q_isqrt.unsqueeze(1)
@@ -314,4 +315,35 @@ class Polora(Optimizer):
                 A_.grad.zero_()
                 B_.grad.zero_()
 
+        if log_now:                     # one line over every pair, not one per shape group
+            logging.getLogger("fizgig.polora").info(
+                "[polora] step %d: avg sigma_A %.4f, avg sigma_B %.4f, rho_scale %.3f",
+                self._step_count, float(torch.cat(sig_A).float().mean()), float(torch.cat(sig_B).float().mean()),
+                self.magnitude_scale * self._timestep_scale * self._decay_factor())
         return loss
+
+    def state_dict(self):
+        sd = super().state_dict()
+        sd["polora"] = {"step": self._step_count,
+                        "pairs": {i: {k: v.detach().cpu().clone() for k, v in st.items() if torch.is_tensor(v)}
+                                  for i, st in self.pair_state.items()}}
+        return sd
+
+    def load_state_dict(self, state_dict):
+        state_dict = dict(state_dict)
+        extra = state_dict.pop("polora", None)
+        super().load_state_dict(state_dict)
+        if not extra:
+            return
+        saved = extra.get("pairs") or {}
+        if len(saved) != len(self.pair_state) or any(
+                saved[i].get("M_A") is None or saved[i]["M_A"].shape != self.pair_state[i]["M_A"].shape
+                or saved[i]["M_B"].shape != self.pair_state[i]["M_B"].shape for i in self.pair_state):
+            logging.getLogger("fizgig.polora").info(
+                "[polora] saved state does not match this LoRA's layout: starting its momentum fresh")
+            return
+        for i, st in self.pair_state.items():
+            dev = st["M_A"].device
+            for k, v in saved[i].items():
+                st[k] = v.to(dev)
+        self._step_count = int(extra.get("step", 0))

@@ -896,13 +896,15 @@ def apply_preset(desc, values, preset, whole=False):
         if o.tab != "model" and o.key not in p and o.setting and o.setting in p:
             out[o.key] = p[o.setting]
     if "OPTIMIZER_ARGS" not in p:
-        from fizgig.training.optimizers import strip_muon_args, strip_prodigy_args
+        from fizgig.training.optimizers import strip_muon_args, strip_polora_args, strip_prodigy_args
         _opt_p = str(out.get("OPTIMIZER_TYPE") or "").strip().lower()
         _oa = str(out.get("OPTIMIZER_ARGS") or "")
         if _opt_p != "prodigy":
             _oa = strip_prodigy_args(_oa)
         if _opt_p != "muon":
             _oa = strip_muon_args(_oa)
+        if _opt_p != "polora":
+            _oa = strip_polora_args(_oa)
         out["OPTIMIZER_ARGS"] = _oa
     return out
 
