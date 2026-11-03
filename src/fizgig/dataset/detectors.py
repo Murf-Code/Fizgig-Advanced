@@ -357,9 +357,37 @@ def trace_box(arr, box, tracer):
     return traced
 
 
+MERGE_GAP = 0.5         # boxes closer than this x the smaller one's height are one watermark (merge_boxes)
+
+
+def merge_boxes(boxes):
+    """Stacked, overlapping or nearly touching boxes (several detectors, or one watermark found in parts) -> their
+    union boxes, merged until none are left close: a gap under MERGE_GAP x the smaller box's height joins them."""
+    out = [tuple(b) for b in boxes]
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(out)):
+            for j in range(i + 1, len(out)):
+                a, b = out[i], out[j]
+                gap = MERGE_GAP * min(a[3] - a[1], b[3] - b[1])
+                gx = max(a[0], b[0]) - min(a[2], b[2])
+                gy = max(a[1], b[1]) - min(a[3], b[3])
+                if gx < gap and gy < gap:
+                    out[i] = (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+                    del out[j]
+                    changed = True
+                    break
+            if changed:
+                break
+    return out
+
+
 def watermark_cover(arr, boxes, tracer=None):
-    """bool (H, W): what's blacked out - each box, or its traced shape (trace_box) with a tracer."""
+    """bool (H, W): what's blacked out - each box, or with a tracer each merged box's traced shape (trace_box)."""
     cover = np.zeros(arr.shape[:2], bool)
+    if tracer is not None:
+        boxes = merge_boxes(boxes)
     for b in boxes:
         cover |= trace_box(arr, b, tracer)
     return cover

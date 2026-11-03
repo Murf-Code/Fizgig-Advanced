@@ -89,3 +89,14 @@ def test_trace():
     cov = D.watermark_cover(arr, [box], stroke)
     out = D.watermarks_only(arr.shape, [box], None, cov)
     assert (out == 0).sum() == cov.sum()
+
+
+def test_merge_boxes():
+    # stacked (two detectors), overlapping, and a signature found in two parts with a small gap -> one box
+    assert D.merge_boxes([(10, 10, 50, 30), (12, 11, 49, 31)]) == [(10, 10, 50, 31)]
+    assert sorted(D.merge_boxes([(10, 10, 50, 30), (55, 12, 90, 30), (300, 300, 320, 310)])) == \
+        [(10, 10, 90, 30), (300, 300, 320, 310)]
+    # chained: a joins b, then the union reaches c
+    assert D.merge_boxes([(0, 0, 20, 20), (25, 0, 45, 20), (50, 0, 70, 20)]) == [(0, 0, 70, 20)]
+    # too far apart: kept separate
+    assert len(D.merge_boxes([(0, 0, 20, 20), (40, 0, 60, 20)])) == 2
