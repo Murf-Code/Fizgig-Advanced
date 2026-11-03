@@ -671,7 +671,7 @@ class FamilyDescription:
     def lr(self) -> str:
         """The family's default standard-LoRA learning rate (e.g. '1e-4' or '5e-5')."""
         for _name, pr in self.presets or ():
-            if (str(pr.get("OPTIMIZER_TYPE") or "").lower() not in ("automagic3", "prodigy")
+            if (str(pr.get("OPTIMIZER_TYPE") or "").lower() not in ("automagic3", "automagic4", "prodigy")
                     and not pr.get("FAMILY_SLIDER") and not pr.get("FAMILY_FT") and pr.get("LEARNING_RATE")):
                 v = float(pr["LEARNING_RATE"])
                 txt = f"{v:.0e}".replace("e-0", "e-").replace("e+0", "e+")

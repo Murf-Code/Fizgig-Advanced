@@ -63,6 +63,10 @@ byte-for-byte as upstream's `toolkit/optimizers/automagic3.py`, under a Fizgig
 header describing how it is constructed. Offered as an optimizer choice on the
 MiniMax H3 and Krea 2 LoRA paths.
 
+The Automagic v4 optimizer (`src/fizgig/training/automagic4.py`) is upstream's
+`toolkit/optimizers/automagic4.py` (commit 534d462f), unchanged except that its
+base-class import points at Fizgig's vendored Automagic v3.
+
 ```
 MIT License
 

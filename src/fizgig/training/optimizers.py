@@ -84,6 +84,10 @@ _CATALOG = {
     # 17 Sep 2026 — unmeasured against the AdamW recipe until an A/B says otherwise.
     "automagic3":         (None,           "Automagic v3 (Ostris) — sets its own learning rate from the update signs; "
                                             "the LR box is its start, 1e-6 recommended. Experiment"),
+    # Automagic v4 (fizgig/training/automagic4.py, MIT): v3 plus a per-weight brake on the most
+    # sensitive weights and a rate controller that settles instead of annealing to zero.
+    "automagic4":         (None,           "Automagic v4 (Ostris) — like v3, sets its own learning rate, but evens out "
+                                            "how hard each weight is pushed; LR box is its start, 1e-6 recommended. Experiment"),
 }
 
 DEFAULT_OPTIMIZER = "adamw8bit"
@@ -185,7 +189,7 @@ def owns_its_rate(optimizer) -> bool:
     adaptive watchers that write the group rate have no effect on it and should stand down."""
     if optimizer is None:
         return False
-    if optimizer.__class__.__name__ in ("Automagic3", "Prodigy"):
+    if optimizer.__class__.__name__ in ("Automagic3", "Automagic4", "Prodigy"):
         return True
     groups = getattr(optimizer, "param_groups", None)
     return bool(groups and isinstance(groups[0], dict) and "d" in groups[0])
@@ -226,8 +230,8 @@ def _warn_lr(name: str, lr: float) -> None:
     if name == "lion8bit" and lr > 5e-5:
         logger.warning("[optimizer] Lion applies the SIGN of the update, so it needs roughly a "
                        "TENTH of an AdamW LR. %.2e will likely overbake — try %.2e.", lr, lr / 10)
-    elif name == "automagic3" and lr > 1e-3:
-        logger.warning("[optimizer] Automagic v3 starts at the LR you give and finds its own rate — "
+    elif name in ("automagic3", "automagic4") and lr > 1e-3:
+        logger.warning("[optimizer] Automagic starts at the LR you give and finds its own rate — "
                        "%.2e is a high start (its default is 1e-6); the controller will walk it down, "
                        "but the first steps run at %.2e.", lr, lr)
     elif (name == "prodigy" or "prodigy" in name) and lr < 0.5:
@@ -312,6 +316,10 @@ def create_optimizer(name: str, params, lr: float, args_str: str = "",
             # and step, and a fused optimizer would update inside backward, ahead of all of it.
             kwargs.setdefault("fused", False)
             opt = Automagic3(params_list, lr=lr, **kwargs)
+        elif key == "automagic4":
+            from fizgig.training.automagic4 import Automagic4
+            kwargs.setdefault("fused", False)     # same reason as v3
+            opt = Automagic4(params_list, lr=lr, **kwargs)
         elif "." in name:
             module_path, cls_name = name.rsplit(".", 1)
             opt = getattr(importlib.import_module(module_path), cls_name)(params_list, lr=lr, **kwargs)
