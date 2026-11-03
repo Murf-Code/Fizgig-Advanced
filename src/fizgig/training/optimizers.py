@@ -38,7 +38,7 @@ PRODIGY_ONLY_KEYS = ("decouple", "d_coef", "use_bias_correction", "safeguard_war
 # Default Muon LoRA kwargs (RMS-matched to AdamW so standard 1e-4..2e-4 LRs and schedulers apply).
 MUON_DEFAULT_ARGS = "adjust_lr_fn=match_rms_adamw weight_decay=0.01 momentum=0.95 nesterov=True ns_steps=5"
 MUON_ONLY_KEYS = ("adjust_lr_fn", "momentum", "nesterov", "ns_steps", "ns_coefficients")
-# PoLoRA's own Optimizer Args (fizgig/training/polora, Apache-2.0). Nothing is pre-filled: its defaults live in
+# PoLoRA's own Optimizer Args (fizgig/training/polora, Apache-2.0). The UI pre-fills magnitude_scale=3; other defaults live in
 # the Polora class. ns_steps is shared with Muon, so it is not stripped when switching between the two.
 POLORA_ONLY_KEYS = ("magnitude_scale", "curvature_beta", "beta1", "delta", "higham_iters", "compile",
                     "decay_start", "decay_type", "log_norms_every")
@@ -91,7 +91,7 @@ _CATALOG = {
     # PoLoRA, vendored (fizgig/training/polora, Apache-2.0): trains each LoRA's down/up pair together.
     # Sets its own step size from the Learning Rate (no scheduler, no Adaptive LR). Chris's runs: 2e-2 with
     # magnitude_scale=2 to 3. Needs a plain LoRA (not LoKR).
-    "polora":             (None,           "PoLoRA - trains each down/up pair together, sets its own step size (no scheduler; Adaptive LR and per-image LR scale magnitude_scale). Try LR 2e-2 with Optimizer Args magnitude_scale=2; log_norms_every=50 prints its sizes"),
+    "polora":             (None,           "PoLoRA - trains each down/up pair together, sets its own step size (no scheduler; Adaptive LR and per-image LR scale magnitude_scale). LR 2e-2 with magnitude_scale=3 (pre-filled; 2.5-3 works well at LR 2e-2); log_norms_every=50 prints its sizes"),
     # Ostris's Automagic v3, vendored (fizgig/training/automagic3.py, MIT). One learning rate per
     # parameter group, nudged up while update signs hold steady and down while they alternate;
     # the LR given is only its START (1e-6 is its own default). MiniMax H3 LoRA experiment,

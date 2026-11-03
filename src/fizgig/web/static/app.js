@@ -768,9 +768,10 @@ function _stripOptKeys(raw, defaultStr, onlyKeys) {
 
 function stripProdigyArgs(raw) { return _stripOptKeys(raw, PRODIGY_DEFAULT_ARGS, PRODIGY_ONLY_KEYS); }
 function stripMuonArgs(raw) { return _stripOptKeys(raw, MUON_DEFAULT_ARGS, MUON_ONLY_KEYS); }
-// PoLoRA's own args (nothing pre-filled; ns_steps is shared with Muon so it is left alone)
+// PoLoRA's own args (magnitude_scale=3 pre-filled when picked; ns_steps is shared with Muon so it is left alone)
 const POLORA_ONLY_KEYS = new Set(["magnitude_scale", "curvature_beta", "beta1", "delta", "higham_iters", "compile",
   "decay_start", "decay_type", "log_norms_every"]);
+const POLORA_DEFAULT_ARGS = "magnitude_scale=3";
 function stripPoloraArgs(raw) { return _stripOptKeys(raw, "", POLORA_ONLY_KEYS); }
 
 function familyDefaultLr() {
@@ -809,6 +810,14 @@ function onValue(r, val) {
         touched.push("LEARNING_RATE");
       }
       S.values.OPTIMIZER_ARGS = curArgs || MUON_DEFAULT_ARGS;
+      syncInputs(touched);
+    } else if (opt === "polora") {
+      // PoLoRA: magnitude_scale=3 pre-filled (2.5-3 works well at LR 2e-2); Adaptive LR / per-image LR scale it
+      const touched = ["OPTIMIZER_ARGS"];
+      if (wasProdigy || prevOpt !== "polora") { S.values.LEARNING_RATE = "2e-2"; touched.push("LEARNING_RATE"); }
+      let a = (wasProdigy || wasMuon) ? "" : curArgs;
+      if (!/(^|[\s,])magnitude_scale\s*=/.test(a)) a = (a ? a + " " : "") + POLORA_DEFAULT_ARGS;
+      S.values.OPTIMIZER_ARGS = a;
       syncInputs(touched);
     } else {
       const touched = [];
