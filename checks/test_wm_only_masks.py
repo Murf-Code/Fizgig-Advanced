@@ -61,22 +61,31 @@ def test_folder(tmp_path):
 
 
 def test_trace():
-    arr = np.zeros((100, 100, 3), np.uint8)
-    box = (20, 20, 60, 50)
-    full = D.trace_box(arr, box, None)
-    assert full.sum() == 40 * 30
-    # SAM finds a thin stroke: kept, grown a little, held to the padded box
-    def stroke(crop):
-        t = np.zeros(crop.shape[:2], bool); t[10:14, :] = True; return t
+    arr = np.zeros((200, 200, 3), np.uint8)
+    box = (60, 80, 120, 100)                       # 60 x 20: padded 18 sideways, 12 up and down
+    assert D.trace_box(arr, box, None).sum() == 60 * 20
+    pb = D.padded_box(box, 200, 200)
+    assert pb == (42, 68, 138, 112)
+    full = np.zeros((200, 200), bool); full[68:112, 42:138] = True
+
+    def stroke(crop):                              # a signature running past the YOLO box's right end
+        t = np.zeros(crop.shape[:2], bool); t[18:24, 10:90] = True; return t
     m = D.trace_box(arr, box, stroke)
-    assert 0 < m.sum() < full.sum() and not m[:, :20 - D.TRACE_PAD].any() and not m[:, 60 + D.TRACE_PAD:].any()
-    assert m[20 - D.TRACE_PAD + 12, 40]
-    # empty, tiny, wrong-sized or failing trace -> the full box
-    tiny = lambda c: np.pad(np.ones((1, 1), bool), ((0, c.shape[0] - 1), (0, c.shape[1] - 1)))
+    assert 0 < m.sum() < full.sum() and m[90, 125] and not m[70, 60] and not (m & ~full).any()
+
+    rng = np.random.default_rng(0)
+    speckle = lambda c: rng.random(c.shape[:2]) > 0.93          # SAM picked up texture
+    blob = lambda c: np.ones(c.shape[:2], bool)                 # SAM took the whole area
     def boom(c): raise RuntimeError
-    for t in (lambda c: None, lambda c: np.zeros(c.shape[:2], bool), tiny, lambda c: np.ones((3, 3), bool), boom):
+    for t in (lambda c: None, lambda c: np.zeros(c.shape[:2], bool), lambda c: np.ones((3, 3), bool), boom,
+              speckle, blob):
         assert (D.trace_box(arr, box, t) == full).all()
-    # merged through watermarks_only with a cover
+
+    def stroke_specks(crop):                       # a good stroke with a few specks: specks dropped
+        t = stroke(crop); t[2, 2] = t[40, 5] = t[3, 80] = True; return t
+    m = D.trace_box(arr, box, stroke_specks)
+    assert not m[68 + 2, 42 + 2] and m[90, 100]
+
     cov = D.watermark_cover(arr, [box], stroke)
     out = D.watermarks_only(arr.shape, [box], None, cov)
     assert (out == 0).sum() == cov.sum()

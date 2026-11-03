@@ -291,33 +291,67 @@ def chain_finder(words, stage_list, seg=None, log=print, fit_all=False, max_shar
 
 
 # ---- watermark masks ----
-TRACE_PAD = 6           # px around a box SAM may look in (and the traced shape may reach)
-TRACE_GROW = 3          # px the traced shape is grown by, to catch soft edges
-TRACE_MIN = 0.03        # a traced shape under this share of its box is not trusted: the full box is used
+TRACE_PAD = 0.15        # SAM looks this share of the box's size around it (YOLO boxes often stop short of the text)
+TRACE_PAD_X = 0.30      # ... and more sideways, where text runs on
+TRACE_PAD_MIN = 12      # px, at least, each way
+TRACE_GROW = 3          # px the cleaned shape is grown by, to catch soft edges
+TRACE_CLOSE = 5         # px: the morphological close that joins letters and fills small holes
+TRACE_SPECK = 0.004     # a piece under this share of the box (and under 6 px) is a speck: dropped
+TRACE_MIN = 0.03        # a cleaned shape under this share of the box is not trusted: the padded box is used
+TRACE_MAX = 0.85        # ... nor one covering more than this of the padded area (SAM took the picture's texture)
+TRACE_PIECES = 12       # ... nor one in more pieces than this (speckled)
+
+
+def padded_box(box, w, h):
+    """The YOLO box grown for tracing (TRACE_PAD, more sideways), kept on the picture."""
+    x1, y1, x2, y2 = box
+    bw, bh = x2 - x1, y2 - y1
+    px, py = max(TRACE_PAD_MIN, int(TRACE_PAD_X * bw)), max(TRACE_PAD_MIN, int(TRACE_PAD * bh))
+    return max(0, x1 - px), max(0, y1 - py), min(w, x2 + px), min(h, y2 + py)
+
+
+def clean_trace(t, box_area):
+    """SAM's raw shape (bool crop) -> cleaned bool, or None when it's too noisy to trust: specks dropped, letters joined
+    and small holes filled (close), then judged by its pieces and how much it covers."""
+    import cv2
+    t = np.asarray(t, np.uint8)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (TRACE_CLOSE, TRACE_CLOSE))
+    n, lab, st, _ = cv2.connectedComponentsWithStats(t, 8)
+    keep = np.zeros(n, bool)
+    keep[1:] = st[1:, cv2.CC_STAT_AREA] >= max(6, TRACE_SPECK * box_area)
+    t = keep[lab].astype(np.uint8)
+    t = cv2.morphologyEx(t, cv2.MORPH_CLOSE, k)
+    area = int(t.sum())
+    if area < TRACE_MIN * box_area or area > TRACE_MAX * t.size:
+        return None
+    if cv2.connectedComponents(t, connectivity=8)[0] - 1 > TRACE_PIECES:
+        return None
+    if TRACE_GROW:
+        t = cv2.dilate(t, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * TRACE_GROW + 1, 2 * TRACE_GROW + 1)))
+    return t.astype(bool)
 
 
 def trace_box(arr, box, tracer):
-    """bool (H, W): the watermark inside `box` traced by tracer(crop uint8 (h, w, 3)) -> bool (h, w) or None, kept to
-    the box (TRACE_PAD around it) and grown TRACE_GROW px; the full box when the trace is empty, tiny or fails."""
+    """bool (H, W): the watermark in `box` traced by tracer(crop uint8 (h, w, 3)) -> bool (h, w) or None, on the
+    padded box (padded_box), cleaned (clean_trace). Falls back to the padded box when the trace is empty, tiny, noisy
+    or fails; without a tracer, the box as it is."""
     h, w = arr.shape[:2]
     x1, y1, x2, y2 = box
     out = np.zeros((h, w), bool)
-    out[y1:y2, x1:x2] = True
     if tracer is None or x2 <= x1 or y2 <= y1:
+        out[y1:y2, x1:x2] = True
         return out
-    cx1, cy1, cx2, cy2 = max(0, x1 - TRACE_PAD), max(0, y1 - TRACE_PAD), min(w, x2 + TRACE_PAD), min(h, y2 + TRACE_PAD)
+    cx1, cy1, cx2, cy2 = padded_box(box, w, h)
+    out[cy1:cy2, cx1:cx2] = True
     try:
         t = tracer(arr[cy1:cy2, cx1:cx2])
     except Exception:
         t = None
     if t is None or np.asarray(t).shape != (cy2 - cy1, cx2 - cx1):
         return out
-    t = np.asarray(t, bool)
-    if t.sum() < TRACE_MIN * (x2 - x1) * (y2 - y1):
+    t = clean_trace(t, (x2 - x1) * (y2 - y1))
+    if t is None:
         return out
-    if TRACE_GROW:
-        from PIL import Image, ImageFilter
-        t = np.asarray(Image.fromarray(t.astype(np.uint8) * 255).filter(ImageFilter.MaxFilter(2 * TRACE_GROW + 1))) > 127
     traced = np.zeros((h, w), bool)
     traced[cy1:cy2, cx1:cx2] = t
     return traced
