@@ -23,7 +23,8 @@ from fizgig.dataset.masks import is_mask_file
 
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif'}
 LOOK_EXTS = ('.png', '.jpg', '.jpeg', '.webp', '.bmp')
-MODES = ("Auto Prep (Face Crops)", "Resize Only", "Face Crop Only")
+MODES = ("Auto Prep (Face Crops)", "Resize Only", "Face Crop Only", "Detail Crops (Style)")
+FACE_MODES = ("Auto Prep (Face Crops)", "Face Crop Only")
 MEGAPIXELS = ["0.25", "0.37", "0.5", "0.75", "1.0", "1.5", "2.0", "2.4", "3.0", "4.2"]
 FACE_TARGETS = ["Largest Face", "Largest Male Face", "Largest Female Face"]
 OTHER_TARGET = "Other…"           # the Face dropdown's Other…: crop to what the Find this box names (SAM 3.1)
@@ -42,6 +43,11 @@ class _NothingToAdd(Exception):
 RESIZED_DIR, CROPS_DIR, SKIPPED_DIR = "resized", "crops", "skipped"   # Image Prep's outputs
 CROP_PREFIX = "Crop_"             # Find this close-ups: Crop_paw_001.png (faces keep FaceCrop_)
 CLASS_TARGET = "YOLO class: "     # an older build's Crop to choice for a YOLO class ("YOLO class: penis"): now Other…
+
+
+def crop_sizes(prep_mp):
+    """Detail crops' sizes for Image Prep: every Target megapixels from the smallest up to the one picked."""
+    return [float(m) for m in MEGAPIXELS if float(m) <= float(prep_mp) + 1e-9]
 
 
 def bucket_step():
@@ -287,7 +293,7 @@ def source_stats(folder, max_sample=40):
     return len(files), med[0] * med[1], med
 
 
-def summary(folder, mode, replace, prep_mp, train_mp=None, find=""):
+def summary(folder, mode, replace, prep_mp, train_mp=None, find="", crops_only=False):
     """The 'What will happen' card: {lines, warn (prep below training's megapixels), count}. find: the Find this
     box's words when the Face dropdown is on Other… (else "")."""
     area = target_area(prep_mp)
@@ -310,6 +316,23 @@ def summary(folder, mode, replace, prep_mp, train_mp=None, find=""):
     elif mode == "Face Crop Only":
         what = (f"{count} → a face close-up from each photo, added as PNG named {FACE_CROP_PREFIX}001.png and "
                 f"on, as the close-ups of Resize + close-up crops are")
+    elif mode == "Detail Crops (Style)":
+        from fizgig.dataset.detail_crops import DIR, side
+        s = side(prep_mp)
+        from fizgig.dataset.detail_crops import MASTERS, pictures
+        n = len(pictures(folder))
+        sizes = ", ".join(f"{m:g}" for m in crop_sizes(prep_mp))
+        lines = [f"Each of your {n or ''} pictures gets a crop at its own scale (from its full-size original when "
+                 f"there is one) at every size up to {prep_mp:g} MP ({sizes} MP), in {DIR}. "
+                 + (f"Then the pictures, with their captions and masks, move into {MASTERS}, which never trains: "
+                    f"this folder trains its crops only, at the size each run trains at." if crops_only else
+                    f"Your pictures stay as they are, and this folder trains its crops too, at the size each run "
+                    f"trains at.") + " A size not made here is made at Start."]
+        if median_size and min(median_size) < s:
+            lines.append(f"⚠ Your typical picture (about {median_size[0] * median_size[1] / 1e6:.2g} MP) is too small for "
+                         f"a {prep_mp:g} MP crop: those train whole, with no crop. Detail crops work from pictures "
+                         f"bigger than training size.")
+        return {"lines": [" ".join(lines[0].split())] + lines[1:], "warn": "", "count": n}
     else:
         what = f"{count} → {sized}"
     if mode == "Face Crop Only":
@@ -326,14 +349,14 @@ def summary(folder, mode, replace, prep_mp, train_mp=None, find=""):
                      "in the 'resized' sub-folder, and training uses them in place of the full-size ones. To undo, "
                      "delete that folder.")
     lines = [f"{what}. {originals}"]
-    if mode != "Resize Only" and median_area is not None and median_area <= area:
+    if mode in FACE_MODES and median_area is not None and median_area <= area:
         what_cut = "close-ups" if find else "face close-ups"
         lines.append(f"⚠ Your images are already at or below {prep_mp:g} MP — {what_cut} cut from them will be "
                      f"soft. If you have higher-res versions, prep from those instead.")
-    if mode != "Resize Only" and find:
+    if mode in FACE_MODES and find:
         lines.append("Pictures where nothing is found are left whole. Next: eyeball the close-ups on the Captions "
                      "tab and Remove any you don't want before captioning.")
-    elif mode != "Resize Only":
+    elif mode in FACE_MODES:
         lines.append("Next: eyeball the face close-ups on the Captions tab and Remove any blurry ones before "
                      "captioning.")
     warn = ""
@@ -544,7 +567,8 @@ class Prep:
                 self.log(f"  its mask: cropped the same way -> {os.path.basename(out_mask)}\n")
 
     # ---- the three modes: the training folder itself is never changed ----
-    def run(self, mode, folder, prep_mp, face_label="Largest Face", face_padding=20.0, replace=False):
+    def run(self, mode, folder, prep_mp, face_label="Largest Face", face_padding=20.0, replace=False,
+            crops_only=False):
         """Prep never touches the training folder's own files: resized copies go to resized/, close-ups to crops/,
         and pictures the cropping skipped (nothing found / an error) are copied to skipped/ with skipped.txt saying
         why. A re-run empties the folders it writes first; undo = delete the folder. replace is no longer used."""
@@ -553,15 +577,36 @@ class Prep:
         face_mode = face_mode_of(face_label)
         if self.captions is not None:                 # what the crops are of stays in their captions (trim never drops it)
             self.captions.targets = list(self.finder.words) if self.finder is not None else ["face"]
-        if self.detector is not None and mode != "Resize Only" and getattr(self.detector, "backend_name",
+        if self.detector is not None and mode in FACE_MODES and getattr(self.detector, "backend_name",
                                                                              "insightface") != "insightface":
             self.log(f"Face finder: {self.detector.describe()}\n")      # only when it isn't the usual one
-        if self.finder is not None and mode != "Resize Only":
+        if mode == "Detail Crops (Style)":           # the folder switched to detail crops, and this size's made now
+            from fizgig.dataset import detail_crops
+            detail_crops.switch(folder, True)
+            self.log(f"Mode: Detail crops (for a style)\n\nThis folder now trains detail crops too, at the size each "
+                     f"run trains at. Making them at every size up to {prep_mp:g} MP:\n")
+            for mp in crop_sizes(prep_mp):           # every size up to the one picked
+                detail_crops.make(folder, mp, log=lambda t: self.log(t + "\n"))
+            moved = detail_crops.archive(folder, crops_only, log=lambda t: self.log(t + "\n"))
+            if moved:                               # Train on the crops only: the pictures kept in detail_masters/
+                self.log((f"\nTraining on the crops only: {moved} file(s) moved into "
+                          f"{os.path.join(folder, detail_crops.MASTERS)} (kept, never trained)." if crops_only else
+                          f"\nThe pictures train again: {moved} file(s) moved back from "
+                          f"{detail_crops.MASTERS}.") + "\n")
+            n = detail_crops.share_captions(folder)
+            todo = sum(1 for _l, d in detail_crops.sizes(folder) for c in detail_crops.uncaptioned(d))
+            self.log(f"\nThe crops are in {os.path.join(folder, detail_crops.DIR)}, one folder per size"
+                     + (f"; {n} caption(s) copied from another size" if n else "")
+                     + (f"; {todo} have no caption yet - caption them on the Captions tab (Show: detail crops; the "
+                        "largest size is captioned and copied to the others), or Start captions them" if todo else "")
+                     + ".\n")
+            return
+        if self.finder is not None and mode in FACE_MODES:
             if getattr(self.finder, "yolo_words", None):      # some (or all) of it found by the YOLO model
                 self.log(f"Finding with {self.finder.describe()}\n")
             else:
                 self.log(f"Finding: {', '.join(self.finder.words)} (SAM 3.1)\n")
-        resize_on, crop_on = mode != "Face Crop Only", mode != "Resize Only"
+        resize_on, crop_on = mode != "Face Crop Only", mode in FACE_MODES
         self.log(f"Mode: {mode}\n")
         dirs = {}
         if resize_on:

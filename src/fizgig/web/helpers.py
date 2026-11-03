@@ -137,7 +137,10 @@ def _needs(desc, job, prefs):
     for role in ("dit", "vae") if job.get("conds") else ("dit", "vae", "text_encoder"):
         f = next((m for m in desc.model_files if m.role == role), None)
         if f is not None:
-            out.append((f.label, s.pref_path(prefs, f.pref_key), f))
+            p = s.pref_path(prefs, f.pref_key)
+            if not p and not f.required and getattr(f, "inside", ""):
+                continue                 # left empty: read from the file it's inside (SDXL's checkpoint)
+            out.append((f.label, p, f))
     sp = desc.preview_speed()
     if sp is not None and float(job.get("turbo") or 0) > 0 and sp.pref_key:
         f = next((m for m in desc.model_files if m.pref_key == sp.pref_key), None)
@@ -452,18 +455,24 @@ def _norm(url):
     return url
 
 
-def add(url, password):
+def add(url, password, auto=False):
+    """A helper added (`auto`: one of your pods, added by itself once it answered: see _auto_pods)."""
     url = _norm(url)
     c = Client(url)
     prefs = _srv().load_prefs()
+    key = ""
     if not password and "proxy.runpod.net" in url:
-        # a pod of this account: its password from its RunPod settings
+        # a pod of this account: its password from its RunPod settings, else from its log
         from fizgig.web import pod_stop, pods
-        password = pods.login_password(pod_stop.api_key(prefs), url)
+        key = pod_stop.api_key(prefs)
+        password = pods.login_password(key, url)
     if not password:                     # else the login this computer already has there (helping it, its checkpoints)
         c.cookie = (prefs.get("helper_out_cookies") or {}).get(url, "")
         if not c.cookie and "proxy.runpod.net" in url:
-            raise ValueError("Its password is needed: type it beside the pod.")
+            raise ValueError("Fizgig couldn't find this pod's password. Copy it from the pod's log on RunPod (the "
+                             "line under \"Ready\") and paste it into the box beside the pod." if key else
+                             "Type the pod's password into the box beside it. Or save your RunPod API key on the "
+                             "Pods tab, and Fizgig finds it for you.")
     try:
         if password or not c.cookie:
             c.login(password or "")
@@ -482,10 +491,13 @@ def add(url, password):
         if _norm(h.get("url") or url) != url:
             _readdress(_norm(h["url"]), url, c.cookie)
     rows.append({"id": hid, "url": url, "name": name, "cookie": c.cookie, "where": _where(url),
-                 "previews": any(h.get("previews") for h in old), "share": any(h.get("share") for h in old)})
+                 "previews": any(h.get("previews") for h in old), "share": any(h.get("share") for h in old), "auto": auto,
+                 "ours": url in {_norm(a["url"]) for a in _acct.get("all") or []}})
     for h in old:
         _live.pop(h["id"], None)
     _save(rows)
+    if not auto:                         # added by hand: one removed before may come back by itself again
+        _srv().update_prefs({"helpers_declined": [u for u in prefs.get("helpers_declined") or [] if u != url]})
     _live.pop(hid, None)
     ensure_lead()
     threading.Thread(target=measure_link, args=(url, c.cookie), daemon=True).start()
@@ -525,6 +537,11 @@ def _readdress(old, new, cookie):
 
 
 def remove(hid):
+    h = next((x for x in _helpers() if x.get("id") == hid), None)
+    if h and _where(h.get("url") or "") == "pod":      # removed by hand: _auto_pods doesn't add it back
+        prefs = _srv().load_prefs()
+        _srv().update_prefs({"helpers_declined": ([u for u in prefs.get("helpers_declined") or [] if u != h["url"]]
+                                                  + [h["url"]])[-50:]})
     _save([h for h in _helpers() if h.get("id") != hid])
     _live.pop(hid, None)
     return {"say": "Removed."}
@@ -565,6 +582,32 @@ def set_jobs(hid, previews=None, share=None, every=None, send_cache=None, wait=N
     return {"ok": True}
 
 
+_relogged = {}            # helper id -> when its login was last tried again
+
+
+def _relogin(h, c):
+    """A pod helper whose login ran out (it restarted on a new session key): logged in again with its password,
+    found as Add finds it, and its info - or None (not a pod, no password to find, tried in the last 5 minutes)."""
+    if time.time() - _relogged.get(h["id"], 0) < 300:
+        return None
+    _relogged[h["id"]] = time.time()
+    pw = _pod_password(h["url"])
+    if not pw:
+        return None
+    try:
+        c.login(pw)
+        i = c.call("/api/helper/info", timeout=6)
+    except Exception:
+        return None
+    rows = _helpers()
+    for r in rows:
+        if r.get("id") == h["id"]:
+            r["cookie"] = c.cookie
+    _save(rows)
+    h["cookie"] = c.cookie
+    return i
+
+
 def _check(h, mine):
     """One helper's state now: ready / away / login / elsewhere, its GPU and build, and how far away it is."""
     c = Client(h["url"], h.get("cookie", ""))
@@ -572,7 +615,9 @@ def _check(h, mine):
     try:
         i = c.call("/api/helper/info", timeout=6)
     except PermissionError:
-        return {"state": "login"}
+        i = _relogin(h, c)
+        if i is None:
+            return {"state": "login"}
     except Exception:
         return {"state": "away"}
     from fizgig.web import pods
@@ -609,7 +654,7 @@ def listing(look=False):
         lv = _live.get(h["id"]) or {"state": "away"}
         st = lv.get("state")
         rows.append({"id": h["id"], "name": h.get("name"), "url": h.get("url"), "where": h.get("where"),
-                     "previews": h.get("previews"), "share": h.get("share"),
+                     "previews": h.get("previews"), "share": h.get("share"), "auto": bool(h.get("auto")),
                      "state": st, "training": lv.get("training"), "gpu": lv.get("gpu"), "vram": lv.get("vram"),
                      "ping_ms": lv.get("ping_ms"), "build": lv.get("build"), "elsewhere": lv.get("elsewhere"),
                      "match": lv.get("match", ""),
@@ -705,7 +750,7 @@ def _pods_to_help():
         return []
 
 
-_acct = {"at": 0.0, "rows": None, "key": "", "busy": False}
+_acct = {"at": 0.0, "rows": None, "all": None, "key": "", "busy": False}
 _lan_seen = {"at": 0.0, "rows": []}
 _found_lock = threading.Lock()
 
@@ -741,11 +786,16 @@ def _account_rows(key):
     def ask():
         from fizgig.web import pods
         try:
-            rows = [p for p in pods.account(key) if p.get("running")]
+            every = pods.account(key)    # stopped ones too: a pod missing from it was deleted
+            rows = [p for p in every if p.get("running")]
         except ValueError:
-            rows = None                  # a refused key: the saved pods are listed instead
+            rows = every = None          # a refused key: the saved pods are listed instead
+        except Exception:                # RunPod didn't answer: the last copy stays, asked again next time
+            with _found_lock:
+                _acct["busy"] = False
+            return
         with _found_lock:
-            _acct.update(rows=rows, at=time.time(), key=key, busy=False)
+            _acct.update(rows=rows, all=every, at=time.time(), key=key, busy=False)
     threading.Thread(target=ask, daemon=True, name="helpers-account").start()
     return _acct["rows"] if _acct["key"] == key else None
 
@@ -791,6 +841,66 @@ def _found(look=False):
     return out
 
 
+_auto = {"thread": None, "tried": {}}    # url -> when adding it last failed
+
+
+def _auto_pods():
+    """Your RunPod pods as helpers, with no adding: each running Fizgig pod on the account is added once its Fizgig
+    answers, Previews and Training share off (a tick away on the Helpers tab), and one deleted from the account goes
+    from the list. One removed by hand stays removed until it's added by hand again."""
+    from fizgig.web import pod_stop, pods
+    s = _srv()
+    prefs = s.load_prefs()
+    key = pod_stop.api_key(prefs)
+    if not key:
+        return
+    running = _account_rows(key)
+    every = _acct.get("all") if _acct["key"] == key else None
+    if running is None or every is None:
+        return                           # not known yet (or a refused key): nothing added, nothing removed
+    known = {_norm(a["url"]) for a in every}
+    gone = [h for h in _helpers() if (h.get("auto") or h.get("ours")) and _norm(h["url"]) not in known]
+    if gone:
+        _save([h for h in _helpers() if h not in gone])
+        for h in gone:
+            _live.pop(h["id"], None)
+            logger.info(f"[helpers] {h.get('name')}: its pod was deleted, so it's no longer a helper")
+    mine = {_norm(h["url"]) for h in _helpers()}
+    declined = set(prefs.get("helpers_declined") or [])
+    for a in running:
+        url = _norm(a["url"])
+        if url in mine or url in declined or time.time() - _auto["tried"].get(url, 0) < 120:
+            continue
+        if pods.probe(url, 6.0) != "ready":
+            continue                     # still starting: asked again next time round
+        try:
+            add(url, "", auto=True)
+        except Exception as e:
+            _auto["tried"][url] = time.time()
+            logger.info(f"[helpers] adding pod {a.get('name') or url} by itself: {_plain(e)}")
+            continue
+        logger.info(f"[helpers] pod {a.get('name') or url} added as a helper (its jobs are off until you tick one)")
+
+
+def _auto_loop():
+    while True:
+        try:
+            _auto_pods()
+        except Exception:
+            logger.exception("[helpers] adding pods")
+        time.sleep(30.0)
+
+
+def ensure_auto():
+    """Started with the server, on a computer (a pod, or this computer's second Fizgig on another GPU, adds none)."""
+    s = _srv()
+    if s.on_pod() or os.environ.get("FIZGIG_PARENT_PID"):
+        return
+    if _auto["thread"] is None or not _auto["thread"].is_alive():
+        _auto["thread"] = threading.Thread(target=_auto_loop, daemon=True, name="helpers-auto")
+        _auto["thread"].start()
+
+
 def ensure_lead():
     """The lead's two threads: one checks the helpers and keeps the trainer's note fresh, one sends the rounds (a
     round can take minutes; the note must not go stale meanwhile)."""
@@ -823,7 +933,9 @@ def _check_loop():
                         continue
                 lv["misses"] = 0
                 lv.update(r)
-                if r.get("pod") and r.get("state") == "ready" and r.get("build") not in ("", "same", None) and \
+                if r.get("pod") and not (h.get("previews") or h.get("share")):
+                    lv["match"] = ""         # on the list with no job: it stays on its own Fizgig until one is ticked
+                elif r.get("pod") and r.get("state") == "ready" and r.get("build") not in ("", "same", None) and \
                         _lead["mine"]:
                     _match_pod(h, lv, _lead["mine"])
                 elif r.get("pod") and r.get("state") == "busy" and r.get("build") not in ("", "same", None):
@@ -1031,7 +1143,8 @@ def _send_round(h, lv, rd, out_dir, run):
             raise ValueError(st.get("error") or "the helper lost the job")
         w = st.get("worker") or {}
         act(kind="previews", progress=.3 if st["state"] != "rendering" else min(.95, .3 + (time.time() - t0) / 120),
-            text=w.get("text") if st["state"] == "loading" else "")
+            text=(f"Loading the model there, the first round only ({w.get('text') or 'starting'})"
+                  if st["state"] == "loading" else "Waiting its turn there" if st["state"] == "queued" else ""))
         if not os.path.isdir(rd):
             return
         time.sleep(1.5)
@@ -1184,6 +1297,14 @@ def finish(name, ok, error=""):
     return {"ok": True}
 
 
+def _pod_password(url):
+    """A pod of this account's password, found as Add does (its RunPod settings, else its start-up log), or ""."""
+    if "proxy.runpod.net" not in url:
+        return ""
+    from fizgig.web import pod_stop, pods
+    return pods.login_password(pod_stop.api_key(_srv().load_prefs()), url)
+
+
 def help_start(url, password="", mode="previews"):
     """This computer helps the run at `url` with its previews, or (mode "share") trains its share of each epoch;
     it connects, so the other end needn't reach it."""
@@ -1191,6 +1312,7 @@ def help_start(url, password="", mode="previews"):
     s = _srv()
     cookies = dict(s.load_prefs().get("helper_out_cookies") or {})
     c = Client(url, cookies.get(url, ""))
+    password = password or ("" if c.cookie else _pod_password(url))
     if password:
         c.login(password)
         cookies[url] = c.cookie
@@ -1198,10 +1320,15 @@ def help_start(url, password="", mode="previews"):
     try:
         i = c.call("/api/helper/info")
     except PermissionError:
-        raise ValueError("Its password is needed.")
+        raise ValueError("Its password is needed: type it into the box beside it.")
     from fizgig.web import pods
     if (pods._build_word(s.about_info().get("commit") or "", i.get("commit")) or "same") != "same":
         raise ValueError("It runs a different Fizgig version: update both, then try again.")
+    name = i.get("name") or url
+    if s._gpu_training():                # this GPU has its own run: it can't help another
+        raise ValueError(f"This computer is training its own run, so its GPU can't help {name} now. To have {name} "
+                         "make this run's previews, turn on Previews on its tile under Your helpers.")
+    idle = not (c.call("/api/run") or {}).get("running")      # set up ahead of its run: it waits for one
     _out.clear()                         # a loop still going for the last start sees a new generation, and ends
     _gen[0] += 1
     share = mode == "share"
@@ -1209,6 +1336,8 @@ def help_start(url, password="", mode="previews"):
                 text="Connecting for its training share" if share else "Waiting for its next preview round")
     threading.Thread(target=_out_share_loop if share else _out_loop, args=(c, dict(_out)), daemon=True,
                      name="helpers-out").start()
+    if idle:
+        return {"say": f"Nothing is training on {name} yet. This GPU starts helping when a run starts there."}
     return {"say": f"Training a share of {_out['name']}'s run (experimental)." if share else
             f"Helping {_out['name']} with its previews."}
 
@@ -1352,6 +1481,7 @@ def remote_checkpoints(url, password=""):
     """The run at `url`: its name and its saved checkpoints, newest first (password: log in to it first, and keep
     the login)."""
     url, c = _client_for(url)
+    password = password or ("" if c.cookie else _pod_password(url))
     if password:
         c.login(password)
         s = _srv()
@@ -1630,6 +1760,7 @@ def home_set(url, on=None, previews=None, delete=None, password=""):
     (its previews too), and delete the pod once its run has finished and everything is home and checked."""
     url, c = _client_for(url)
     s = _srv()
+    password = password or ("" if c.cookie else _pod_password(url))
     if password:
         c.login(password)
         cookies = dict(s.load_prefs().get("helper_out_cookies") or {})
@@ -1702,6 +1833,7 @@ def _home_loop():
                 continue
             st = _home.setdefault(url, {"text": "Looking for its checkpoints"})
             try:
+                _home_active[url] = True
                 nxt[url] = time.time() + _home_once(url, row, st)
             except PermissionError:
                 st["text"] = "Its login ran out: type its password, then tick this again"
@@ -1710,6 +1842,8 @@ def _home_loop():
                 logger.info(f"[helpers] bringing {url}'s checkpoints home: {_plain(e)}")
                 st["text"] = f"Couldn't bring them all home just now ({_plain(e)}): trying again in a minute"
                 nxt[url] = time.time() + 60
+            finally:
+                _home_active[url] = False
             done_at = float(_home_rows().get(url, {}).get("finished_at") or 0)
             if row.get("delete") and done_at and time.time() - done_at > HOME_GIVE_UP and not st.get("deleted"):
                 _home_give_up(url, st, "Not everything came home within 15 minutes of its run finishing")
@@ -1746,6 +1880,8 @@ def _home_once(url, row, st):
     # brought back as Bring its LoRAs here does, which also closes the move
     moved = (_mv.get("state") in ("moved", "back") and _norm(_mv.get("url") or "x") == url
              and _mv.get("run") == name and _mv.get("remote_out") == out)
+    if _mv.get("state") == "back" and _norm(_mv.get("url") or "x") == url:
+        return 10                            # being brought back: the bring-back fetches the rest
     from fizgig.web import pod_stop, pods
     key, pid = pod_stop.api_key(_srv().load_prefs()), pods.parse(url).get("id")
     # the pod's own stop is held while this computer works on it: 30 minutes, asked again each look, so if this
@@ -1761,10 +1897,12 @@ def _home_once(url, row, st):
         _home_row(url, finished_at=0, finished_run="")
     want = [i for i in c.call("/api/checkpoints?dir=" + urllib.parse.quote(out)).get("items") or []
             if i.get("run") in (name, name + ".safetensors") and _SAFE_FILE.match(str(i.get("name") or "")) and i["name"].endswith(".safetensors")]
-    dest = _mv["out_dir"] if moved else row["dest"]
+    dest = _mv["out_dir"] if moved else _moved_dest(url, name, out) or row["dest"]
     st["folder"] = dest
     os.makedirs(dest, exist_ok=True)
     for n, i in enumerate(want):
+        if _mv.get("state") == "back" and _norm(_mv.get("url") or "x") == url:
+            return 10                        # the bring-back started: it fetches the rest
         d = os.path.join(dest, i["name"])
         # its saved time travels with it: a re-run there under the same name comes home again
         if os.path.isfile(d) and os.path.getsize(d) == int(i["size"]) and abs(os.path.getmtime(d) - float(i["time"])) < 2:
@@ -1795,7 +1933,7 @@ def _home_once(url, row, st):
         st["text"] += ", and the pod was stopped (its own setting), its files still on it"
         return 300
     if not (finished and row.get("delete") and want):
-        return 300 if state in ("completed", "", "idle", "stopped", "failed") else 60
+        return 300 if state in ("completed", "", "idle", "stopped", "failed") else (15 if row.get("move") else 60)   # a moved run: little left for Bring back
     # A: never while the pod still works for a computer (previews, a share, a move on its way), or trains anything
     i = c.call("/api/helper/info", timeout=20)
     if (i.get("sharing") or i.get("helping") or i.get("training") or (i.get("worker") or {}).get("state") in
@@ -2223,12 +2361,26 @@ def _probe(family, shas):
         want = shas.get(stage)
         if not want:
             return {"ok": False, "why": "the run has no cache step for it", "files": files}
+        if want == shas.get("dit") and "dit" in files:
+            # made from the model's own file (SDXL's checkpoint holds its VAE and encoders): that file, never a
+            # separate VAE / encoder this computer has set (_same_as_dit, once the model is here)
+            files[stage] = {**files["dit"], "same_as": "dit"}
+            continue
         f, got = pick(role, want)
         if got is None:
             return {"ok": False, "files": files, "why": f"this run's {f.label if f else role} isn't one it can "
                                                         f"download (not in {desc.display_name}'s list of builds)"}
         files[stage] = got
     return {"ok": True, "files": files}
+
+
+def _same_as_dit(desc, specs, paths):
+    """The cache steps the lead made from the model's own file take this computer's copy of it."""
+    f = next((m for m in desc.model_files if m.role == "dit"), None)
+    dit = paths.get("dit") or (_srv().pref_path(_srv().load_prefs(), f.pref_key) if f is not None else "")
+    for stage, spec in specs.items():
+        if spec.get("same_as") == "dit" and not paths.get(stage) and dit:
+            paths[stage] = dit
 
 
 _gets = {}                         # repo/path -> this computer fetching a build for a share: {state, error}
@@ -2366,6 +2518,8 @@ def _share_start(body):
     m = models(desc.key, {"conds": not make or "text" in paths, "turbo": 0, "look": 0}, fetch=True)
     if m["missing"]:
         return {"models": m}
+    if make:
+        _same_as_dit(desc, specs, paths)
     old = _sw.get(tag)
     if old and old["proc"].poll() is None:
         return {"ok": True, "dir": old["dir"]}
@@ -3517,12 +3671,29 @@ def _move_extras(values):
 
 
 def _run_subfolders(folder, values):
-    """[(relative path, folder)] of the run's sub-folders when it trains them (Include sub-folders)."""
+    """[(relative path, folder)] of the run's sub-folders when it trains them (Also train on its sub-folders), and its
+    detail crops for each size it trains at (Target Megapixels, Start at a smaller size's): they go with a move or a
+    training share as a sub-folder does."""
     from fizgig.families import launch
-    if not (values or {}).get("TRAIN_SUBFOLDERS"):
-        return launch.prep_subfolders(folder)          # Image Prep's resized/ and crops/ always train
-    return launch.subfolders(folder, (str(values.get("LORA_OUTPUT_DIR") or ""),
-                                      str(values.get("FAMILY_FT_REG_DIR") or "")))
+    subs = launch.subfolders(folder, (str(values.get("LORA_OUTPUT_DIR") or ""),
+                                      str(values.get("FAMILY_FT_REG_DIR") or ""))) \
+        if (values or {}).get("TRAIN_SUBFOLDERS") else launch.prep_subfolders(folder)   # Image Prep's resized/ and crops/ always train
+    from fizgig.dataset import detail_crops
+    if not detail_crops.is_on(folder):
+        return subs
+    crops = []
+    m = os.path.join(folder, detail_crops.MASTERS)      # Train on the crops only: the pictures crops are cut from
+    if os.path.isdir(m):
+        crops.append((detail_crops.MASTERS, m))
+    for k in ("DATASET_MEGAPIXELS", "STAGE_MP"):
+        try:
+            mp = float(str((values or {}).get(k) or "0").split(" ")[0])
+        except ValueError:
+            continue
+        d = detail_crops.size_dir(folder, mp) if mp > 0 else ""
+        if d and os.path.isdir(d) and all(c[1] != d for c in crops):
+            crops.append((f"{detail_crops.DIR}/{detail_crops.size_name(mp)}", d))
+    return subs + crops
 
 
 def _safe_rel(rel):
@@ -3546,7 +3717,15 @@ def moved_in_waiting(out_dir):
 
 
 def move_status():
-    return {k: v for k, v in _mv.items() if k not in ("cookie", "values")} if _mv.get("state") else None
+    if not _mv.get("state"):
+        return None
+    out = {k: v for k, v in _mv.items() if k not in ("cookie", "values")}
+    row = _home_rows().get(_norm(_mv.get("url") or "x")) if _mv.get("url") else None
+    if row and row.get("move"):              # its files coming home as they're saved: how far that has got
+        out["home_text"] = (_home.get(_norm(_mv["url"])) or {}).get("text") or ""
+    from fizgig.web import pods
+    out["pod"] = bool(pods.parse(_mv.get("url") or "").get("id"))
+    return out
 
 
 def move_busy():
@@ -3593,6 +3772,54 @@ def move_clear(here=False):
     return {"ok": True}
 
 
+_home_active = {}         # pod url -> True while the bring-home loop is fetching from it
+
+
+def _moved_record(url, run, remote_out, out_dir):
+    """Which run of this computer's went to `url`, so what comes home from it later (Help another Fizgig with
+    this GPU, after the move is over too) goes into its own output folder, not a pod's folder of its own."""
+    rec = dict(_srv().load_prefs().get("helper_moved_runs") or {})
+    rec[_norm(url)] = {"run": run, "remote_out": remote_out, "out_dir": out_dir, "at": time.time()}
+    _srv().update_prefs({"helper_moved_runs": rec})
+
+
+def _moved_dest(url, run, remote_out):
+    """This computer's output folder for a run that was moved to `url` from here, or ""."""
+    r = (_srv().load_prefs().get("helper_moved_runs") or {}).get(_norm(url)) or {}
+    return r.get("out_dir") or "" if r.get("run") == run and r.get("remote_out") == remote_out else ""
+
+
+def _home_for_move(url, out_dir):
+    """A moved run's checkpoints and previews, home as they're saved (the bring-home loop)."""
+    rows = _home_rows()
+    rows[_norm(url)] = {**rows.get(_norm(url), {}), "on": True, "previews": True, "move": True, "dest": out_dir}
+    _srv().update_prefs({"helper_bring_home": rows})
+    ensure_home()
+
+
+def _back_done(url, to, delete, ok):
+    """A run brought back: its move's bring-home row goes, and with Delete the pod ticked, the pod - everything
+    of the run is here now."""
+    u = _norm(url) if url else ""
+    rows = _home_rows()
+    if u in rows and rows[u].get("move"):
+        rows.pop(u, None)
+        _home.pop(u, None)
+        _srv().update_prefs({"helper_bring_home": rows})
+    if not (delete and ok and u):
+        return
+    from fizgig.web import pod_stop, pods
+    s = _srv()
+    try:
+        pods.terminate(pod_stop.api_key(s.load_prefs()), pods.parse(u)["id"])
+    except Exception as e:
+        s.append_log(f"[move] Everything is back, but {to} couldn't be deleted ({_plain(e)}): delete it on RunPod.\n")
+        return
+    s.update_prefs({"app_pods": [p for p in pods.saved(s.load_prefs()) if _norm(p["url"]) != u],
+                    "helpers": [h for h in _helpers() if _norm(h.get("url") or "x") != u]})
+    s.append_log(f"[move] Everything is back from {to}, so the pod was deleted.\n")
+
+
 def _abandon_later(c, tag, hours=12):
     """Carry on here while the other computer was away: it's told to stop its copy once it answers again, so the
     run never trains in two places (a deleted pod never answers: given up after `hours`)."""
@@ -3622,7 +3849,7 @@ def _mv_client():
     return Client(_mv["url"], (h or {}).get("cookie", "") or _mv.get("cookie", ""))
 
 
-def move_start(hid, now=False):
+def move_start(hid, now=False, home=True):
     if _mv.get("state") in ("moving", "back", "moved"):
         raise ValueError("This run is already moving, or training elsewhere.")
     h = next((x for x in _helpers() if x.get("id") == hid), None)
@@ -3657,7 +3884,7 @@ def move_start(hid, now=False):
         raise ValueError("It hasn't saved yet, so it can't move now: move it at the end of this epoch instead.")
     _mv.clear()
     _mv.update(state="moving", hid=hid, to=h.get("name") or h["url"], url=h["url"], run=r["lora"],
-               out_dir=r["output_dir"], error="", text="Getting ready to move", progress=None)
+               out_dir=r["output_dir"], error="", text="Getting ready to move", progress=None, home=bool(home))
     threading.Thread(target=_move_work, args=(h, now), daemon=True, name="helpers-move").start()
     return {"ok": True}
 
@@ -3674,6 +3901,31 @@ def _move_shas(out_dir, name, setup):
     if "--dit" in args[:-1]:
         shas["dit"] = _sha(args[args.index("--dit") + 1])
     return shas
+
+
+_LIVE_KEYS = {"seed": "SAMPLE_SEED", "width": "SAMPLE_WIDTH", "height": "SAMPLE_HEIGHT", "steps": "SAMPLE_STEPS",
+              "cfg": "SAMPLE_CFG_SCALE", "turbo": "FAMILY_TURBO_STRENGTH", "every": "SAMPLE_EVERY_N_EPOCHS",
+              "until": "SAMPLE_UNTIL_EPOCH", "after": "SAMPLE_EVERY_AFTER"}
+
+
+def _with_live_previews(out_dir, values):
+    """The run's settings with the Samples tab's live change in them (Change the previews of the run going now:
+    <out_dir>/.sample_override.json), so its previews look the same wherever it goes next - the file itself is
+    this computer's (its paths) and a start clears it."""
+    ov = _read(os.path.join(out_dir or "", ".sample_override.json"), {}) or {}
+    if not ov.get("prompts"):
+        return values
+    v = dict(values, SAMPLE_PROMPT="\n".join(ov["prompts"]))
+    for k, key in _LIVE_KEYS.items():
+        if ov.get(k) is not None:
+            v[key] = str(ov[k])
+    if "until" in ov or "after" in ov:       # Then preview less often: until / after 0 = off
+        v["SAMPLE_LATER"] = bool(int(ov.get("until") or 0) and int(ov.get("after") or 0))
+    if "look" in ov:                         # the SFT look tick: a path here, so only whether it's on
+        v["FAMILY_PREVIEW_LOOK"] = bool(ov["look"])
+    if "checkpoint" in ov:                   # the preview-model tick (Qwen's Turbo)
+        v["SAMPLE_CHECKPOINT"] = bool(ov["checkpoint"])
+    return v
 
 
 def _move_pack(out_dir, name, state, folder, values):
@@ -3752,6 +4004,7 @@ def _move_work(h, now):
         with s._lock:
             fam, values, folder, state = (s._run["family"], dict(s._run["values"] or {}), s._run["image_folder"],
                                           s._run["resume"])
+        values = _with_live_previews(out_dir, values)    # its previews as they are now, not as it started
         if not state or not os.path.isdir(state):
             raise ValueError("its saved state isn't there")
         setup = _read(os.path.join(out_dir, SHARE_DIR, "setup.json"), {}) or {}
@@ -3796,7 +4049,11 @@ def _move_work(h, now):
             time.sleep(5)
         _write(os.path.join(out_dir, MOVED_FILE), {"url": _mv["url"], "to": to, "tag": tag, "run": name,
                                                    "remote_out": a.get("output_dir") or "", "at": time.time(),
-                                                   "family": fam, "values": values, "image_folder": folder})
+                                                   "family": fam, "values": values, "image_folder": folder,
+                                                   "home": bool(_mv.get("home"))})
+        _moved_record(_mv["url"], name, a.get("output_dir") or "", out_dir)
+        if _mv.get("home"):                  # its checkpoints and previews come home as they're saved, queued
+            _home_for_move(_mv["url"], out_dir)
         with s._lock:
             s._run["state"] = "moved"
         _mv.update(state="moved", tag=tag, remote_out=a.get("output_dir") or "", remote=None, family=fam,
@@ -3932,6 +4189,7 @@ def move_in(body):
                fetch=True)
     if m["missing"]:
         return {"models": m}
+    _same_as_dit(desc, body.get("files") or {}, paths)
     name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(body.get("run") or "run")).strip("._")[:80] or "run"
     for old in glob.glob(_dir("files", "mv*.tar")):      # an earlier attempt's file that never became a run
         if os.path.basename(old) != f"mv{tag}.tar" and time.time() - os.path.getmtime(old) > 3600:
@@ -4098,15 +4356,22 @@ def move_piece(tag, name, offset=0, n=PIECE):
 
 
 # ---- bringing it back -----------------------------------------------------------------------------------------------
-def move_back(now=False):
+def move_back(now=False, delete=False):
     if _mv.get("state") != "moved":
         raise ValueError("No run of this computer's is training elsewhere.")
+    if delete:
+        from fizgig.web import pod_stop, pods
+        if not pods.parse(_mv.get("url") or "").get("id"):
+            delete = False                   # another computer: never deleted
+        elif not pod_stop.api_key(_srv().load_prefs()):
+            raise ValueError("Deleting the pod needs your RunPod API key: add it on the Pods tab, or untick Delete "
+                             "the pod.")
     s = _srv()
     with s._lock:
         busy = s._run["proc"] is not None and s._run["proc"].poll() is None
     if busy:
         raise ValueError("Something is training here: stop it first.")
-    _mv.update(state="back", error="")
+    _mv.update(state="back", error="", delete_after=bool(delete))
     threading.Thread(target=_back_work, args=(now,), daemon=True, name="helpers-move-back").start()
     return {"ok": True}
 
@@ -4115,8 +4380,15 @@ def _back_work(now):
     s = _srv()
     to, tag, out_dir, name = _mv["to"], _mv["tag"], _mv["out_dir"], _mv["run"]
     folder_here = _mv.get("image_folder") or ""
+    url, delete = _mv.get("url") or "", bool(_mv.get("delete_after"))
+    state = ""
     try:
         c = _mv_client()
+        for _n in range(600):                # the file it's bringing home now (it stops after that one)
+            if not _home_active.get(_norm(url)):
+                break
+            _mv_say(f"Finishing the checkpoint on its way home from {to}", log=False)
+            time.sleep(1)
         _mv_say(f"Asking {to} to pause it" + (" now" if now else " at the end of this epoch"))
         while True:
             a = _again(lambda: c.call("/api/helper/move_out", {"tag": tag, "now": now}, timeout=90))
@@ -4185,6 +4457,7 @@ def _back_work(now):
             s.history.end(hid, "finished", {"epoch": rem.get("epochs") or rem.get("epoch"),
                                             "total_epochs": rem.get("epochs")} if rem.get("epoch") else None)
             s.append_log(f"[move] {name} finished on {to}: its LoRAs and previews are here now.\n")
+            _back_done(url, to, delete, True)
             return
         with s._lock:
             s._run.update(state="paused", resume=state, resume_mode="state", family=fam, values=values,
@@ -4197,6 +4470,7 @@ def _back_work(now):
             s._record_pause(out_dir)
             with s._lock:
                 s._run["state"] = "paused"
+        _back_done(url, to, delete, True)
     except Exception as e:
         logger.warning(f"[move] back from {to}: {e}")
         _mv.update(state="moved", error=_plain(e))

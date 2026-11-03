@@ -38,6 +38,7 @@ def _preset(rank, lr=1e-4, adaptive=None, epochs=30, mp="0.5", slider=False, ada
 
 ZIMAGE = FamilyDescription(
     key="zimage",
+    start_lr_bands=(("lora", 3e-5, 4.5e-4), ("finetune", 1.7e-5, 3e-4), ("slider", 7e-5, 6e-4)),
     masked_training=True,
     timestep_spread=timestep_spread.FLOW,     # Timestep focus presets (the shift's multiple / the curve's width)
     arch_id="zimageturbo",

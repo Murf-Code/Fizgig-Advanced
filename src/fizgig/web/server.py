@@ -219,6 +219,78 @@ def _poll_stats_loop():
         time.sleep(1.0)
 
 
+def _side_extras() -> dict:
+    """The sidebar's monitor beyond the GPU: the drive LoRAs are saved to (the run's, else the output folder in
+    Preferences), the jobs going in the background (captions, a model download, Image Prep, the Profiler, an
+    extraction) and what is loaded on the GPU now (training, Studio, the caption model, a helper's previews)."""
+    with _lock:
+        out_dir = _run["output_dir"] or ""
+        training = _run["lora"] if _run["proc"] is not None and _run["proc"].poll() is None else ""
+    disk = None
+    try:
+        d = out_dir if out_dir and os.path.isdir(out_dir) else default_output_dir()
+        while d and not os.path.isdir(d):        # a folder not made yet: the drive it would be on
+            up = os.path.dirname(d)
+            d = "" if up == d else up
+        u = shutil.disk_usage(d or BASE_DIR)
+        mount = os.path.abspath(d or BASE_DIR)     # off Windows: the mount point (/workspace), not the whole path
+        while not os.path.ismount(mount) and os.path.dirname(mount) != mount:
+            mount = os.path.dirname(mount)
+        disk = {"used": u.used, "total": u.total, "free": u.free, "where": os.path.splitdrive(d)[0] or mount,
+                "path": d}
+    except OSError:
+        pass
+    jobs, loaded = [], []
+    try:
+        c = captions.status()
+        if c["state"] in ("loading", "running", "translating"):
+            jobs.append({"what": "Translating captions" if c["state"] == "translating" else "Captioning",
+                         "done": c.get("done") or 0, "total": c.get("total") or 0, "tab": "captions"})
+        if c.get("loaded"):
+            loaded.append({"what": "Caption model", "name": c.get("model") or "", "tab": "captions"})
+    except Exception:
+        pass
+    with _lock:
+        f = {k: _fetch.get(k) for k in ("state", "file", "done", "total")}
+        fp = _fetch["proc"]
+    if fp is not None and fp.poll() is None:
+        jobs.append({"what": "Downloading " + (os.path.basename(f.get("file") or "") or "models"),
+                     "done": f.get("done") or 0, "total": f.get("total") or 0, "tab": "prefs"})
+    try:
+        from fizgig.web import prep_jobs
+        if prep_jobs.busy():
+            jobs.append({"what": "Image Prep", "done": 0, "total": 0, "tab": "prep"})
+    except Exception:
+        pass
+    try:
+        from fizgig.web import tools
+        for kind, tab, what in (("profile", "profiler", "Profiling"), ("extract", "extract", "Extracting")):
+            t = tools.status(kind)
+            if t["state"] == "running":
+                p = t.get("progress") or [0, 0]
+                jobs.append({"what": t.get("text") or what, "done": p[0], "total": p[1], "tab": tab})
+    except Exception:
+        pass
+    if training:
+        loaded.append({"what": "Training", "name": training, "tab": "training"})
+    try:
+        st = studio.status()
+        if st.get("state") in ("loading", "ready"):
+            desc = get_family(st.get("family") or "")
+            loaded.append({"what": "Studio", "name": desc.display_name if desc else st.get("family") or "",
+                           "tab": "studio"})
+    except Exception:
+        pass
+    try:
+        from fizgig.web import helpers
+        w = helpers._worker_state()
+        if w.get("state") in ("loading", "ready", "rendering"):
+            loaded.append({"what": "Previews for another computer", "name": "", "tab": "helpers"})
+    except Exception:
+        pass
+    return {"disk": disk, "jobs": jobs, "loaded": loaded}
+
+
 def append_log(text: str):
     with _lock:
         _log_n[0] += 1
@@ -657,14 +729,16 @@ def _pods_post(what, b):
         update_prefs({"runpod_api_key": ""})
         return {"ok": True, "found": 0}
     key = pod_stop.api_key(p)
-    if what in ("start", "stop"):
+    if what in ("start", "stop", "delete"):
         if not key:
-            raise ValueError("Starting and stopping pods from here needs your RunPod API key (below).")
+            raise ValueError("Starting, stopping and deleting pods from here needs your RunPod API key (below).")
         pid = str(b.get("id") or "")
         if not pods.POD_ID.match(pid):
             raise ValueError("No such pod.")
         if what == "start":
             pods.start(key, pid, int(b.get("gpus") or 1))
+        elif what == "delete":                # the Pods tab's Delete pod, after its own confirm in the row
+            pods.terminate(key, pid)
         else:
             pods.stop(key, pid)
         return {"ok": True}
@@ -1006,10 +1080,11 @@ def _plan(family_key, values, image_folder, resume="", ft_continue=None, models=
         vram_reclaim={k: prefs.get(k, d) for k, d in launch.RECLAIM_PREF_DEFAULTS.items()},
         captioner=captioner if captioner and os.path.isfile(captioner) else "",
         caption_overrides=dict(raw_ovr) if isinstance(raw_ovr, dict) else {},
-        recaption_with=recaption_with(captioner if captioner and os.path.isfile(captioner) else ""))
+        recaption_with=recaption_with(captioner if captioner and os.path.isfile(captioner) else ""),
+        caption_concept=str((load_state().get("captions") or {}).get("concept") or ""))
     # auto-recaption's trigger word per folder: a sub-folder's or another subject's own (the Captions tab's for it, else
     # the word its captions open with), never the training folder's
-    trig = {f"{rel}/": subject_trigger(f, ext) for rel, f in launch.run_subfolders(desc, inputs)}
+    trig = {launch.item_prefix(rel): subject_trigger(f, ext) for rel, f in launch.run_subfolders(desc, inputs)}
     if inputs.get("multiconcept"):
         trig.update({f"s{i}:": str(values.get(f"DOP_FOLDER_TRIGGER{i}") or "")
                      for i, f in enumerate(inputs.get("extra_folders") or [], start=2) if f})
@@ -1251,7 +1326,20 @@ def dataset_zip(folder, captions_only, ext) -> str:
         os.path.splitext(e.name)[1].lower() in MEDIA or re.fullmatch(r"fizgig_\w+\.json", e.name)))]
     if not keep:
         raise ValueError(f"No {ext} captions in that folder." if captions_only else "That folder is empty.")
-    return _zip_file("dataset_", [(e.path, e.name) for e in sorted(keep, key=lambda e: e.name)])
+    files = [(e.path, e.name) for e in sorted(keep, key=lambda e: e.name)]
+    from fizgig.dataset import detail_crops
+    if detail_crops.is_on(folder):                # its detail crops, in their folders (an upload puts them back there)
+        m = os.path.join(folder, detail_crops.MASTERS)    # and its detail_masters/ (Train on the crops only): their source
+        if os.path.isdir(m):
+            files += [(e.path, f"{detail_crops.MASTERS}/{e.name}") for e in sorted(os.scandir(m), key=lambda e: e.name)
+                      if e.is_file() and (e.name.lower().endswith(ext) or (not captions_only and
+                                                                           os.path.splitext(e.name)[1].lower() in MEDIA))]
+        for _label, d in detail_crops.sizes(folder):
+            sub = f"{detail_crops.DIR}/{os.path.basename(d)}/"
+            files += [(e.path, sub + e.name) for e in sorted(os.scandir(d), key=lambda e: e.name) if e.is_file()
+                      and (e.name.lower().endswith(ext) or (not captions_only and os.path.splitext(e.name)[1].lower()
+                                                            in MEDIA))]
+    return _zip_file("dataset_", files)
 
 
 def samples_zip(folder, name) -> str:
@@ -1594,6 +1682,9 @@ def _start_one(family_key, values, image_folder, resume, ft_continue, note, mode
         studio.stop_worker()
     if captions.status()["state"] in ("loading", "running", "translating"):
         return {"error": "Captions are being made (Captions tab). Stop that first, then start the run."}
+    from fizgig.web import tools
+    if tools.holding_gpu():                     # a profile part-way: refused like captions, not thrown away
+        return {"error": "The Profiler is rendering on the GPU. Wait for it, or Stop it, then start the run."}
     captions.unload()                                     # the run gets the GPU memory the caption model held
     from fizgig.web import helpers
     helpers.share_stop_all()       # this computer's own run comes first: a share it trains for another stops there
@@ -1724,7 +1815,7 @@ def _progress_dict(upd):
     return {"epoch": upd.get("epoch"), "total_epochs": upd.get("total_epochs"), "step": step, "total_steps": total,
             "speed": upd.get("speed_text") or "", "loss": upd.get("average_loss_text") or "",
             "eta": upd.get("eta_text") or "", "percent": 100.0 * min(step, total) / total if total else 0.0,
-            "note": ""}
+            "note": "", "lr": upd.get("lr_text") or "", "grad_norm": upd.get("grad_norm_text") or ""}
 
 
 def _run_stages(stages, out_dir):
@@ -1735,6 +1826,8 @@ def _run_stages(stages, out_dir):
         _run["progress"] = None
         tracker = TrainingProgressTracker((_run.get("values") or {}).get("MAX_TRAIN_EPOCHS", 1))
         _run["started_at"] = time.time()
+        _run["training_at"] = None             # the Training stage's start (the run summary's Training time)
+        _stats["vram_peak"] = 0                # this run's peak, not the server's
     for stage in stages:
         with _lock:
             if _run["state"] == "stopped":
@@ -1742,6 +1835,8 @@ def _run_stages(stages, out_dir):
                 webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
                 return
             _run["stage"] = stage.name
+            if stage.name == "Training" and not _run.get("training_at"):
+                _run["training_at"] = time.time()
             if str((_run.get("progress") or {}).get("note") or "").startswith("Caching"):
                 _run["progress"] = None          # the last stage's cache count isn't this stage's
         append_log(f"\n▶ {stage.name}\n")
@@ -2212,7 +2307,12 @@ def _thumb(path, size=320):
                 im = upright(im)
                 im.thumbnail((size, size))
                 buf = io.BytesIO()
-                im.convert("RGB").save(buf, "JPEG", quality=82)
+                if im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info:
+                    im = im.convert("RGBA")
+                    if im.getextrema()[3][0] < 255:
+                        im.save(buf, "PNG")     # see-through: a PNG keeps it (the page puts it on a checkerboard)
+                if not buf.tell():
+                    im.convert("RGB").save(buf, "JPEG", quality=82)
         data = buf.getvalue()
     except Exception:
         return None
@@ -2390,6 +2490,18 @@ def list_datasets() -> dict:
         # its sub-folders' pictures: trained on only with the Start tab's Include sub-folders
         subs = launch.subfolders(path) if any(e.is_dir() and not e.name.startswith(".") for e in entries) else []
         sub_items = sum(launch._media_count(f) for _r, f in subs)
+        if not thumbs and not waves and subs:   # every picture in sub-folders: the tile shows theirs, one per folder first
+            per = []
+            for _r, f in subs[:8]:
+                try:
+                    es = list(os.scandir(f))
+                except OSError:
+                    continue
+                ns = {e.name for e in es}
+                per.append([e.path for e in es if e.is_file() and os.path.splitext(e.name)[1].lower() in _PIC
+                            and not is_mask_file(e.name) and _settled(e, ns)][:4])
+            for i in range(4):
+                thumbs += [ps[i] for ps in per if len(ps) > i][:4 - len(thumbs)]
         if pics + clips + songs + sub_items:
             out.append({"name": name, "path": path, "pictures": pics, "clips": clips, "songs": songs,
                         "captioned": captioned, "time": newest, "thumbs": thumbs or waves, "elsewhere": elsewhere,
@@ -2514,12 +2626,21 @@ def _finish_upload(name, ext, dest, tmp, single):
                     except ValueError:
                         badname.append(base)
                         continue
-                    if base in saved or os.path.exists(os.path.join(dest, base)):
-                        replaced.append(base)
-                    with z.open(info) as src, open(os.path.join(dest, base), "wb") as out:
+                    # a detail crop goes back in its folder (fizgig_detail_crops/<size>/): it shares its picture's name
+                    parts, into, key = info.filename.replace("\\", "/").split("/"), dest, base
+                    if len(parts) >= 3 and parts[-3] == "fizgig_detail_crops" and re.fullmatch(r"\d+(\.\d+)?mp",
+                                                                                               parts[-2]):
+                        into, key = os.path.join(dest, parts[-3], parts[-2]), "/".join(parts[-3:-1] + [base])
+                        os.makedirs(into, exist_ok=True)
+                    elif len(parts) >= 2 and parts[-2] == "detail_masters":   # Train on the crops only: the pictures kept
+                        into, key = os.path.join(dest, "detail_masters"), "detail_masters/" + base
+                        os.makedirs(into, exist_ok=True)
+                    if key in saved or os.path.exists(os.path.join(into, base)):
+                        replaced.append(key)
+                    with z.open(info) as src, open(os.path.join(into, base), "wb") as out:
                         while chunk := src.read(1 << 20):
                             out.write(chunk)
-                    saved.append(base)
+                    saved.append(key)
         except zipfile.BadZipFile:
             raise ValueError(f"{name}: not a readable zip.")
         finally:
@@ -2535,12 +2656,42 @@ def _finish_upload(name, ext, dest, tmp, single):
 
 
 # ---- model downloads: the desktop's "Download models for me" (fizgig.scripts.fetch_models) ----------------------
-_fetch = {"proc": None, "state": "idle", "family": "", "file": "", "done": 0, "total": 0, "lines": []}
+_fetch = {"proc": None, "state": "idle", "family": "", "file": "", "done": 0, "total": 0, "lines": [],
+          "then_start": None}           # (family, values, image folder): Start pressed before the model was here
+
+
+def _only_downloads(desc, problems):
+    """True when everything stopping a Start is this model's files not downloaded yet, all of which Download models
+    for me fetches."""
+    labels = [f.label for f in desc.model_files if f.repo and f.path]
+    return bool(problems) and all(any(p.startswith((f"{lab} path is empty", f"{lab} file does not exist"))
+                                      for lab in labels) for p in problems)
+
+
+def _fetch_then_start(desc, family, values, image_folder, problems):
+    """Start pressed on a model not downloaded yet: Download models for me for it, and the run starts once it's done
+    (the server does both, so it happens with the page closed too)."""
+    with _lock:
+        going = _run["proc"] is not None and _run["proc"].poll() is None or _run["state"] in ("starting", "running")
+    if going:
+        return {"error": "A run is already going. Stop or pause it first."}
+    if any(f.gated and f.repo for f in desc.model_files) and not os.environ.get("HF_TOKEN", "").strip():
+        return {"problems": problems + [f"{desc.display_name}'s files need a Hugging Face token: download them on the "
+                                        "Preferences tab (its Download models for me, with the token box there)."]}
+    try:
+        _start_fetch(desc.key)
+    except ValueError as e:
+        return {"problems": problems + [str(e)]}
+    with _lock:
+        _fetch["then_start"] = (family, values, image_folder)
+    append_log(f"{desc.display_name}'s model files aren't here yet: downloading them, then the run starts.\n")
+    return {"fetching": True, "family": desc.key}
 
 
 def _fetch_status() -> dict:
     with _lock:
-        out = {k: v for k, v in _fetch.items() if k not in ("proc", "lines")}
+        out = {k: v for k, v in _fetch.items() if k not in ("proc", "lines", "then_start")}
+        out["then_start"] = bool(_fetch["then_start"])
         out["lines"] = _fetch["lines"][-40:]
     out["env_token"] = bool(os.environ.get("HF_TOKEN"))
     return out
@@ -2575,7 +2726,7 @@ def _start_fetch(family, token="", optional=False, choices=None):
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
                             encoding="utf-8", errors="replace", env=env, cwd=BASE_DIR, **kw)
     with _lock:
-        _fetch.update(proc=proc, state="running", family=family, file="", done=0, total=0, lines=[])
+        _fetch.update(proc=proc, state="running", family=family, file="", done=0, total=0, lines=[], then_start=None)
     threading.Thread(target=_fetch_watch, args=(proc,), daemon=True).start()
 
 
@@ -2655,6 +2806,16 @@ def _fetch_watch(proc):
     with _lock:
         if _fetch["state"] == "running":
             _fetch["state"] = "done" if code == 0 else "failed"
+        then, _fetch["then_start"] = _fetch["then_start"], None
+        ok = _fetch["state"] == "done"
+    if then and ok:                       # Start was pressed before the model was here: the run starts now
+        r = _start(*then)
+        if not r.get("ok"):
+            append_log("The download finished but the run didn't start: "
+                       + "; ".join(r.get("problems") or [r.get("error") or "?"]) + "\n")
+    elif then:
+        append_log("The model download didn't finish, so the run didn't start: see Preferences, where pressing "
+                   "Download models for me again carries on.\n")
 
 
 def captioner_for(prefs) -> str:
@@ -2899,6 +3060,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/schema":
             return self.json({**get_schema(ref_dit_set=bool(pref_path(load_prefs(), "minimax_ref_dit"))),
                               "logged_in": True, "outdated": _code_stamp() > _STARTED_CODE + 1})
+        if path == "/api/pod/files_login":          # the sidebar pill: the file manager's login, for whoever is in
+            from fizgig.web import pod_stop
+            fm, pw = pod_stop.file_manager(), self.password or ""
+            if not fm or fm["login"] == "none" or not pw:
+                return self.json({"user": "admin", "password": None, "login": (fm or {}).get("login")})
+            return self.json({"user": "admin", "login": fm["login"],
+                              "password": pw.ljust(12, "0") if fm["login"] == "padded" else pw})
         if path == "/api/prefs":
             from fizgig.web import pod_stop
             p = load_prefs()
@@ -3211,7 +3379,8 @@ class Handler(BaseHTTPRequestHandler):
                 mp, train = 1.0, None
             face, find = _prep.migrate_target(g("face"), g("find"))   # an older build's "YOLO class: penis": Other…
             find = ", ".join(sammask_words(find)) if _prep.is_other(face) else ""
-            r = _prep.summary(folder, g("mode", _prep.MODES[0]), g("replace") == "1", mp, train, find)
+            r = _prep.summary(folder, g("mode", _prep.MODES[0]), g("replace") == "1", mp, train, find,
+                              g("crops_only") == "1")
             try:
                 names = os.listdir(folder)
             except OSError:
@@ -3327,7 +3496,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.json({"state": pods.probe(pods.parse(url)["url"])})
         if path == "/api/stats":
             with _lock:
-                return self.json(dict(_stats))
+                out = dict(_stats)
+            out.update(_side_extras())
+            return self.json(out)
         if path == "/api/run":
             with _lock:
                 r = {k: v for k, v in _run.items() if k != "proc"}
@@ -3348,6 +3519,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._browse((qs.get("path") or [""])[0])
         if path == "/api/samples":
             return self._samples((qs.get("dir") or [""])[0], (qs.get("run") or [""])[0])
+        if path == "/api/style":                    # the gallery's Style score (resumes the scorer when on)
+            from fizgig.web import gallery_style
+            return self.json(gallery_style.state((qs.get("dir") or [""])[0], (qs.get("dataset") or [""])[0]))
         if path == "/api/likeness":                 # the gallery's likeness scores (resumes the scorer)
             from fizgig.web import gallery_likeness
             return self.json(gallery_likeness.state((qs.get("dir") or [""])[0], (qs.get("dataset") or [""])[0],
@@ -3359,7 +3533,8 @@ class Handler(BaseHTTPRequestHandler):
             data = _thumb(p)
             if data is None:
                 return self._stream(p, attachment=False)
-            return self._send(200, data, "image/jpeg", extra=[("Cache-Control", "private, max-age=3600")])
+            return self._send(200, data, "image/png" if data[:4] == b"\x89PNG" else "image/jpeg",
+                              extra=[("Cache-Control", "private, max-age=3600")])
         if path == "/api/media":
             p = (qs.get("path") or [""])[0]
             if os.path.splitext(p)[1].lower() not in MEDIA or not os.path.isfile(p):
@@ -3505,9 +3680,28 @@ class Handler(BaseHTTPRequestHandler):
             mode = None
         newest = by_epoch[max(by_epoch, key=int)] if by_epoch else None
         return self.json({"items": out[:1000] if run else out[:300], "runs": runs, "epoch_prompts": by_epoch,
+                          "loras": self._epoch_loras(os.path.dirname(folder.rstrip("\\/")), run, infos) if run else {},
                           "preview_mode": mode if isinstance(mode, dict) else None,
                           "preview_labels": preview_labels(mode),
                           "prompts": newest or (run_prompts(os.path.dirname(folder.rstrip("\\/")), run) if run else [])})
+
+    @staticmethod
+    def _epoch_loras(out_dir, run, infos):
+        """{epoch: the LoRA file saved at it} for a run's previews: <run>-NNNNNN.safetensors, and the run's final
+        <run>.safetensors for its last previewed epoch when that one has no numbered file (fine-tunes left out)."""
+        found = {}
+        try:
+            for e in os.scandir(out_dir):
+                m = _CKPT.match(e.name[:-len(".safetensors")]) if e.name.lower().endswith(".safetensors") else None
+                if m and m.group(1) == run and m.group(2):
+                    found[int(m.group(2))] = e.path
+        except OSError:
+            return {}
+        epochs = [i["epoch"] for i in infos.values() if i and i.get("run") == run and i.get("epoch") is not None]
+        final = os.path.join(out_dir, run + ".safetensors")
+        if epochs and max(epochs) not in found and os.path.isfile(final):
+            found[max(epochs)] = final
+        return {str(k): p for k, p in found.items() if _checkpoint_kind(p) != "finetune"}
 
     def _checkpoints(self, folder):
         """The run's saved LoRAs / checkpoints in its output folder, newest first."""
@@ -3515,13 +3709,18 @@ class Handler(BaseHTTPRequestHandler):
             items = [e for e in os.scandir(folder) if e.is_file() and e.name.lower().endswith(".safetensors")]
         except OSError:
             return self.json({"items": []})
-        now = time.time()
-        items = [e for e in items if now - e.stat().st_mtime > 5]       # not one still being written
-        items.sort(key=lambda e: e.stat().st_mtime, reverse=True)
+        now, stats = time.time(), []
+        for e in items:
+            try:                                 # one deleted while this reads (a run moved away clears its files)
+                st = e.stat()
+            except OSError:
+                continue
+            if now - st.st_mtime > 5:            # not one still being written
+                stats.append((e, st))
+        stats.sort(key=lambda x: x[1].st_mtime, reverse=True)
         base = lambda n: (lambda m: m.group(1) if m else n)(_CKPT.match(n[:-len(".safetensors")]))
-        return self.json({"items": [{"name": e.name, "path": e.path, "size": e.stat().st_size,
-                                     "time": e.stat().st_mtime, "kind": _checkpoint_kind(e.path),
-                                     "run": base(e.name)} for e in items]})
+        return self.json({"items": [{"name": e.name, "path": e.path, "size": st.st_size, "time": st.st_mtime,
+                                     "kind": _checkpoint_kind(e.path), "run": base(e.name)} for e, st in stats]})
 
     def _captions(self, folder, ext, family="", subs=False, skip=()):
         """The folder's items with their captions. subs: the training sub-folders too (Include sub-folders: the
@@ -3554,7 +3753,32 @@ class Handler(BaseHTTPRequestHandler):
                 mask = mask_for_stem(d, stem, lower)        # masked training: the picture's mask, shown on its row
                 out.append((f"{rel}/{n}" if rel else n, p, {"caption": text, "size": _media_size(p),
                             **({"sub": rel} if rel else {}), **({"mask": os.path.basename(mask)} if mask else {})}))
-        return self.json({"items": pair_songs(out)})
+        items = pair_songs(out)
+        from fizgig.dataset import detail_crops
+        big = detail_crops.largest(folder)           # its detail crops, after the pictures: the largest size
+        if big:
+            crops = self._caption_items(big, sorted(os.listdir(big)), ext, family)
+            items += [{**it, "crop": os.path.basename(big)} for it in crops]
+        return self.json({"items": items})
+
+    def _caption_items(self, folder, names, ext, family):
+        out = []
+        keep = _caption_media_filter(names, family)
+        lower = {n.lower(): n for n in names}
+        for n in names:
+            stem, e = os.path.splitext(n)
+            if e.lower() not in MEDIA or not keep(n) or is_mask_file(n):
+                continue
+            cap = os.path.join(folder, stem + ext)
+            try:
+                text = captions.read_text(cap)          # any encoding: one odd file never empties the list (#225)
+            except OSError:
+                text = None
+            p = os.path.join(folder, n)
+            mask = mask_for_stem(folder, stem, lower)        # masked training: the picture's mask, shown on its row
+            out.append((n, p, {"caption": text, "size": _media_size(p),
+                               **({"mask": os.path.basename(mask)} if mask else {})}))
+        return pair_songs(out)
 
     # -- POST
     def do_POST(self):
@@ -3712,9 +3936,9 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/api/helper/share_start":
                     return self.json(helpers.share_start(b))
                 if path == "/api/helpers/move":           # this computer's run: carry on training on a helper
-                    return self.json(helpers.move_start(str(b.get("id") or ""), bool(b.get("now"))))
+                    return self.json(helpers.move_start(str(b.get("id") or ""), bool(b.get("now")), b.get("home", True) is not False))
                 if path == "/api/helpers/move_back":      # a run moved to a helper: back here, to carry on training
-                    return self.json(helpers.move_back(bool(b.get("now"))))
+                    return self.json(helpers.move_back(bool(b.get("now")), bool(b.get("delete"))))
                 if path == "/api/helpers/move_clear":
                     return self.json(helpers.move_clear(bool(b.get("here"))))
                 if path == "/api/helper/move_in":         # a run moving here from another computer
@@ -3968,9 +4192,25 @@ class Handler(BaseHTTPRequestHandler):
                     warn += [w] if w else []
                 return self.json({"problems": plan.problems, "warnings": warn, "stages": [{"name": s.name, "cmd": s.cmd}
                                                                          for s in plan.stages],
-                                  "dataset_toml": plan.dataset_toml})
+                                  "dataset_toml": plan.dataset_toml,
+                                  "warnings": launch.start_checks(desc, inputs, b.get("image_folder") or "")
+                                  if desc is not None and not plan.problems else []})
             if path == "/api/start":
-                return self.json(_start(b.get("family", ""), b.get("values") or {}, b.get("image_folder") or ""))
+                fam, vals, folder = b.get("family", ""), b.get("values") or {}, b.get("image_folder") or ""
+                if not b.get("anyway"):          # the Start checks first: warnings come back, nothing starts
+                    desc, inputs, plan = _plan(fam, vals, folder)
+                    fetch = desc is not None and _only_downloads(desc, plan.problems)
+                    warn = launch.start_checks(desc, inputs, folder) \
+                        if desc is not None and (not plan.problems or fetch) else []
+                    if warn:
+                        return self.json({"warnings": warn})
+                    if fetch:
+                        return self.json(_fetch_then_start(desc, fam, vals, folder, plan.problems))
+                r = _start(fam, vals, folder)
+                desc = get_family(fam) if r.get("problems") and fam != refmod.KEY else None
+                if desc is not None and _only_downloads(desc, r["problems"]):
+                    r = _fetch_then_start(desc, fam, vals, folder, r["problems"])
+                return self.json(r)
             if path == "/api/resume":                    # as the desktop's Resume Training
                 with _lock:
                     last = {k: _run.get(k) for k in ("state", "family", "values", "image_folder", "resume",
@@ -4181,8 +4421,9 @@ class Handler(BaseHTTPRequestHandler):
                 cap = captioner_for(prefs)
                 model = str(b.get("model") or "")
                 _caption_gpu_check(8.0 if model == captions.QWEN_MODEL else 2.5)
-                only = [p for p in (b.get("only") or []) if os.path.dirname(os.path.abspath(p)) ==
-                        os.path.abspath(folder)]
+                from fizgig.dataset import detail_crops     # the folder's files, or its largest detail crops
+                inside = {os.path.abspath(f) for f in captions.with_crops(folder)}
+                only = [p for p in (b.get("only") or []) if os.path.dirname(os.path.abspath(p)) in inside]
                 return self.json(captions.ai_captions(
                     prefs, cap if cap and os.path.isfile(cap) else "", folder, model, str(b.get("task") or ""),
                     str(b.get("instruction") or ""), int(b.get("max_tokens") or 120), str(b.get("trigger") or ""),
@@ -4293,6 +4534,13 @@ class Handler(BaseHTTPRequestHandler):
                         b.get("pairs") if b.get("on") else "", ds, sdirs)})
                 except (ValueError, OSError) as e:
                     return self.json({"error": str(e)}, 400)
+            if path == "/api/style":               # the gallery's Style score on or off for a samples folder
+                from fizgig.web import gallery_style
+                try:
+                    return self.json(gallery_style.switch(str(b.get("dir") or ""), str(b.get("dataset") or ""),
+                                                          bool(b.get("on"))))
+                except ValueError as e:
+                    return self.json({"error": str(e)}, 400)
             if path == "/api/likeness":            # three dataset photos to score the samples against; [] clears
                 from fizgig.web import gallery_likeness
                 if b.get("paired") and b.get("baselines"):
@@ -4393,7 +4641,7 @@ class Handler(BaseHTTPRequestHandler):
                                                          b.get("padding") or 20, bool(b.get("replace")),
                                                          str(b.get("find") or ""), b.get("captions"),
                                                          b.get("fitAll") is not False,    # on unless turned off
-                                                         bool(b.get("separate"))))
+                                                         bool(b.get("separate")), bool(b.get("crops_only"))))
                     if path == "/api/look/scan":
                         return self.json(prep_jobs.look_scan(folder, b.get("baselines") or []))
                     if path == "/api/masks/edit/save":
@@ -4475,6 +4723,10 @@ class Handler(BaseHTTPRequestHandler):
                 _, folder, *_ = _caption_args(b)
                 return self.json(captions.find_replace(folder, str(b.get("find") or ""), str(b.get("replace") or ""),
                                                        bool(b.get("apply")), captions.caption_ext(b.get("ext"))))
+            if path == "/api/captions/add":
+                _, folder, *_ = _caption_args(b)
+                return self.json(captions.add_text(folder, b.get("start"), b.get("end"), b.get("trigger"),
+                                                   bool(b.get("apply")), captions.caption_ext(b.get("ext"))))
             if path == "/api/captions/translate":
                 prefs, folder, *_ = _caption_args(b)
                 _caption_gpu_check(1.0)
@@ -4764,6 +5016,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": "bad folder or file"}, 400)
                 with open(os.path.join(folder, stem + ext), "w", encoding="utf-8") as f:
                     f.write(text)
+                from fizgig.dataset import detail_crops
+                if detail_crops.is_crop_dir(folder):        # a detail crop: the same caption at its other sizes
+                    detail_crops.share_captions(detail_crops.root_of(folder), ext)
                 return self.json({"ok": True})
         except ValueError as e:
             return self.json({"error": str(e)}, 400)
@@ -4874,6 +5129,7 @@ def run_server(host, port=None, password=None, password_arg=False, open_browser=
     _restore_pause()                                   # a run paused before the restart can still be resumed
     __import__("fizgig.web.helpers", fromlist=["x"]).ensure_home()   # pods' checkpoints still coming home
     __import__("fizgig.web.helpers", fromlist=["x"]).local_restore()  # this computer's other GPU, as a helper
+    __import__("fizgig.web.helpers", fromlist=["x"]).ensure_auto()    # your RunPod pods, as helpers by themselves
     if os.environ.get("FIZGIG_PARENT_PID"):          # this is that second Fizgig: it goes when the first does
         threading.Thread(target=_follow_first, daemon=True).start()
     if str(load_prefs().get("update_check", "1")) != "0":     # Preferences > Network: Check for new releases

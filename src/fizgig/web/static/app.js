@@ -98,8 +98,12 @@ async function boot() {
   }
   await chooseFamily(st.family && S.schema.order.includes(st.family) ? st.family : S.schema.order[0]);
   showTab("start");                // Fizgig always opens on Start (its News card), never the last tab used
-  // the forms are there: the page is usable. The cover stays at least 3.5 s from the page opening, so its tip can be read
-  setTimeout(() => $("bootCover").classList.add("done"), Math.max(0, 3500 - performance.now()));
+  // the forms are there: the page is usable. The cover stays at least 3.5 s from the page opening, so its tip can be
+  // read - once a window: switching it between this computer and a pod (window.name stays across the switch, whatever
+  // the address) shows the cover only while the page loads
+  const switched = window.name === "fizgig-window";
+  window.name = "fizgig-window";
+  setTimeout(() => $("bootCover").classList.add("done"), switched ? 0 : Math.max(0, 3500 - performance.now()));
   newsCard();
   wire();
   $("podsTabBtn").style.display = S.onPod ? "none" : "";      // on a pod there's nothing to connect to
@@ -229,10 +233,9 @@ function triggerCheckBlock() {
   const d = el("details", {class: "tc-box"},
     el("summary", {text: "Check a trigger word (optional)"}),
     el("div", {class: "field-hint", text:
-      `Fizgig LoRA Isolation joins each subject's trigger word to what the subject is: "zwxem, a woman" trains as one ` +
-      `word, zwxemwoman. Some words join badly: the text encoder splits them so the subject word is no longer whole ` +
-      `(fyxo + woman reads as f | yx | ow | oman), and the LoRA learns that subject less cleanly. This checks a word ` +
-      `with ${name}'s text encoder, the one this LoRA trains with, before you caption.`}),
+      `Checks how a trigger word reads to ${name}'s text encoder, the one this LoRA trains with, before you ` +
+      `caption. Fizgig LoRA Isolation joins it to what the subject is ("zwxem, a woman" trains as zwxemwoman), and ` +
+      `some words join badly: fyxo + woman reads as f | yx | ow | oman, and the LoRA learns that subject less cleanly.`}),
     el("div", {class: "field-row"}, el("span", {class: "field-label", text: "Trigger word to check:"}), word),
     el("div", {class: "field-row"}, el("span", {class: "field-label", text: "The subject is:"}), cls),
     el("div", {class: "field-hint", text: "The word Fizgig joins on: the same trigger can join cleanly with one " +
@@ -270,7 +273,26 @@ function renderSections(tab, host) {
         el("span", {class: "sec-video-text"}, el("b", {text: sec.help.text}),
           el("span", {class: "sec-video-sub", text: sec.help.sub || "Watch on YouTube"}))));
     }
-    for (const r of sec.rows) if (!(r && r.place)) body.append(renderRow(r));     // a placed row is drawn elsewhere
+    // a group's rows (form.py ROW_GROUPS) in one box where its first row is, side by side; their hints behind ?
+    const groups = {};
+    for (const r of sec.rows) {
+      if (r && r.place) continue;                     // a placed row is drawn elsewhere
+      const row = renderRow(r);
+      if (!r || !r.group) { body.append(row); continue; }
+      let g = groups[r.group];
+      if (!g) {
+        const inner = el("div", {class: "form-group-rows"}), help = el("div", {class: "form-group-help"});
+        const q = el("button", {class: "form-group-q", text: "?", title: "What these do",
+          onclick: () => help.classList.toggle("open")});
+        const box = el("div", {class: "form-group", "data-group": r.group},
+          el("div", {class: "form-group-head"}, el("span", {text: r.group_label}), q), inner, help);
+        g = groups[r.group] = {box, inner, help, q};
+        body.append(box);
+      }
+      g.inner.append(row);
+      if (r.hint) g.help.append(el("div", {}, el("b", {text: r.label.replace(/:$/, "") + ": "}), r.hint));
+    }
+    for (const g of Object.values(groups)) if (!g.help.children.length) g.q.remove();
     if (sec.id === "subjects" && !S.family.startsWith("acestep")) body.append(triggerCheckBlock());
     const card = el("div", {class: "section-card", id: "sec-" + sec.id, "data-section": sec.id}, head, body);
     show();
@@ -439,7 +461,8 @@ function renderRow(r) {
     }
     wrap.append(h);
   } else if (r.hint) {                            // a hint of several lines keeps its line breaks
-    const h = el("div", {class: "field-hint", text: r.hint});
+    const h = el("div", {class: "field-hint row-hint", text: r.hint, title: "Click to read it all",
+      onclick: () => h.classList.toggle("open")});
     if (r.hint.includes("\n")) h.style.whiteSpace = "pre-line";
     wrap.append(h);
   }
@@ -901,6 +924,9 @@ async function refreshState() {
   document.querySelectorAll(".form-row[data-key]").forEach((row) => {
     const k = row.dataset.key;
     row.style.display = hidden.has(k) ? "none" : "";
+    const grp = row.closest(".form-group");         // a box shows while any of its rows does
+    if (grp) grp.style.display = [...grp.querySelectorAll(".form-row[data-key]")]
+      .some((x) => !hidden.has(x.dataset.key)) ? "" : "none";
     // a label the state renumbers (the Edit pairs steps when an extra-pictures folder joins), else the form's own
     const lab = row.querySelector(".field-label"), rowDef = (S.fam.form.sections.flatMap((s) => s.rows)
       .find((r) => r && r.key === k));
@@ -1318,6 +1344,28 @@ function paintFetch() {
   const st = S.fetch || {};
   const busy = st.state === "running";
   const gb = (n) => (n / 1024 ** 3).toFixed(1);
+  // Start pressed before the model was downloaded: the Training tab shows the download, and the run starts after it
+  if (busy && st.then_start) S.fetchStart = true;
+  if (S.fetchStart && $("problems")) {
+    const box = $("problems"), name = (S.schema?.families || []).find((f) => f.key === st.family)?.display_name || "The model";
+    box.classList.remove("ok");
+    if (busy && st.then_start) {
+      const pct = st.total ? Math.min(100, (100 * st.done) / st.total) : 0;
+      box.replaceChildren(
+        el("div", {text: `${name}'s model files aren't downloaded yet: downloading them now, then training starts by itself.`}),
+        el("div", {class: "fetch-msg", text: st.file ? `${st.file}: ${gb(st.done)} of ${gb(st.total)} GB` :
+          ((st.lines || []).slice(-1)[0] || "Starting…")}),
+        el("div", {class: "fetch-bar"}, el("div", {style: `width:${pct.toFixed(1)}%`})),
+        el("button", {class: "btn btn-sm", text: "Cancel download",
+          onclick: () => api("/api/fetch/cancel", {}).then(watchFetch)}));
+    } else {
+      S.fetchStart = false;
+      box.replaceChildren(...(st.state === "done" ? [] : [el("div", {text: st.state === "cancelled"
+        ? "Download cancelled, so the run didn't start. Press Start again to carry on downloading."
+        : "Some files didn't download, so the run didn't start. Press Start again to retry just those (Preferences " +
+          "shows what went wrong)."})]));
+    }
+  }
   for (const [key, r] of Object.entries(S.fetchRows || {})) {
     r.btn.disabled = busy;
     r.status.innerHTML = "";
@@ -1719,13 +1767,25 @@ async function check() {
   } catch (e) { showProblems([e.message]); }
 }
 
+// the Start checks' warnings (launch.start_checks): shown with Start anyway, never a block
+function showWarnings(list, body) {
+  const box = $("problems");
+  box.classList.remove("ok");
+  box.replaceChildren(el("div", {text: "Worth a look before you start:\n• " + list.join("\n• ")}),
+    el("div", {class: "field-row"},
+      el("button", {class: "btn btn-primary btn-sm", text: "Start anyway", onclick: () => start("/api/start", {...body, anyway: true})}),
+      el("button", {class: "btn btn-sm", text: "Cancel", onclick: () => box.replaceChildren()})));
+}
+
 async function start(path, body) {
   if (S.starting) return;                  // checking a run takes the server a few seconds: one press is one run
   S.starting = true;
   const btn = path === "/api/start" ? $("btnStart") : null;
   if (btn) { btn.disabled = true; btn.dataset.label = btn.dataset.label || btn.textContent; btn.textContent = "Starting…"; }
   try {
-    const r = await api(path, path === "/api/start" ? runBody() : (body || {}));
+    const r = await api(path, path === "/api/start" ? {...runBody(), ...(body || {})} : (body || {}));
+    if (r.warnings && r.warnings.length) { showWarnings(r.warnings, body || {}); return; }
+    if (r.fetching) { S.fetchStart = true; watchFetch(); return; }    // the model isn't here yet: it downloads first
     showProblems(r.problems || (r.error ? [r.error] : []));    // stays up: the run line below refreshes itself
     // the form went to a run that started: it isn't the queued run being edited any more (Save to queue would have
     // put this run's settings in its place)
@@ -1745,16 +1805,26 @@ async function start(path, body) {
 // a clip family's clip size): then a choice - as it was, or at the new size (the cache is made again first, keeping
 // what still fits). Training at a bigger size for the last epochs, say.
 const SIZE_KEYS = {DATASET_MEGAPIXELS: "Target Megapixels", CLIP_MEGAPIXELS: "Clip Megapixels"};
+// what Resume takes from the form as it is now (server.py _RESUME_SAMPLE_KEYS); the rest trains on as the run began
+const RESUME_KEYS = ["SAMPLE_PROMPT", "SAMPLE_PAIRS", "SAMPLE_PAIRED", "SAMPLE_SEED", "SAMPLE_WIDTH", "SAMPLE_HEIGHT", "SAMPLE_STEPS", "SAMPLE_CFG_SCALE",
+  "FAMILY_TURBO_STRENGTH", "SAMPLE_CHECKPOINT", "BLOCKS_SWAP", "FAMILY_PREVIEW_LOOK",
+  "SAMPLE_EVERY_N_EPOCHS", "SAMPLE_LATER", "SAMPLE_UNTIL_EPOCH", "SAMPLE_EVERY_AFTER",
+  "SAVE_EVERY_N_EPOCHS", "SAVE_LATER", "SAVE_UNTIL_EPOCH", "SAVE_EVERY_AFTER",
+  "LEARNING_RATE", "ADAPTIVE_LR_MIN", "ADAPTIVE_LR_MAX"];
+
+// while this model's run is paused, the rows Resume uses are marked "Applies on Resume"
+function resumeMarks() {
+  const r = S.run || {}, on = r.state === "paused" && r.family === S.family && r.resume_mode !== "ft";
+  const keys = new Set([...RESUME_KEYS, ...Object.keys(SIZE_KEYS)]);
+  document.querySelectorAll(".form-row[data-key]").forEach((row) =>
+    row.classList.toggle("row-resume", on && keys.has(row.dataset.key)));
+}
+
 async function resumeClick() {
   const r = S.run || {}, was = r.values || {}, box = $("resumeChoice");
   // the previews as the Samples tab has them now (prompts, seed, size, steps, CFG, Turbo strength, the preview
   // checkpoint tick), block swap, the save schedule and the learning rate go with the resume
-  const samples = r.family === S.family ? Object.fromEntries(["SAMPLE_PROMPT", "SAMPLE_PAIRS", "SAMPLE_PAIRED", "SAMPLE_SEED", "SAMPLE_WIDTH",
-    "SAMPLE_HEIGHT", "SAMPLE_STEPS", "SAMPLE_CFG_SCALE", "FAMILY_TURBO_STRENGTH", "SAMPLE_CHECKPOINT", "BLOCKS_SWAP",
-    "FAMILY_PREVIEW_LOOK",
-    "SAMPLE_EVERY_N_EPOCHS", "SAMPLE_LATER", "SAMPLE_UNTIL_EPOCH", "SAMPLE_EVERY_AFTER",
-    "SAVE_EVERY_N_EPOCHS", "SAVE_LATER", "SAVE_UNTIL_EPOCH", "SAVE_EVERY_AFTER",
-    "LEARNING_RATE", "ADAPTIVE_LR_MIN", "ADAPTIVE_LR_MAX"]
+  const samples = r.family === S.family ? Object.fromEntries(RESUME_KEYS
     .filter((k) => k in S.values).map((k) => [k, S.values[k]])) : {};
   const diff = r.family === S.family ? Object.keys(SIZE_KEYS).filter((k) => S.values[k] !== undefined &&
     String(S.values[k]).trim() !== "" && Number(S.values[k]) !== Number(was[k])) : [];
@@ -1781,6 +1851,12 @@ const RUN_LABELS = {idle: "Idle", starting: "Starting", running: "Running", paus
 
 async function pollRun() {
   try { S.run = await api("/api/run"); } catch (e) { return; }
+  resumeMarks();
+  runSummary();
+  if (training() !== S.wasTraining) {             // the LoRA lists' Studio buttons show only between runs
+    if (S.wasTraining !== undefined && $("tab-training").classList.contains("active")) loadCheckpoints();
+    S.wasTraining = training();
+  }
   const ps = S.run.pod_stop || {};
   $("podStopBar").style.display = ps.counting || ps.note ? "" : "none";
   $("podStopKeep").textContent = ps.counting ? "Keep the pod running" : "OK";      // a result note: dismissed
@@ -1911,13 +1987,22 @@ function moveDraw(mv) {
         `Training on ${mv.to}` + (rm.epoch ? `: epoch ${rm.epoch} of ${rm.epochs}` : rm.stage ? `: ${rm.stage}` : "") +
         (rm.eta ? ` · ${rm.eta} left` : "") : `On ${mv.to}.`;
     if (mv.error) say += ` (${mv.error})`;
+    if (mv.home_text) say += ` Coming home as they're saved: ${mv.home_text}.`;
+    if (S.moveDelete === undefined) S.moveDelete = true;
+    const del = () => !!(mv.pod && S.moveDelete);
     kids.push(el("button", {class: "btn btn-sm btn-primary", text: rm.state === "completed" ? "Bring its LoRAs here" : "Bring it back",
       title: "Paused there at the end of its epoch, its new checkpoints, previews and saved state brought here, and it carries on here",
-      onclick: go("/api/helpers/move_back", {now: false})}));
+      onclick: () => go("/api/helpers/move_back", {now: false, delete: del()})()}));
     if (rm.state === "running") kids.push(el("button", {class: "btn btn-sm", text: "Bring it back now",
       title: "Stopped there now and brought back from its last save (the epochs since it are trained again here)",
-      onclick: go("/api/helpers/move_back", {now: true})}));
-    if (mv.url) kids.push(el("a", {class: "btn btn-sm", href: mv.url, target: "_blank", rel: "noopener", text: `Open ${mv.to}`}));
+      onclick: () => go("/api/helpers/move_back", {now: true, delete: del()})()}));
+    if (mv.pod) kids.push(el("label", {class: "checkbox-label", title: "Once the run and everything it made are here, the " +
+      "pod is deleted on RunPod, so it stops billing. Untick it to keep the pod (its files stay on it)."},
+      el("input", {type: "checkbox", ...(S.moveDelete ? {checked: true} : {}),
+        onchange: (e) => { S.moveDelete = e.target.checked; }}), ` Delete the pod once it's all here`));
+    // as the Pods tab's Open: in the app window it switches over there (a pod logs you in); in a browser, a new tab
+    if (mv.url) kids.push(el("button", {class: "btn btn-sm", text: inApp() ? `Open ${mv.to}` : `Open ${mv.to} ↗`,
+      onclick: () => podOpen({url: mv.url, name: mv.to})}));
     if (["away", "login", "gone", "failed", "stopped"].includes(rm.state) || mv.error)
       kids.push(el("button", {class: "btn btn-sm", text: "Carry on here",
         title: `For a ${mv.to} that won't come back (a pod deleted): carries on here from this computer's last save - ` +
@@ -1949,9 +2034,10 @@ async function moveOpen() {
   }
   const pick = el("select", {class: "w-combo"}, ...ready.map((h) => el("option", {value: h.id,
     text: `${h.name}${h.gpu ? ` (${h.gpu}${h.vram ? `, ${h.vram} GB` : ""})` : ""}`})));
+  const home = el("input", {type: "checkbox", checked: true});
   const send = (now) => async () => {
     try {
-      await api("/api/helpers/move", {id: pick.value, now});
+      await api("/api/helpers/move", {id: pick.value, now, home: home.checked});
       S.moveOpen = false;
     } catch (e) { showProblems([e.message]); }
     pollRun();
@@ -1967,7 +2053,10 @@ async function moveOpen() {
       ...(running ? [el("button", {class: "btn btn-sm", text: "Now",
         title: "Stopped now and moved from its last save (the epochs since it are trained again there)",
         onclick: send(true)})] : []),
-      el("button", {class: "btn btn-sm", text: "Cancel", onclick: close})));
+      el("button", {class: "btn btn-sm", text: "Cancel", onclick: close})),
+    el("label", {class: "checkbox-label", title: "Each checkpoint and preview comes back to this run's folder here as " +
+      "it's saved there, one after another (a slow link just queues them), so bringing the run back only has the " +
+      "last few to fetch."}, home, " Bring its checkpoints and previews back here as they're saved"));
 }
 
 // ---- a prompt slider's live prompts: edited here while it trains, taken by the trainer at its next epoch boundary
@@ -2185,6 +2274,7 @@ function followLog() {
 async function pollStats() {
   let s;
   try { s = await api("/api/stats"); } catch (e) { return; }     // the server restarts
+  S.stats = s;
   const gb = (b) => (b / 2 ** 30).toFixed(1);
   const meter = (label, value, frac, warn) => el("div", {class: "meter" + (warn ? " warn" : "")},
     el("div", {class: "meter-head"}, el("span", {text: label}), el("span", {text: value})),
@@ -2198,6 +2288,114 @@ async function pollStats() {
     s.vram[1] && s.vram[0] / s.vram[1] > 0.95));
   host.append(meter("RAM", `${gb(s.ram[0])} / ${gb(s.ram[1])} GB`, s.ram[1] ? s.ram[0] / s.ram[1] : 0,
     s.ram[1] && s.ram[0] / s.ram[1] > 0.95));
+  // the drive LoRAs go to: checkpoints and saved states fill it fast (red under 5% or 20 GB free)
+  const d = s.disk;
+  if (d && d.total) {
+    const free = d.free >= 2 ** 40 ? `${(d.free / 2 ** 40).toFixed(1)} TB free` : `${gb(d.free)} GB free`;
+    const m = meter("Disk" + (d.where && d.where !== "/" ? ` ${d.where}` : ""), free,
+      d.used / d.total, d.free < Math.max(20 * 2 ** 30, d.total * 0.05));
+    if (d.path) m.title = `LoRAs save to ${d.path}` + (S.onPod ? ". On a pod this is what the drive reports: a " +
+      "network volume reports the whole shared storage, so the free space shown may be far more than your " +
+      "volume's own size" : "");
+    host.append(m);
+  }
+  // what's loaded on the GPU now, each a click to its tab
+  for (const m of s.loaded || []) host.append(el("div", {class: "side-loaded", title: `Open the ${m.tab} tab`,
+    onclick: () => showTab(m.tab)}, el("span", {class: "side-loaded-dot"}),
+    el("span", {class: "side-loaded-text", text: m.what + (m.name ? `: ${m.name}` : "")})));
+  // jobs going in the background, wherever you are
+  for (const j of s.jobs || []) {
+    const frac = j.total ? j.done / j.total : 0;
+    const count = !j.total ? "" : j.total > 2 ** 20 ? `${Math.round(100 * frac)}%` : `${j.done} of ${j.total}`;
+    const m = meter(j.what, count, frac, false);
+    m.classList.add("side-job");
+    if (!j.total) m.classList.add("indeterminate");
+    m.title = `Open the ${j.tab} tab`;
+    m.addEventListener("click", () => showTab(j.tab));
+    host.append(m);
+  }
+}
+
+// ---- the Training tab's Run summary: time, learning and the run's own setup (its values, not the form's)
+function runSummary() {
+  const box = $("runSummary"), r = S.run || {};
+  if (!r.lora || !r.values || r.stage === undefined && !r.started_at) { box.style.display = "none"; return; }
+  const v = r.values, p = r.progress || {}, s = S.stats || {};
+  const live = r.running || ["starting", "running", "pausing"].includes(r.state);
+  const dur = (sec) => { sec = Math.max(0, Math.round(sec)); const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60);
+    return h ? `${h}h ${m}m` : `${m}m ${sec % 60}s`; };
+  const end = live ? Date.now() / 1000 : (r.ended_at && r.ended_at > r.started_at ? r.ended_at : null);
+  const cell = (k, val) => el("div", {class: "rs-cell"}, el("span", {class: "rs-key", text: k}),
+    el("span", {class: "rs-val", text: val == null || val === "" ? "-" : String(val)}));
+  const sec = (title, cells, extra) => {
+    const open = !(S.rsShut || {})[title];
+    const head = el("div", {class: "rs-head"}, el("span", {text: title}), ...(extra ? [extra] : []),
+      el("button", {class: "rs-fold", text: open ? "⌃" : "⌄", title: open ? "Fold" : "Open", onclick: () => {
+        S.rsShut = {...(S.rsShut || {}), [title]: open}; runSummary(); }}));
+    return el("div", {class: "rs-section"}, head, open ? el("div", {class: "rs-grid"}, ...cells.filter(Boolean)) : null);
+  };
+  const gb = (b) => b ? `${(b / 2 ** 30).toFixed(1)} GB` : "";
+  const time = sec("Time", [
+    cell("Training", r.training_at && end ? dur(end - r.training_at) : ""),
+    cell("Total", r.started_at && end ? dur(end - r.started_at) : ""),
+    cell("Speed", p.speed), cell("Epoch", p.epoch ? `${p.epoch} of ${p.total_epochs}` : ""),
+    cell("Peak VRAM", live ? gb(s.vram_peak) : ""), cell(live ? "Time left" : "Steps",
+      live ? p.eta : (p.total_steps ? `${p.step} of ${p.total_steps}` : "")),
+  ]);
+  const lk = S.likeSummary;
+  const learning = sec("Learning", [
+    cell("Learning rate", p.lr), cell("Grad norm", p.grad_norm), cell("Loss", p.loss),
+    lk ? cell("Likeness", `${Math.round(lk.now * 100)}% (epoch ${lk.epoch})` +
+      (lk.bestEpoch !== lk.epoch ? ` · best ${Math.round(lk.best * 100)}% at ${lk.bestEpoch}` : "")) : null,
+  ]);
+  const fam = (S.schema.families.find((f) => f.key === r.family) || {}).display_name || r.family;
+  const yes = (k) => v[k] === true || v[k] === "1" || v[k] === "true";
+  const first = (x) => String(x == null ? "" : x).split(" (")[0];
+  const net = [String(v.NETWORK_TYPE || "LoRA").split(" ")[0], v.NETWORK_DIM ? `rank ${v.NETWORK_DIM}` : "",
+    v.NETWORK_ALPHA && v.NETWORK_ALPHA !== v.NETWORK_DIM ? `alpha ${v.NETWORK_ALPHA}` : "",
+    yes("MASKED_TRAINING") ? "masked" : "", v.FAMILY_EMA && !/^off/i.test(v.FAMILY_EMA) ? `EMA ${first(v.FAMILY_EMA)}` : "",
+    v.CAPTION_DROPOUT && !/^off/i.test(v.CAPTION_DROPOUT) ? `caption dropout ${first(v.CAPTION_DROPOUT)}` : ""];
+  const spec = el("button", {class: "rs-spec", text: S.rsSpec ? "Hide full spec" : "{ } Full spec",
+    title: "Every setting this run started with", onclick: () => { S.rsSpec = !S.rsSpec; runSummary(); }});
+  const setup = sec("Setup", [
+    cell("Model", fam + (v.FAMILY_PRECISION ? ` · ${first(v.FAMILY_PRECISION)}` : "")),
+    cell("Dataset", String(r.image_folder || "").split(/[\\/]/).filter(Boolean).pop()),
+    cell("Training", [v.MAX_TRAIN_EPOCHS ? `${v.MAX_TRAIN_EPOCHS} epochs` : "", p.total_steps ? `${p.total_steps} steps` : "",
+      "batch 1", v.DATASET_MEGAPIXELS ? `${v.DATASET_MEGAPIXELS} MP` : "",
+      v.STAGE_MP && v.STAGE_MP !== "Off" ? `${v.STAGE_MP} MP for the first ${v.STAGE_UNTIL || "30%"}` : ""].filter(Boolean).join(" · ")),
+    cell("Optimizer", [v.OPTIMIZER_TYPE, yes("ADAPTIVE_LR") ? `Adaptive LR ${v.ADAPTIVE_LR_MIN} to ${v.ADAPTIVE_LR_MAX}` :
+      v.LEARNING_RATE ? `from ${v.LEARNING_RATE}` : ""].filter(Boolean).join(" · ")),
+    cell("Network", net.filter(Boolean).join(" · ")),
+    cell("Memory", [v.BLOCKS_SWAP ? `block swap ${first(v.BLOCKS_SWAP)}` : "",
+      v.GRADIENT_ACCUMULATION && String(v.GRADIENT_ACCUMULATION) !== "1" ? `accumulation ${v.GRADIENT_ACCUMULATION}` : ""]
+      .filter(Boolean).join(" · ")),
+  ], spec);
+  const full = S.rsSpec ? el("pre", {class: "rs-full", text: Object.keys(v).sort()
+    .filter((k) => v[k] !== "" && v[k] != null && !k.startsWith("_"))
+    .map((k) => `${k} = ${typeof v[k] === "object" ? JSON.stringify(v[k]) : v[k]}`).join("\n")}) : null;
+  box.replaceChildren(el("div", {class: "card-title"}, el("span", {text: `Run summary: ${r.lora}`})),
+    el("div", {class: "card-content rs-body"}, time, learning, setup, ...(full ? [full] : [])));
+  box.style.display = "";
+}
+
+// the sidebar run card's loss line: the run card's own loss, smoothed, about 60 points
+function sideSpark(d) {
+  const box = $("sideRunSpark");
+  if (!box) return;
+  const pts = (d && d.points || []).map((p) => p[2]).filter((v) => isFinite(v));
+  if (pts.length < 3) { box.replaceChildren(); box.style.display = "none"; return; }
+  const sm = [];
+  pts.forEach((v, i) => sm.push(i ? sm[i - 1] * 0.95 + v * 0.05 : v));
+  const step = Math.max(1, Math.floor(sm.length / 60)), ys = sm.filter((_v, i) => i % step === 0);
+  const lo = Math.min(...ys), hi = Math.max(...ys), span = hi - lo || 1;
+  const path = ys.map((v, i) => `${i ? "L" : "M"}${(100 * i / (ys.length - 1)).toFixed(1)},${(22 - 20 * (v - lo) / span).toFixed(1)}`).join(" ");
+  const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg"), p = document.createElementNS(ns, "path");
+  svg.setAttribute("viewBox", "0 0 100 24"); svg.setAttribute("preserveAspectRatio", "none");
+  p.setAttribute("d", path);
+  svg.append(p);
+  box.replaceChildren(svg);
+  box.style.display = "";
+  box.title = `Loss, smoothed: ${ys[ys.length - 1].toFixed(4)} now`;
 }
 
 // the run's figures (the same from a web run and from a desktop run): the bar, the tiles, the sidebar
@@ -2242,7 +2440,7 @@ function previewFigure(it, prompts, eager, byEpoch) {
     (own && own[it.idx]) || (prompts ? prompts[it.idx] : "");
   return withMode(el("figure", {class: "gallery-item", title: it.name}, mediaFor(it, eager && eager.has(it)),
     el("figcaption", {}, el("b", {text: previewLabel(it)}), prompt ? el("span", {class: "preview-prompt", text: prompt, title: prompt}) : null,
-      el("span", {class: "preview-file", text: it.name}))), it);
+      el("span", {class: "preview-file", text: it.name}), it.lora ? studioButton(it.lora, it.family) : null)), it);
 }
 // the family's line on how this preview was made (the run's record), shown over it in the lightbox
 function withMode(fig, it) {
@@ -2311,10 +2509,11 @@ async function loadGallery() {
   // redrawn only when something changed (a new preview, another run or view), and never under a clip or song that
   // is playing - the 15 s refresh used to rebuild the gallery and stop it
   // (with each picture's prompt and the epochs' records: one written after its pictures appear still redraws)
-  const sig = [run, view, ...g.items.map((it) => it.name + "@" + it.time + "@" + (it.prompt || "")),
+  const sig = [run, view, training(), ...g.items.map((it) => it.name + "@" + it.time + "@" + (it.prompt || "")),
     JSON.stringify(g.epoch_prompts || {})].join("|");
   const playing = [...host.querySelectorAll("video, audio")].some((m) => !m.paused);
-  if (S.gal && S.gal.sig === sig || (playing && S.gal && S.gal.run === run)) { likenessShow(dir, g.items, run, view); return; }
+  if (S.gal && S.gal.sig === sig || (playing && S.gal && S.gal.run === run)) {
+    likenessShow(dir, g.items, run, view); styleShow(dir, g.items); return; }
   host.innerHTML = "";
   host.classList.toggle("gallery-as-grid", view === "grid");
   // the newest epoch's clips download at once (the ones you'll play); the rest when the pointer comes to them
@@ -2322,9 +2521,11 @@ async function loadGallery() {
   const top = epochs.length ? Math.max(...epochs) : null;
   const eager = new Set((top != null ? g.items.filter((it) => it.epoch === top) : g.items.slice(0, 3)).slice(0, 8));
   if (view === "grid" && g.items.length) host.append(previewGrid(g.items, g.prompts || [], eager));
-  else for (const it of g.items.slice(0, 120)) host.append(previewFigure(it, g.prompts || [], eager, g.epoch_prompts));
+  else for (const it of g.items.slice(0, 120))
+    host.append(previewFigure(withLora(it, g.loras, S.fam && S.fam.key), g.prompts || [], eager, g.epoch_prompts));
   S.gal = {items: g.items, run, sig};
   likenessShow(dir, g.items, run, view);
+  styleShow(dir, g.items);
   const others = g.runs.filter((r) => r !== run).length;
   $("galleryInfo").textContent = g.items.length ?
     `${g.items.length} preview${g.items.length === 1 ? "" : "s"} of ${run} in ${dir}` +
@@ -2341,6 +2542,25 @@ const LIK_PICS = /\.(png|jpe?g|webp)$/i;
 const ARC_PEAK = "Peak ArcFace is about 72%: that's what two photos of the same person score against each other, " +
   "so no picture reaches 100%.";
 function arcPeak(label) { return !label || String(label).startsWith("ArcFace") ? ARC_PEAK : ""; }
+
+// the gallery's Style score (web/gallery_style.py): each preview against the training pictures' look as a whole
+async function styleShow(dir, items) {
+  let d;
+  try { d = await api(`/api/style?dir=${encodeURIComponent(dir)}&dataset=${encodeURIComponent(S.imageFolder || "")}`); }
+  catch (e) { return; }
+  S.sty = {dir, on: d.on};
+  $("styBtn").classList.toggle("active", d.on);
+  $("styBtn").textContent = d.on ? "🎨 Style score: on" : "🎨 Style score";
+  $("styStatus").textContent = d.on && d.status ? "🎨 " + d.status : "";
+  for (const fig of document.querySelectorAll("#gallery .gallery-item")) {
+    fig.querySelector(".sty-badge")?.remove();
+    if (!d.on || !(fig.title in d.scores)) continue;
+    const s = d.scores[fig.title];
+    fig.append(el("span", {class: `sty-badge ${s == null ? "na" : s >= 0.7 ? "good" : s >= 0.4 ? "mid" : "bad"}`,
+      title: "Style score: how close this preview is to the training pictures' look", text: s == null ? "style ?" :
+      `style ${Math.round(s * 100)}%`}));
+  }
+}
 
 async function likenessShow(dir, items, run, view) {
   S.lik.dir = dir;
@@ -2365,6 +2585,8 @@ async function likenessShow(dir, items, run, view) {
   let best = 0;
   avgs.forEach((v, i) => { if (v > avgs[best]) best = i; });
   const bestEpoch = epochs.length ? epochs[best] : null;
+  if (run === (S.run && S.run.lora)) S.likeSummary = epochs.length ?      // the run summary's Likeness
+    {now: avgs[avgs.length - 1], epoch: epochs[epochs.length - 1], best: avgs[best], bestEpoch} : null;
   // a badge on every scored picture (the best epoch's outlined)
   for (const fig of document.querySelectorAll("#gallery .gallery-item")) {
     fig.querySelector(".lik-badge")?.remove();
@@ -2750,7 +2972,7 @@ async function likGridShow(folder, picked) {
   const r = await api(royale ? `/api/captions?folder=${encodeURIComponent(folder)}&ext=${encodeURIComponent(capExt())}&family=${encodeURIComponent(S.family || "")}`
     : trainImagesUrl(S.lik.single && S.lik.single.top)).catch(() => ({items: []}));
   const pics = (S.lik.single && S.lik.single.pics) || LIK_PICS;      // Image Prep's Test also lists .bmp
-  for (const it of r.items.filter((x) => pics.test(x.name))) {
+  for (const it of r.items.filter((x) => !x.crop && pics.test(x.name))) {
     S.lik.paths[it.name] = it.path;
     const fig = el("figure", {title: it.sub ? `${it.name.slice(it.sub.length + 1)}\nin ${it.sub}` : it.name, onclick: () => {
       if (S.lik.single && !S.lik.multi) { $("likModal").classList.remove("active"); S.lik.single.onPick(it); return; }
@@ -2851,6 +3073,7 @@ function rvDraw(g, im, fr, W, H) {
   // the video's own frames (shown here and exported): fixed colours, not the theme's
   g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
   const sc = Math.min(W / im.naturalWidth, H / im.naturalHeight), dw = im.naturalWidth * sc, dh = im.naturalHeight * sc;
+  g.fillStyle = "#fff"; g.fillRect((W - dw) / 2, (H - dh) / 2, dw, dh);    // a transparent sample on white
   g.drawImage(im, (W - dw) / 2, (H - dh) / 2, dw, dh);
   if ($("rvTicker").checked) {
     const label = "Epoch " + fr.epoch;
@@ -2926,6 +3149,7 @@ async function loadCheckpoints() {
       el("span", {class: "checkpoint-name", text: it.name}),
       el("span", {class: "field-hint", text: `${it.kind === "finetune" ? "Fine-tune (whole model)" : "LoRA"} · ` +
         `${size(it.size)} · ${new Date(it.time * 1000).toLocaleString()}`}),
+      it.kind === "finetune" ? null : studioButton(it.path, S.fam && S.fam.key),
       el("a", {class: "btn btn-sm btn-primary", href, download: it.name, text: "Download"})));
   }
   const others = r.items.length - mine.length;
@@ -3336,7 +3560,7 @@ function imageLossCaption(im, run, live) {
     catch (e) { box.replaceChildren(el("div", {class: "problems", text: e.message})); return; }
     const ta = el("textarea", {rows: 5, class: "il-cap-text"});
     ta.value = r.caption;
-    const say = el("div", {class: "field-hint", text: "Caption what the picture actually shows - viewpoint (from behind, side profile), pose, what's in the way."});
+    const say = el("div", {class: "field-hint", text: "Caption what the picture actually shows - viewpoint (from behind, side profile), pose, lighting, what's in the way."});
     const save = el("button", {class: "btn btn-sm btn-primary", text: live ? "Save and queue for re-encode" : "Save caption", onclick: async () => {
       try {
         const res = await api("/api/runs/caption", {id: run.id, key: im.key, caption: ta.value, ext: capExt()});
@@ -3706,7 +3930,7 @@ async function royaleScore() {
     const r = await api("/api/royale/score", {refs: S.ry.likeRefs || []});
     S.ry.scores = r.scores; S.ry.best = r.best;
     royaleGrid();
-    if (r.best == null) { $("ryLikeStatus").textContent = "No faces detected in the renders or subject photos."; $("ryBest").disabled = true; return; }
+    if (r.best == null) { $("ryLikeStatus").textContent = "No faces detected in the renders or subject photos. Likeness needs a face: for a style or object LoRA, judge the epochs by eye."; $("ryBest").disabled = true; return; }
     $("ryBest").disabled = false;
     $("ryLikeStatus").textContent = `Best: ${ryLabel(r.best).toLowerCase()} (${r.scores[r.best].toFixed(3)})` +
       (r.no_face ? `  (${r.no_face} no-face)` : "") +
@@ -4494,6 +4718,7 @@ async function runLossTick(training) {
   if (training && now - (S.lossAt || 0) < 10000) return;
   S.lossAt = now; S.lossDone = !training;
   const d = await api("/api/runs/loss?live=1").catch(() => null);
+  sideSpark(d);
   const host = $("runLoss");
   if (!d || !d.points || d.points.length < 2) { host.replaceChildren(); return; }
   host.replaceChildren(lossGraph(d));
@@ -4577,12 +4802,13 @@ async function runFiles(run) {
       .catch(() => ({items: [], prompts: []})),
     api("/api/checkpoints?dir=" + encodeURIComponent(run.output_dir)).catch(() => ({items: []}))]);
   const shots = g.items.slice(0, 12);
-  if (shots.length) out.push(el("div", {class: "gallery run-gallery"}, shots.map((it) => previewFigure(it, g.prompts, null, g.epoch_prompts))));
+  if (shots.length) out.push(el("div", {class: "gallery run-gallery"}, shots.map((it) => previewFigure(withLora(it, g.loras, run.family), g.prompts, null, g.epoch_prompts))));
   const size = (b) => b >= 2 ** 30 ? (b / 2 ** 30).toFixed(1) + " GB" : (b / 2 ** 20).toFixed(0) + " MB";
   const ckpts = c.items.filter((it) => it.run === run.lora);
   if (ckpts.length) out.push(el("div", {class: "checkpoint-list"}, ckpts.map((it) => el("div", {class: "checkpoint-row"},
     el("span", {class: "checkpoint-name", text: it.name}),
     el("span", {class: "field-hint", text: `${it.kind === "finetune" ? "Fine-tune" : "LoRA"} · ${size(it.size)}`}),
+    it.kind === "finetune" ? null : studioButton(it.path, run.family),
     el("a", {class: "btn btn-sm btn-primary", download: it.name, text: "Download",
       href: `/api/download?path=${encodeURIComponent(it.path)}&t=${encodeURIComponent(TOKEN)}`})))));
   if (!out.length) out.push(el("div", {class: "field-hint", text: "Nothing saved by this run in " + run.output_dir + "."}));
@@ -4690,7 +4916,8 @@ const prepSettings = () => ({
   find: $("prepFind").value || "", fitAll: $("prepFitAll").checked, separate: $("prepSeparate").checked, maskWatermarks: !!($("maskWatermarks") || {}).checked, capCopy: $("prepCapCopy").checked, capTrim: $("prepCapTrim").checked,
   capCloseup: $("prepCapCloseup").checked, capAdd: $("prepCapAdd").checked, addScore: $("prepAddScore").value || "0.90",
   tagger: $("prepTagger").value || "wd-eva02", keepScore: $("prepKeepScore").value || TAGGER_KEEP[$("prepTagger").value] || "0.35",
-  replace: (document.querySelector('input[name="prepReplace"]:checked') || {}).value === "1"});
+  replace: (document.querySelector('input[name="prepReplace"]:checked') || {}).value === "1",
+  crops_only: $("prepCropsOnly").checked});
 // Trim tags' taggers (fizgig/dataset/taggers.py): what each is for, and the keep score a fresh pick starts at
 const TAGGER_KEEP = {"wd-eva02": "0.35", "jtp3": "0.20"};
 const TAGGER_HINTS = {
@@ -4724,6 +4951,7 @@ async function loadPrep() {
     const mode = saved.mode || "Auto Prep (Face Crops)";
     document.querySelectorAll('input[name="prepMode"]').forEach((r) => { r.checked = r.value === mode; });
     document.querySelectorAll('input[name="prepReplace"]').forEach((r) => { r.checked = r.value === (saved.replace ? "1" : "0"); });
+    $("prepCropsOnly").checked = !!saved.crops_only;
     $("prepNoFaces").style.display = o.face_tools ? "none" : "";
     faceSettingsShow(o.face_settings);
     if (saved.migrated) savePrepSoon();                 // save the moved choice (an older "YOLO class: ..." one)
@@ -5089,9 +5317,11 @@ function meDraw() {
     c.fillStyle = themeColor("--pic-mask"); c.beginPath(); c.arc(m.samAt[0], m.samAt[1], 4, 0, Math.PI * 2); c.fill();
   }
   if (m.cursor && !m.panning && m.tool !== "sam") {    // the brush, its size on screen
+    // drawn as the difference with what's under it (XOR-like), so it shows on white, black and any picture (#271)
     c.setTransform(1, 0, 0, 1, 0, 0);
-    c.strokeStyle = themeColor("--pic-text", 0.9); c.lineWidth = 1;
+    c.globalCompositeOperation = "difference"; c.strokeStyle = "#fff"; c.lineWidth = 1.5;
     c.beginPath(); c.arc(m.cursor[0], m.cursor[1], Number($("meSize").value) / 2, 0, Math.PI * 2); c.stroke();
+    c.globalCompositeOperation = "source-over";
   }
 }
 function meAt(e) {
@@ -5124,7 +5354,8 @@ function meDab(x, y) {
   const a = Number($("meStrength").value) / 100;
   const g = c.createRadialGradient(x, y, r * (1 - soft) * 0.999, x, y, r);
   g.addColorStop(0, `rgba(255,255,255,${a})`); g.addColorStop(1, "rgba(255,255,255,0)");
-  c.globalCompositeOperation = m.tool === "erase" ? "destination-out" : "source-over";
+  // the Eraser takes away, the Brush adds; a right-click stroke does the other (#271)
+  c.globalCompositeOperation = (m.tool === "erase") !== !!m.flip ? "destination-out" : "source-over";
   c.fillStyle = soft > 0 ? g : `rgba(255,255,255,${a})`;
   c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
   c.globalCompositeOperation = "source-over";
@@ -5203,7 +5434,8 @@ function meWire() {
       if (e.button === 0 || e.button === 2) meSamClick(p, e.button === 2 || e.altKey);
       return;
     }
-    if (e.button !== 0) return;
+    if (e.button !== 0 && e.button !== 2) return;
+    m.flip = e.button === 2;                           // right-click: the Brush erases, the Eraser paints
     mePush(); meDab(p.x, p.y); last = p; m.dirty = true; meStateLine(); meDraw();
   });
   cv.addEventListener("pointermove", (e) => {
@@ -5213,10 +5445,10 @@ function meWire() {
     else if (last) { meStroke(last, p); last = p; }
     meDraw();
   });
-  const up = () => { last = null; pan = null; m.panning = false; meDraw(); };
+  const up = () => { last = null; pan = null; m.panning = false; m.flip = false; meDraw(); };
   cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
   cv.addEventListener("pointerleave", () => { m.cursor = null; meDraw(); });
-  cv.addEventListener("contextmenu", (e) => e.preventDefault());          // right-click is SAM click's "take away"
+  cv.addEventListener("contextmenu", (e) => e.preventDefault());   // right-click: SAM's "take away", the brush's erase
   cv.addEventListener("wheel", (e) => {
     if (!m.mask) return;
     e.preventDefault();
@@ -5335,7 +5567,7 @@ function prepYoloWords() {
 const prepOther = () => ((S.prep.opts || {}).other || "Other…") === $("prepFace").value;
 function prepTrimBlocked() {
   const p = prepSettings();
-  if (p.mode === "Resize Only" || !(p.capCopy && p.capTrim)) return "";
+  if (!["Auto Prep (Face Crops)", "Face Crop Only"].includes(p.mode) || !(p.capCopy && p.capTrim)) return "";
   const t = prepTaggerInfo(), k = Number(p.keepScore);
   if (!(k > 0 && k < 1)) return `Keep tags scored at least: a number between 0 and 1, like ${TAGGER_KEEP[p.tagger] || "0.35"}.`;
   const a = Number(p.addScore);
@@ -5345,7 +5577,7 @@ function prepTrimBlocked() {
 }
 function prepFindBlocked() {
   const p = prepSettings();
-  if (p.mode === "Resize Only" || !prepOther()) return "";
+  if (!["Auto Prep (Face Crops)", "Face Crop Only"].includes(p.mode) || !prepOther()) return "";
   if (!p.find.split(/[,\n]/).some((w) => w.trim())) return "Type what to find in Find this (e.g. hat, tail, hand).";
   const sam = (S.prep.maskOpts || {}).sam, yw = prepYoloWords();
   if (sam && !sam.path && yw.yolo.length < yw.words.length) return "Finding by words needs SAM 3.1: press Download on the Masks card below first.";
@@ -5353,7 +5585,7 @@ function prepFindBlocked() {
 }
 function prepBlocked() { return prepFindBlocked() || prepTrimBlocked(); }
 function prepFindShow() {
-  const p = prepSettings(), other = prepOther(), faceOn = p.mode !== "Resize Only";
+  const p = prepSettings(), other = prepOther(), faceOn = ["Auto Prep (Face Crops)", "Face Crop Only"].includes(p.mode);
   $("prepFindRow").style.display = other ? "" : "none";
   $("prepFindHint").style.display = other ? "" : "none";
   $("prepFinderNow").style.display = other || !faceOn ? "none" : "";
@@ -5417,24 +5649,35 @@ function prepTaggerShow() {
 }
 
 async function prepSummary() {
-  const p = prepSettings(), faceOn = p.mode !== "Resize Only";
+  const p = prepSettings(), faceOn = ["Auto Prep (Face Crops)", "Face Crop Only"].includes(p.mode);
   document.querySelectorAll(".prep-face select, .prep-face input").forEach((i) => {
     i.disabled = !faceOn || (!S.prep.opts.face_tools && !(i.id === "prepFind" || (i.id === "prepFace" && prepOther()))); });
   $("prepCapCopy").disabled = !faceOn;
   $("prepCapTrim").disabled = !faceOn || !$("prepCapCopy").checked;
   $("prepCapCloseup").disabled = !faceOn || !$("prepCapCopy").checked;
   prepFindShow();
+  // Detail crops leave the pictures alone and use no face: no face rows, no originals choice, the size is the crop's
+  const crops = p.mode === "Detail Crops (Style)";
+  for (const id of ["prepOriginals", "prepSizingNote", "prepChars"]) $(id).style.display = crops ? "none" : "";
+  for (const id of ["prepCropsOnlyRow", "prepCropsOnlyHint"]) $(id).style.display = crops ? "" : "none";
+  // the face row and the face test only for the modes that make face close-ups
+  $("prepTestRow").style.display = faceOn ? "" : "none";
+  document.querySelectorAll(".prep-face").forEach((r) => { r.style.display = faceOn ? "" : "none"; });
+  if (crops) $("prepNoFaces").style.display = "none";
+  else $("prepNoFaces").style.display = S.prep.opts.face_tools ? "none" : "";
+  $("prepMpHint").textContent = crops ? "MP" : "MP (larger images shrink to fit; smaller are left alone)";
+  $("prepRunTitle").textContent = crops ? "2 · Run it" : "3 · Run it";
   if (!S.imageFolder) { $("prepSummary").textContent = ""; return; }
   const r = await api(`/api/prep/summary?folder=${encodeURIComponent(S.imageFolder)}&mode=${encodeURIComponent(p.mode)}` +
     `&face=${encodeURIComponent(p.face)}&find=${encodeURIComponent(p.find)}` +
-    `&mp=${p.mp}&replace=${p.replace ? 1 : 0}&train_mp=${encodeURIComponent(S.values.DATASET_MEGAPIXELS || "")}`).catch(() => null);
+    `&mp=${p.mp}&replace=${p.replace ? 1 : 0}&crops_only=${p.crops_only ? 1 : 0}&train_mp=${encodeURIComponent(S.values.DATASET_MEGAPIXELS || "")}`).catch(() => null);
   if (!r) return;
   $("prepAudioOnly").style.display = r.audio_only ? "" : "none";
   $("prepMain").style.display = r.audio_only ? "none" : "";
   $("prepSummary").replaceChildren(...r.lines.map((t) => el("div", {text: t})));
   $("prepMpWarn").textContent = r.warn || "";
-  if (!S.prep.running) $("prepRun").textContent = r.count ? `✨ Prepare ${r.count} Image${r.count === 1 ? "" : "s"} Now` :
-    "✨ Prepare Images Now";
+  if (!S.prep.running) $("prepRun").textContent = crops ? "✨ Make Detail Crops Now" :
+    r.count ? `✨ Prepare ${r.count} Image${r.count === 1 ? "" : "s"} Now` : "✨ Prepare Images Now";
 }
 
 async function pollPrep() {
@@ -5631,7 +5874,7 @@ async function lookPickOpen() {
   host.replaceChildren(el("div", {class: "field-hint", text: "Loading the folder's pictures…"}));
   const r = await api(`/api/captions?folder=${encodeURIComponent(S.imageFolder)}&ext=${encodeURIComponent(capExt())}&family=${encodeURIComponent(S.family || "")}`).catch(() => ({items: []}));
   const pics = r.items.filter((it) => /\.(png|jpe?g|webp|bmp)$/i.test(it.name));
-  host.replaceChildren(el("div", {class: "field-hint look-pick-hint", text: "Click the 3 pictures that best nail the look you want."}),
+  host.replaceChildren(el("div", {class: "field-hint look-pick-hint", text: "Click the 3 pictures that best show the face you're training."}),
     ...pics.map((it) => el("button", {class: "look-tile pick" + (S.prep.bases.includes(it.path) ? " chosen" : ""),
       title: it.name, onclick: (e) => {
         const i = S.prep.bases.indexOf(it.path);
@@ -5783,7 +6026,7 @@ function presetSaveOpen() {
 function wirePrep() {
   document.querySelectorAll('input[name="prepMode"], input[name="prepReplace"]').forEach((r) =>
     r.addEventListener("change", () => { prepSummary(); savePrepSoon(); }));
-  for (const id of ["prepMp", "prepFace", "prepPadding"]) $(id).addEventListener("change", () => { prepSummary(); savePrepSoon(); });
+  for (const id of ["prepMp", "prepFace", "prepPadding", "prepCropsOnly"]) $(id).addEventListener("change", () => { prepSummary(); savePrepSoon(); });
   $("prepFace").addEventListener("change", () => { if (prepOther() && !$("prepFind").value.trim()) $("prepFind").focus(); });
   $("prepFind").addEventListener("input", () => { prepFindShow(); savePrepSoon(); });
   $("prepFitAll").addEventListener("change", () => { prepFindShow(); savePrepSoon(); });
@@ -5848,7 +6091,36 @@ async function studioOpen() {
     S.st.familiesLoaded = true;
     await studioFamily(sv.res, sv.w, sv.h);
   }
+  if (S.st.openWith) await studioTake();
   studioPoll();
+}
+
+// a LoRA row's Studio button: the LoRA as the primary, on the model its file is for (from its key names; the run's
+// model when the file can't tell), on the Studio tab. Nothing loads until Start.
+function studioButton(path, family) {
+  if (training()) return null;                    // Studio's model would share the card with the run
+  return el("button", {class: "btn btn-sm", text: "Studio", title: "Open this LoRA in Studio, on the model it was trained for",
+    onclick: () => { S.st.openWith = {path, family}; showTab("studio"); }});
+}
+
+function training() { return !!(S.run && (S.run.running || ["starting", "running", "pausing"].includes(S.run.state))); }
+// a preview with the LoRA its epoch saved (the server's loras map), for its Studio button
+function withLora(it, loras, family) {
+  return it.epoch != null && loras && loras[String(it.epoch)] ? {...it, lora: loras[String(it.epoch)], family} : it;
+}
+
+async function studioTake() {
+  const {path, family} = S.st.openWith;
+  S.st.openWith = null;
+  let key = "";
+  try { key = (await api("/api/studio/lorafamily?path=" + encodeURIComponent(path))).key; } catch (e) { /* the run's */ }
+  const has = (k) => k && [...$("stFamily").options].some((o) => o.value === k);
+  const fam = has(key) ? key : has(family) ? family : "";
+  if (!fam) { $("stStatus").textContent = "Studio doesn't work on this LoRA's model."; return; }
+  if (fam !== $("stFamily").value) { $("stFamily").value = fam; await studioFamily(); }
+  $("stPrimary").value = path;
+  stRemember();
+  $("stStatus").textContent = `${path.split(/[\\/]/).pop()} is the primary LoRA.`;
 }
 
 async function studioFamily(res, w, h) {
@@ -5949,7 +6221,7 @@ function studioSlots() {
   $("stFramesTitle").textContent = ref ? "Reference Images" : "First / Last Frame";
   $("stFramesDesc").textContent = ref ? "Optional: up to two photos the clip should look like (this checkpoint's " +
     "references), each cropped to the clip's shape - you place the crop when you pick one. Say <Picture 1> and " +
-    "<Picture 2> in the prompt for them, e.g. \"the woman in <Picture 1> walks along a beach\"." :
+    "<Picture 2> in the prompt for them, e.g. \"the woman in <Picture 1> walks along the beach in <Picture 2>\"." :
     "Optional: photos the clip starts and ends on (a still uses the first only), each cropped to the clip's shape - " +
     "you place the crop when you pick one.";
   const host = $("stFrameSlots");
@@ -6699,12 +6971,12 @@ async function studioMetrics() {
   try { m = await api(`/api/studio/metrics?ref=${encodeURIComponent(ref)}`); } catch (e) { m = {error: e.message}; }
   if (gen !== S.st.metGen) return;                    // a newer pair is on screen: these numbers aren't its
   if (m.error) { put("like", `metrics failed: ${String(m.error).slice(0, 60)}`, "bad"); for (const k of ["grid", "tex", "clip", "sat"]) put(k, ""); return; }
-  if (!m.ref_set) put("like", "Likeness: set a reference photo →");
-  else if (!m.ref_face) put("like", "Likeness: no face in reference", "bad");
-  else if (m.like_base == null || m.like_tweak == null) put("like", "Likeness: no face in render");
+  if (!m.ref_set) put("like", "Face likeness: set a reference photo →");
+  else if (!m.ref_face) put("like", "Face likeness: no face in reference", "bad");
+  else if (m.like_base == null || m.like_tweak == null) put("like", "Face likeness: no face in render");
   else {
     const lb = m.like_base * 100, lt = m.like_tweak * 100, d = lt - lb;
-    put("like", `Likeness ${lb.toFixed(0)}% ${d > 0.5 ? "▲" : d < -0.5 ? "▼" : "→"} ${lt.toFixed(0)}%`, d > 0.5 ? "good" : d < -0.5 ? "bad" : "");
+    put("like", `Face likeness ${lb.toFixed(0)}% ${d > 0.5 ? "▲" : d < -0.5 ? "▼" : "→"} ${lt.toFixed(0)}%`, d > 0.5 ? "good" : d < -0.5 ? "bad" : "");
   }
   $(chips.like).title = m.embedder ? `Look match: ${m.embedder} (scores are on its own scale)` : "";
   put("grid", `Grid ${m.grid_base.toFixed(2)} → ${m.grid_tweak.toFixed(2)}`, m.grid_delta > 0.05 ? "bad" : m.grid_delta < -0.05 ? "good" : "");
@@ -7579,12 +7851,19 @@ function wireStudio() {
 let CAP_PAGE = 12;                         // Per page (the desktop's sizes), remembered with the tab's settings
 S.cap = {page: 0, items: [], opts: null, lastState: "", tagMin: {}, tagChar: {}};
 
+// the folder the Captions tab works on (its tools take the folder's largest detail crops in too, server side)
+function capFolder() {
+  return S.imageFolder;
+}
+// the folder one listed file is in: the training folder, or its largest detail crop folder
+const capItemFolder = (it) => it.path.slice(0, it.path.length - it.name.length - 1);
+
 function capSettings() {
   return {trigger: $("capTrigger").value, model: $("capModel").value, task: $("capTask").value,
     tokens: $("capTokens").value, overwrite: $("capOverwrite").checked, songWords: $("capSongWords").value,
     skipCjk: $("capSkipCjk").checked, perPage: $("capPerPage").value,
     tagMin: S.cap.tagMin, tagChar: S.cap.tagChar, tagMax: $("capTagMax").value, tagStyle: $("capTagStyle").value,
-    tagRatings: $("capTagRatings").checked};
+    tagRatings: $("capTagRatings").checked, concept: $("capConcept").value.trim()};
 }
 const saveCapSoon = debounce(() => { S.capSaved = capSettings(); api("/api/state", {captions: S.capSaved}).catch(() => {}); }, 600);
 const qwenOn = () => !!S.cap.opts && S.cap.opts.qwen_available && $("capModel").value === S.cap.opts.qwen_model;
@@ -7624,6 +7903,8 @@ async function loadCaptionOptions() {
   $("capTagMax").value = saved.tagMax || o.tag_max || 255;
   $("capTagStyle").value = saved.tagStyle === "underscores" ? "underscores" : "spaces";
   $("capTagRatings").checked = !!saved.tagRatings;
+  if (saved.concept !== undefined) $("capConcept").value = saved.concept;
+  capConceptShow();
   $("capSongCard").style.display = o.song_words ? "" : "none";
   // a model that trains on no pictures or clips (ACE-Step): the AI card has nothing to caption, the song card does
   const media = (S.fam && S.fam.media) || ["photo"];
@@ -7633,6 +7914,8 @@ async function loadCaptionOptions() {
   $("capModel").closest(".field-row").style.display = pictures ? "" : "none";
   $("capModelHint").style.display = pictures ? "" : "none";
   capShowModel();
+  if (!pictures) $("capInstrBox").style.display = "none";
+  $("capTaskHint").style.display = pictures && qwenOn() ? "" : "none";       // fillTasks ran while the row was hidden
   if (o.song_words) { $("capSongWords").placeholder = "e.g. " + o.song_words; $("capSongWords").value = saved.songWords || ""; }
 }
 
@@ -7688,10 +7971,19 @@ function fillTasks(want) {
   for (const l of labels) task.append(el("option", {value: l, text: l}));
   task.value = labels.includes(want) ? want : (qwenOn() ? o.default_qwen_task : "<DETAILED_CAPTION>");
   $("capEditInstr").style.display = qwenOn() ? "" : "none";
+  $("capTaskHint").style.display = qwenOn() && $("capTask").closest(".field-row").style.display !== "none" ? "" : "none";
   $("capInstrBox").style.display = "none";
 }
 
+// the Concept task's box: shown with it (or with any instruction that uses {concept})
+function capConceptShow() {
+  const t = qwenOn() && qwenTask();
+  const on = !!t && t.instruction.includes("{concept}") && $("capTask").closest(".field-row").style.display !== "none";
+  for (const id of ["capConceptRow", "capConceptHint"]) $(id).style.display = on ? "" : "none";
+}
+
 function onCapTask() {
+  capConceptShow();
   const t = qwenOn() && qwenTask();
   if (t) $("capTokens").value = t.tokens;            // each Qwen task suggests its own length
   if ($("capInstrBox").style.display !== "none") openInstr();
@@ -7727,8 +8019,8 @@ const capExt = () => {                    // Training > Other Options > Caption 
 
 function capJobBody(extra = {}) {
   const t = qwenOn() && qwenTask();
-  return {family: S.family, folder: S.imageFolder, model: $("capModel").value, task: $("capTask").value, ext: capExt(),
-    instruction: t ? t.instruction : "", max_tokens: Number($("capTokens").value) || 120,
+  return {family: S.family, folder: capFolder(), model: $("capModel").value, task: $("capTask").value, ext: capExt(),
+    instruction: t ? t.instruction.split("{concept}").join($("capConcept").value.trim() || "the same concept") : "", max_tokens: Number($("capTokens").value) || 120,
     trigger: $("capTrigger").value, overwrite: $("capOverwrite").checked, ...capTagBody(), ...extra};
 }
 
@@ -7744,12 +8036,12 @@ async function capRun(path, body) {
 // while captioning runs: the captions written so far fill in every few seconds - never over one you're editing
 async function captionsLive() {
   if (!S.imageFolder || !document.querySelector("#tab-captions.active")) return;
-  const r = await api(`/api/captions?folder=${encodeURIComponent(S.imageFolder)}&ext=${encodeURIComponent(capExt())}&family=${encodeURIComponent(S.family || "")}`)
+  const r = await api(`/api/captions?folder=${encodeURIComponent(capFolder())}&ext=${encodeURIComponent(capExt())}&family=${encodeURIComponent(S.family || "")}`)
     .catch(() => null);
   if (!r || !r.items) return;
-  const now = new Map(r.items.map((i) => [i.name, i]));
+  const now = new Map(r.items.map((i) => [i.path, i]));
   for (const it of S.cap.items) {
-    const n = now.get(it.name);
+    const n = now.get(it.path);
     if (!n || (n.caption ?? "") === (it.caption ?? "")) continue;
     const ta = it._ta, untouched = !ta || (document.activeElement !== ta && ta.value === (it.caption ?? ""));
     if (!untouched) continue;
@@ -7815,8 +8107,9 @@ async function loadCaptions() {
     "Choose the training folder on the Start tab first.") + subfoldersHint();
   if (!S.imageFolder) { $("captionsSummary").textContent = "Choose the training folder on the Start tab."; return; }
   const ext = $("captionExt").value.trim() || ".txt";
-  const r = await api(`/api/captions?folder=${encodeURIComponent(S.imageFolder)}&ext=${encodeURIComponent(ext)}&family=${encodeURIComponent(S.family || "")}`);
-  S.cap.items = r.items;
+  const r = await api(`/api/captions?folder=${encodeURIComponent(capFolder())}` +
+    `&ext=${encodeURIComponent(ext)}&family=${encodeURIComponent(S.family || "")}`);
+  S.cap.items = r.items;                      // the pictures, then the largest detail crops (it.crop: their folder)
   renderCaptions();
 }
 
@@ -7832,12 +8125,19 @@ function renderCaptions() {
     items = [...items].sort((a, b) => (px(a) == null) - (px(b) == null) ||
       (sort === "small" ? px(a) - px(b) : px(b) - px(a)) || a.name.localeCompare(b.name));
   }
+  const ts = S.cap.tsort;                       // the table's column sort (its header), over the Sort box
+  if ($("capView").value === "table" && ts) {
+    const v = CAP_COLS.find((c) => c.key === ts.key).sort;
+    items = [...items].sort((a, b) => ((v(a) > v(b)) - (v(a) < v(b))) * ts.dir || a.name.localeCompare(b.name));
+  }
   const pages = Math.max(1, Math.ceil(items.length / CAP_PAGE));
   S.cap.page = Math.min(S.cap.page, pages - 1);
   const missing = all.filter((i) => i.caption === null).length;
   $("captionsSummary").textContent = `${all.length} files${missing ? `, ${missing} without a caption` : ""}` +
     (q ? ` · ${items.length} match` : "") + (pages > 1 ? ` · page ${S.cap.page + 1} of ${pages}` : "");
   $("capPrev").disabled = S.cap.page === 0; $("capNext").disabled = S.cap.page >= pages - 1;
+  host.classList.toggle("captions-as-table", $("capView").value === "table");
+  if ($("capView").value === "table") { host.append(captionsTable(items.slice(S.cap.page * CAP_PAGE, (S.cap.page + 1) * CAP_PAGE), ext)); return; }
   for (const it of items.slice(S.cap.page * CAP_PAGE, (S.cap.page + 1) * CAP_PAGE)) {
     const src = `/api/media?path=${encodeURIComponent(it.path)}&t=${encodeURIComponent(TOKEN)}`;
     const ta = el("textarea", {rows: 4});
@@ -7845,9 +8145,9 @@ function renderCaptions() {
     it._ta = ta;                                 // for the live refresh while captioning runs
     const status = el("span", {class: "field-hint"});
     const saveCap = async () => {
-      await api("/api/captions/save", {folder: S.imageFolder, name: it.name, text: ta.value, ext});
+      await api("/api/captions/save", {folder: capItemFolder(it), name: it.name, text: ta.value, ext});
       it.caption = ta.value;
-      status.textContent = "Saved";
+      status.textContent = it.crop ? "Saved, at every crop size" : "Saved";
     };
     const save = el("button", {class: "btn btn-sm", text: "Save", onclick: saveCap});
     const kind = it.name.split(".").pop().toLowerCase();
@@ -7864,7 +8164,7 @@ function renderCaptions() {
     const speechRun = kind === "mp4" && !/_mute$/i.test(it.name.replace(/\.[^.]+$/, "")) ? async (say = (t) => { status.textContent = t; }) => {
       say("Transcribing… (the first time downloads Whisper, ~300 MB)");
       try {
-        const r = await api("/api/captions/transcribe", {family: S.family, folder: S.imageFolder, name: it.name});
+        const r = await api("/api/captions/transcribe", {family: S.family, folder: capItemFolder(it), name: it.name});
         if (!r.text) { say("Whisper heard no words in this clip."); return; }
         const cap = ta.value.trim().replace(/\.$/, "");
         ta.value = (cap ? cap + " " : "") + `saying "${r.text}"`;
@@ -7878,8 +8178,9 @@ function renderCaptions() {
     const media = mediaFor(it);
     const card = el("div", {class: "caption-card"});
     // the big view edits, saves, re-captions and removes the same caption
-    card._cap = {ta, it, save: saveCap, recap: recap ? recapRun : null, speech: speechRun, remove: () => capRemove(it, card, status)};
-    const remove = el("button", {class: "btn btn-sm", text: "Remove",
+    card._cap = {ta, it, save: saveCap, recap: recap ? recapRun : null, speech: speechRun,
+      remove: it.crop ? null : () => capRemove(it, card, status)};
+    const remove = it.crop ? null : el("button", {class: "btn btn-sm", text: "Remove",
       title: "Take it out of the training set: it and its caption move into the folder's removed subfolder (nothing is deleted).",
       onclick: () => capRemove(it, card, status)});
     const size = it.size ? `${it.size[0]}×${it.size[1]} · ${(it.size[0] * it.size[1] / 1e6).toFixed(1)} MP` : "";
@@ -7894,16 +8195,69 @@ function renderCaptions() {
         maskBtn.textContent = on ? "Show picture" : "Show mask";
       }}) : null;
     card.append(media, el("div", {class: "caption-card-body"},
-      el("div", {class: "caption-card-title", text: mediaLabel(it)}),
+      el("div", {class: "caption-card-title", text: mediaLabel(it) + (it.crop ? " · detail crop" : ""),
+        title: it.crop ? "This picture's detail crop (Image Prep's Detail crops), the largest size: its caption is " +
+          "copied to the crop at every other size" : ""}),
       size ? el("div", {class: "field-hint caption-card-size", text: size + (it.mask ? " · has a mask" : "")}) : null, ta,
       el("div", {class: "field-row"}, save, recap, speech, maskBtn, remove, status)));
     host.append(card);
   }
 }
 
+// the table view: one row a file, sorted by a click on a column's head (again: the other way)
+const capWords = (i) => (i.caption || "").trim() ? (i.caption || "").trim().split(/\s+/).length : 0;
+const CAP_COLS = [
+  {key: "name", label: "File", sort: (i) => i.name.toLowerCase()},
+  {key: "caption", label: "Caption", sort: (i) => (i.caption || "").toLowerCase()},
+  {key: "words", label: "Words", sort: capWords},
+  {key: "size", label: "Size", sort: (i) => (i.size ? i.size[0] * i.size[1] : -1)},
+  {key: "mask", label: "Mask", sort: (i) => (i.mask ? 1 : 0)},
+];
+function captionsTable(items, ext) {
+  const ts = S.cap.tsort || {key: "name", dir: 1};
+  const head = el("tr", {}, el("th", {}), ...CAP_COLS.map((c) => el("th", {class: "cap-th",
+    text: c.label + (ts.key === c.key ? (ts.dir > 0 ? " ▲" : " ▼") : ""), title: "Sort by this column",
+    onclick: () => { S.cap.tsort = {key: c.key, dir: ts.key === c.key ? -ts.dir : 1}; S.cap.page = 0; renderCaptions(); }})));
+  const rows = items.map((it) => {
+    const ta = el("textarea", {rows: 2, class: "cap-cell-text"});
+    ta.value = it.caption ?? "";
+    it._ta = ta;                                 // the live refresh while captioning runs fills it too
+    const words = el("td", {class: "cap-num", text: String(capWords(it))});
+    ta.addEventListener("change", async () => {  // saved when you leave the box, as typed
+      try {
+        await api("/api/captions/save", {folder: capItemFolder(it), name: it.name, text: ta.value, ext});
+        it.caption = ta.value; words.textContent = String(capWords(it));
+      } catch (e) { ta.title = e.message; }
+    });
+    const thumb = it.size ? el("img", {class: "cap-thumb", loading: "lazy",
+      src: `/api/thumb?path=${encodeURIComponent(it.path)}&t=${encodeURIComponent(TOKEN)}`}) : el("span", {text: ""});
+    return el("tr", {}, el("td", {}, thumb), el("td", {class: "cap-name", text: mediaLabel(it) +
+      (it.crop ? " · detail crop" : ""), title: it.name}),
+      el("td", {}, ta), words,
+      el("td", {class: "cap-num", text: it.size ? `${it.size[0]}×${it.size[1]}` : ""}),
+      el("td", {class: "cap-num", text: it.mask ? "yes" : ""}));
+  });
+  return el("table", {class: "captions-table"}, head, ...rows);
+}
+
+async function addText(apply) {
+  const host = $("frChanges");
+  try {
+    const r = await api("/api/captions/add", {family: S.family, folder: capFolder(), start: $("frStart").value,
+      end: $("frEnd").value, trigger: $("capTrigger").value, apply, ext: capExt()});
+    host.innerHTML = "";
+    $("frStatus").textContent = r.changes.length ? (apply ? `Added to ${r.changes.length} captions.` :
+      `${r.changes.length} captions would change:`) : "Every caption already has that.";
+    if (!apply) for (const c of r.changes.slice(0, 100)) host.append(el("div", {class: "checkpoint-row"},
+      el("span", {class: "checkpoint-name", text: c.name}),
+      el("span", {class: "field-hint", text: "Before: " + c.old}), el("span", {class: "field-hint", text: "After: " + c.new})));
+    if (apply) loadCaptions();
+  } catch (e) { $("frStatus").textContent = e.message; }
+}
+
 async function capRemove(it, card, status) {
   // out of the training set (into removed/), with an Undo on the spot
-  const folder = S.imageFolder;
+  const folder = capItemFolder(it);
   try {
     const r = await api("/api/captions/remove", {folder, name: it.name, ext: $("captionExt").value.trim() || ".txt"});
     S.cap.items = S.cap.items.filter((x) => x !== it);
@@ -7923,7 +8277,7 @@ async function capRemove(it, card, status) {
 async function findReplace(apply) {
   const host = $("frChanges");
   try {
-    const r = await api("/api/captions/replace", {family: S.family, folder: S.imageFolder, find: $("frFind").value,
+    const r = await api("/api/captions/replace", {family: S.family, folder: capFolder(), find: $("frFind").value,
       replace: $("frReplace").value, apply, ext: capExt()});
     host.innerHTML = "";
     $("frStatus").textContent = r.changes.length ? (apply ? `Replaced in ${r.changes.length} captions.` :
@@ -7948,6 +8302,7 @@ function wireCaptions() {
   $("capPerPage").addEventListener("change", () => {
     CAP_PAGE = Number($("capPerPage").value) || 12; S.cap.page = 0; renderCaptions(); saveCapSoon(); });
   $("capTask").addEventListener("change", onCapTask);
+  $("capConcept").addEventListener("input", saveCapSoon);
   for (const id of ["capTrigger", "capTokens", "capOverwrite", "capSongWords", "capSkipCjk", "capTagMax", "capTagStyle",
     "capTagRatings"])
     $(id).addEventListener("change", saveCapSoon);
@@ -7977,6 +8332,9 @@ function wireCaptions() {
   $("capStop").addEventListener("click", () => capRun("/api/captions/stop", {}));
   $("capUnload").addEventListener("click", () => capRun("/api/captions/unload", {}));
   $("frPreview").addEventListener("click", () => findReplace(false));
+  $("frAddPreview").addEventListener("click", () => addText(false));
+  $("frAdd").addEventListener("click", () => addText(true));
+  $("capView").addEventListener("change", () => { S.cap.page = 0; renderCaptions(); });
   $("frApply").addEventListener("click", held($("frApply"), () => findReplace(true)));
   $("capSearch").addEventListener("input", debounce(() => { S.cap.page = 0; renderCaptions(); }, 250));
   $("capSort").addEventListener("change", () => { S.cap.page = 0; renderCaptions(); });
@@ -8655,7 +9013,22 @@ function fileManagerLinks(fm) {
     "Log in as admin with this pod's password" + (fm.login === "padded" ? ", with 0s added to make it 12 characters " +
     "(the file manager refused it as too common): abc123 → abc123000000. The pod's log shows it" : "");
   $("sideFiles").style.display = fm ? "" : "none";
+  $("sideFilesLogin").style.display = fm ? "" : "none";
   $("uploadFm").style.display = fm ? "" : "none";
+  // the login pill above the button: admin, and the password on Show (asked of the pod only then, never kept)
+  const pw = $("sideFilesPw"), show = $("sideFilesShow");
+  const hide = () => { pw.textContent = "••••••"; pw.classList.remove("fm-note"); show.textContent = "Show"; };
+  hide();
+  show.onclick = async () => {
+    if (show.textContent === "Hide") return hide();
+    try {
+      const d = await api("/api/pod/files_login");
+      pw.textContent = d.password || (d.login === "none" ? "not set up: see the pod's log on RunPod"
+        : "in the pod's log on RunPod");
+      pw.classList.toggle("fm-note", !d.password);
+    } catch (e) { pw.textContent = "in the pod's log on RunPod"; pw.classList.add("fm-note"); }
+    show.textContent = "Hide";
+  };
   for (const a of [$("sideFiles"), ...document.querySelectorAll(".fm-link")]) {
     if (fm) { a.href = fm.url; a.title = `Big files in and out, by drag and drop. ${how}.`; }
     else if (a.classList.contains("fm-text")) a.removeAttribute("href");
@@ -8663,10 +9036,29 @@ function fileManagerLinks(fm) {
 }
 
 // ---- Pods: rented GPUs running Fizgig, opened from here (the app window goes there; a browser opens a tab) -------
-S.pods = {list: [], timer: 0, waitFor: ""};
+S.pods = {list: [], timer: 0, waitFor: "", pending: {}};
+// Start or Stop pressed here: RunPod takes a few seconds to say so, and a reload in that gap would flick the row back
+// to what it was. Each press is held for 90 s (kept by pod, as reloads make fresh rows); one RunPod hasn't moved by
+// then didn't start (or stop)
+const POD_HOLD_MS = 90000;
+function podPending(p) {
+  const k = p.id || p.url, h = S.pods.pending[k];
+  if (!h) return "";
+  const done = h.kind === "start" ? p.running || p.state === "ready" : h.kind === "delete" ? !p.account
+    : !p.running && p.state !== "ready";
+  if (done) { delete S.pods.pending[k]; return ""; }
+  if (Date.now() - h.t < POD_HOLD_MS) return {start: "starting", stop: "stopping", delete: "deleting"}[h.kind];
+  delete S.pods.pending[k];
+  $("podsNote").textContent = h.kind === "start"
+    ? `${p.name || p.id} didn't start: RunPod still has it stopped. Often no GPU is free on its machine now; its page on RunPod says why.`
+    : `${p.name || p.id} hasn't ${h.kind === "delete" ? "gone" : "stopped"} yet: check it on RunPod.`;
+  if (h.kind === "start" && S.pods.waitFor === p.url) S.pods.waitFor = "";
+  return "";
+}
 const inApp = () => !!window.pywebview;
 const POD_STATE = {ready: ["Ready", "ok"], waiting: ["Starting - a pod can take a few minutes. If it isn't ready after that, check it on RunPod", "warn"],
   stopped: ["Stopped", "muted"], off: ["Not answering", "muted"], starting: ["Starting...", "warn"],
+  stopping: ["Stopping...", "muted"], deleting: ["Deleting...", "muted"],
   gone: ["Not on your RunPod account (another account's pod, or deleted there). Forget takes it off this list", "muted"],
   away: ["Not on your network now: is it on, awake and running Fizgig?", "muted"],
   blocked: ["Found, but it doesn't let this computer in yet: on it, Preferences > Web UI > Allow on my network", "warn"]};
@@ -8676,6 +9068,8 @@ async function podsLoad(quiet) {
   let r;
   try { r = await api("/api/pods"); } catch (e) { $("podsNote").textContent = e.message; return; }
   S.pods.list = r.pods || [];
+  for (const k of Object.keys(S.pods.pending))     // a deleted pod off the list altogether: its hold is done
+    if (!S.pods.list.some((p) => (p.id || p.url) === k)) delete S.pods.pending[k];
   S.pods.key = r.key_saved;
   $("podKeyNote").textContent = r.key_saved ? "Key saved: your Fizgig pods are listed above." : "";
   podsDraw();
@@ -8685,7 +9079,7 @@ async function podsLoad(quiet) {
   // keep checking while the tab is open: every 6 s while one is on its way up (and open it when it's ready if asked
   // to), else every 30 s with an API key saved (a pod started or stopped on RunPod shows up by itself)
   clearTimeout(S.pods.timer);
-  const starting = S.pods.list.some((p) => p.state === "waiting" || p._starting);
+  const starting = S.pods.list.some((p) => p.state === "waiting") || Object.keys(S.pods.pending).length > 0;
   S.pods.timer = setTimeout(() => {          // the network's Fizgigs come and go too: every 30 s regardless
     if ($("tab-pods").classList.contains("active")) podsLoad(true);
   }, starting ? 6000 : 30000);
@@ -8696,7 +9090,7 @@ async function podsLoad(quiet) {
 function podsDraw() {
   const box = $("podsList");
   box.replaceChildren(...S.pods.list.map((p) => {
-    const st = p._starting && p.state !== "ready" ? "starting" : p.state;
+    const hold = podPending(p), st = hold || p.state;
     const [label, tone] = POD_STATE[st] || [st, "muted"];
     const title = p.name || p.id || p.url;
     const build = {mine: "Newer Fizgig there: update this computer",
@@ -8708,21 +9102,31 @@ function podsDraw() {
       p.cost ? `$${p.cost.toFixed(2)}/hr` : "", p.id && p.id !== title ? p.id : "",
       !p.id && p.url !== title ? p.url.replace(/^https?:\/\/|\/$/g, "") : "", build].filter(Boolean).join(" · ");
     const btns = [];
-    if (p.state === "ready") btns.push(el("button", {class: "btn btn-primary btn-sm", text: inApp() ? "Open" : "Open ↗",
+    if (hold === "stopping" || hold === "deleting") { /* nothing to press while it goes */ }
+    else if (p.state === "ready") btns.push(el("button", {class: "btn btn-primary btn-sm", text: inApp() ? "Open" : "Open ↗",
       onclick: () => podOpen(p)}));
-    else if (p.state === "waiting" || p._starting) btns.push(el("button", {class: "btn btn-sm",
+    else if (p.state === "waiting" || hold === "starting") btns.push(el("button", {class: "btn btn-sm",
       text: S.pods.waitFor === p.url ? "Opens when ready..." : "Open when ready", onclick: () => {
         S.pods.waitFor = p.url; podsDraw(); }}));
-    if (p.account && !p.running && S.pods.key) btns.push(el("button", {class: "btn btn-primary btn-sm",
+    if (p.account && !p.running && !hold && S.pods.key) btns.push(el("button", {class: "btn btn-primary btn-sm",
       text: "Start and open", onclick: () => podStart(p)}));
-    if (p.account && p.running && S.pods.key) btns.push(el("button", {class: "btn btn-sm", text: "Stop",
+    if (p.account && p.running && !hold && S.pods.key) btns.push(el("button", {class: "btn btn-sm", text: "Stop",
       title: "Stop the pod (it stops billing for the GPU; its files stay on its volume)", onclick: () => podStop(p)}));
+    if (p.account && S.pods.key && hold !== "deleting") btns.push(el("button", {class: "btn btn-sm btn-danger",
+      text: "Delete pod", title: "Delete the pod on RunPod: it and its volume disk go for good",
+      onclick: () => { S.pods.confirmDel = S.pods.confirmDel === p.id ? null : p.id; podsDraw(); }}));
     if (p.saved) btns.push(el("button", {class: "btn btn-sm", text: "Forget", title: "Take it off this list (the pod itself is untouched)",
       onclick: async () => { await api("/api/pods/forget", {url: p.url}).catch(() => {}); podsLoad(true); }}));
     return el("div", {class: "pod-row"},
       el("span", {class: `pod-dot ${build ? "warn" : tone}`}),
       el("div", {class: "pod-main"}, el("div", {class: "pod-name", text: title}),
-        el("div", {class: "field-hint", text: `${label}${sub ? " · " + sub : ""}`})),
+        el("div", {class: "field-hint", text: `${label}${sub ? " · " + sub : ""}`}),
+        // a stopped pod still pays for its volume disk; RunPod's own page has the price (its API reads 0)
+        st === "stopped" && p.account ? el("div", {class: "field-hint"}, "Its cost while stopped (its disk) is on ",
+          el("a", {class: "inline-link", href: "https://console.runpod.io/pods", target: "_blank", rel: "noopener",
+            text: "your RunPod account"}), ".") : null,
+        // only this RunPod pod's row (a computer on your network has no id)
+        p.account && p.id && S.pods.confirmDel === p.id && hold !== "deleting" ? podDeleteConfirm(p) : null),
       el("div", {class: "pod-btns"}, ...btns));
   }));
 }
@@ -8736,16 +9140,44 @@ function podOpen(p) {
 async function podStart(p) {
   try {
     await api("/api/pods/start", {id: p.id, gpus: p.gpus || 1});
-    p._starting = true; S.pods.waitFor = p.url; podsDraw();
+    S.pods.pending[p.id || p.url] = {kind: "start", t: Date.now()}; S.pods.waitFor = p.url; podsDraw();
     $("podsNote").textContent = `Starting ${p.name || p.id}: it opens here when it's ready. A pod can take a few minutes to start; if it isn't ` +
       "ready after that, check it on RunPod (its Logs show what it's doing).";
     setTimeout(() => podsLoad(true), 4000);
   } catch (e) { $("podsNote").textContent = e.message; }
 }
 
+// Delete pod's confirm, in the row: what goes with it, then a second press
+function podDeleteConfirm(p) {
+  const name = p.name || p.id;
+  return el("div", {class: "pod-confirm"},
+    el("div", {}, el("b", {text: `Delete ${name}? `}), "The pod and everything on its volume disk (/workspace: LoRAs, " +
+      "checkpoints, datasets, outputs) go for good. A network volume is kept."),
+    p.busy ? el("div", {class: "tc-warn", text: `It's training ${p.busy}. To keep its checkpoints, use Bring back on ` +
+      "its run card first."}) : null,
+    el("div", {class: "pod-btns"},
+      el("button", {class: "btn btn-sm btn-danger", text: "Delete it", onclick: () => podDelete(p)}),
+      el("button", {class: "btn btn-sm", text: "Cancel", onclick: () => { S.pods.confirmDel = null; podsDraw(); }})));
+}
+
+async function podDelete(p) {
+  S.pods.confirmDel = null;
+  try {
+    await api("/api/pods/delete", {id: p.id});
+    S.pods.pending[p.id || p.url] = {kind: "delete", t: Date.now()};
+    if (S.pods.waitFor === p.url) S.pods.waitFor = "";
+    podsDraw();
+    $("podsNote").textContent = `${p.name || p.id} is being deleted on RunPod.`;
+    setTimeout(() => podsLoad(true), 4000);
+  } catch (e) { $("podsNote").textContent = e.message; podsDraw(); }
+}
+
 async function podStop(p) {
   try {
     await api("/api/pods/stop", {id: p.id});
+    S.pods.pending[p.id || p.url] = {kind: "stop", t: Date.now()};
+    if (S.pods.waitFor === p.url) S.pods.waitFor = "";
+    podsDraw();
     $("podsNote").textContent = `${p.name || p.id} is stopping. Its files stay on its volume for next time.`;
     setTimeout(() => podsLoad(true), 4000);
   } catch (e) { $("podsNote").textContent = e.message; }
@@ -8848,7 +9280,10 @@ async function helpLoad(quiet) {
 // one line for what a helper is doing now, and how far along it is (0-1, or null for no bar)
 function helpActivity(h) {
   const a = h.activity;
-  if (h.state === "login") return ["Its password changed or its login ran out: add it again with its password", "warn", null];
+  if (h.state === "login") return [/proxy\.runpod\.net/.test(h.url || "") ?
+    "Its login ran out and Fizgig couldn't find its password to log in again: Remove it, then add it again with " +
+    "the password from the pod's log on RunPod" :
+    "Its password changed or its login ran out: Remove it, then add it again with its password", "warn", null];
   if (h.state === "away") return ["Not answering: is it on, awake and running Fizgig?", "muted", null];
   if (h.build && h.build !== "same" && h.match && h.state === "busy") return [`Training its own run (${h.training}). ` +
     h.match, "muted", null];
@@ -8867,8 +9302,11 @@ function helpActivity(h) {
     "round" : "preview round"}` : "Ready: it starts with this computer's next run", "", null];
   if (a.kind === "models") return [`Getting ${a.what ? a.what + " " : "models "}${a.for ? `for ${a.for} ` : ""}` +
     `(${a.got.toFixed(1)} of ${a.total.toFixed(1)} GB): the job starts when it has them`, "", a.got / a.total];
-  if (a.kind === "previews") return [`Rendering ${a.run ? a.run + "'s " : ""}previews for epoch ${a.epoch}` +
-    (a.queued ? ` · ${a.queued} more queued` : ""), "", a.progress];
+  // each step of a round says what it is (sending the LoRA, loading the model there the first time - minutes for a
+  // big model - waiting its turn), not "Rendering" all through
+  if (a.kind === "previews") return [(a.text ? `${a.text} · ` : "Rendering ") +
+    `${a.run ? a.run + "'s " : ""}previews for epoch ${a.epoch}` + (a.queued ? ` · ${a.queued} more queued` : ""),
+    "", a.progress];
   if (a.kind === "share") return [a.text || `Training its share of epoch ${a.epoch}` +
     (a.images ? ` (${a.images} images)` : ""), "", a.progress];
   if (a.kind === "check") return ["Rendering a check picture", "", a.progress];
@@ -8880,7 +9318,7 @@ function helpJob(h, kind) {
     (kind !== "share" || h.share_ready !== false);
   const title = kind === "previews" ? "Previews" : "Training share";
   const what = kind === "previews" ? "Renders this computer's previews, so training doesn't stop for them." :
-    "Trains its share of each epoch's images alongside this GPU, then the two combine.";
+    "Trains its share of each epoch's images alongside this GPU, then the two combine. Switched on while a run trains, it joins at the next epoch it's ready for.";
   const stat = kind === "previews" ? h.previews_stat : h.share_stat;
   const box = el("input", {type: "checkbox", class: "switch", ...(on ? {checked: true} : {}), ...(usable ? {} : {disabled: true})});
   const job = el("label", {class: `helper-job${on ? " on" : ""}${usable ? "" : " off-limits"}`},
@@ -8959,6 +9397,8 @@ function helpCard(h) {
       el("div", {class: "pod-main"},
         el("div", {class: "helper-name"}, h.name,
           ...(where ? [el("span", {class: `helper-tag ${cls}`, text: where})] : []),
+          ...(h.auto ? [el("span", {class: "helper-tag", text: "Added by itself",
+            title: "One of your RunPod pods: added once it started, and taken off the list when the pod is deleted. Tick a job to use it"})] : []),
           ...(h.inbound ? [el("span", {class: "helper-tag in", text: "Connected from its side",
             title: "It connected to this Fizgig (a pod can't reach a home computer, so the home computer does the connecting)"})] : [])),
         el("div", {class: "field-hint", text: sub})),
@@ -9005,14 +9445,24 @@ async function helpCall(path, body) {
   helpLoad(true);
 }
 
+// the Help another Fizgig with this GPU card's buttons: what they say shows in that card, kept across redraws
+async function helpOutCall(body) {
+  try { const r = await api("/api/helpers/help", body); S.help.outSay = (r && r.say) || ""; }
+  catch (e) { S.help.outSay = e.message; }
+  helpLoad(true);
+}
+
 function helpDraw() {
   const d = S.help.data || {};
   const hs = d.helpers || [];
   $("helpList").replaceChildren(...hs.map(helpCard));
-  $("helpNote").textContent = hs.length ? "" : "No helpers yet. Add one below: another computer with Fizgig, or a pod.";
+  $("helpNote").textContent = hs.length ? "" : "No helpers yet. Add one in the next card: a pod, or another computer with Fizgig.";
   $("helpFound").replaceChildren(...(d.found || []).map((f) => {
     const [where] = HELP_WHERE[f.where] || [""];
-    const pw = el("input", {type: "password", class: "w-combo-md", placeholder: "its password", autocomplete: "off"});
+    const pod = /proxy\.runpod\.net/.test(f.url || "");
+    const pw = el("input", {type: "password", class: "w-combo-md", autocomplete: "off",
+      placeholder: pod ? "password: leave empty" : "its password",
+      title: pod ? "Fizgig finds a pod's password itself. Type it only if Fizgig says it couldn't." : ""});
     return el("div", {class: "pod-row"}, el("span", {class: "pod-dot ok"}),
       el("div", {class: "pod-main"}, el("div", {class: "pod-name", text: f.name}),
         el("div", {class: "field-hint", text: [where, f.gpu, f.vram ? `${f.vram} GB` : ""].filter(Boolean).join(" · ")})),
@@ -9037,7 +9487,10 @@ function helpDraw() {
   const out = d.out || [];
   $("helpOut").replaceChildren(...out.flatMap((o) => {
     const mine = d.helping && d.helping.url === o.url;
-    const pw = el("input", {type: "password", class: "w-combo-md", placeholder: "its password", autocomplete: "off"});
+    const isPod = /proxy\.runpod\.net/.test(o.url || "");
+    const pw = el("input", {type: "password", class: "w-combo-md", autocomplete: "off",
+      placeholder: isPod ? "password: leave empty" : "its password",
+      title: isPod ? "Fizgig finds a pod's password itself. Type it only if Fizgig says it couldn't." : ""});
     // its checkpoints list stays as it is across redraws (the ticks too); asked again only when it's opened
     const kept = S.help.remote === o.url && S.help.panel && S.help.panel.url === o.url;
     const panel = kept ? S.help.panel.box : el("div", {class: "helper-remote", style: S.help.remote === o.url ? "" : "display:none"});
@@ -9049,20 +9502,20 @@ function helpDraw() {
       el("div", {class: "pod-main"}, el("div", {class: "pod-name", text: o.name}),
         el("div", {class: "field-hint", text: mine ? d.helping.text : o.url.replace(/^https?:\/\/|\/$/g, "")})),
       el("div", {class: "pod-btns"}, ...(mine || o.logged_in ? [] : [pw]), mine ?
-        el("button", {class: "btn btn-sm", text: "Stop helping", onclick: () => helpCall("/api/helpers/help", {url: o.url, on: false})}) :
+        el("button", {class: "btn btn-sm", text: "Stop helping", onclick: () => helpOutCall({url: o.url, on: false})}) :
         el("button", {class: "btn btn-primary btn-sm", text: "Help it with previews",
-          ...(d.helping ? {disabled: true} : {}), onclick: () => helpCall("/api/helpers/help",
+          ...(d.helping ? {disabled: true} : {}), onclick: () => helpOutCall(
             {url: o.url, on: true, password: pw.value})}),
         el("button", {class: "btn btn-sm", text: "Help it train", title: "EXPERIMENTAL: train a share of each epoch's " +
           "images of its run on this GPU (its training folder comes here, and this computer makes the run's cache)", ...(d.helping ? {disabled: true} : {}),
-          onclick: () => helpCall("/api/helpers/help", {url: o.url, on: true, password: pw.value, mode: "share"})}),
+          onclick: () => helpOutCall({url: o.url, on: true, password: pw.value, mode: "share"})}),
         el("button", {class: "btn btn-sm", text: "Its checkpoints…", title: "Its run's checkpoints: fetch the ones you " +
           "pick and try your own prompts on them in LoRA Royale, on this GPU (type its password first if asked)",
           onclick: () => { S.help.remotePw = pw.value; S.help.remote = S.help.remote === o.url ? "" : o.url;
             S.help.panel = null; helpDraw(); }}))),
       ...linkRow, panel];
   }));
-  $("helpOutNote").textContent = [...(d.home_done || []),
+  $("helpOutNote").textContent = [S.help.outSay || "", ...(d.home_done || []),
     out.length ? "" : "Your pods show here (the Pods tab), once one is running Fizgig."].filter(Boolean).join(". ");
   helpStrips();
   // this Fizgig is a helper right now: say so at the top, whatever it's doing
@@ -9077,6 +9530,12 @@ function helpDraw() {
 // a pod's run brought home as it saves (its previews too), and the pod deleted once that's all here and checked
 function helpHome(o, pw) {
   const hm = o.home || {};
+  // this computer's own run, moved there: the move brings it home (the run card), not these
+  const mv = S.run && S.run.move;
+  if (mv && ["moved", "back"].includes(mv.state) && mv.url && mv.url.replace(/\/$/, "") === o.url.replace(/\/$/, ""))
+    return el("div", {class: "helper-link helper-home"}, el("span", {class: "field-hint", text:
+      `${mv.run} moved here from this computer, so its move handles it: on the run card, its checkpoints and ` +
+      "previews come back as they're saved, and Bring it back can delete the pod."}));
   const tick = (text, on, body, title) => {
     const box = el("input", {type: "checkbox", ...(on ? {checked: true} : {})});
     box.addEventListener("change", () => helpCall("/api/helpers/home", {url: o.url, password: pw.value,
@@ -9295,6 +9754,7 @@ function showTab(name) {
   if (name === "samples") loadGallery();
   if (name === "training") loadCheckpoints();
   if (name === "outputs") { loadRuns(); if (S.outputsOpen) loadOutputs(); }
+  if (S.pods.confirmDel) { S.pods.confirmDel = null; podsDraw(); }   // a Delete pod left open: gone, not waiting
   if (name === "pods") { podsLoad(); pickLoad(); }
   if (name === "helpers") helpLoad();
   // the workbench's render choice follows the Samples tab, which may have changed since the tab last drew it
@@ -9519,6 +9979,10 @@ async function uploadFiles(picked, opts = {}) {
   const keepSubs = !!(S.values || {}).TRAIN_SUBFOLDERS;
   const sub = (f) => {
     const parts = String(f.webkitRelativePath || f.rel || "").split("/").slice(1, -1).map(tidyName).filter(Boolean);
+    // its detail crops keep their folders whatever the tick: each size's crops share their pictures' names
+    const i = parts.indexOf("fizgig_detail_crops");
+    if (i >= 0 && parts.length === i + 2) return parts.slice(i).join("/");
+    if (parts.length === 1 && parts[0] === "detail_masters") return "detail_masters";     // Train on the crops only: their source
     return keepSubs ? parts.join("/") : "";
   };
   const seen = new Map();
@@ -9681,6 +10145,28 @@ function fullPicture(src) {
   return src;
 }
 
+// a see-through picture (Qwen Image 2.1 draws them) sits on a checkerboard wherever it shows, so its transparency
+// reads as transparency, not as the page behind it; JPEGs (thumbnails of ordinary photos) are never looked at
+const ALPHA_PROBE = document.createElement("canvas");
+ALPHA_PROBE.width = ALPHA_PROBE.height = 48;
+document.addEventListener("load", (e) => {
+  const img = e.target;
+  if (!(img instanceof HTMLImageElement)) return;
+  let see = false;
+  let src = img.currentSrc || img.src || "";
+  try { src = decodeURIComponent(src); } catch (err) { /* as it is */ }
+  if (/\.png|\.webp|image\/png|image\/webp|^blob:/i.test(src)) {
+    try {
+      const c = ALPHA_PROBE.getContext("2d", {willReadFrequently: true});
+      c.clearRect(0, 0, 48, 48);
+      c.drawImage(img, 0, 0, 48, 48);
+      const d = c.getImageData(0, 0, 48, 48).data;
+      for (let i = 3; i < d.length; i += 4) if (d[i] < 250) { see = true; break; }
+    } catch (err) { /* a picture the page can't read back: as it is */ }
+  }
+  img.classList.toggle("see-through", see);
+}, true);
+
 function wireLightbox() {
   document.addEventListener("click", (e) => {
     const img = e.target.closest && e.target.closest(LIGHTBOX_PICS);
@@ -9692,8 +10178,9 @@ function wireLightbox() {
       const fig = i.closest(".gallery-item, .caption-card");
       const cap = fig && fig.querySelector("figcaption, .caption-card-title");
       const label = cap ? [...cap.childNodes].map((n) => n.textContent).filter(Boolean).join(" · ") : "";
+      const m = /_e(\d{6})_(\d{2})_/.exec((fig && fig.title) || "");     // a preview: its epoch and prompt number
       return {src: fullPicture(i.currentSrc || i.src), name: label || i.alt, cap: fig && fig._cap,
-              mode: (fig && fig._mode) || ""};
+              mode: (fig && fig._mode) || "", ep: m ? Number(m[1]) : null, idx: m ? Number(m[2]) : null};
     });
     lightboxShow(imgs.indexOf(img));
   });
@@ -9733,8 +10220,22 @@ function wireLightbox() {
     if (typing && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("lightboxCapSave").click(); }
     else if (e.key === "Escape") lightboxClose();
     else if (typing) return;                     // the arrows move the cursor in the caption
-    else if (e.key === "ArrowLeft") lightboxStep(S.lb.at - 1);
-    else if (e.key === "ArrowRight") lightboxStep(S.lb.at + 1);
+    else if (e.key.startsWith("Arrow")) {
+      // previews: ← → the same prompt an epoch earlier / later, ↑ ↓ the prompt before / after at the same epoch;
+      // any other pictures step in order
+      const d = {ArrowLeft: -1, ArrowRight: 1, ArrowUp: -1, ArrowDown: 1}[e.key];
+      const cur = S.lb.list[S.lb.at], across = e.key === "ArrowLeft" || e.key === "ArrowRight";
+      if (!cur || cur.ep == null) { if (across) lightboxStep(S.lb.at + d); return; }
+      e.preventDefault();
+      const same = across ? (p) => p.idx === cur.idx : (p) => p.ep === cur.ep;
+      const key = across ? (p) => p.ep : (p) => p.idx;
+      let best = -1;
+      S.lb.list.forEach((p, i) => {
+        if (p.ep == null || !same(p) || (key(p) - key(cur)) * d <= 0) return;
+        if (best < 0 || Math.abs(key(p) - key(cur)) < Math.abs(key(S.lb.list[best]) - key(cur))) best = i;
+      });
+      if (best >= 0) lightboxStep(best);
+    }
   });
 }
 
@@ -9898,6 +10399,13 @@ function wire() {
   $("galleryRun").addEventListener("change", () => { S.galleryRun = $("galleryRun").value; loadGallery(); });
   LIK_TITLE = $("likBtn").title;
   $("likBtn").addEventListener("click", () => likenessPicker());
+  $("styBtn").addEventListener("click", async () => {       // the Style score on or off for the shown run's folder
+    const dir = S.lik && S.lik.dir;
+    if (!dir) return;
+    try { await api("/api/style", {dir, dataset: S.imageFolder || "", on: !(S.sty && S.sty.on)}); }
+    catch (e) { $("styStatus").textContent = e.message; return; }
+    styleShow(dir, []);
+  });
   // Gizmo is a window on the Fizgig computer: offered only to a page open there (not a phone, not a pod)
   const gizmoHere = !!(S.uploadRoot && S.uploadRoot.local && !S.onPod);
   $("gizmoCard").style.display = gizmoHere ? "" : "none";

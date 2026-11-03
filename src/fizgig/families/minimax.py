@@ -108,8 +108,9 @@ OPTIONS = (
                  mode="lora", setting="MINIMAX_TREAD", show_if_media="clip", section="after"),
     FamilyOption("H3_CLIP_STILL", "Also train each clip's sharpest face frame as a photo", kind="check",
                  tokens="clip_still_as_photo=1 aux:clip_still=1", default="1",
-                 hint="Each clip's sharpest face frame trains as a photo with the clip's caption. Picked at caching; "
-                      "clips cached with this off use frame 0 until re-cached.",
+                 hint="Each clip's sharpest face frame trains as a photo with the clip's caption; a clip with no face "
+                      "uses its first frame. For clips without people, untick it (the Style preset does). Picked at "
+                      "caching; clips cached with this off use frame 0 until re-cached.",
                  setting="MINIMAX_CLIP_STILL", show_if_media="clip", section="after"),
     FamilyOption("H3_ADAPTER_RAMP", "Adapter-relative LR", kind="choice", choices=(
         ("Off", ""), ("0.003 (slow build)", "adapter_ramp=0.003"), ("0.005 (recommended)", "adapter_ramp=0.005"),
@@ -174,6 +175,7 @@ OPTIONS = (
 
 MINIMAX = FamilyDescription(
     key="minimax",
+    start_lr_bands=(("slider", 7e-5, 6e-4),),
     arch_id="minimaxh3",
     display_name="MiniMax H3",
     gui_label="MiniMax H3",
@@ -310,6 +312,9 @@ MINIMAX = FamilyDescription(
     multi_concept=True,
     # the old H3 recipe on the box's click: a stronger caption dropout (each subject must answer to its own trigger)
     multi_concept_defaults=(("H3_CAPTION_DROPOUT", "0.10 (strong)"),),
+    caption_dropout=False,                   # its own Caption dropout option (the cached uncond embed)
+    resolution_stages=False,                 # clips train at their own size: not measured with stages
+    detail_crops=False,                      # clips: a crop of a frame isn't a clip
     multi_concept_hint="See the MiniMax section of the README.",
     int8_attention=True,              # workbench renders: comfy-kitchen's INT8 attention
     activation_cache=True,            # Turbo Preview: step-1 replay, identical to a full render
