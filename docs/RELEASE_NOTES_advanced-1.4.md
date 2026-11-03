@@ -44,6 +44,12 @@ See upstream's `docs/RELEASE_NOTES_v8.9.96.md` to `docs/RELEASE_NOTES_v9.0.2.md`
 - The detectors run with onnxruntime only, so nothing new needs installing. Missing models are skipped, and the log says so.
 - See-through PNGs are laid on white for Make masks (automatic and SAM), SAM's preview and the Look filter, instead of on their hidden colour.
 
+### YOLO detectors section
+- The YOLO body-part and watermark models now sit in their own **YOLO detectors** section in Image Prep. It starts closed and remembers if you open it.
+- **On/off tick for each model:** a model that's off is greyed out and skipped.
+- **Add model:** add your own YOLO or ADetailer `.onnx` (a file or its folder), with an optional name, as Body parts or Watermarks. Added models run after the built-in ones and before SAM 3.1. `.pt` files point you to the converter.
+- **Remove** needs two clicks ("Confirm remove", which goes back after 5 seconds). It only takes the model off the list and never deletes your file. Built-in models can only be switched off.
+
 ### Previews and tabs
 - **Sample now** sends a prompt you just typed, and the override sees the sample picture.
 - While training, the Training and Samples tabs open at the running run.
