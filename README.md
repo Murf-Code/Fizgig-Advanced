@@ -13,7 +13,7 @@ Fizgig Advanced is Fizgig with extra features. It's kept up to date with upstrea
 **Install**
 Follow the normal [Fizgig install](#install), but clone this fork's branch:
 ```
-git clone -b fizgig-advanced https://github.com/Murf-Code/Fizgig.git
+git clone -b fizgig-advanced https://github.com/Murf-Code/Fizgig-Advanced.git
 ```
 
 **Update**
@@ -23,7 +23,7 @@ git pull
 ```
 Already on upstream Fizgig? Switch with:
 ```
-git remote add advanced https://github.com/Murf-Code/Fizgig.git
+git remote add advanced https://github.com/Murf-Code/Fizgig-Advanced.git
 git fetch advanced
 git checkout -b fizgig-advanced advanced/fizgig-advanced
 ```
