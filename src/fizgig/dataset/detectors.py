@@ -343,6 +343,62 @@ def clean_trace(t, box_area, grow=TRACE_GROW):
     return t.astype(bool)
 
 
+PICK_INSIDE = 0.5       # a piece with at least this share of itself in the YOLO box is the watermark's (pick_pieces)
+
+
+def pick_pieces(t, inner, gap=None):
+    """Keep only the watermark's pieces of a cleaned trace (bool crop). `inner` = the YOLO box (x1, y1, x2, y2) in crop
+    coords. Anchor = the biggest piece mostly inside the box (nearest the centre when sizes are close); pieces mostly
+    inside that sit within `gap` (MERGE_GAP x the box's height) of what's kept join it, chain-wise (letters, a crest's
+    parts). Pieces touching the crop's edge and mostly outside the box are art poking in (ears, hair): dropped. No piece
+    mostly inside -> the one with most of itself in the box. Shape-blind: text, symbols and crests alike. None if empty."""
+    import cv2
+    if t is None:
+        return None
+    t = np.asarray(t, bool)
+    if not t.any():
+        return None
+    h, w = t.shape
+    x1, y1, x2, y2 = inner
+    if gap is None:
+        gap = MERGE_GAP * max(1, y2 - y1)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(t.astype(np.uint8), 8)
+    if n <= 2:
+        return t
+    inbox = np.zeros_like(t)
+    inbox[max(0, y1):y2, max(0, x1):x2] = True
+    ins = np.bincount(lab[inbox], minlength=n)
+    area = st[:, cv2.CC_STAT_AREA]
+    frac = ins / np.maximum(area, 1)
+    bx = [(st[i, 0], st[i, 1], st[i, 0] + st[i, 2], st[i, 1] + st[i, 3]) for i in range(n)]
+    cand = [i for i in range(1, n) if frac[i] >= PICK_INSIDE]   # edge-touching art mostly outside never qualifies
+    if not cand:
+        best = max(range(1, n), key=lambda i: ins[i])
+        return (lab == best) if ins[best] else None
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    big = max(area[i] for i in cand)
+    near = [i for i in cand if area[i] >= 0.8 * big]
+    anchor = min(near, key=lambda i: ((bx[i][0] + bx[i][2]) / 2 - cx) ** 2 + ((bx[i][1] + bx[i][3]) / 2 - cy) ** 2)
+    kept, todo = {anchor}, [i for i in cand if i != anchor]
+    grew = True
+    while grew:
+        grew = False
+        for i in list(todo):
+            a = bx[i]
+            for j in kept:
+                b = bx[j]
+                dx = max(0, max(a[0], b[0]) - min(a[2], b[2]))
+                dy = max(0, max(a[1], b[1]) - min(a[3], b[3]))
+                if max(dx, dy) <= gap:
+                    kept.add(i)
+                    todo.remove(i)
+                    grew = True
+                    break
+    keep = np.zeros(n, bool)
+    keep[list(kept)] = True
+    return keep[lab]
+
+
 STROKE_BG = 0.6         # the local background's window, as a share of the box's height (median, odd, 15-101 px)
 STROKE_GROW = 0.07      # strokes found this way are grown by this share of the box's height: faint letter parts
 #                         Otsu misses sit between the ones it finds, so the text is covered as one shape
@@ -396,6 +452,8 @@ def trace_box(arr, box, tracer):
                 if s2 is not None else None
         except Exception:
             t = None
+    if t is not None:                            # drop art poking into the padded box (ears, hair)
+        t = pick_pieces(t, (x1 - cx1, y1 - cy1, x2 - cx1, y2 - cy1))
     if t is None:
         return out
     traced = np.zeros((h, w), bool)
