@@ -1741,6 +1741,36 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
             except (OSError, ValueError):
                 pass
         opt_params = params
+        if str(optimizer_type or "").lower() == "polora":
+            # PoLoRA needs explicit (A, B) pairs.
+            # FamilyLoRA (Krea 2 etc.) stores each adapter as nn.Sequential(down, up).
+            # Classic LoRANetwork stores LoRAModule with .lora_down / .lora_up.
+            pairs = []
+            # Prefer FamilyLoRA style
+            if hasattr(net, "trainable_modules"):
+                for ad in net.trainable_modules():
+                    if isinstance(ad, torch.nn.Sequential) and len(ad) == 2:
+                        a, b = ad[0], ad[1]
+                        if hasattr(a, "weight") and hasattr(b, "weight"):
+                            pairs.append((a.weight, b.weight))
+            # Fallback: classic LoRANetwork
+            if not pairs:
+                for lora in getattr(net, "unet_loras", []) or []:
+                    down = getattr(lora, "lora_down", None)
+                    up = getattr(lora, "lora_up", None)
+                    if down is None or up is None:
+                        continue
+                    if isinstance(down, torch.nn.ModuleList):
+                        for d, u in zip(down, up):
+                            if hasattr(d, "weight") and hasattr(u, "weight"):
+                                pairs.append((d.weight, u.weight))
+                    elif hasattr(down, "weight") and hasattr(up, "weight"):
+                        pairs.append((down.weight, up.weight))
+            if pairs:
+                opt_params = pairs
+                logger.info(f"[optimizer] PoLoRA: collected {len(pairs)} (down, up) pairs")
+            else:
+                logger.warning("[optimizer] PoLoRA: no (lora_down, lora_up) pairs found on network")
         if str(optimizer_type or "").lower() == "automagic3":
             groups = _optimizer_family_groups(desc, net, learning_rate)
             if groups:                   # one rate per group: each family of modules finds its own

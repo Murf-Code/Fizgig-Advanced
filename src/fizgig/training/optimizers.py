@@ -78,6 +78,7 @@ _CATALOG = {
     "lion8bit":           ("bitsandbytes", "Lion — sign updates; use ~1/10 the AdamW LR"),
     "prodigy":            (None,           "Prodigy — estimates the LR itself (d); Learning Rate is locked to 1.0"),
     "muon":               (None,           "Muon — Newton-Schulz orthogonalized momentum (RMS-matched to AdamW LR)"),
+    "polora":             (None,           "PoLoRA — preconditioned orthogonalized LoRA (product-aware spectral + curvature + magnitude; try ~2e-4; args: magnitude_scale, curvature_beta, beta1, compile, decay_start, decay_type, log_norms_every)"),
     # Ostris's Automagic v3, vendored (fizgig/training/automagic3.py, MIT). One learning rate per
     # parameter group, nudged up while update signs hold steady and down while they alternate;
     # the LR given is only its START (1e-6 is its own default). MiniMax H3 LoRA experiment,
@@ -181,11 +182,11 @@ def group_rates(optimizer) -> str:
 
 
 def owns_its_rate(optimizer) -> bool:
-    """True for an optimizer that sets its own learning rate (Automagic v3, Prodigy): schedulers and
+    """True for an optimizer that sets its own learning rate (Automagic v3, Prodigy, PoLoRA): schedulers and
     adaptive watchers that write the group rate have no effect on it and should stand down."""
     if optimizer is None:
         return False
-    if optimizer.__class__.__name__ in ("Automagic3", "Prodigy"):
+    if optimizer.__class__.__name__ in ("Automagic3", "Prodigy", "Polora"):
         return True
     groups = getattr(optimizer, "param_groups", None)
     return bool(groups and isinstance(groups[0], dict) and "d" in groups[0])
@@ -235,6 +236,45 @@ def _warn_lr(name: str, lr: float) -> None:
                        "multiplier. At %.2e it will barely train.", lr)
     elif name not in ("lion8bit", "prodigy") and "prodigy" not in name and lr > 1e-2:
         logger.warning("[optimizer] LR %.2e is very high for %s.", lr, name)
+
+
+
+def _collect_lora_pairs(params):
+    """Collect (A, B) pairs for PoLoRA.
+    Accepts:
+      - a list of (tensor, tensor) tuples already prepared by the caller
+      - a flat list of parameters that have .lora_down / .lora_up modules attached
+    Returns list of (A, B) or None.
+    """
+    if not params:
+        return None
+    # Already pairs?
+    if isinstance(params[0], (tuple, list)) and len(params[0]) == 2 and hasattr(params[0][0], "ndim"):
+        return list(params)
+    # Module-based fallback
+    pairs = []
+    seen = set()
+    for p in params:
+        mod = getattr(p, "_module", None) or getattr(p, "module", None)
+        if mod is None:
+            continue
+        down = getattr(mod, "lora_down", None)
+        up = getattr(mod, "lora_up", None)
+        if down is None or up is None:
+            continue
+        if isinstance(down, torch.nn.ModuleList):
+            for d, u in zip(down, up):
+                if hasattr(d, "weight") and hasattr(u, "weight"):
+                    key = (id(d.weight), id(u.weight))
+                    if key not in seen:
+                        pairs.append((d.weight, u.weight))
+                        seen.add(key)
+        elif hasattr(down, "weight") and hasattr(up, "weight"):
+            key = (id(down.weight), id(up.weight))
+            if key not in seen:
+                pairs.append((down.weight, up.weight))
+                seen.add(key)
+    return pairs or None
 
 
 def create_optimizer(name: str, params, lr: float, args_str: str = "",
@@ -306,6 +346,16 @@ def create_optimizer(name: str, params, lr: float, args_str: str = "",
             else:
                 from fizgig.training.muon import Muon
                 opt = Muon(params_list, lr=lr, **kwargs)
+        elif key == "polora":
+            pairs = _collect_lora_pairs(params_list)
+            if not pairs:
+                raise ValueError("PoLoRA requires (lora_down, lora_up) pairs; none found on the supplied parameters")
+            from fizgig.training.polora import Polora
+            # Sensible defaults; user can override via Optimizer Args
+            kwargs.setdefault("beta1", 0.9)
+            kwargs.setdefault("curvature_beta", 0.99)
+            kwargs.setdefault("ns_steps", 8)
+            opt = Polora(pairs=pairs, lr=lr, **kwargs)
         elif key == "automagic3":
             from fizgig.training.automagic3 import Automagic3
             # NON-fused: the MiniMax H3 loop clips, masks and snapshots grads between backward
