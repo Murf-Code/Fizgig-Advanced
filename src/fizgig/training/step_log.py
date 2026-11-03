@@ -49,6 +49,14 @@ class StepLog:
         if len(self.buf) >= FLUSH_EVERY:
             self.flush()
 
+    def add_polora(self, step, factor_size, magnitude):
+        """PoLoRA's average factor size ((avg sigma_A + avg sigma_B) / 2) and effective magnitude:
+        {"k": "pf", "s", "f", "m"}. No "l", so step readers skip it."""
+        if self.path is None:
+            return
+        self.buf.append(json.dumps({"k": "pf", "s": int(step), "f": float(f"{factor_size:.6g}"),
+                                    "m": float(f"{magnitude:.6g}")}) + "\n")
+
     def add_validation(self, step, epoch, loss, per_t=None, seconds=None, seg=0):
         """A fixed validation check: {"k": "val", "s", "e", "v": mean, "vt": [per timestep], "sec"}. It has no "l",
         so anything reading only step lines skips it. Written straight away (one a check)."""
@@ -146,7 +154,7 @@ def read(path, max_points=4000):
     every step: "epoch_mean", "running_avg" and "val"
     ([[step, epoch, loss, [per timestep]], ...], the fixed validation checks), and "stop": where an early stop
     finished the run ({step, epoch, best_step, best_epoch, best}) or None}."""
-    rows, val, stop = [], [], None
+    rows, val, stop, pf = [], [], None, []
     try:
         with open(path, encoding="utf-8") as f:
             for line in f:
@@ -155,6 +163,9 @@ def read(path, max_points=4000):
                     if d.get("k") == "stop":
                         stop = {"step": int(d["s"]), "epoch": int(d["e"]), "best_step": int(d["bs"]),
                                 "best_epoch": int(d["be"]), "best": float(d["v"])}
+                        continue
+                    if d.get("k") == "pf":
+                        pf.append([int(d["s"]), float(d["f"]), float(d["m"])])
                         continue
                     if d.get("k") == "val":
                         val.append([int(d["s"]), int(d["e"]), float(d["v"]), d.get("vt") or []]
@@ -175,4 +186,5 @@ def read(path, max_points=4000):
     if rows and pts[-1] is not rows[-1]:
         pts.append(rows[-1])
     return {"points": pts, "epochs": epochs, "steps": len(rows), "stride": k, "epoch_mean": epoch_means(rows),
-            "running_avg": _thin(running_avg(rows), max_points), "val": val, "stop": stop}
+            "running_avg": _thin(running_avg(rows), max_points), "val": val, "stop": stop,
+            "polora": _thin(pf, max_points)}

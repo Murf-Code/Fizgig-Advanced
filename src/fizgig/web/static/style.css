@@ -2338,6 +2338,11 @@ a.pick-pill-vast:hover { border-color: var(--success); }
 .lg-sw-raw { border-color: var(--text-muted); opacity: 0.6; border-top-width: 1px; }
 .lg-sw-smooth { border-color: var(--accent); }
 .lg-sw-lr { border-color: var(--special); border-top-style: dashed; }
+/* PoLoRA's factor size: its own colour token, which the colour-safe theme maps to Okabe-Ito bluish green */
+.loss-graph-svg .lg-pf { fill: none; stroke: var(--data-green); stroke-width: 1.2; stroke-dasharray: 1 2; vector-effect: non-scaling-stroke; }
+.loss-graph-svg .lg-pf-axis { fill: var(--data-green); }
+.lg-sw-pf { border-color: var(--data-green); border-top-style: dotted; }
+:root[data-theme="colour-safe"] .loss-graph-svg .lg-pf { stroke: var(--data-green); }
 .lg-sw-emean { border-color: var(--data-orange); border-top-width: 3px; }
 .lg-sw-ravg { border-color: var(--gold); border-top-width: 3px; }
 .lg-sw-val { border-color: var(--data-teal); border-top-width: 3px; }

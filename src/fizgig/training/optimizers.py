@@ -91,7 +91,7 @@ _CATALOG = {
     # PoLoRA, vendored (fizgig/training/polora, Apache-2.0): trains each LoRA's down/up pair together.
     # Sets its own step size from the Learning Rate (no scheduler, no Adaptive LR). Chris's runs: 2e-2 with
     # magnitude_scale=2 to 3. Needs a plain LoRA (not LoKR).
-    "polora":             (None,           "PoLoRA - trains each down/up pair together, sets its own step size (no scheduler or Adaptive LR). Try LR 2e-2 with Optimizer Args magnitude_scale=2; log_norms_every=50 prints its sizes"),
+    "polora":             (None,           "PoLoRA - trains each down/up pair together, sets its own step size (no scheduler; Adaptive LR and per-image LR scale magnitude_scale). Try LR 2e-2 with Optimizer Args magnitude_scale=2; log_norms_every=50 prints its sizes"),
     # Ostris's Automagic v3, vendored (fizgig/training/automagic3.py, MIT). One learning rate per
     # parameter group, nudged up while update signs hold steady and down while they alternate;
     # the LR given is only its START (1e-6 is its own default). MiniMax H3 LoRA experiment,

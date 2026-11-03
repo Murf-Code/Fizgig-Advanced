@@ -127,15 +127,19 @@ class Polora(Optimizer):
         self._step_count = 0
         self._grad_norm_ema = None
         self._timestep_scale = 1.0
-        # dynamic=True lets the LoRA shape groups share one compiled kernel.
+        # Per-step multipliers on magnitude_scale set by the training loop (Fizgig): the per-image loss watch and
+        # Adaptive LR. effective magnitude = magnitude_scale * per_image * adaptive; 1.0 each = unchanged.
+        self._image_factor = 1.0
+        self._adaptive_factor = 1.0
+        self.record_every = 0           # Fizgig's loss graph: also measure the factor sizes on these steps
+        self.last_norms = None          # {"step", "sigma_A", "sigma_B", "magnitude"} from the last measured step
+        # dynamic=True lets the LoRA shape groups share one compiled kernel. A compile that cannot run (Windows
+        # without triton, an old torch) falls back to the plain kernels with one line, at the first use.
+        self._polar_fn = polar_express_gram_batched
+        self._invsqrt_fn = ns_inv_sqrt
+        self._compiled = False
         if compile:
-            self._polar_fn = torch.compile(
-                polar_express_gram_batched, dynamic=True, fullgraph=False)
-            self._invsqrt_fn = torch.compile(
-                ns_inv_sqrt, dynamic=True, fullgraph=False)
-        else:
-            self._polar_fn = polar_express_gram_batched
-            self._invsqrt_fn = ns_inv_sqrt
+            self._compiled = self._try_compile()
 
         self.pair_state = {}
         for i, (A, B) in enumerate(pairs):
@@ -147,6 +151,52 @@ class Polora(Optimizer):
                 'Q': torch.full((d_in,), self.epsilon, dtype=torch.float32, device=A.device),
                 'P': torch.full((d_out,), self.epsilon, dtype=torch.float32, device=B.device),
             }
+
+    def _try_compile(self):
+        log = logging.getLogger("fizgig.polora")
+        dev = self.pairs[0][0].device
+        if dev.type == "cuda":
+            try:
+                import triton  # noqa: F401
+            except Exception:
+                log.info("[polora] compile is off: triton is not installed (usual on Windows) - running uncompiled")
+                return False
+        try:
+            self._polar_fn = torch.compile(polar_express_gram_batched, dynamic=True, fullgraph=False)
+            self._invsqrt_fn = torch.compile(ns_inv_sqrt, dynamic=True, fullgraph=False)
+        except Exception as e:
+            self._polar_fn, self._invsqrt_fn = polar_express_gram_batched, ns_inv_sqrt
+            log.info("[polora] compile is off: %s - running uncompiled", str(e).splitlines()[0][:200] if str(e) else type(e).__name__)
+            return False
+        log.info("[polora] compiling its polar and inverse-square-root kernels (the first steps are slower)")
+        return True
+
+    def _kernel(self, name, *args, **kw):
+        """Run a compiled kernel; if it fails (compile errors surface on the first call), switch to the plain
+        kernels for good, with one line."""
+        fn = getattr(self, name)
+        if not self._compiled:
+            return fn(*args, **kw)
+        try:
+            return fn(*args, **kw)
+        except Exception as e:
+            self._compiled = False
+            self._polar_fn, self._invsqrt_fn = polar_express_gram_batched, ns_inv_sqrt
+            msg = str(e).splitlines()[0][:200] if str(e) else type(e).__name__
+            logging.getLogger("fizgig.polora").info("[polora] compile failed (%s) - running uncompiled from here", msg)
+            return getattr(self, name)(*args, **kw)
+
+    @torch.no_grad()
+    def set_magnitude_factors(self, image=None, adaptive=None):
+        """Fizgig: the per-image loss-watch factor (this step) and the Adaptive LR factor, each multiplying
+        magnitude_scale. None leaves that one as it is."""
+        if image is not None:
+            self._image_factor = float(image)
+        if adaptive is not None:
+            self._adaptive_factor = float(adaptive)
+
+    def effective_magnitude(self):
+        return self.magnitude_scale * self._image_factor * self._adaptive_factor
 
     @staticmethod
     def _sym(M):
@@ -177,7 +227,7 @@ class Polora(Optimizer):
 
     def _polar_batched(self, X):
         """Matrix sign via PolarExpress (Frobenius-prescaled internally)."""
-        return self._polar_fn(X, nsteps=self.ns_steps)
+        return self._kernel("_polar_fn", X, nsteps=self.ns_steps)
 
     @torch.no_grad()
     def set_timestep_scale(self, scale):
@@ -243,6 +293,8 @@ class Polora(Optimizer):
         for i, (A, B) in enumerate(pairs):
             groups[(A.shape[0], A.shape[1], B.shape[0], A.device)].append(i)
         log_now = bool(self.log_norms_every) and self._step_count % self.log_norms_every == 0
+        record_now = bool(self.record_every) and self._step_count % self.record_every == 0
+        magnitude = self.effective_magnitude()
         sig_A, sig_B = [], []
         for idxs in groups.values():
             G_A = torch.stack([pairs[i][0].grad.float() for i in idxs])
@@ -261,10 +313,10 @@ class Polora(Optimizer):
             # Curvature factors, rebuilt each step (not stored).
             C_B = Bw.transpose(-2, -1) @ (P_dmp.unsqueeze(-1) * Bw)
             C_A = (Aw * Q_dmp.unsqueeze(1)) @ Aw.transpose(-2, -1)
-            C_B_isqrt = self._invsqrt_fn(self._sym(C_B), nsteps=self.higham_iters,
+            C_B_isqrt = self._kernel("_invsqrt_fn", self._sym(C_B), nsteps=self.higham_iters,
                                          eps=self.delta, eps_relative=True,
                                          floor=self.epsilon)
-            C_A_isqrt = self._invsqrt_fn(self._sym(C_A), nsteps=self.higham_iters,
+            C_A_isqrt = self._kernel("_invsqrt_fn", self._sym(C_A), nsteps=self.higham_iters,
                                          eps=self.delta, eps_relative=True,
                                          floor=self.epsilon)
             C_B_inv = C_B_isqrt @ C_B_isqrt
@@ -279,8 +331,8 @@ class Polora(Optimizer):
             sigma_B = self._smax_warm(Bw, grp, 'v_sigma_B')
             # Magnitude scale + optional timestep scale + optional decay
             rho = lr / (sigma_B + sigma_A)
-            rho = rho * self.magnitude_scale * self._timestep_scale * self._decay_factor()
-            if log_now:
+            rho = rho * magnitude * self._timestep_scale * self._decay_factor()
+            if log_now or record_now:
                 sig_A.append(sigma_A.detach().reshape(-1))
                 sig_B.append(sigma_B.detach().reshape(-1))
 
@@ -315,16 +367,19 @@ class Polora(Optimizer):
                 A_.grad.zero_()
                 B_.grad.zero_()
 
+        if log_now or record_now:
+            sa, sb = float(torch.cat(sig_A).float().mean()), float(torch.cat(sig_B).float().mean())
+            self.last_norms = {"step": self._step_count, "sigma_A": sa, "sigma_B": sb, "magnitude": magnitude}
         if log_now:                     # one line over every pair, not one per shape group
             logging.getLogger("fizgig.polora").info(
-                "[polora] step %d: avg sigma_A %.4f, avg sigma_B %.4f, rho_scale %.3f",
-                self._step_count, float(torch.cat(sig_A).float().mean()), float(torch.cat(sig_B).float().mean()),
-                self.magnitude_scale * self._timestep_scale * self._decay_factor())
+                "[polora] step %d: avg sigma_A %.4f, avg sigma_B %.4f, magnitude %.3f (set %.3g x image %.2f x adaptive %.2f), rho_scale %.3f",
+                self._step_count, sa, sb, magnitude, self.magnitude_scale, self._image_factor, self._adaptive_factor,
+                magnitude * self._timestep_scale * self._decay_factor())
         return loss
 
     def state_dict(self):
         sd = super().state_dict()
-        sd["polora"] = {"step": self._step_count,
+        sd["polora"] = {"step": self._step_count, "adaptive_factor": self._adaptive_factor,
                         "pairs": {i: {k: v.detach().cpu().clone() for k, v in st.items() if torch.is_tensor(v)}
                                   for i, st in self.pair_state.items()}}
         return sd
@@ -347,3 +402,4 @@ class Polora(Optimizer):
             for k, v in saved[i].items():
                 st[k] = v.to(dev)
         self._step_count = int(extra.get("step", 0))
+        self._adaptive_factor = float(extra.get("adaptive_factor", 1.0))

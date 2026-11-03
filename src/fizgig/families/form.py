@@ -1106,6 +1106,13 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
         notes.update(bad_lr)
     if kind == "finetune":       # a fine-tune trains at its own fixed rate: no Adaptive LR, on any model
         hidden.add("ADAPTIVE_LR")
+    if str(values.get("OPTIMIZER_TYPE", "")).strip().lower() == "polora" and kind not in ("slider", "finetune"):
+        notes["ADAPTIVE_LR"] = "With PoLoRA this scales magnitude_scale instead of LR (Min/Max only set how far, " \
+                               "around 1x). Per-image LR does the same, image by image."
+        if values.get("ADAPTIVE_LR"):            # PoLoRA still steps at the Learning Rate box
+            disabled.discard("LEARNING_RATE")
+            for k in bad_lr:
+                notes.pop(k, None)
     from fizgig.training.optimizers import (
         MUON_DEFAULT_ARGS, PRODIGY_DEFAULT_ARGS, strip_muon_args, strip_prodigy_args,
     )

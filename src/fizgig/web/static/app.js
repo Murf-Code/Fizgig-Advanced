@@ -816,10 +816,7 @@ function onValue(r, val) {
         S.values.LEARNING_RATE = opt === "automagic3" ? "1e-6" : familyDefaultLr();
         touched.push("LEARNING_RATE");
       }
-      if (opt === "polora" && S.values.ADAPTIVE_LR) {    // PoLoRA sets its own step size: Adaptive LR stands down
-        S.values.ADAPTIVE_LR = false;
-        touched.push("ADAPTIVE_LR");
-      }
+      // PoLoRA keeps Adaptive LR and per-image LR: they scale its magnitude_scale, not the rate
       const nextArgs = (wasProdigy || wasMuon) ? "" : curArgs;
       if (wasProdigy || wasMuon || nextArgs !== String(S.values.OPTIMIZER_ARGS || "").trim()) {
         S.values.OPTIMIZER_ARGS = nextArgs;
@@ -4263,6 +4260,10 @@ function lossGraph(data) {
   const clip = el("input", {type: "checkbox"}); clip.checked = set.clip;
   const lrOn = el("input", {type: "checkbox"}); lrOn.checked = set.lr;
   const hasLr = pts.some((p) => p[3] != null);
+  // PoLoRA: its average factor size ((avg sigma_A + avg sigma_B) / 2) at its logging steps, own right-hand scale
+  const pf = (data.polora || []).filter((p) => isFinite(p[1]));
+  const hasPf = pf.length > 1;
+  const pfOn = el("input", {type: "checkbox"}); pfOn.checked = set.pf !== false;
   // the trend views (each its own switch, kept with the others): worked out by the server from every step
   const tog = (k) => { const i = el("input", {type: "checkbox"}); i.checked = !!set[k]; return i; };
   const emOn = tog("emean"), raOn = tog("ravg"), valOn = tog("val");
@@ -4271,19 +4272,20 @@ function lossGraph(data) {
   const val = (data.val || []).filter((p) => isFinite(p[2]));
   const hasVal = val.length > 0;
   const redraw = () => {
-    Object.assign(set, {smooth: Number(smooth.value), log: log.checked, clip: clip.checked, lr: lrOn.checked,
+    Object.assign(set, {smooth: Number(smooth.value), log: log.checked, clip: clip.checked, lr: lrOn.checked, pf: pfOn.checked,
       emean: emOn.checked, ravg: raOn.checked, val: valOn.checked});
     lgSave(set);
     legendFill();
     draw();
   };
-  for (const i of [smooth, log, clip, lrOn, emOn, raOn, valOn]) i.addEventListener("input", redraw);
+  for (const i of [smooth, log, clip, lrOn, pfOn, emOn, raOn, valOn]) i.addEventListener("input", redraw);
   // what each line and mark is
   const key = (cls, text) => el("span", {class: "lg-key"}, el("i", {class: "lg-sw " + cls}), text);
   const legend = el("div", {class: "lg-legend"});
   const legendFill = () => legend.replaceChildren(...[
     key("lg-sw-raw", "loss at each step"), key("lg-sw-smooth", "smoothed loss"),
     hasLr && set.lr ? key("lg-sw-lr", "learning rate (right-hand scale)") : null,
+    hasPf && pfOn.checked ? key("lg-sw-pf", "PoLoRA factor size (its own right-hand scale, green)") : null,
     set.emean && em.length ? key("lg-sw-emean", "average loss of each epoch") : null,
     set.ravg && ra.length ? key("lg-sw-ravg", "running avg (kohya-style: drifts down by itself)") : null,
     set.val && hasVal ? key("lg-sw-val", "fixed validation loss (same images, noise and seed)" +
@@ -4294,7 +4296,7 @@ function lossGraph(data) {
   const tip = (node, text) => { node.title = text; return node; };
   box.append(el("div", {class: "field-row loss-graph-ctl"},
     el("span", {class: "field-label", text: "Smoothing:"}), smooth, ctl("Log scale", log), ctl("Clip outliers", clip),
-    hasLr ? ctl("Learning rate", lrOn) : null),
+    hasLr ? ctl("Learning rate", lrOn) : null, hasPf ? ctl("PoLoRA factor size", pfOn) : null),
   el("div", {class: "field-row loss-graph-ctl"}, el("span", {class: "field-label", text: "Trends:"}),
     tip(ctl("Epoch average", emOn), "One point an epoch: the mean loss of all its steps."),
     tip(ctl("Running avg (kohya-style)", raOn), "What kohya-based trainers (and Anima Standalone) show as avr_loss: " +
@@ -4310,7 +4312,7 @@ function lossGraph(data) {
     // numbers in teal in a second column beside the loss numbers, so both trends fill the plot height
     const trends = (set.emean && em.length) || (set.ravg && ra.length);
     const ownVal = valScale(trends, set.val, val.length);
-    const L = ownVal ? 110 : 54, R = hasLr && set.lr ? 64 : 12, T = 10, B = 26;   // room for the live rate beside "LR"
+    const L = ownVal ? 110 : 54, R = (hasLr && set.lr) || (hasPf && pfOn.checked) ? 64 : 12, T = 10, B = 26;   // room for the live rate beside "LR"
     const xs = pts.map((p) => p[0]);
     const x0 = !xs.length ? xs[0] : Math.min(xs[0], ...(set.val && hasVal ? [val[0][0]] : [])), x1 = xs[xs.length - 1];   // a step-0 baseline
     const tf = (v) => (set.log ? Math.log10(Math.max(v, 1e-8)) : v);
@@ -4427,6 +4429,16 @@ function lossGraph(data) {
         const t = mk("text", {x: W - R + 4, y: yy, class: "lg-axis lg-lr-axis" + cls}); t.textContent = text; svg.append(t);
       }
       svg.append(mk("circle", {cx: lx, cy: ly, r: 3, class: "lg-lr-now"}));
+    }
+    // PoLoRA's factor size, 0..its peak (with headroom), labelled at the right under the LR's numbers
+    if (hasPf && pfOn.checked) {
+      const top = Math.max(...pf.map((p) => p[1])) * 1.1 || 1;
+      const FY = (v) => T + (H - T - B) * (1 - Math.min(Math.max(v, 0), top) / top);
+      const line = mk("polyline", {class: "lg-pf", points: pf.map((p) => `${X(p[0]).toFixed(1)},${FY(p[1]).toFixed(1)}`).join(" ")});
+      const lp = pf[pf.length - 1];
+      const ft = mk("title", {}); ft.textContent = `PoLoRA factor size ${lp[1].toFixed(4)} at step ${lp[0]} (magnitude ${lp[2].toFixed(2)})`;
+      line.append(ft); svg.append(line);
+      const t = mk("text", {x: W - R + 4, y: T + 28, class: "lg-axis lg-pf-axis"}); t.textContent = lp[1].toPrecision(3); svg.append(t);
     }
     // the lowest smoothed point
     let bi = 0;

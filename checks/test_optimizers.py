@@ -452,9 +452,21 @@ def test_launch_per_image_lr_with_prodigy(tmp_path, opt, lr, keeps):
 def test_trainer_keeps_per_image_lr_only_for_prodigy():
     src = open(os.path.join(os.path.dirname(__file__), "..", "src", "fizgig", "families", "train.py"),
                encoding="utf-8").read()
-    blk = src[src.index("    if owns_its_rate(optimizer):        # Automagic v3"):]
+    blk = src[src.index("    elif owns_its_rate(optimizer):        # Automagic v3"):]
     blk = blk[:blk.index("box_learning_rate = learning_rate")]
     assert '_keeps_pilr = str(optimizer_type or "").strip().lower() == "prodigy"' in blk
     assert "adaptive_lr = warmup_look_outliers = False" in blk
     assert "if not _keeps_pilr:\n            per_image_lr = False" in blk
     assert "m = 1.0                        # Automagic v3 / Prodigy owns the rate" in src   # lr_acc path untouched
+
+
+def test_polora_factors_multiply_magnitude():
+    import torch
+    from fizgig.training.polora import Polora
+    A, B = torch.nn.Parameter(torch.randn(2, 6)), torch.nn.Parameter(torch.zeros(4, 2))
+    o = Polora(pairs=[(A, B)], lr=2e-2, magnitude_scale=2.0)
+    for img, want in ((0.5, 1.0), (1.1, 2.2), (1.2, 2.4)):
+        o.set_magnitude_factors(image=img)
+        assert abs(o.effective_magnitude() - want) < 1e-9
+    o.set_magnitude_factors(image=1.0, adaptive=0.5)
+    assert abs(o.effective_magnitude() - 1.0) < 1e-9
