@@ -14,7 +14,6 @@ a Cosmos-Predict2 2B DiT with an LLM adapter, a Qwen3 0.6B text encoder and the 
 * LoRA: each block's self- and cross-attention and MLP Linears; kohya keys (lora_unet_blocks_0_self_attn_q_proj),
   which ComfyUI maps to diffusion_model.blocks.0.self_attn.q_proj
 """
-import math
 
 import numpy as np
 import torch

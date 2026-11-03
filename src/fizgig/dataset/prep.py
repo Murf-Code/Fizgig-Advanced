@@ -10,7 +10,6 @@ light into every score) with the face embedder Image Prep's face settings pick (
 anime faces: face_utils), and saves <folder>/fizgig_look_scores.json, which training's "Warm up look outliers" reads:
 keep its format.
 """
-import glob
 import json
 import math
 import os

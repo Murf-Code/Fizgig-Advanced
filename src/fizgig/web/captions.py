@@ -20,7 +20,6 @@ import re
 import subprocess
 import sys
 import threading
-import time
 
 from fizgig.user_data import user_file  # noqa: E402  (Fizgig's own files: user_data/)
 from fizgig.dataset.masks import is_mask_file  # noqa: E402
