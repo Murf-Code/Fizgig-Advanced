@@ -136,7 +136,7 @@ def test_wm_score():
     old = D.WM_SCORE
     try:
         D.set_wm_score("0.7"); assert D.WM_SCORE == 0.7
-        D.set_wm_score(5); assert D.WM_SCORE == 0.95
-        D.set_wm_score("x"); assert D.WM_SCORE == 0.95
+        D.set_wm_score(5); assert D.WM_SCORE == 0.9
+        D.set_wm_score("x"); assert D.WM_SCORE == 0.9
     finally:
         D.WM_SCORE = old

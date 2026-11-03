@@ -50,7 +50,7 @@ def set_wm_score(v):
     """The masks card's sureness slider: boxes the watermark models are less sure of than this are left out."""
     global WM_SCORE
     try:
-        WM_SCORE = float(min(0.95, max(0.1, float(v))))
+        WM_SCORE = float(min(0.9, max(0.1, float(v))))   # the slider: 0.10-0.90
     except (TypeError, ValueError):
         pass
 
