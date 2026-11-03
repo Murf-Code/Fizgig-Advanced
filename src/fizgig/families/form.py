@@ -1123,13 +1123,13 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
         cleaned_args = strip_prodigy_args(cleaned_args)
     if opt != "muon":
         cleaned_args = strip_muon_args(cleaned_args)
-    if opt == "automagic3":
+    if opt in ("automagic3", "automagic4"):
         disabled |= {"ADAPTIVE_LR", "KREA2_PER_IMAGE_LR", "KREA2_WARMUP_LOOK"}
         force.update({k: False for k in ("ADAPTIVE_LR", "KREA2_PER_IMAGE_LR", "KREA2_WARMUP_LOOK") if values.get(k)})
         if values.get("ADAPTIVE_LR"):            # turned off now: as it shows with Adaptive LR off
             disabled.discard("LEARNING_RATE")
             hidden |= {"ADAPTIVE_LR_MIN", "ADAPTIVE_LR_MAX"}
-        notes["OPTIMIZER_TYPE"] = "automagic3 sets its own learning rate: Adaptive LR, per-image LR and the look " \
+        notes["OPTIMIZER_TYPE"] = f"{opt} sets its own learning rate: Adaptive LR, per-image LR and the look " \
                                   "warm-up are off."
     elif opt == "prodigy":
         # per-image LR stays: with Prodigy it is a weight on that image's loss, not a write to the group rate
@@ -1164,7 +1164,7 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
         except ValueError:
             lr_val = 0.0
         if lr_val >= 0.1:
-            restored_lr = "1e-6" if opt == "automagic3" else _default_lr(desc)
+            restored_lr = "1e-6" if opt in ("automagic3", "automagic4") else _default_lr(desc)
             force["LEARNING_RATE"] = restored_lr
             values = {**values, "LEARNING_RATE": restored_lr}
     hidden |= {s for s, k in (("edit", "edit"), ("slider", "slider"), ("finetune", "finetune")) if k != kind}
@@ -1620,7 +1620,7 @@ def _default_lr(desc) -> str:
         except (TypeError, ValueError):
             return str(lr)
     for _name, pr in getattr(desc, "presets", None) or ():
-        if (str(pr.get("OPTIMIZER_TYPE") or "").lower() not in ("automagic3", "prodigy")
+        if (str(pr.get("OPTIMIZER_TYPE") or "").lower() not in ("automagic3", "automagic4", "prodigy")
                 and not pr.get("FAMILY_SLIDER") and not pr.get("FAMILY_FT") and pr.get("LEARNING_RATE")):
             v = float(pr["LEARNING_RATE"])
             txt = f"{v:.0e}".replace("e-0", "e-").replace("e+0", "e+")
@@ -1635,7 +1635,7 @@ def _lr_hint(desc, values, kind, image_folder):
     hint = getattr(desc, "lr_hint", (2e-4, 125))
     if not hint or kind != "standard" or not image_folder:
         return None
-    if str(values.get("OPTIMIZER_TYPE") or "").strip().lower() in ("prodigy", "automagic3"):
+    if str(values.get("OPTIMIZER_TYPE") or "").strip().lower() in ("prodigy", "automagic3", "automagic4"):
         return None
     adaptive = bool(values.get("ADAPTIVE_LR"))
     key = "ADAPTIVE_LR_MIN" if adaptive else "LEARNING_RATE"

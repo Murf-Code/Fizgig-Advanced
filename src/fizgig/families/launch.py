@@ -1490,7 +1490,7 @@ def multi_concept_problems(desc, inputs):
 
 
 def automagic(inputs):
-    return _s(inputs.get("OPTIMIZER_TYPE")).lower() == "automagic3"
+    return _s(inputs.get("OPTIMIZER_TYPE")).lower() in ("automagic3", "automagic4")
 
 
 def prodigy(inputs):

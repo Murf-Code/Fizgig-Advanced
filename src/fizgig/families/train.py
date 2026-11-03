@@ -1743,11 +1743,17 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
             except (OSError, ValueError):
                 pass
         opt_params = params
+<<<<<<< HEAD
         if str(optimizer_type or "").lower() == "polora":   # trains each LoRA's down/up pair together
             from fizgig.training.optimizers import polora_pairs
             opt_params = polora_pairs(net)
             logger.info(f"[optimizer] PoLoRA: {len(opt_params)} down/up pairs")
         if str(optimizer_type or "").lower() == "automagic3":
+||||||| 2821f636
+        if str(optimizer_type or "").lower() == "automagic3":
+=======
+        if str(optimizer_type or "").lower() in ("automagic3", "automagic4"):
+>>>>>>> new-optimizers
             groups = _optimizer_family_groups(desc, net, learning_rate)
             if groups:                   # one rate per group: each family of modules finds its own
                 opt_params = groups
@@ -1755,7 +1761,7 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
                     f"{g['family']} ({g['modules']} modules)" for g in groups) + " - each votes its own rate")
             if desc.automagic_sign_window and "polarity_history" not in (optimizer_args or ""):
                 optimizer_args = f"{optimizer_args or ''} polarity_history={desc.automagic_sign_window}".strip()
-                logger.info(f"[optimizer] Automagic v3: sign window {desc.automagic_sign_window} (this family's "
+                logger.info(f"[optimizer] Automagic: sign window {desc.automagic_sign_window} (this family's "
                             f"default; set polarity_history in Optimizer Args to override)")
         _oargs = optimizer_args or ""
         if (desc.optimizer_weight_decay is not None and "weight_decay" not in _oargs

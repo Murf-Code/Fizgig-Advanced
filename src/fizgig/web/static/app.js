@@ -777,7 +777,7 @@ function familyDefaultLr() {
   for (const p of (S.fam && S.fam.form && S.fam.form.presets) || []) {
     const v = p.values || {};
     const opt = String(v.OPTIMIZER_TYPE || "").toLowerCase();
-    if (opt !== "automagic3" && opt !== "prodigy" && !v.FAMILY_SLIDER && !v.FAMILY_FT && v.LEARNING_RATE) {
+    if (opt !== "automagic3" && opt !== "automagic4" && opt !== "prodigy" && !v.FAMILY_SLIDER && !v.FAMILY_FT && v.LEARNING_RATE) {
       const n = Number(v.LEARNING_RATE);
       if (isFinite(n) && n > 0) return n.toExponential().replace("e-0", "e-").replace("e+0", "e+");
     }
@@ -813,7 +813,7 @@ function onValue(r, val) {
     } else {
       const touched = [];
       if (wasProdigy || parseFloat(S.values.LEARNING_RATE) >= 0.1) {
-        S.values.LEARNING_RATE = opt === "automagic3" ? "1e-6" : familyDefaultLr();
+        S.values.LEARNING_RATE = (opt === "automagic3" || opt === "automagic4") ? "1e-6" : familyDefaultLr();
         touched.push("LEARNING_RATE");
       }
       // PoLoRA keeps Adaptive LR and per-image LR: they scale its magnitude_scale, not the rate
