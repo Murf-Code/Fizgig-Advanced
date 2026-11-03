@@ -294,7 +294,8 @@
                 <div class="field-row prep-opts prep-face" id="prepFindRow" style="display:none">
                   <span class="field-label">Find this:</span>
                   <input type="text" id="prepFind" class="w-path" placeholder="e.g. hat, tail, hand">
-                  <label title="With several words: one close-up around everything found (the biggest of each), instead of one crop per word. Skipped when it would cover nearly the whole picture."><input type="checkbox" id="prepFitAll" checked> Fit all words in one crop</label>
+                  <label title="With several words: one close-up around everything found (the biggest of each). Skipped when it would cover the whole picture anyway."><input type="checkbox" id="prepFitAll" checked> Fit all words in one crop</label>
+                  <label title="A close-up of each word found, on its own. With Fit all words on too, you get both: the one around everything, and one for each word."><input type="checkbox" id="prepSeparate"> Separate crop for each word</label>
                 </div>
                 <div class="field-hint" id="prepFindHint" style="display:none"></div>
                 <div class="field-hint" id="prepFinderNow"></div>
@@ -354,9 +355,9 @@
                   <div class="field-hint" id="prepFaceMsg"></div>
                   <div class="tc-box" id="prepDetectorsBox">
                     <div class="field-label">Body-part and watermark detectors</div>
-                    <div class="field-hint">Other… sends each word to the first of these that knows it (after your
-                      YOLO face model), and to SAM 3.1 last. Optional: a missing one is skipped. Civitai models come as
-                      .pt files: convert each once with tools/convert_detector_to_onnx.py (docs/FACE_BACKENDS.md).</div>
+                    <div class="field-hint">Other… tries these in order (after your YOLO face model), SAM 3.1 last;
+                      a missing one is skipped. Civitai's .pt files need converting once:
+                      tools/convert_detector_to_onnx.py (docs/FACE_BACKENDS.md).</div>
                     <div id="prepDetectors"></div>
                   </div>
                 </details>
@@ -365,7 +366,6 @@
                 <div class="field-hint">Sizing is by target area (megapixels), not longest side: this matches how
                   training buckets your images, so prepping costs you no resolution. The resized copies keep their
                   aspect ratio; close-ups are cut from the full-size pictures, then sized the same way.</div>
-                <label class="prep-opts" title="Finds watermarks with the two watermark detectors (Anime/furry/drawn characters) and masks them out, so masked training ignores them. Masks go in a 'masks' sub-folder, merged with any mask a picture has."><input type="checkbox" id="prepWatermarks"> Mask watermarks</label>
                 <div class="problems" id="prepMpWarn"></div>
               </div>
             </div>
@@ -441,6 +441,10 @@
                   Only my subject, when there are several people</label>
                 <div class="field-hint radio-hint" id="maskSubjectHint">Finds your subject by their face, with the
                   Look Filter's 3 baselines (the last card on this tab); everyone else counts as background.</div>
+                <label class="checkbox-label"><input type="checkbox" id="maskWatermarks"> Mask watermarks too</label>
+                <div class="field-hint radio-hint">Finds watermarks and signatures with the two watermark detectors
+                  (Anime/furry/drawn characters, Body-part and watermark detectors) and blacks them out of each mask,
+                  so training ignores them.</div>
                 <label class="checkbox-label"><input type="checkbox" id="maskReplace"> Replace masks already there</label>
                 <div class="field-hint radio-hint">Off: masks already in the folder, including any you painted
                   yourself, are kept.</div>

@@ -2,15 +2,18 @@
 
 Other…'s Find this words go down a chain, each word to the first model that has a class for it (or a synonym, e.g.
 butt for ass): the YOLO face model (Fdetailer) first, then booru_yolo, then Anime NSFW All-in-One, then assDetailer,
-then SAM 3.1 last. A box covering more than prep.HIT_MAX_SHARE of the picture is dropped; a model that finds only such
-boxes for a word hands the word on to the next one. A model whose file isn't there is skipped (said once).
+then SAM 3.1 last. A detector's boxes are trusted however big; only SAM 3.1's are dropped when they cover more than
+prep.HIT_MAX_SHARE of the picture. A model that finds nothing for a word hands it on to the next one. The log names the
+model behind each box. A model whose file isn't there is skipped (said once).
 
 Weights are the user's: booru_yolo has a Download button (Hugging Face, deepghs/booru_yolo; the weights' own licence
 is Ultralytics' AGPL-3.0, so Fizgig never ships them). The Civitai models are .pt files the user downloads and turns
 into .onnx once with tools/convert_detector_to_onnx.py (docs/FACE_BACKENDS.md).
 
-Watermark masks: both watermark models' boxes (score >= WM_SCORE, padded WM_PAD px) are painted black on a white mask
-saved in the folder's masks/ sub-folder, merged with a mask already there; masked training then leaves them out."""
+Watermark masks (Make masks' Mask watermarks, never during cropping): both watermark models' boxes (score >= WM_SCORE,
+padded WM_PAD px) are painted black on the picture's mask beside it (photo-masklabel.png), merged with the mask it
+has; masked training then leaves them out. A box over WM_MAX_SHARE of the picture is dropped: watermark_s fires on big
+blank areas at scores 0.3-0.7 (measured on real sets), while real watermarks and signatures are small."""
 import json
 import os
 import threading
@@ -37,7 +40,7 @@ WATERMARK = [
 ]
 MODELS = {m["key"]: m for m in BODY + WATERMARK}
 CONF = 0.35
-WM_SCORE, WM_PAD, WM_WARN = 0.3, 8, 0.15
+WM_SCORE, WM_PAD, WM_WARN, WM_MAX_SHARE = 0.3, 8, 0.15, 0.10
 
 # a typed word -> class names that count as it (compared by face_utils.class_key: case, spaces, _ and - ignored)
 SYNONYMS = {
@@ -166,6 +169,10 @@ def route(words, stage_list):
     return out
 
 
+def _share_text(b, w, h):
+    return f"{100 * (b[2] - b[0]) * (b[3] - b[1]) / float(w * h or 1):.0f}%"
+
+
 def chain_finder(words, stage_list, seg=None, log=print, fit_all=False, max_share=None, seg_factory=None):
     """A prep.ThingFinder that sends each word down the chain (SAM 3.1 last: seg, or seg_factory() made the first time
     a word needs it - SAM 3.1 is only loaded when a model couldn't find the word)."""
@@ -188,10 +195,6 @@ def chain_finder(words, stage_list, seg=None, log=print, fit_all=False, max_shar
                 parts.append(f"{w}: {' then '.join(who) if who else 'nothing installed finds it'}")
             return "; ".join(parts)
 
-        def _ok(self, b, w, h):
-            x1, y1, x2, y2 = b
-            return (x2 - x1) * (y2 - y1) <= self.max_share * w * h
-
         def find(self, img):
             from fizgig.face_utils import _face_info
             arr = np.asarray(img.convert("RGB"))
@@ -211,10 +214,14 @@ def chain_finder(words, stage_list, seg=None, log=print, fit_all=False, max_shar
                     kept = []
                     for x1, y1, x2, y2, s, _c in hits:
                         b = self._clamped((x1, y1, x2, y2), w, h)
-                        if b and self._ok(b, w, h):
+                        if b:                              # a detector's box is trusted, however big
                             kept.append(_face_info(*b, gender=word, score=float(s), source="yolo"))
                     if kept:
-                        out += sorted(kept, key=lambda f: -f.score)
+                        kept.sort(key=lambda f: -f.score)
+                        log(f"  {word}: found by {self.stages[i][0]} ("
+                            + ", ".join(f"score {f.score:.2f}, {_share_text(f.bbox, w, h)} of the picture"
+                                        for f in kept[:3]) + ")\n")
+                        out += kept
                         got = True
                         break
                 if not got and self.seg is None and seg_factory is not None:
@@ -225,6 +232,8 @@ def chain_finder(words, stage_list, seg=None, log=print, fit_all=False, max_shar
                             continue
                         b = self._clamped(f["box"], w, h)
                         if b:
+                            log(f"  {word}: found by SAM 3.1 (score {f.get('score', 1.0):.2f}, "
+                                f"{_share_text(b, w, h)} of the picture)\n")
                             out.append(_face_info(*b, gender=word, score=f.get("score", 1.0), source="sam3"))
             return out
 
@@ -251,7 +260,7 @@ def watermark_boxes(arr, models):
         try:
             ids = sorted((b.all_classes() or {}).keys())
             for x1, y1, x2, y2, s, _c in b.find_classes(arr, ids):
-                if s >= WM_SCORE:
+                if s >= WM_SCORE and (x2 - x1) * (y2 - y1) <= WM_MAX_SHARE * w * h:
                     out.append((max(0, int(x1) - WM_PAD), max(0, int(y1) - WM_PAD),
                                 min(w, int(np.ceil(x2)) + WM_PAD), min(h, int(np.ceil(y2)) + WM_PAD)))
         except Exception:
@@ -260,8 +269,8 @@ def watermark_boxes(arr, models):
 
 
 def watermark_mask(image_path, img, models):
-    """Paint the watermarks black on the picture's mask (masks/<stem>-masklabel.png, merged with the mask it already
-    has). Returns the share of the picture covered (0 when none found: nothing written)."""
+    """Paint the watermarks black on the picture's mask (beside it: <stem>-masklabel.png, merged with the mask it
+    already has). Returns the share of the picture covered (0 when none found: nothing written)."""
     from PIL import Image
     from fizgig.dataset.masks import MASK_SUFFIX, mask_for
     arr = np.asarray(img.convert("RGB"))
@@ -278,11 +287,33 @@ def watermark_mask(image_path, img, models):
     for x1, y1, x2, y2 in boxes:
         cover[y1:y2, x1:x2] = True
     m[cover] = 0
-    d = os.path.join(os.path.dirname(image_path), "masks")
-    os.makedirs(d, exist_ok=True)
     stem = os.path.splitext(os.path.basename(image_path))[0]
-    Image.fromarray(m, "L").save(os.path.join(d, stem + MASK_SUFFIX + ".png"))
+    Image.fromarray(m, "L").save(os.path.join(os.path.dirname(image_path), stem + MASK_SUFFIX + ".png"))
     return float(cover.mean())
+
+
+def watermark_folder(folder, models, log=print):
+    """Make masks' Mask watermarks: every picture in the folder (top level) gets its watermarks masked. Returns
+    [(name, share covered)] of the pictures with any."""
+    from fizgig.dataset import prep
+    found = []
+    for p in prep.image_files(folder):
+        try:
+            img = prep.load_image(p)
+            try:
+                share = watermark_mask(p, img, models)
+            finally:
+                img.close()
+        except Exception as e:
+            log(f"  {os.path.basename(p)}: watermarks not checked ({e})\n")
+            continue
+        if share:
+            found.append((os.path.basename(p), share))
+    log(f"Watermarks masked: {len(found)} picture(s)\n")
+    big = [f"{n} ({100 * s:.0f}%)" for n, s in found if s > WM_WARN]
+    if big:
+        log("Watermarks cover a lot of these - worth a look: " + ", ".join(big) + "\n")
+    return found
 
 
 def download_booru():

@@ -48,7 +48,7 @@ def main(argv=None):
             venv.create(tmp, with_pip=True)
             subprocess.check_call([py, "-m", "pip", "install", "--quiet", "ultralytics", "onnx"])
         subprocess.check_call([py, os.path.join(ROOT, "src", "fizgig", "scripts", "convert_yolo_to_onnx.py"), pt,
-                               "--out", out])
+                               "--out", out, "--detector"])
         print(f"[convert] saved {out}")
     finally:
         if not a.keep_venv:

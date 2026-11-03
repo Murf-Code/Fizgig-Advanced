@@ -193,7 +193,7 @@ def test_sam_giant_box_ignored_crop_fits_yolo_boxes(tmp_path):
     hits = [_hit((300, 300, 360, 360), "pussy", "yolo"), _hit((380, 380, 420, 430), "anus", "yolo"),
             _hit((0, 0, 1000, 790), "ass", "sam3")]
     text = _prep_fixed(tmp_path, hits, ["pussy", "anus", "ass"])
-    assert "ass box too big (99%), ignored" in text
+    assert "ass: SAM 3.1's box is too big (99%), ignored" in text
     assert [c for c in os.listdir(tmp_path / "crops") if c.endswith(".png")] == ["Crop_pussy_anus_001.png"]
     full = Image.open(tmp_path / "a.png").convert("RGB")
     want, _ = prep.resize_image(F.crop_to_face(full, F._face_info(300, 300, 420, 430), 20.0), prep.target_area(0.05))

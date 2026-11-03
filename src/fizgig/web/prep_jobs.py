@@ -225,9 +225,10 @@ def find_words(face_label, find, backend=None):
     if not words:
         raise ValueError("Type what to find in Find this (e.g. hat, tail, hand).")
     from fizgig.dataset import detectors
-    routes = detectors.route(words, detectors.stages(_log_quiet, backend if backend is not None else _yolo()))
+    flat = list(dict.fromkeys(a for w in words for a in prep.split_or(w)))     # 'ass OR pussy': both choices
+    routes = detectors.route(flat, detectors.stages(_log_quiet, backend if backend is not None else _yolo()))
     path = sammask.find_model(MODELS_DIR)
-    if all(routes[w] for w in words):
+    if all(routes[w] for w in flat):
         return words, path or ""            # SAM 3.1 (when downloaded) only as the last resort
     if not path:
         raise ValueError("Finding by words needs SAM 3.1: press Download on the Masks card (further down this tab) "
@@ -349,7 +350,7 @@ def _tagger(folder, name=None):
     return taggers.get(name).Tagger(folder, log=_log)
 
 
-def start(folder, mode, mp, face_label, padding, replace, find="", captions=None, fit_all=True, watermarks=False):
+def start(folder, mode, mp, face_label, padding, replace, find="", captions=None, fit_all=True, separate=False):
     face_label, find = prep.migrate_target(face_label, find)    # an older build's "YOLO class: penis": Other…
     if not folder or not os.path.isdir(folder):
         raise ValueError("Choose the training folder on the Start tab first.")
@@ -369,19 +370,13 @@ def start(folder, mode, mp, face_label, padding, replace, find="", captions=None
     def work():
         try:
             tagger = _tagger(tagger_dir, cap_settings["tagger"]) if tagger_dir else None
-            wm = None
-            if watermarks:
-                from fizgig.dataset import detectors
-                wm = detectors.watermark_models(log=_log)
-                if not wm:
-                    _log("Mask watermarks is on, but neither watermark model is installed - no masks made.\n")
             try:
                 caps = crop_captions(cap_settings, tagger)
                 if words:
-                    _things(words, sam_path, mode, folder, mp, face_label, padding, replace, caps, fit_all, wm)
+                    _things(words, sam_path, mode, folder, mp, face_label, padding, replace, caps, fit_all, separate)
                 else:
                     det = _face_detector() if mode != "Resize Only" else None
-                    prep.Prep(_log, det, captions=caps, watermarks=wm).run(mode, folder, float(mp), face_label, float(padding),
+                    prep.Prep(_log, det, captions=caps).run(mode, folder, float(mp), face_label, float(padding),
                                                             bool(replace))
             finally:
                 if tagger is not None:
@@ -397,23 +392,21 @@ def start(folder, mode, mp, face_label, padding, replace, find="", captions=None
     return {"ok": True}
 
 
-def _things(words, sam_path, mode, folder, mp, face_label, padding, replace, caps=None, fit_all=False, wm=None):
+def _things(words, sam_path, mode, folder, mp, face_label, padding, replace, caps=None, fit_all=False, separate=False):
     """A prep run with Other…: the YOLO face model finds the phrases it has a class for, SAM 3.1 the other words; SAM is
     freed from memory when the run ends."""
     from fizgig.dataset import sammask
     if not sam_path:                                   # the YOLO model finds it all: SAM 3.1 isn't touched
         finder = thing_finder(words, "", _log)
-        finder.fit_all = bool(fit_all)
-        prep.Prep(_log, None, finder, caps, watermarks=wm).run(mode, folder, float(mp), face_label, float(padding),
-                                                               bool(replace))
+        finder.fit_all, finder.separate = bool(fit_all), bool(separate)
+        prep.Prep(_log, None, finder, caps).run(mode, folder, float(mp), face_label, float(padding), bool(replace))
         return
     if not sammask._use.acquire(blocking=False):
         raise ValueError("SAM 3.1 is busy with a mask preview. Try again in a moment.")
     try:
         finder = thing_finder(words, sam_path, _log)
-        finder.fit_all = bool(fit_all)
-        prep.Prep(_log, None, finder, caps, watermarks=wm).run(mode, folder, float(mp), face_label, float(padding),
-                                                               bool(replace))
+        finder.fit_all, finder.separate = bool(fit_all), bool(separate)
+        prep.Prep(_log, None, finder, caps).run(mode, folder, float(mp), face_label, float(padding), bool(replace))
     finally:
         sammask._use.release()
         sammask.unload()
@@ -441,7 +434,7 @@ def test_things(path, words, sam_path):
         hits = finder.find(img)
     if not hits:
         return {"faces": [], "image": None, "finder": finder.describe(), "things": True}
-    picked = finder.per_word(hits)
+    picked = finder.per_word(finder.pick_or(hits) if hasattr(finder, "pick_or") else hits)
     shown = img.copy()
     d = ImageDraw.Draw(shown)
     lw = max(2, min(shown.size) // 250)
@@ -672,10 +665,11 @@ def _heads_for(kind):
     return _head_finder() if kind in charmask.HEAD_KINDS else _LazyHeads()
 
 
-def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who="photo"):
+def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who="photo", watermarks=False):
     """Masks for every picture in the training folder (dataset/automask.py), as a prep run: the same log and state.
     sam: {"path", "include", "exclude", "drawn"} to make them with SAM 3.1 from words instead (dataset/sammask.py).
-    who: the quick finder's "Who's in your pictures" (dataset/charmask.py WHO)."""
+    who: the quick finder's "Who's in your pictures" (dataset/charmask.py WHO). watermarks: Mask watermarks - after the
+    masks are made, the watermark detectors' finds are painted out of each picture's mask (dataset/detectors.py)."""
     from fizgig.dataset import automask, charmask
     from fizgig.user_data import MODELS_DIR
     if not folder or not os.path.isdir(folder):
@@ -735,6 +729,14 @@ def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who
                                              detector=det, log=_log, who=who, characters=chars, heads=heads)
                 finally:
                     chars.close()
+            if watermarks:
+                from fizgig.dataset import detectors
+                wm = detectors.watermark_models(log=_log)
+                if wm:
+                    _log("\nMasking watermarks...\n")
+                    detectors.watermark_folder(folder, wm, log=_log)
+                else:
+                    _log("\nMask watermarks is on, but neither watermark model is installed - none masked.\n")
             _log(f"\nDone: {c['made']} mask(s) written"
                  + (f", {c['kept']} already there kept" if c["kept"] else "")
                  + (f", {c['no_person']} picture(s) with nothing to mask" if c["no_person"] else "")

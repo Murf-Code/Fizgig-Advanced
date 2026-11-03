@@ -462,7 +462,7 @@ def _anchor_lines(raw):
     return [str(x).strip() for x in (raw or []) if str(x).strip()]
 
 
-def _encode_override(driver, te_path, prompts, dit, device, parkable=True, references=None):
+def _encode_override(driver, te_path, prompts, dit, device, parkable=True, references=None, image=None):
     """Encode the override's prompts mid-run. The text encoder loads beside the training DiT when it fits; otherwise the
     DiT waits on CPU for the encode (a block-swapped DiT is small enough to stay, and the driver picks a smaller
     encoder when VRAM is short)."""
@@ -481,6 +481,8 @@ def _encode_override(driver, te_path, prompts, dit, device, parkable=True, refer
         try:
             if references:
                 return driver.encode_text_with_references(te, list(prompts), [references] * len(prompts))
+            if image is not None:      # previews that see a picture (Krea 2's sample image): the new prompts too
+                return driver.encode_text_with_image(te, list(prompts), image)
             return driver.encode_text(te, list(prompts))
         finally:
             driver.unload_text_encoder(te)
@@ -2036,8 +2038,10 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
                         f"seed={ov['seed']} {ov['width']}x{ov['height']}")
             try:
                 if ov_cache[0] != ov["prompts"]:     # encoded again only when the prompts changed
+                    pic = open_upright(sample_image) if (sample_image and desc.preview_image and not ref_imgs) else None
                     ov_cache[:] = [list(ov["prompts"]), _encode_override(driver, te_path, ov["prompts"], dit, device,
-                                                                         parkable=not swapped, references=ref_imgs)]
+                                                                         parkable=not swapped, references=ref_imgs,
+                                                                         image=pic)]
                 conds = ov_cache[1]
                 sd, prompts = ov["seed"], list(ov["prompts"])
                 if ov.get("steps"):

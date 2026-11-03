@@ -29,6 +29,8 @@ def main(argv=None):
                     help="input size baked into the ONNX (default 640: as accurate as 1024 for faces on our tests, "
                          "~2x faster on CPU)")
     ap.add_argument("--opset", type=int, default=None, help="ONNX opset (default: ultralytics' choice)")
+    ap.add_argument("--detector", action="store_true",
+                    help="it's a Body-part or watermark detector (every class used), not the YOLO face model")
     a = ap.parse_args(argv)
 
     os.environ.setdefault("YOLO_AUTOINSTALL", "false")    # never pip-install into this Python
@@ -65,11 +67,26 @@ def main(argv=None):
               f"{[o.shape for o in sess.get_outputs()]}")
     except ImportError:
         pass
-    face = [n for n in names.values() if str(n).lower() in ("face", "head")]
     print(f"[convert] wrote {out} ({os.path.getsize(out) / 1e6:.1f} MB)")
-    print(f"[convert] Fizgig will use class {face[0]!r}" if face else
-          "[convert] no 'face'/'head' class name - Fizgig uses class 0 for one-class models, otherwise none")
+    print(note(names, face_model=not a.detector))
     return out
+
+
+def note(names, face_model=True):
+    """What Fizgig does with the converted model's classes, in plain words. face_model: it is meant as the YOLO face
+    model (Face settings); else as one of Image Prep's Body-part and watermark detectors, where every class is used."""
+    names = names or {}
+    every = ", ".join(str(n) for n in names.values()) or "none listed"
+    if not face_model:
+        return f"[convert] All its classes can be found with Crop to Other…: {every}"
+    face = [n for n in names.values() if str(n).lower() in ("face", "head")]
+    if face:
+        return f"[convert] As the YOLO face model, Fizgig finds faces with class {face[0]!r}" + \
+            (f"; its other classes work with Crop to Other…: {every}" if len(names) > 1 else "")
+    if len(names) == 1:
+        return f"[convert] One class ({every}): as the YOLO face model Fizgig uses it for faces"
+    return (f"[convert] No 'face' or 'head' class, so it can't be the YOLO face model - use it as a Body-part "
+            f"detector instead; its classes work with Crop to Other…: {every}")
 
 
 if __name__ == "__main__":
