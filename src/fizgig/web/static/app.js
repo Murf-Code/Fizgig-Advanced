@@ -10323,11 +10323,13 @@ function wireLightbox() {
     else if (e.key === "Escape") lightboxClose();
     else if (typing) return;                     // the arrows move the cursor in the caption
     else if (e.key.startsWith("Arrow")) {
-      // previews: ← → the same prompt an epoch earlier / later, ↑ ↓ the prompt before / after at the same epoch;
-      // any other pictures step in order
+      // previews: ↑ ↓ the prompt before / after at the same epoch
       const d = {ArrowLeft: -1, ArrowRight: 1, ArrowUp: -1, ArrowDown: 1}[e.key];
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || "")) return;
       const cur = S.lb.list[S.lb.at], across = e.key === "ArrowLeft" || e.key === "ArrowRight";
-      if (!cur || cur.ep == null) { if (across) lightboxStep(S.lb.at + d); return; }
+      // ← → do just what the ‹ › buttons do: the picture before / after
+      if (across) { e.preventDefault(); lightboxStep(S.lb.at + d); return; }
+      if (!cur || cur.ep == null) return;
       e.preventDefault();
       const same = across ? (p) => p.idx === cur.idx : (p) => p.ep === cur.ep;
       const key = across ? (p) => p.ep : (p) => p.idx;

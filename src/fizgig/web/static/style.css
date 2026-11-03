@@ -1832,7 +1832,8 @@ img.see-through { background: repeating-conic-gradient(var(--pic-text) 0 25%,
   background: var(--bg-inset); color: var(--text-primary); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
 .lightbox-cap textarea:focus { outline: none; border-color: var(--accent); }
 .lightbox-cap-row { display: flex; align-items: center; gap: 10px; }
-.lightbox-step { font-size: 22px; height: 44px; width: 44px; justify-content: center; flex: none; }
+.lightbox-step { font-size: 22px; height: 44px; width: 44px; display: inline-flex; align-items: center; justify-content: center;
+  padding: 0 0 3px; line-height: 1; flex: none; align-self: center; }  /* the chevron in the middle of its button */
 @media (max-width: 760px) {
   .lightbox { padding: 8px; gap: 4px; }
   .lightbox-figure img { width: calc(100vw - 96px); }
