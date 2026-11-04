@@ -25,7 +25,7 @@ def _replay(train, val, a=None):
 def test_validation_loss_keeps_the_lr_well_above_min():
     _a, lrs = _replay(TRAIN, VAL)
     print(" ".join(f"{x:.2e}" for x in lrs))
-    # 2.5x (was 3x): since train loss must confirm a raise, this jittery run raises less and its low is 2.78e-5
+    # 2.5x / 3x (was 3x / 5x): raises wait out train-loss spikes, so this jittery run dips to 2.78e-5, ends 4.35e-5
     assert min(lrs) >= 2.5 * MIN and lrs[-1] >= 3 * MIN
 
 

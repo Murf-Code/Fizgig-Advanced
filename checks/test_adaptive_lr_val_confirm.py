@@ -1,39 +1,68 @@
-"""Chris's PoLoRA run (Nov 2026, base LR 0.02): with validation on, train loss now confirms it - Auto LR only raises
-while validation improves and the epoch train loss isn't rising 1%+, and holds when only validation looks better."""
+"""With validation on, the train loss steers Auto LR (Chris, Nov 2026): a raise waits while the train loss spikes (3%+
+over its last-3 average) and a raise is undone at once if loss jumps 10%+ within 2 epochs. Paths from the sim he approved."""
 import torch
 
 from fizgig.training.adaptive_lr import AdaptiveLR
 
-VAL = [.1516, .1503, .1493, .1485, .1478, .1477, .1479, .1472, .1462, .1468, .1466, .1470, .1456]  # [0] = step 0
-LOSS = [.1167, .1193, .117, .1272, .1267, .1287, .1248, .1157, .1209, .132, .128, .1132]
-START = 0.02
+RUNS = {
+    "cat": ([.1167, .1193, .117, .1272, .1267, .1287, .1248, .1157, .1209, .132, .128, .1132],
+            [.151644, .150251, .149335, .148506, .147811, .147676, .147933, .147223, .146206, .146761, .146577, .146961,
+             .145597]),
+    "furry": ([.1297, .1362, .1336, .1271, .131, .1321, .1312, .1289, .1298, .1333, .1232, .1276, .1171, .1281, .1267,
+               .1207, .125, .1213, .1199, .1247, .1308, .1242, .1147, .1287, .1224, .1174, .1151, .1162, .1111, .1216,
+               .1204, .1287, .1155, .107, .1157, .1128, .1087, .1165, .1087, .1109, .1147, .131, .1123, .1079],
+              [.1300, .129561, .128298, .127224, .127094, .127797, .127147, .127094, .126487, .125944, .125852, .125522,
+               .124593, .124865, .124408, .123798, .123934, .123649, .123576, .123348, .122549, .123666, .122611,
+               .122489, .122203, .121848, .121488, .122164, .121604, .12097, .120461, .120505, .120514, .120211,
+               .119787, .119607, .119606, .11879, .118855, .118443, .118193, .118446, .118155, .118394, .117787]),
+    "ruaidri": ([.1552, .1482, .1577, .163, .151, .1451, .1496, .1541, .1519, .1447, .1543, .1409, .1438, .149, .1468,
+                 .1442, .1543, .1509, .1476, .1327, .1426, .1514, .1563],
+                [.155, .153773, .152224, .151743, .150569, .14995, .14937, .149306, .149187, .148323, .147858, .148506,
+                 .147486, .147159, .146708, .146234, .146333, .145715, .145037, .144934, .144707, .143827, .143823,
+                 .143911]),
+}
+EXPECT = {  # LR after each epoch, from the sim Chris approved (4 Nov 2026)
+    "cat": [0.02, 0.025, 0.025, 0.025, 0.025, 0.025, 0.025, 0.03125, 0.03125, 0.025, 0.025, 0.025],
+    "furry": [0.02, 0.02, 0.025, 0.025, 0.025, 0.025, 0.0125, 0.0125, 0.015625, 0.015625, 0.019531, 0.019531, 0.019531,
+              0.019531, 0.024414, 0.024414, 0.024414, 0.030518, 0.030518, 0.038147, 0.038147, 0.038147, 0.038147,
+              0.038147, 0.047684, 0.047684, 0.047684, 0.047684, 0.047684, 0.047684, 0.047684, 0.047684, 0.047684,
+              0.059605, 0.059605, 0.059605, 0.059605, 0.059605, 0.059605, 0.074506, 0.074506, 0.059605, 0.059605,
+              0.059605],
+    "ruaidri": [0.02, 0.025, 0.025, 0.025, 0.03125, 0.03125, 0.039062, 0.039062, 0.048828, 0.048828, 0.048828,
+                0.048828, 0.061035, 0.061035, 0.076294, 0.076294, 0.076294, 0.095367, 0.095367, 0.1, 0.1, 0.095367,
+                0.095367],
+}
 
 
-def _replay(a=None, val=VAL, loss=LOSS):
+def _replay(L, V, a=None):
     net = torch.nn.Linear(4, 4)
-    opt = torch.optim.SGD(net.parameters(), lr=START)
-    a = a or AdaptiveLR(START * 0.05, START * 10)
-    if val:
-        a.set_baseline(val[0])
+    opt = torch.optim.SGD(net.parameters(), lr=0.02)
+    a = a or AdaptiveLR(0.001, 0.1)
+    a.set_baseline(V[0])
     lrs = []
-    for e, t in enumerate(loss):
-        a.epoch_boundary(e, t, net, opt, val_loss=val[e + 1] if val else None)
+    for e, t in enumerate(L):
+        a.epoch_boundary(e, t, net, opt, val_loss=V[e + 1])
         lrs.append(opt.param_groups[0]["lr"])
-    return a, lrs
+    return lrs
 
 
-def test_chris_run_raises_only_when_train_loss_agrees():
-    _a, lrs = _replay()
-    print(" ".join(f"{x:.4f}" for x in lrs))
-    for i in range(1, len(lrs)):
-        if lrs[i] > lrs[i - 1]:
-            assert VAL[i + 1] < VAL[i] and LOSS[i] <= LOSS[i - 1] * 1.01
-    assert max(lrs) < 0.039        # the old run reached 0.039 by e9
+def test_chris_runs_follow_the_sim_paths():
+    for name, (L, V) in RUNS.items():
+        lrs = _replay(L, V)
+        print(name, " ".join(f"{x:.4g}" for x in lrs))
+        assert [round(x, 6) for x in lrs] == EXPECT[name], name
 
 
-def test_old_state_without_prev_raw_loads_and_new_keys_are_ignored():
-    a = AdaptiveLR(1e-4, 1)
+def test_catwithhorns_cuts_at_e10_and_never_hits_0039():
+    lrs = _replay(*RUNS["cat"])
+    assert max(lrs) < 0.039 and lrs[9] < lrs[8]
+
+
+def test_old_state_loads_and_unknown_keys_are_ignored():
+    a = AdaptiveLR(1e-3, .1)
     a.load_state_dict({"best_loss": .1, "good_streak": 1, "best_val": .14, "cooldown": 0,
-                       "base_lr": .02, "raised_from": .02, "prev_val": .14})
-    assert a.prev_raw is None
-    _replay(a)
+                       "base_lr": .02, "raised_from": .02, "prev_val": .14, "prev_raw": .12})
+    assert a.loss_hist == [] and a.raise_epoch is None
+    b = AdaptiveLR(1e-3, .1)
+    b.load_state_dict(a.state_dict())
+    _replay(*RUNS["cat"], a=b)

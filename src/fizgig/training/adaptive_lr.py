@@ -28,7 +28,9 @@ class AdaptiveLR:
                         # by about ±0.005, which on its own read as a plateau every other epoch and walked the LR to Min
     VAL_MIN_REL = 0.0002    # with the fixed validation loss on, it is the signal: steady but tiny drops (0.02%+ of the
                             # best so far counts as better); the train loss jitters too much (a Muon run floored by e16)
-    TRAIN_RISE_REL = 0.01   # with validation on, the epoch train loss must confirm it: 1%+ above the last epoch blocks a raise
+    SPIKE_REL = 0.03        # with validation on: train loss 3%+ above its last-3-epoch average is a spike - hold, no raise
+    HARD_SPIKE_REL = 0.10   # within HARD_WINDOW epochs after a raise, train loss 10%+ above the epoch that triggered it:
+    HARD_WINDOW = 2         # the raise overshot - back to the pre-raise LR and cool down (no 3-epoch plateau wait)
     COOLDOWN = 2            # after a halving, this many epochs before a plateau can count again: fresh evidence first
 
     def __init__(self, min_lr, max_lr, clip_signal=False):
@@ -49,7 +51,10 @@ class AdaptiveLR:
         self.recent_losses = []
         self.best_val = None
         self.cooldown = 0
-        self.prev_raw = None     # last epoch's (unsmoothed) train loss, to confirm the validation signal
+        self.loss_hist = []       # raw epoch train losses (last 3), for the spike check
+        self.raise_epoch = None   # the last raise: epoch, the LR before it and the trigger epoch's train loss
+        self.pre_raise_lr = None
+        self.raise_loss = None
         self.snapshot = None  # {"weights": {...cpu...}, "optim": cpu state} — not persisted
 
     def set_baseline(self, val_loss):
@@ -73,7 +78,9 @@ class AdaptiveLR:
                 "bad_streak": self.bad_streak, "stability_streak": self.stability_streak,
                 "stability_triggered": self.stability_triggered,
                 "prev_weight_norm": self.prev_weight_norm, "recent_losses": list(self.recent_losses),
-                "best_val": self.best_val, "cooldown": self.cooldown, "prev_raw": self.prev_raw}
+                "best_val": self.best_val, "cooldown": self.cooldown,
+                "loss_hist": list(self.loss_hist), "raise_epoch": self.raise_epoch,
+                "pre_raise_lr": self.pre_raise_lr, "raise_loss": self.raise_loss}
 
     def load_state_dict(self, d):
         if not d:
@@ -87,7 +94,10 @@ class AdaptiveLR:
         self.recent_losses = [float(x) for x in (d.get("recent_losses") or [])][-self.SMOOTH_EPOCHS:]
         self.best_val = d.get("best_val")
         self.cooldown = int(d.get("cooldown", 0))
-        self.prev_raw = d.get("prev_raw")        # older states lack it: the first epoch after resume isn't confirmed
+        self.loss_hist = [float(x) for x in (d.get("loss_hist") or [])][-3:]   # older states lack these: start fresh
+        self.raise_epoch = d.get("raise_epoch")
+        self.pre_raise_lr = d.get("pre_raise_lr")
+        self.raise_loss = d.get("raise_loss")
 
     @staticmethod
     def _weight_norm(network):
@@ -131,11 +141,42 @@ class AdaptiveLR:
                 pass
 
     def epoch_boundary(self, epoch, current_loss, network, optimizer, val_loss=None):
+        """The plateau tracker (_tracker_boundary) plus, with validation on, the train-loss checks: hold a raise while
+        the train loss spikes (3%+ over its last-3 average; the good streak is kept so it raises once loss falls), and
+        undo a raise at once on a hard spike (10%+ over the trigger epoch's loss within 2 epochs)."""
+        loss = float(current_loss)
+        use_val = val_loss is not None
+        hist = self.loss_hist
+        spiking = bool(hist) and loss > (sum(hist) / len(hist)) * (1.0 + self.SPIKE_REL)
+        hard = (self.raise_epoch is not None and epoch - self.raise_epoch <= self.HARD_WINDOW
+                and self.raise_loss is not None and loss > self.raise_loss * (1.0 + self.HARD_SPIKE_REL))
+        cur = optimizer.param_groups[0]["lr"]
+        self._tracker_boundary(epoch, current_loss, network, optimizer, val_loss=val_loss)
+        new = optimizer.param_groups[0]["lr"]
+        if use_val and hard and new >= cur and self.pre_raise_lr is not None:
+            back = max(float(self.pre_raise_lr), self.min_lr)
+            for pg in optimizer.param_groups:
+                pg["lr"] = back
+            self.cooldown = self.COOLDOWN
+            self.good_streak = self.bad_streak = 0
+            self.raise_epoch = None
+            logger.info(f"[adaptive_lr] epoch {epoch + 1}: train loss {loss:.4f} is {self.HARD_SPIKE_REL*100:.0f}%+ over "
+                        f"{self.raise_loss:.4f} right after a raise | BACK OFF {new:.2e}->{back:.2e}")
+        elif use_val and spiking and new > cur:
+            for pg in optimizer.param_groups:
+                pg["lr"] = cur
+            self.good_streak = 1
+            logger.info(f"[adaptive_lr] epoch {epoch + 1}: train loss {loss:.4f} spiking | HOLD (raise waits)")
+        elif new > cur:
+            self.raise_epoch, self.pre_raise_lr, self.raise_loss = epoch, cur, loss
+        if self.raise_epoch is not None and epoch - self.raise_epoch > self.HARD_WINDOW:
+            self.raise_epoch = None
+        self.loss_hist = (hist + [loss])[-3:]
+
+    def _tracker_boundary(self, epoch, current_loss, network, optimizer, val_loss=None):
         """epoch is 0-indexed (global). epoch 0 arms the baseline; epoch >= 1 adjusts the LR. val_loss: this epoch's
         fixed validation loss (None when it's off or didn't run): when given it decides better / plateau."""
         raw_loss = current_loss
-        train_up = self.prev_raw is not None and float(raw_loss) > self.prev_raw * (1.0 + self.TRAIN_RISE_REL)
-        self.prev_raw = float(raw_loss)
         self.recent_losses = (self.recent_losses + [float(current_loss)])[-self.SMOOTH_EPOCHS:]
         current_loss = sum(self.recent_losses) / len(self.recent_losses)      # smoothed
         use_val = val_loss is not None
@@ -200,10 +241,6 @@ class AdaptiveLR:
             else:
                 action = "WAIT"
                 reason = f"stability: {stability_reason}, streak {self.stability_streak}/{stability_patience}"
-        elif use_val and improved and train_up:
-            # validation better but the train loss disagrees: hold, no raise
-            self.stability_streak = self.bad_streak = 0     # a new best still ends a plateau; the up-streak waits
-            reason = "validation better but train loss rising, holding"
         elif improved:
             self.stability_streak = 0
             if not use_val:
