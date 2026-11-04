@@ -307,8 +307,10 @@ def summary(folder, mode, replace, prep_mp, train_mp=None, find="", crops_only=F
     if find and mode == "Auto Prep (Face Crops)":
         what = f"{count} → {sized}, plus a close-up of each {find} found"
     elif find and mode == "Face Crop Only":
+        clean_find = find.replace('\n', ',').split(',')[0].strip() or find
+        slug_name = word_slug(clean_find)
         what = (f"{count} → a close-up of the {find} in each picture (the biggest one found), added as PNG "
-                f"named {CROP_PREFIX}{word_slug(find.replace('\n', ',').split(',')[0].strip() or find)}_001.png and on, as the close-ups "
+                f"named {CROP_PREFIX}{slug_name}_001.png and on, as the close-ups "
                 f"of Resize + close-up crops are")
     elif mode == "Auto Prep (Face Crops)":
         what = f"{count} → {sized}, plus one face close-up each{f' (≈{n * 2} files)' if n else ''}"
