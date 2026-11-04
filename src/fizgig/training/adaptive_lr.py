@@ -28,6 +28,8 @@ class AdaptiveLR:
                         # by about ±0.005, which on its own read as a plateau every other epoch and walked the LR to Min
     VAL_MIN_REL = 0.0002    # with the fixed validation loss on, it is the signal: steady but tiny drops (0.02%+ of the
                             # best so far counts as better); the train loss jitters too much (a Muon run floored by e16)
+    RAISE_CAP = 1.5         # raises never go past 1.5x the starting LR (a PoLoRA run walked 0.02 -> 0.039 and stalled)
+    TRAIN_RISE_REL = 0.01   # with validation on, the epoch train loss counts as rising when it is 1%+ above the last
     COOLDOWN = 2            # after a halving, this many epochs before a plateau can count again: fresh evidence first
 
     def __init__(self, min_lr, max_lr, clip_signal=False):
@@ -48,6 +50,10 @@ class AdaptiveLR:
         self.recent_losses = []
         self.best_val = None
         self.cooldown = 0
+        self.base_lr = None      # the LR at the first epoch boundary: raises are capped at RAISE_CAP x this
+        self.raised_from = None  # the LR before the last raise, while the epoch right after it is judged
+        self.prev_val = None
+        self.prev_raw = None
         self.snapshot = None  # {"weights": {...cpu...}, "optim": cpu state} — not persisted
 
     def set_baseline(self, val_loss):
@@ -71,7 +77,9 @@ class AdaptiveLR:
                 "bad_streak": self.bad_streak, "stability_streak": self.stability_streak,
                 "stability_triggered": self.stability_triggered,
                 "prev_weight_norm": self.prev_weight_norm, "recent_losses": list(self.recent_losses),
-                "best_val": self.best_val, "cooldown": self.cooldown}
+                "best_val": self.best_val, "cooldown": self.cooldown,
+                "base_lr": self.base_lr, "raised_from": self.raised_from,
+                "prev_val": self.prev_val, "prev_raw": self.prev_raw}
 
     def load_state_dict(self, d):
         if not d:
@@ -85,6 +93,13 @@ class AdaptiveLR:
         self.recent_losses = [float(x) for x in (d.get("recent_losses") or [])][-self.SMOOTH_EPOCHS:]
         self.best_val = d.get("best_val")
         self.cooldown = int(d.get("cooldown", 0))
+        self.base_lr = d.get("base_lr")          # older states lack these: base_lr is then taken at the next boundary
+        self.raised_from = d.get("raised_from")
+        self.prev_val = d.get("prev_val")
+        self.prev_raw = d.get("prev_raw")
+
+    def _raise_cap(self):
+        return min(self.max_lr, self.base_lr * self.RAISE_CAP) if self.base_lr else self.max_lr
 
     @staticmethod
     def _weight_norm(network):
@@ -130,7 +145,9 @@ class AdaptiveLR:
     def epoch_boundary(self, epoch, current_loss, network, optimizer, val_loss=None):
         """epoch is 0-indexed (global). epoch 0 arms the baseline; epoch >= 1 adjusts the LR. val_loss: this epoch's
         fixed validation loss (None when it's off or didn't run): when given it decides better / plateau."""
-        raw_loss = current_loss
+        raw_loss = float(current_loss)
+        if self.base_lr is None:
+            self.base_lr = float(optimizer.param_groups[0]["lr"])
         self.recent_losses = (self.recent_losses + [float(current_loss)])[-self.SMOOTH_EPOCHS:]
         current_loss = sum(self.recent_losses) / len(self.recent_losses)      # smoothed
         use_val = val_loss is not None
@@ -154,6 +171,8 @@ class AdaptiveLR:
                 note = f" [judged on {signal}: {'better' if improved else 'not better'} than the baseline]"
             logger.info(f"[adaptive_lr] epoch 1: loss={raw_loss:.4f} "
                         f"lr={optimizer.param_groups[0]['lr']:.2e}{note} | ARMED")
+            self.prev_val = float(val_loss) if use_val else None
+            self.prev_raw = raw_loss
             self._snapshot(network, optimizer)
             return
 
@@ -175,7 +194,22 @@ class AdaptiveLR:
             stability_reason = f"wnorm_Δ {weight_growth*100:+.0f}% > {self.WEIGHT_GROWTH_THRESHOLD*100:.0f}%"
 
         action, reason = "HOLD", ""
-        if stability_reason is not None:
+        val_worse = use_val and self.prev_val is not None and v > self.prev_val
+        train_up = self.prev_raw is not None and raw_loss > self.prev_raw * (1.0 + self.TRAIN_RISE_REL)
+        raised_from, self.raised_from = self.raised_from, None
+        if stability_reason is None and use_val and raised_from is not None and val_worse and train_up:
+            # the raise overshot: validation and train loss both got worse right after it - undo it now
+            candidate = max(raised_from if raised_from < cur_lr else cur_lr * 0.5, self.min_lr)
+            if candidate < cur_lr:
+                new_lr, action = candidate, "BACK OFF"
+            reason = "validation and train loss both worse right after a raise"
+            self.good_streak = self.bad_streak = self.stability_streak = 0
+            self.cooldown = self.COOLDOWN + 1
+        elif stability_reason is None and use_val and improved and train_up:
+            # only one signal is good: hold, no raise
+            self.stability_streak = self.good_streak = self.bad_streak = 0
+            reason = "validation better but train loss rising, holding"
+        elif stability_reason is not None:
             self.stability_streak += 1
             stability_patience = 1 if not self.stability_triggered else 2
             if self.stability_streak >= stability_patience:
@@ -202,14 +236,15 @@ class AdaptiveLR:
             self.good_streak += 1
             self.bad_streak = 0
             if self.good_streak >= patience_up:
-                candidate = min(cur_lr * 1.25, self.max_lr)
+                candidate = min(cur_lr * 1.25, self._raise_cap())
                 if candidate > cur_lr:
                     new_lr = candidate
+                    self.raised_from = cur_lr
                     action = "PROBE UP"
                     reason = f"loss improving, streak {self.good_streak}"
                 else:
                     action = "HOLD (capped)"
-                    reason = "loss improving, at max_lr"
+                    reason = "loss improving, at the raise cap"
                 self.good_streak = 0
             else:
                 reason = f"loss improving, streak {self.good_streak}/{patience_up}"
@@ -246,5 +281,7 @@ class AdaptiveLR:
         logger.info(f"[adaptive_lr] epoch {epoch + 1}: loss={raw_loss:.4f} (avg {current_loss:.4f}) lr={lr_str} "
                     f"{clip_str}wnorm_Δ={wn_str} [judged on {signal}] | {action} ({reason})")
         self.prev_weight_norm = cur_wn
+        self.prev_val = v if use_val else None
+        self.prev_raw = raw_loss
         self.clip_steps = self.clip_events = 0
         self._snapshot(network, optimizer)
