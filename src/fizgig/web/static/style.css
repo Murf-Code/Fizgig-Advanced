@@ -2427,7 +2427,7 @@ a.pick-pill-vast:hover { border-color: var(--success); }
 .loss-graph-svg .lg-lr-axis { fill: var(--special); }
 .loss-graph-svg .lg-val-axis { fill: var(--data-teal); }
 .loss-graph-svg .lg-lr-now { fill: var(--special); stroke: var(--bg-deep); stroke-width: 1.5; }
-.loss-graph-svg .lg-best { fill: var(--success); }
+.loss-graph-svg .lg-best { fill: var(--success); stroke: var(--bg-surface); stroke-width: 1.5; }
 .loss-graph-svg .lg-steps-fit .lg-raw { opacity: 0.18; }
 .loss-graph-svg .lg-steps-fit .lg-smooth { opacity: 0.35; }
 .loss-graph-svg .lg-cursor { stroke: var(--text-secondary); stroke-width: 1; vector-effect: non-scaling-stroke; }

@@ -4507,7 +4507,7 @@ function lossGraph(data) {
     set.val && hasVal ? key("lg-sw-val", "fixed validation loss (same images, noise and seed)" +
       (valScale((set.emean && em.length) || (set.ravg && ra.length), set.val, val.length) ?
         " - its own scale, the teal numbers" : "")) : null,
-    key("lg-sw-best", "lowest smoothed loss"), key("lg-sw-epoch", "start of an epoch (e1, e2…)")].filter(Boolean));
+    em.length ? key("lg-sw-best", "lowest epoch loss") : null, key("lg-sw-epoch", "start of an epoch (e1, e2…)")].filter(Boolean));
   legendFill();
   const tip = (node, text) => { node.title = text; return node; };
   box.append(el("div", {class: "field-row loss-graph-ctl"},
@@ -4656,13 +4656,15 @@ function lossGraph(data) {
       line.append(ft); svg.append(line);
       const t = mk("text", {x: W - R + 4, y: T + 28, class: "lg-axis lg-pf-axis"}); t.textContent = lp[1].toPrecision(3); svg.append(t);
     }
-    // the lowest smoothed point
-    let bi = 0;
-    sm.forEach((v, i) => { if (v < sm[bi]) bi = i; });
-    const best = mk("circle", {cx: X(pts[bi][0]), cy: YS(sm[bi]), r: 4, class: "lg-best"});
-    const bt = mk("title", {}); bt.textContent = `Lowest smoothed loss: ${sm[bi].toFixed(4)} at step ${pts[bi][0]}`;
-    best.append(bt);
-    steps.append(best);
+    // the epoch with the lowest average loss (drawn on top, on the trend scale so it is never cut off)
+    let bi = -1;
+    em.forEach((p, i) => { if (bi < 0 || p[2] < em[bi][2]) bi = i; });
+    if (bi >= 0) {
+      const best = mk("circle", {cx: X(em[bi][0]), cy: Y(em[bi][2]), r: 5, class: "lg-best"});
+      const bt = mk("title", {}); bt.textContent = `Lowest epoch loss: ${em[bi][2].toFixed(4)} (epoch ${em[bi][1]})`;
+      best.append(bt);
+      svg.append(best);
+    }
     const axisT = (x, text, cls, anchor) => { const t = mk("text", {x, y: T + 2, class: "lg-axis " + cls, "text-anchor": anchor,
       "dominant-baseline": "hanging"}); t.textContent = text; svg.append(t); };
     axisT(4, "loss", "lg-axis-title", "start");
@@ -4672,8 +4674,8 @@ function lossGraph(data) {
     svg.append(cursor);
     const say = (i) => read.textContent = `Step ${pts[i][0]} · epoch ${pts[i][1]} · loss ${pts[i][2].toFixed(4)} ` +
       `(smoothed ${sm[i].toFixed(4)})` + (pts[i][3] != null ? ` · LR ${Number(pts[i][3]).toExponential(2)}` : "");
-    const base = () => read.textContent = `${data.steps} steps · lowest smoothed loss ${sm[bi].toFixed(4)} at step ` +
-      `${pts[bi][0]} (epoch ${pts[bi][1]})` + (data.stride > 1 ? ` · every ${data.stride}th step drawn` : "") +
+    const base = () => read.textContent = `${data.steps} steps` +
+      (bi >= 0 ? ` · lowest epoch loss ${em[bi][2].toFixed(4)} (epoch ${em[bi][1]})` : "") + (data.stride > 1 ? ` · every ${data.stride}th step drawn` : "") +
       (set.val && hasVal ? ` · validation ${val[val.length - 1][2].toFixed(4)} (best ${Math.min(...val.map((p) => p[2])).toFixed(4)})` : "") +
       (data.stop ? ` · stopped early at step ${data.stop.step}, final LoRA = step ${data.stop.best_step} (epoch ${data.stop.best_epoch})` : "");
     svg.addEventListener("pointermove", (ev) => {
