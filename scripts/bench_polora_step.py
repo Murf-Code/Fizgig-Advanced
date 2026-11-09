@@ -114,7 +114,8 @@ def phases(torch, po, opt, pairs, grads, clock, n):
     """ms per step in PoLoRA's kernels (sync timers wrapped round them on this optimizer only; the rest is stacking,
     the curvature matmuls, the preconditioner update and the per-pair writeback)."""
     acc = {"inv_sqrt (C_A, C_B)": 0.0, "polar (zA, zB)": 0.0, "sigma_max (power iter)": 0.0}
-    names = {"_invsqrt_fn": "inv_sqrt (C_A, C_B)", "_polar_fn": "polar (zA, zB)"}
+    # PoLoRA's kernel hooks: _smax_fn is the batched sigma_max of the stacked-state PoLoRA; an older one has _smax_warm
+    names = {"_invsqrt_fn": "inv_sqrt (C_A, C_B)", "_polar_fn": "polar (zA, zB)", "_smax_fn": "sigma_max (power iter)"}
 
     def wrap(fn, key):
         def w(*a, **k):
@@ -129,7 +130,7 @@ def phases(torch, po, opt, pairs, grads, clock, n):
     for a, key in names.items():
         if a in saved:
             setattr(opt, a, wrap(saved[a], key))
-    smax = getattr(opt, "_smax_warm", None)
+    smax = getattr(opt, "_smax_warm", None) if "_smax_fn" not in saved else None
     if smax is not None:
         opt._smax_warm = wrap(smax, "sigma_max (power iter)")
     total = 0.0

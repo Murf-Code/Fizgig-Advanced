@@ -22,7 +22,10 @@ length ``d_in``, ``P`` of length ``d_out``) — about half of Adam's state; the
 non-PEFT use is supported via ``Polora(pairs=[(A, B), ...], lr=...)``.
 """
 # Modified for Fizgig: one console line per logged step, state_dict() carries the pair state so a
-# resume keeps it, math imported at the top. The update itself is unchanged.
+# resume keeps it, math imported at the top. The pair state is kept stacked per shape group between steps (no per-pair
+# stacking and copying back), the factor updates and grad zeroing are written back with foreach ops, and the four
+# sigma_max power iterations of a group run as two batched calls (compiled with the other kernels when compile=True).
+# The update itself is unchanged (checks/test_polora_stacked.py runs it against the per-pair step it replaced).
 from __future__ import annotations
 
 import logging
@@ -33,6 +36,34 @@ import torch
 from torch.optim import Optimizer
 
 from .utils import polar_express_gram_batched, ns_inv_sqrt, power_iter_top
+
+# the sigma_max warm-start vectors per pair, as state_dict() names them
+_VKEYS = ("v_sigma_A", "v_sigma_DA", "v_sigma_B", "v_sigma_DB")
+
+
+def _smax_floored(M, v, n_iters=8):
+    """``sigma_max`` of a batch by warm-started power iteration, floored at ``max(row L2, col L2)`` - a lower bound
+    on ``sigma_max`` - so a cold or degenerate start vector cannot under-estimate the top value. A zero ``v`` row
+    starts cold (``M @ 1``), as no warm start does."""
+    s, v = power_iter_top(M, v_init=v, n_iters=n_iters)
+    Mf = M.float()
+    rn = Mf.pow(2).sum(dim=-1).amax(dim=-1).sqrt()
+    cn = Mf.pow(2).sum(dim=-2).amax(dim=-1).sqrt()
+    return torch.maximum(s, torch.maximum(rn, cn).reshape(s.shape).to(s.dtype)), v
+
+
+def smax_groups(WA, vA, WB, vB, n_iters=8):
+    """A shape group's four ``sigma_max`` in two batched calls: ``WA`` stacks ``A`` over ``D_A`` and ``WB`` stacks
+    ``B`` over ``D_B``, each with its warm-start vectors. Returns ``(sigma_WA, v_WA, sigma_WB, v_WB)``."""
+    sA, vA = _smax_floored(WA, vA, n_iters)
+    sB, vB = _smax_floored(WB, vB, n_iters)
+    return sA, vA, sB, vB
+
+
+class _Group:
+    """One shape group's stacked state: the pairs' params and, stacked along dim 0, the momentum, the Q / P
+    diagonals and the sigma_max warm-start vectors (``vA`` = A's over D_A's, ``vB`` = B's over D_B's)."""
+    __slots__ = ("idxs", "As", "Bs", "f32", "M_A", "M_B", "Q", "P", "vA", "vB")
 
 
 def collect_lora_pairs(model):
@@ -137,20 +168,57 @@ class Polora(Optimizer):
         # without triton, an old torch) falls back to the plain kernels with one line, at the first use.
         self._polar_fn = polar_express_gram_batched
         self._invsqrt_fn = ns_inv_sqrt
+        self._smax_fn = smax_groups
         self._compiled = False
         if compile:
             self._compiled = self._try_compile()
 
+        # The pair state lives stacked per shape group (_Group); pair_state[i] holds views into it under the
+        # per-pair names, so state_dict() / load_state_dict() keep their per-pair format.
+        self._groups = []
+        self._layout = None
         self.pair_state = {}
-        for i, (A, B) in enumerate(pairs):
-            r, d_in = A.shape
-            d_out = B.shape[0]
-            self.pair_state[i] = {
-                'M_A': torch.zeros_like(A, dtype=torch.float32),
-                'M_B': torch.zeros_like(B, dtype=torch.float32),
-                'Q': torch.full((d_in,), self.epsilon, dtype=torch.float32, device=A.device),
-                'P': torch.full((d_out,), self.epsilon, dtype=torch.float32, device=B.device),
-            }
+        self._build_groups()
+
+    def _layout_now(self):
+        return [(tuple(A.shape), tuple(B.shape), A.device, A.dtype, B.dtype) for A, B in self.pairs]
+
+    def _build_groups(self, layout=None):
+        """(Re)builds the stacked state and the group membership - at construction, and again only if a pair's
+        shape, device or dtype changes. A pair whose state still fits keeps it; anything else starts as at
+        construction (zero momentum, Q / P at epsilon, no warm start)."""
+        layout = layout or self._layout_now()
+        old = self.pair_state
+        by = defaultdict(list)
+        for i, (shA, shB, dev, dtA, dtB) in enumerate(layout):
+            by[(shA, shB, dev, dtA, dtB)].append(i)
+        groups, state = [], {}
+        f32 = torch.float32
+        for (shA, shB, dev, dtA, dtB), idxs in by.items():
+            (r, d_in), d_out, n = shA, shB[0], len(idxs)
+            g = _Group()
+            g.idxs = idxs
+            g.As = [self.pairs[i][0] for i in idxs]
+            g.Bs = [self.pairs[i][1] for i in idxs]
+            g.f32 = dtA == f32 and dtB == f32
+            g.M_A = torch.zeros((n, r, d_in), dtype=f32, device=dev)
+            g.M_B = torch.zeros((n, d_out, shB[1]), dtype=f32, device=dev)
+            g.Q = torch.full((n, d_in), self.epsilon, dtype=f32, device=dev)
+            g.P = torch.full((n, d_out), self.epsilon, dtype=f32, device=dev)
+            # zero = no warm start yet: power_iter_top restarts a zero vector from M @ 1, the cold start
+            g.vA = torch.zeros((2 * n, min(r, d_in)), dtype=f32, device=dev)
+            g.vB = torch.zeros((2 * n, min(d_out, shB[1])), dtype=f32, device=dev)
+            for j, i in enumerate(idxs):
+                st = state[i] = {"M_A": g.M_A[j], "M_B": g.M_B[j], "Q": g.Q[j], "P": g.P[j],
+                                 "v_sigma_A": g.vA[j], "v_sigma_DA": g.vA[n + j],
+                                 "v_sigma_B": g.vB[j], "v_sigma_DB": g.vB[n + j]}
+                prev = old.get(i)
+                if prev is not None and prev["M_A"].shape == st["M_A"].shape and prev["M_B"].shape == st["M_B"].shape:
+                    for k, v in st.items():
+                        if torch.is_tensor(prev.get(k)) and prev[k].shape == v.shape:
+                            v.copy_(prev[k])
+            groups.append(g)
+        self._groups, self.pair_state, self._layout = groups, state, layout
 
     def _try_compile(self):
         log = logging.getLogger("fizgig.polora")
@@ -164,11 +232,12 @@ class Polora(Optimizer):
         try:
             self._polar_fn = torch.compile(polar_express_gram_batched, dynamic=True, fullgraph=False)
             self._invsqrt_fn = torch.compile(ns_inv_sqrt, dynamic=True, fullgraph=False)
+            self._smax_fn = torch.compile(smax_groups, dynamic=True, fullgraph=False)
         except Exception as e:
-            self._polar_fn, self._invsqrt_fn = polar_express_gram_batched, ns_inv_sqrt
+            self._polar_fn, self._invsqrt_fn, self._smax_fn = polar_express_gram_batched, ns_inv_sqrt, smax_groups
             log.info("[polora] compile is off: %s - running uncompiled", str(e).splitlines()[0][:200] if str(e) else type(e).__name__)
             return False
-        log.info("[polora] compiling its polar and inverse-square-root kernels (the first steps are slower)")
+        log.info("[polora] compiling its polar, inverse-square-root and sigma_max kernels (the first steps are slower)")
         return True
 
     def _kernel(self, name, *args, **kw):
@@ -181,7 +250,7 @@ class Polora(Optimizer):
             return fn(*args, **kw)
         except Exception as e:
             self._compiled = False
-            self._polar_fn, self._invsqrt_fn = polar_express_gram_batched, ns_inv_sqrt
+            self._polar_fn, self._invsqrt_fn, self._smax_fn = polar_express_gram_batched, ns_inv_sqrt, smax_groups
             msg = str(e).splitlines()[0][:200] if str(e) else type(e).__name__
             logging.getLogger("fizgig.polora").info("[polora] compile failed (%s) - running uncompiled from here", msg)
             return getattr(self, name)(*args, **kw)
@@ -208,22 +277,6 @@ class Polora(Optimizer):
         preconditioner EMA is seeded at ``epsilon``."""
         xmax = x.amax(dim=-1, keepdim=True)
         return (x / xmax + self.delta).rsqrt()
-
-    def _smax_warm(self, M, states, key):
-        """Batched ``sigma_max`` with per-pair warm-start caching, floored at
-        ``max(row L2, col L2)`` — a lower bound on ``sigma_max`` — so a cold
-        or degenerate start vector cannot under-estimate the top value."""
-        cached = [st.get(key) for st in states]
-        vi = torch.stack(cached) if all(c is not None for c in cached) else None
-        s, v = power_iter_top(M, v_init=vi, n_iters=8)
-        for j, st in enumerate(states):
-            st[key] = v[j].detach()
-        with torch.no_grad():
-            Mf = M.detach().float()
-            rn = Mf.pow(2).sum(dim=-1).amax(dim=-1).sqrt()
-            cn = Mf.pow(2).sum(dim=-2).amax(dim=-1).sqrt()
-            s = torch.maximum(s, torch.maximum(rn, cn).reshape(s.shape).to(s.dtype))
-        return s
 
     def _polar_batched(self, X):
         """Matrix sign via PolarExpress (Frobenius-prescaled internally)."""
@@ -277,34 +330,45 @@ class Polora(Optimizer):
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
+        for A, B in self.pairs:
+            if A.grad is None or B.grad is None:
+                raise ValueError("Gradients are required for Polora update.")
+        layout = self._layout_now()
+        if layout != self._layout:
+            self._build_groups(layout)
+        with torch.no_grad():
+            self._update()
+        return loss
+
+    def _update(self):
         lr = self.param_groups[0]["lr"]
         cb = self.curvature_beta
         b1, eps = self.beta1, self.epsilon
-        pairs = self.pairs
-        S = self.pair_state
-
-        for A, B in pairs:
-            if A.grad is None or B.grad is None:
-                raise ValueError("Gradients are required for Polora update.")
-
-        # One batched bmm / Newton-Schulz / sigma_max per (r, d_in, d_out, device)
-        # shape group; rank and device must match for torch.stack.
-        groups = defaultdict(list)
-        for i, (A, B) in enumerate(pairs):
-            groups[(A.shape[0], A.shape[1], B.shape[0], A.device)].append(i)
+        f32 = torch.float32
         log_now = bool(self.log_norms_every) and self._step_count % self.log_norms_every == 0
         record_now = bool(self.record_every) and self._step_count % self.record_every == 0
         magnitude = self.effective_magnitude()
+        scale = magnitude * self._timestep_scale * self._decay_factor()
         sig_A, sig_B = [], []
-        for idxs in groups.values():
-            G_A = torch.stack([pairs[i][0].grad.float() for i in idxs])
-            G_B = torch.stack([pairs[i][1].grad.float() for i in idxs])
-            Aw = torch.stack([pairs[i][0].detach().float() for i in idxs])
-            Bw = torch.stack([pairs[i][1].detach().float() for i in idxs])
-            M_A = torch.stack([S[i]['M_A'] for i in idxs]).mul_(b1).add_(G_A, alpha=1.0 - b1)
-            M_B = torch.stack([S[i]['M_B'] for i in idxs]).mul_(b1).add_(G_B, alpha=1.0 - b1)
-            Q = torch.stack([S[i]['Q'] for i in idxs])         # d_in metric diagonal
-            P = torch.stack([S[i]['P'] for i in idxs])         # d_out metric diagonal
+        # One batched bmm / Newton-Schulz / sigma_max per (r, d_in, d_out, device, dtype) shape group.
+        for g in self._groups:
+            n = len(g.idxs)
+            gA, gB = [A.grad for A in g.As], [B.grad for B in g.Bs]
+            G_A = torch.stack(gA) if g.f32 else torch.stack(gA).float()
+            G_B = torch.stack(gB) if g.f32 else torch.stack(gB).float()
+            # A over D_A (and B over D_B) in one tensor: their sigma_max run as one batched call
+            WA = torch.empty((2 * n, *g.M_A.shape[1:]), dtype=f32, device=G_A.device)
+            WB = torch.empty((2 * n, *g.M_B.shape[1:]), dtype=f32, device=G_B.device)
+            Aw, Bw = WA[:n], WB[:n]
+            if g.f32:
+                torch.stack(g.As, out=Aw)
+                torch.stack(g.Bs, out=Bw)
+            else:
+                Aw.copy_(torch.stack(g.As))
+                Bw.copy_(torch.stack(g.Bs))
+            M_A = g.M_A.mul_(b1).add_(G_A, alpha=1.0 - b1)
+            M_B = g.M_B.mul_(b1).add_(G_B, alpha=1.0 - b1)
+            Q, P = g.Q, g.P                                  # d_in / d_out metric diagonals
 
             Q_isqrt = self._rdinv(Q)
             P_isqrt = self._rdinv(P)
@@ -314,11 +378,9 @@ class Polora(Optimizer):
             C_B = Bw.transpose(-2, -1) @ (P_dmp.unsqueeze(-1) * Bw)
             C_A = (Aw * Q_dmp.unsqueeze(1)) @ Aw.transpose(-2, -1)
             C_B_isqrt = self._kernel("_invsqrt_fn", self._sym(C_B), nsteps=self.higham_iters,
-                                         eps=self.delta, eps_relative=True,
-                                         floor=self.epsilon)
+                                     eps=self.delta, eps_relative=True, floor=self.epsilon)
             C_A_isqrt = self._kernel("_invsqrt_fn", self._sym(C_A), nsteps=self.higham_iters,
-                                         eps=self.delta, eps_relative=True,
-                                         floor=self.epsilon)
+                                     eps=self.delta, eps_relative=True, floor=self.epsilon)
             C_B_inv = C_B_isqrt @ C_B_isqrt
             C_A_inv = C_A_isqrt @ C_A_isqrt
 
@@ -326,25 +388,25 @@ class Polora(Optimizer):
             M_hat_A = M_A.mul(b1).add(G_A, alpha=1.0 - b1)
             M_hat_B = M_B.mul(b1).add(G_B, alpha=1.0 - b1)
 
-            grp = [S[i] for i in idxs]
-            sigma_A = self._smax_warm(Aw, grp, 'v_sigma_A')
-            sigma_B = self._smax_warm(Bw, grp, 'v_sigma_B')
-            # Magnitude scale + optional timestep scale + optional decay
-            rho = lr / (sigma_B + sigma_A)
-            rho = rho * magnitude * self._timestep_scale * self._decay_factor()
-            if log_now or record_now:
-                sig_A.append(sigma_A.detach().reshape(-1))
-                sig_B.append(sigma_B.detach().reshape(-1))
-
-            # Whiten -> polar -> unwhiten.
+            # Whiten -> polar -> unwhiten (D_A / D_B written under A / B for the sigma_max call).
             zA = (C_B_isqrt @ M_hat_A) * Q_isqrt.unsqueeze(1)
             zB = (M_hat_B @ C_A_isqrt) * P_isqrt.unsqueeze(-1)
             zA = self._polar_batched(zA)
             zB = self._polar_batched(zB)
-            D_A = (C_B_isqrt @ zA) * Q_isqrt.unsqueeze(1)
-            D_B = (zB @ C_A_isqrt) * P_isqrt.unsqueeze(-1)
-            sigma_DA = self._smax_warm(D_A, grp, 'v_sigma_DA')
-            sigma_DB = self._smax_warm(D_B, grp, 'v_sigma_DB')
+            D_A = torch.mul(C_B_isqrt @ zA, Q_isqrt.unsqueeze(1), out=WA[n:])
+            D_B = torch.mul(zB @ C_A_isqrt, P_isqrt.unsqueeze(-1), out=WB[n:])
+
+            sWA, vA, sWB, vB = self._kernel("_smax_fn", WA, g.vA, WB, g.vB)
+            g.vA.copy_(vA)
+            g.vB.copy_(vB)
+            sigma_A, sigma_DA = sWA[:n], sWA[n:]
+            sigma_B, sigma_DB = sWB[:n], sWB[n:]
+            # Magnitude scale + optional timestep scale + optional decay
+            rho = lr / (sigma_B + sigma_A)
+            rho = rho * magnitude * self._timestep_scale * self._decay_factor()
+            if log_now or record_now:
+                sig_A.append(sigma_A.reshape(-1))
+                sig_B.append(sigma_B.reshape(-1))
             dA = -(rho / sigma_DA.clamp_min(eps)).view(-1, 1, 1) * D_A
             dB = -(rho / sigma_DB.clamp_min(eps)).view(-1, 1, 1) * D_B
 
@@ -354,28 +416,21 @@ class Polora(Optimizer):
             Q.mul_(cb).add_((G_A * (C_B_inv @ G_A)).sum(dim=1), alpha=(1.0 - cb) / r)
             P.mul_(cb).add_((G_B * (G_B @ C_A_inv)).sum(dim=2), alpha=(1.0 - cb) / r)
 
-            for j, i in enumerate(idxs):
-                A_, B_ = pairs[i]
-                # .data avoids the "leaf Variable that requires grad is being used
-                # in an in-place operation" error when the kernels are compiled.
-                A_.data.add_(dA[j].detach().to(dtype=A_.dtype, device=A_.device))
-                B_.data.add_(dB[j].detach().to(dtype=B_.dtype, device=B_.device))
-                S[i]['M_A'].copy_(M_A[j])
-                S[i]['M_B'].copy_(M_B[j])
-                S[i]['Q'].copy_(Q[j])
-                S[i]['P'].copy_(P[j])
-                A_.grad.zero_()
-                B_.grad.zero_()
+            # write back: every pair of the group at once, then its grads zeroed
+            if not g.f32:
+                dA, dB = dA.to(g.As[0].dtype), dB.to(g.Bs[0].dtype)
+            torch._foreach_add_(g.As, dA.unbind(0))
+            torch._foreach_add_(g.Bs, dB.unbind(0))
+            torch._foreach_zero_(gA + gB)
 
-        if log_now or record_now:
-            sa, sb = float(torch.cat(sig_A).float().mean()), float(torch.cat(sig_B).float().mean())
+        if log_now or record_now:       # one sync for both averages
+            sa, sb = torch.stack([torch.cat(sig_A).float().mean(), torch.cat(sig_B).float().mean()]).tolist()
             self.last_norms = {"step": self._step_count, "sigma_A": sa, "sigma_B": sb, "magnitude": magnitude}
         if log_now:                     # one line over every pair, not one per shape group
             logging.getLogger("fizgig.polora").info(
                 "[polora] step %d: avg sigma_A %.4f, avg sigma_B %.4f, magnitude %.3f (set %.3g x image %.2f x adaptive %.2f), rho_scale %.3f",
                 self._step_count, sa, sb, magnitude, self.magnitude_scale, self._image_factor, self._adaptive_factor,
-                magnitude * self._timestep_scale * self._decay_factor())
-        return loss
+                scale)
 
     def state_dict(self):
         sd = super().state_dict()
@@ -397,9 +452,11 @@ class Polora(Optimizer):
             logging.getLogger("fizgig.polora").info(
                 "[polora] saved state does not match this LoRA's layout: starting its momentum fresh")
             return
+        # into the stacked state (pair_state holds views of it); a save without warm-start vectors (one made before
+        # the first step) leaves them at zero, the cold start
         for i, st in self.pair_state.items():
-            dev = st["M_A"].device
             for k, v in saved[i].items():
-                st[k] = v.to(dev)
+                if k in st and torch.is_tensor(v) and v.shape == st[k].shape:
+                    st[k].copy_(v)
         self._step_count = int(extra.get("step", 0))
         self._adaptive_factor = float(extra.get("adaptive_factor", 1.0))
