@@ -1959,6 +1959,23 @@ def _run_stages(stages, out_dir):
         pod_stop.maybe_start(load_prefs(), append_log)     # here waits until its computer has taken it back)
 
 
+def _perf_status(r):
+    """The run card's CPU / GPU / disk readout: the trainer's .perf_<name>.json (training/perf_watch.py) for the run
+    on show - live while it trains, its summary after. None when there's none from this run."""
+    out, name = r.get("output_dir") or "", r.get("lora") or ""
+    if not out or not name:
+        return None
+    from fizgig.training import perf_watch
+    path = perf_watch.file_for(out, name)
+    try:
+        if os.path.getmtime(path) < float(r.get("started_at") or 0) - 5:     # an earlier run's
+            return None
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def early_stop_note(line):
     """The trainer's early-stop line ("[early stop] Final LoRA = best validation, step S (epoch E): name") -> the
     run card's note, or ""."""
@@ -3564,6 +3581,7 @@ class Handler(BaseHTTPRequestHandler):
             from fizgig.web import pod_stop
             r["pod_stop"] = pod_stop.status()
             r["slider_live"] = _slider_live_status(r) if r["running"] else None
+            r["perf"] = _perf_status(r)
             return self.json(r)
         if path == "/api/log":
             return self._log_stream(int((qs.get("since") or ["0"])[0] or 0))

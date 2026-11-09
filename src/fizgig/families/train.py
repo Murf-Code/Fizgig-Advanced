@@ -1240,6 +1240,8 @@ def train_family(family, dit_path, dataset_config, *args, **kwargs):
     try:
         return _train_family(family, dit_path, dataset_config, *args, **kwargs)
     finally:
+        from fizgig.training import perf_watch as _perf_watch
+        _perf_watch.finish()                 # the readout's summary: the log and the run card
         _give_back_holdout(dataset_config)
         from fizgig.modules.int8_train import set_rotated_backward
         set_rotated_backward(False)          # this run's own (an in-process run after it starts exact again)
@@ -3187,6 +3189,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         _baseline(validator, adaptive if adaptive_lr_on_val else None, getattr(group, "datasets", []), steplog, step_off + global_step, start_epoch,
                   lambda: run_or_skip(validator, driver, dit, device, net, swapped=bool(swapped)))
     prior = _MaskPrior(driver, dit, net, mask_prior, swapped) if mask_prior else None
+    # the CPU / GPU / disk readout (training/perf_watch.py): sampled on its own thread from here; train_family ends it
+    from fizgig.training import perf_watch as _perf_watch
+    _perf_watch.start(output_dir, output_name, loader.stats, getattr(device, "index", None) or 0,
+                      background_loading=loader.enabled, gpu=getattr(device, "type", "") == "cuda")
     for epoch in (_worker_epochs() if share_worker else range(start_epoch, max_train_epochs)):
         shared_epoch.value = epoch + 1
         driver.begin_epoch(epoch + 1 + (ftr.epochs_done if ftr is not None else 0))   # a continued fine-tune counts on

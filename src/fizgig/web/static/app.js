@@ -1974,6 +1974,7 @@ async function pollRun() {
   $("runCardBadge").textContent = label;
   $("runCardBadge").dataset.state = r.state;
   showProgress(r.progress, r.state, r.lora, r.stage);
+  runPerf(r.perf, !!r.running);
   const moveBusy = !!(r.move && ["moving", "back", "moved"].includes(r.move.state));
   $("btnStart").disabled = live || moveBusy || !!S.starting;
   // Pause, pressed again while the pause waits for the epoch's end: Save & stop - a restore point after the current
@@ -2538,6 +2539,36 @@ function showProgress(p, state, name, extraNote) {
     (p && live && p.total_steps ? `Epoch ${p.epoch || "?"}/${p.total_epochs || "?"} · ${Math.round(p.percent)}%` +
       (p.eta ? ` · ${p.eta} left` : "") : "") || extraNote || "";
   $("runWhen").textContent = (p && p.note) || "";
+}
+
+// The CPU / GPU / disk readout under the run's tiles (the trainer's training/perf_watch.py, via /api/run): the last
+// few seconds while it trains, the whole run's averages and a one-line hint after. Status colours are theme tokens.
+const PERF_WAIT_SLOW = 0.25, PERF_WAIT_SOME = 0.10, PERF_GPU_LOW = 60;
+const perfLevel = (w) => w == null ? "" : w >= PERF_WAIT_SLOW ? "bad" : w >= PERF_WAIT_SOME ? "warn" : "ok";
+function runPerf(perf, live) {
+  const box = $("runPerf");
+  if (!box) return;
+  box.innerHTML = "";
+  const sm = !live && perf && perf.summary, v = sm || (live && perf && perf.live) || null;
+  if (!v || !Object.keys(v).length) return;
+  const chip = (label, value, level, title) => value == null ? null :
+    box.append(el("span", {class: "perf-chip" + (level ? " " + level : ""), title}, label + " ", el("b", {text: value})));
+  const pct = (x) => x == null ? null : `${Math.round(x)}%`;
+  const wait = sm ? v.wait_share : (v.wait_share != null ? v.wait_share : v.wait_share_run);
+  chip(sm ? "Data wait (run)" : "Data wait", wait == null ? null : pct(100 * wait), perfLevel(wait),
+    "Share of training time the GPU sat waiting for the next pictures from the cache" +
+    (v.wait_ms != null ? ` (${Math.round(v.wait_ms)} ms waiting, ${Math.round(v.step_ms)} ms training a step)` : "") +
+    (perf.background_loading === false ? ". Background loading is off." : ""));
+  chip(sm ? "GPU avg" : "GPU", v.gpu_util == null ? null : pct(v.gpu_util) + (v.gpu_w != null ? ` · ${Math.round(v.gpu_w)} W` : ""),
+    v.gpu_util == null ? "" : v.gpu_util < PERF_GPU_LOW ? "warn" : "ok", "How busy the graphics card was, and its power draw");
+  const vram = sm ? v.vram_peak_gb : v.vram_gb, tot = v.vram_total_gb;
+  chip(sm ? "VRAM peak" : "VRAM", vram == null ? null : `${vram.toFixed(1)}${tot ? " / " + tot.toFixed(0) : ""} GB`, "",
+    "Graphics card memory in use (all programs)");
+  chip(sm ? "CPU avg" : "CPU", pct(v.cpu), "", "How busy the processor was (all programs)");
+  chip(sm ? "Disk avg" : "Disk", v.disk_mb_s == null ? null : `${Math.round(v.disk_mb_s)} MB/s`, "",
+    "How fast the drives were read (all programs)");
+  const held = perfLevel(sm && sm.wait_share) === "ok" && sm.gpu_util != null && sm.gpu_util < PERF_GPU_LOW;
+  if (sm && sm.hint) box.append(el("div", {class: "perf-hint " + (held ? "warn" : perfLevel(sm.wait_share)), text: sm.hint}));
 }
 
 // the run on show: the one training, else the LoRA name in the form

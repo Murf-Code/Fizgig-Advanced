@@ -2,6 +2,7 @@
 CPU family (test_save_stop's) with two dataset folders (the second's epoch shuffle lands mid-epoch, on the helper
 thread) and a slow drive: the same batches in the same order, the same losses and LoRA, and the trainer's own draws
 from the global random the same. Plus the setting's flag, the environment override and an early end of a pass."""
+import json
 import os
 import random
 import sys
@@ -100,6 +101,10 @@ def test_same_training_with_and_without(tiny2, tmp_path, monkeypatch):
     assert on[3] == off[3]                                        # the same losses
     assert set(on[4]) == set(off[4]) and all(torch.equal(on[4][k], off[4][k]) for k in off[4])
     assert "fizgig-background-loading" in on[2] and "fizgig-background-loading" not in off[2]
+    for run, bg in (("off", False), ("on", True)):          # the CPU / GPU / disk readout's summary, both ways
+        sm = json.load(open(tmp_path / run / ".perf_t.json", encoding="utf-8"))["summary"]
+        assert sm["steps"] == 12 and sm["background_loading"] is bg and 0 <= sm["wait_share"] <= 1 and sm["hint"]
+    assert not any(t.name == "fizgig-perf-readout" for t in threading.enumerate())
 
 
 def test_setting_flag_and_env(monkeypatch):

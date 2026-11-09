@@ -1606,6 +1606,24 @@ input[type="radio"] { accent-color: var(--accent); width: 16px; height: 16px; ma
 .run-tile span { display: block; font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
   color: var(--text-muted); }
 .run-tile b { font-size: 16px; color: var(--text-primary); }
+/* the CPU / GPU / disk readout under the tiles (training/perf_watch.py): status colours are theme tokens, so the
+   colour-safe theme swaps them */
+.run-perf { display: flex; flex-wrap: wrap; gap: 6px; margin: -6px 0 14px; }
+.run-perf:empty { display: none; }
+.perf-chip { font-size: 11.5px; padding: 3px 9px; border-radius: 999px; background: var(--bg-inset);
+  border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
+.perf-chip b { color: var(--text-primary); font-weight: 700; }
+.perf-chip.ok { border-color: color-mix(in srgb, var(--success) 55%, var(--border)); }
+.perf-chip.ok b { color: var(--success-text); }
+.perf-chip.warn { border-color: color-mix(in srgb, var(--warning) 60%, var(--border)); }
+.perf-chip.warn b { color: var(--warning-text); }
+.perf-chip.bad { border-color: color-mix(in srgb, var(--danger) 60%, var(--border)); }
+.perf-chip.bad b { color: var(--danger-text); }
+.perf-hint { flex-basis: 100%; font-size: 12px; color: var(--text-secondary); padding-left: 8px;
+  border-left: 3px solid var(--border); }
+.perf-hint.ok { border-left-color: var(--success); }
+.perf-hint.warn { border-left-color: var(--warning); }
+.perf-hint.bad { border-left-color: var(--danger); }
 .console-terminal { border-radius: var(--radius-sm); }
 
 /* phones and narrow windows: a top bar - the brand and the run on one line, the tabs as pills under it */
