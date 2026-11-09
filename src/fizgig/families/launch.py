@@ -1457,8 +1457,18 @@ def _sample_image(desc, sm):
 
 
 # ---------------------------------------------------------------------------------------------------- tag shuffle
-TAG_KEYS = ("TAG_SHUFFLE", "TAG_KEEP_FIRST", "TAG_DROPOUT", "TAG_VARIANTS")
+TAG_KEYS = ("TAG_SHUFFLE", "TAG_KEEP_FIRST", "TAG_DROPOUT", "TAG_VARIANTS", "TAG_VARIANT_CAP")
 TAG_VARIANT_CHOICES = ("2", "4", "8", "16")
+TAG_CAP_CHOICES = ("4", "8", "16", "32")      # the most encodings cached per picture (tag_variants.DEFAULT_CAP = 8)
+
+
+def tag_cap(inputs):
+    """Most cached per picture: the box's whole number, 2-33 (8 when empty). ValueError for anything else."""
+    raw = _s(inputs.get("TAG_VARIANT_CAP")).split(" ")[0]
+    c = int(float(raw)) if raw else 8
+    if not 2 <= c <= 33:
+        raise ValueError("cap")
+    return c
 
 
 def _pct(raw):
@@ -1525,7 +1535,7 @@ def tag_settings(desc, inputs):
     if keep < 0 or not 1 <= k <= 32:
         raise ValueError("range")
     return {"tag_shuffle": shuffle, "keep_first_tags": keep, "tag_dropout": td, "caption_dropout": cd,
-            "caption_variants": k}
+            "caption_variants": k, "caption_variant_cap": tag_cap(inputs)}
 
 
 def tag_problems(desc, inputs):
@@ -1533,7 +1543,7 @@ def tag_problems(desc, inputs):
         tag_settings(desc, inputs)
     except (TypeError, ValueError):
         return ["Caption shuffle & dropout: Tag dropout and Caption dropout are percentages from 0 to 100, Keep first "
-                "N tags is a whole number (0 or more), and Variants per caption is 1 to 32."]
+                "N tags is a whole number (0 or more), Variants per caption is 1 to 32, and Most per picture is 2 to 33."]
     return []
 
 
@@ -1544,7 +1554,7 @@ def _tag_lines(desc, inputs):
         return []
     return [f"tag_shuffle = {'true' if t['tag_shuffle'] else 'false'}", f"keep_first_tags = {t['keep_first_tags']}",
             f"tag_dropout = {t['tag_dropout']:g}", f"caption_dropout = {t['caption_dropout']:g}",
-            f"caption_variants = {t['caption_variants']}"]
+            f"caption_variants = {t['caption_variants']}", f"caption_variant_cap = {t['caption_variant_cap']}"]
 
 
 def _keep_words_line(word):

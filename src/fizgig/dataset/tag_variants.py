@@ -38,6 +38,8 @@ logger = logging.getLogger(__name__)
 TAGS_SUFFIX = "_tags.safetensors"
 TE_SUFFIX = "_te.safetensors"
 MAX_VARIANTS = 32
+DEFAULT_CAP = 8              # the most encodings cached per picture (its variants plus the empty caption)
+TRIES = 4                    # a caption's variant indices tried per distinct variant wanted (few tags: few orders)
 AVG_WORDS_PROSE = 4.0        # comma-separated parts longer than this on average read as sentences, not tags
 
 
@@ -49,16 +51,23 @@ class TagSettings:
     caption_dropout: float = 0.0      # 0..1, the whole caption, per image per step
     variants: int = 4
     keep_words: tuple = field(default_factory=tuple)
+    cap: int = DEFAULT_CAP            # the most encodings cached per picture, the empty caption included
 
     @classmethod
     def from_params(cls, shuffle=False, keep_first=1, tag_dropout=0.0, caption_dropout=0.0, variants=4,
-                    keep_words=None):
+                    keep_words=None, cap=DEFAULT_CAP):
         def frac(x):                   # a fraction, 0..1 (the dataset TOML's percent is divided by the dataset)
             return min(max(float(x or 0), 0.0), 1.0)
         return cls(shuffle=bool(shuffle), keep_first=max(0, int(keep_first if keep_first is not None else 1)),
                    tag_dropout=frac(tag_dropout), caption_dropout=frac(caption_dropout),
                    variants=min(MAX_VARIANTS, max(1, int(variants or 4))),
-                   keep_words=tuple(w.strip() for w in (keep_words or ()) if w and w.strip()))
+                   keep_words=tuple(w.strip() for w in (keep_words or ()) if w and w.strip()),
+                   cap=min(MAX_VARIANTS + 1, max(1, int(cap or DEFAULT_CAP))))
+
+    @property
+    def wanted(self) -> int:
+        """Variants a caption gets: Variants per caption, within the per-picture cap (the empty caption counts)."""
+        return max(1, min(self.variants, self.cap - (1 if self.caption_dropout else 0)))
 
     @property
     def varies(self) -> bool:
@@ -88,7 +97,7 @@ class TagSettings:
         if self.caption_dropout:
             bits.append(f"caption dropout {self.caption_dropout * 100:g}%")
         if self.varies:
-            bits.append(f"{self.variants} variants per caption")
+            bits.append(f"up to {self.wanted} different variants per caption")
         return ", ".join(bits)
 
 
@@ -138,10 +147,17 @@ def make_variant(caption: str, s: TagSettings, index: int, seed: int = 0) -> str
 
 
 def variant_captions(caption: str, s: TagSettings, seed: int = 0) -> list:
-    """The caption's variants (s.variants of them), [] when it gets none (natural language, or no shuffle/dropout)."""
+    """The caption's DIFFERENT variants, up to s.wanted of them (a caption with few tags has only a few orders, so
+    fewer), [] when it gets none (natural language, or no shuffle/dropout). One may read exactly as the caption: it
+    is kept (it is as likely as any other order) but never stored twice - it trains on the item's own cache."""
     if not s.varies or split_tags(caption) is None:
         return []
-    return [make_variant(caption, s, i, seed) for i in range(s.variants)]
+    out = {}
+    for i in range(s.wanted * TRIES):
+        out.setdefault(make_variant(caption, s, i, seed), None)
+        if len(out) >= s.wanted:
+            break
+    return list(out)
 
 
 # ---- files -----------------------------------------------------------------------------------------------------
@@ -192,10 +208,9 @@ def write_variants(encode: Callable[[list], list], te_path: str, caption: str, s
         e = {k[3:]: v for k, v in old.items() if k.startswith("e__")}
         if e:
             have.setdefault("", e)
-    if caption in wanted and caption not in have and os.path.exists(te_path):
-        own = compact_text.load(te_path)        # the original order came up: its own encoding
-        have[caption] = {k[len("cond__"):]: v for k, v in own.items() if k.startswith("cond__")}
-    need = [t for t in dict.fromkeys(wanted + ([""] if s.caption_dropout else [])) if t not in have]
+    same = [i for i, t in enumerate(wanted) if t == caption]     # reads as the caption: its own cache, not a copy
+    need = [t for t in dict.fromkeys(wanted + ([""] if s.caption_dropout else []))
+            if t not in have and t != caption]
     if need:
         for t, c in zip(need, encode(need)):
             have[t] = {k: (clean(v, k) if clean else v.detach().cpu().contiguous()) for k, v in c.items()}
@@ -208,13 +223,16 @@ def write_variants(encode: Callable[[list], list], te_path: str, caption: str, s
         used.update((id(v), v.data_ptr()))
         sd[name] = v
     for i, t in enumerate(wanted):
+        if i in same:
+            continue
         for k, v in have[t].items():
             put(f"v{i}__{k}", v)
     if s.caption_dropout:
         for k, v in have[""].items():
             put(f"e__{k}", v)
     meta = {"fizgig_tags": "1", "architecture": arch, "source": caption, "recipe": s.recipe(),
-            "captions": json.dumps(wanted, ensure_ascii=False), "empty": "1" if s.caption_dropout else "0"}
+            "captions": json.dumps(wanted, ensure_ascii=False), "empty": "1" if s.caption_dropout else "0",
+            "orig": json.dumps(same)}
     tmp = path + ".tmp"
     compact_text.save(sd, tmp, meta, compact)     # compact: only each variant's real tokens (Krea 2)
     os.replace(tmp, path)
@@ -330,6 +348,7 @@ class VariantPicker:
         self.s = settings
         self.seed = int(seed or 0)
         self._info = {}               # variants path -> (te mtime, var mtime, (usable variants, empty usable))
+        self._orig = {}               # variants path -> the variant indices that read as the caption itself
         self.stale = set()            # items whose variants don't match their caption (said once)
 
     def info(self, te_path):
@@ -342,11 +361,13 @@ class VariantPicker:
             return hit[2]
         md, _ = _header(path)
         n, empty = 0, False
+        self._orig[path] = set()
         if md is not None and md.get("fizgig_tags") == "1":
             empty = md.get("empty") == "1"
             if self.s.varies and md.get("recipe") == self.s.recipe() and md.get("source") == te_caption(te_path):
                 try:
-                    n = min(len(json.loads(md.get("captions") or "[]")), self.s.variants)
+                    n = min(len(json.loads(md.get("captions") or "[]")), self.s.wanted)
+                    self._orig[path] = set(json.loads(md.get("orig") or "[]"))
                 except ValueError:
                     n = 0
             elif self.s.varies:
@@ -360,7 +381,8 @@ class VariantPicker:
         if self.s.caption_dropout and u1 < self.s.caption_dropout and empty:
             return EMPTY
         if self.s.varies and n:
-            return min(n - 1, int(u2 * n))
+            i = min(n - 1, int(u2 * n))
+            return ORIG if i in self._orig.get(variants_path(te_path), ()) else i
         return ORIG
 
     @staticmethod

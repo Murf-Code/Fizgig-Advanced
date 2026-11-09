@@ -111,6 +111,7 @@ DEFAULTS = {
     "DATASET_MEGAPIXELS": "0.25", "DATASET_CAPTION_EXT": ".txt", "ENABLE_BUCKET": True, "BUCKET_NO_UPSCALE": True,
     "ENABLE_CACHE": True, "MASKED_TRAINING": False, "MASK_FLOOR": "0.1 (recommended)", "MASK_PRIOR": "Off",
     "TAG_SHUFFLE": False, "TAG_KEEP_FIRST": "1", "TAG_DROPOUT": "0", "CAPTION_DROPOUT": "Off", "TAG_VARIANTS": "4",
+    "TAG_VARIANT_CAP": "8",
     "METADATA_TITLE": "", "METADATA_AUTHOR": "", "METADATA_DESCRIPTION": "", "METADATA_LICENSE": "",
     "METADATA_TAGS": "", "METADATA_TRIGGER_PHRASE": "", "METADATA_THUMBNAIL": "",
     "SAMPLE_ENABLED": True, "SAMPLE_PROMPT": "A high quality photo", "SAMPLE_PAIRS": "", "SAMPLE_PAIRED": False, "SAMPLE_SEED": "1234",
@@ -526,7 +527,11 @@ def form(desc):
                  "usual; 0 = off.", ("0", "5", "10", "15", "20")),
             _row("TAG_VARIANTS", "Variants per caption", "combo", "How many shuffled / dropped versions of each "
                  "caption are cached; each step picks one at random (by the run's seed, so a resume picks the same). "
-                 "More variants = more variety, a longer first cache and more disk.", launch.TAG_VARIANT_CHOICES),
+                 "More variants = more variety, a longer first cache and more disk. Variants that come out the same "
+                 "are cached once, so a caption with only a few tags gets fewer.", launch.TAG_VARIANT_CHOICES),
+            _row("TAG_VARIANT_CAP", "Most cached per picture", "combo", "A ceiling on the caption encodings cached "
+                 "for each picture: its variants plus the empty caption (with caption dropout). Keeps the text cache "
+                 "and the first caching time in check when Variants per caption is set high.", launch.TAG_CAP_CHOICES),
         ])
     add("subjects", "Subjects", "training", subjects,
         help={"href": VIDEO, "text": "How to set up Fizgig LoRA Isolation",
@@ -1619,14 +1624,16 @@ def tag_cost_note(values, pictures):
     try:
         td, cd = launch._pct(values.get("TAG_DROPOUT")), launch.variant_caption_dropout(values)
         k = int(float(str(values.get("TAG_VARIANTS") or "4").split(" ")[0]))
+        cap = launch.tag_cap(values)
     except (TypeError, ValueError):
         return ""
     varies = shuffle or td > 0
     if not (varies or cd > 0):
         return ""
+    k = max(1, min(k, cap - (1 if cd > 0 else 0)))          # the per-picture cap
     per = (k if varies else 0) + (1 if cd > 0 else 0)
     n = f", {pictures * per} extra for your {pictures} pictures" if pictures else ""
-    what = (f"{k} variant(s)" if varies else "") + (" + " if varies and cd > 0 else "") + \
+    what = (f"up to {k} variant(s)" if varies else "") + (" + " if varies and cd > 0 else "") + \
         ("the empty caption" if cd > 0 else "")
     return (f"Extra caching: {per} encoding(s) a caption ({what}){n}, the first time. The text encoder runs once "
             f"per variant, so text caching takes about {per + 1}x as long and the text cache about {per + 1}x the "
@@ -1652,7 +1659,7 @@ def _tag_state(desc, values, image_folder, kind, hidden, disabled, notes):
         varies = True
         notes["TAG_DROPOUT"] = "A percentage from 0 to 100."
     if not varies:
-        disabled.update({"TAG_KEEP_FIRST", "TAG_VARIANTS"})
+        disabled.update({"TAG_KEEP_FIRST", "TAG_VARIANTS", "TAG_VARIANT_CAP"})
     cost = tag_cost_note(values, _picture_count(image_folder) if image_folder else 0)
     if cost:
         notes["TAG_VARIANTS"] = cost

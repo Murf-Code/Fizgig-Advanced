@@ -73,6 +73,7 @@ class BaseDatasetParams:
     tag_dropout: float = 0.0          # percent, 0-100
     caption_dropout: float = 0.0      # percent, 0-100
     caption_variants: int = 4
+    caption_variant_cap: int = 8      # the most encodings cached per picture (tag_variants.DEFAULT_CAP)
 
 
 @dataclass
@@ -156,6 +157,7 @@ class ConfigSanitizer:
         "tag_dropout": Any(int, float),
         "caption_dropout": Any(int, float),
         "caption_variants": int,
+        "caption_variant_cap": int,
     }
 
     # Fields specific to an image dataset entry

@@ -339,7 +339,7 @@ def test_launch_rules():
 def test_form_card_and_cost_note():
     sec = {s["id"]: s for s in form.form(get("sdxl"))["sections"]}
     assert [r["key"] for r in sec["captions"]["rows"]] == list(launch.TAG_KEYS)
-    assert all(not form.DEFAULTS[k] or form.DEFAULTS[k] in ("0", "1", "4") for k in launch.TAG_KEYS)
+    assert all(not form.DEFAULTS[k] or form.DEFAULTS[k] in ("0", "1", "4", "8") for k in launch.TAG_KEYS)
     assert "captions" not in {s["id"] for s in form.form(get("minimax"))["sections"]}
     st = form.state(get("sdxl"), dict(form.DEFAULTS))
     assert {"TAG_KEEP_FIRST", "TAG_VARIANTS"} <= set(st["disabled"]) and "TAG_VARIANTS" not in st["notes"]

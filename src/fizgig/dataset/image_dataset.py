@@ -990,6 +990,7 @@ class ImageDataset(torch.utils.data.Dataset):
         tag_dropout: float = 0.0,
         caption_dropout: float = 0.0,
         caption_variants: int = 4,
+        caption_variant_cap: int = 8,
         keep_words: Optional[list] = None,
         **kwargs,
     ):
@@ -999,7 +1000,8 @@ class ImageDataset(torch.utils.data.Dataset):
         from fizgig.dataset.tag_variants import TagSettings
         self.tag_settings = TagSettings.from_params(
             shuffle=tag_shuffle, keep_first=keep_first_tags, tag_dropout=float(tag_dropout or 0) / 100.0,
-            caption_dropout=float(caption_dropout or 0) / 100.0, variants=caption_variants, keep_words=keep_words)
+            caption_dropout=float(caption_dropout or 0) / 100.0, variants=caption_variants, keep_words=keep_words,
+            cap=caption_variant_cap)
         # Each picture's training key is item_prefix + its name: a training folder's own pictures have none, a
         # sub-folder's is its path ("outfits/red/"), another subject's or the regularisation set's a tag ("s2:",
         # "reg:") - so same-named pictures in two folders stay apart, and the loss watch finds each one's folder
