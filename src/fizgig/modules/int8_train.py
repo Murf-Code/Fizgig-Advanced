@@ -16,6 +16,12 @@ The backward is bf16 (exact gradients, the weight dequantised in the compute dty
 measured and removed (#221): rounding each gradient row to INT8 lets its outliers set the scale and rounds most
 of the row to zero, so a LoRA's gradients came out at cosine 0.2-0.6 to the exact ones and likeness lagged.
 
+Opt-in, experimental (set_rotated_backward, the "Rotated INT8 backward" tick box): an INT8 backward that first
+ROTATES the contracted dimension with a block Hadamard matrix H (orthonormal, so g @ W = (g H)(H W) exactly). The
+rotation spreads each row's outliers over its block, so the per-row INT8 scale no longer flattens the rest. The
+rotated weight H W is quantised once per layer (per input column) and kept beside the INT8 weight - about the INT8
+block weights' size again in memory. checks/test_int8_rotated_backward.py measures it against the exact backward.
+
 Measured at Krea 2's main shape (M=1024, K=N=6144), RTX 5090:
     dequant + bf16 matmul (current)   0.767 ms
     _int_mm + activation quant        0.224 ms
@@ -31,6 +37,67 @@ import torch.nn.functional as F
 logger = logging.getLogger(__name__)
 
 _WARNED_FALLBACK = False
+_ROTATED = {"on": False}
+_HADAMARD = {}
+
+
+def set_rotated_backward(on=True):
+    """The rotated INT8 backward on or off for every INT8 frozen Linear (off by default: the exact bf16 backward)."""
+    _ROTATED["on"] = bool(on)
+
+
+def rotated_backward_on():
+    return _ROTATED["on"]
+
+
+def _block(n, most=256):
+    """The Hadamard block for a contracted size n: the largest power of two up to `most` dividing it (0: none of
+    16 or more, and that layer keeps the exact backward)."""
+    b = most
+    while b >= 16:
+        if n % b == 0:
+            return b
+        b //= 2
+    return 0
+
+
+def _hadamard(b, device):
+    """The b x b orthonormal Hadamard matrix (Sylvester's doubling), fp32, cached per device."""
+    key = (b, str(device))
+    h = _HADAMARD.get(key)
+    if h is None:
+        h = torch.ones(1, 1)
+        while h.shape[0] < b:
+            h = torch.cat([torch.cat([h, h], 1), torch.cat([h, -h], 1)], 0)
+        h = (h / b ** 0.5).to(device)
+        _HADAMARD[key] = h
+    return h
+
+
+@torch.no_grad()
+def rotated_weight(w_i8_nk, w_scale_1n):
+    """(H W) for the backward, quantised per input column: (int8 (K, N) contiguous, fp32 scale (1, K)), or None when
+    the layer has no Hadamard block. W = the dequantised (N, K) weight; H rotates its N (output) dimension."""
+    n, k = w_i8_nk.shape
+    b = _block(n)
+    if not b:
+        return None
+    w = w_i8_nk.to(torch.float32) * w_scale_1n.reshape(-1, 1).to(torch.float32)        # (N, K)
+    hw = torch.einsum("ij,bjk->bik", _hadamard(b, w.device), w.view(n // b, b, k)).reshape(n, k)
+    del w
+    q_kn, s_k1 = _quant_per_token(hw.t())                                                 # per input column
+    return q_kn.contiguous(), s_k1.reshape(1, -1)
+
+
+def _int_mm_padded(a_i8, b_kn_t):
+    """torch._int_mm with M <= 16 padded (as the forward does); None when it can't run (CPU builds, odd shapes)."""
+    m = a_i8.shape[0]
+    pad = 17 - m if m <= 16 else 0
+    try:
+        acc = torch._int_mm(torch.nn.functional.pad(a_i8, (0, 0, 0, pad)) if pad else a_i8, b_kn_t)
+    except Exception:
+        return None
+    return acc[:m] if pad else acc
 
 
 def _quant_per_token(t: torch.Tensor):
@@ -44,7 +111,7 @@ class _Int8FrozenLinear(torch.autograd.Function):
     """y = (x @ W) with W frozen int8. Only grad_input is produced — the base never trains."""
 
     @staticmethod
-    def forward(ctx, x, w_i8_nk, w_scale_1n, bias):
+    def forward(ctx, x, w_i8_nk, w_scale_1n, bias, rot_kn=None, rot_s=None):
         orig_shape = x.shape
         x2d = x.reshape(-1, orig_shape[-1])
         a_i8, a_scale = _quant_per_token(x2d)
@@ -89,21 +156,32 @@ class _Int8FrozenLinear(torch.autograd.Function):
                                 "vary with sequence length", x2d.shape[0])
         if bias is not None:
             out = out + bias
-        ctx.save_for_backward(w_i8_nk, w_scale_1n)
+        ctx.save_for_backward(w_i8_nk, w_scale_1n, rot_kn, rot_s)
         ctx.orig_shape = orig_shape
         ctx.needs_bias_grad = bias is not None and bias.requires_grad
         return out.reshape(*orig_shape[:-1], -1)
 
     @staticmethod
     def backward(ctx, grad_out):
-        w_i8_nk, w_scale_1n = ctx.saved_tensors
+        w_i8_nk, w_scale_1n, rot_kn, rot_s = ctx.saved_tensors
         g2d = grad_out.reshape(-1, grad_out.shape[-1])
+        grad_bias = g2d.sum(dim=0).to(grad_out.dtype) if ctx.needs_bias_grad else None
+        if rot_kn is not None:
+            # the rotated INT8 backward (experimental): g @ W = (g H) @ (H W), both sides rounded to INT8
+            n, b = g2d.shape[1], _block(g2d.shape[1])
+            gh = (g2d.to(torch.float32).view(-1, n // b, b) @ _hadamard(b, g2d.device)).view(-1, n)
+            a_i8, a_scale = _quant_per_token(gh)
+            del gh
+            acc = _int_mm_padded(a_i8, rot_kn.t())
+            if acc is None:              # no int8 matmul here: the same INT8 numbers, multiplied in fp32
+                acc = a_i8.to(torch.float32) @ rot_kn.t().to(torch.float32)
+            grad_x = (acc.to(torch.float32) * a_scale * rot_s).to(grad_out.dtype)
+            return grad_x.reshape(*ctx.orig_shape), None, None, grad_bias, None, None
         # bf16 backward: exact gradients. Dequantise in the COMPUTE dtype - an fp32 (K,N) copy of a 6144x6144 weight
         # is 150 MB and made this path slower than dense bf16.
         w = w_i8_nk.to(grad_out.dtype) * w_scale_1n.reshape(-1, 1).to(grad_out.dtype)  # (N,K)
         grad_x = g2d @ w
-        grad_bias = g2d.sum(dim=0).to(grad_out.dtype) if ctx.needs_bias_grad else None
-        return grad_x.reshape(*ctx.orig_shape), None, None, grad_bias
+        return grad_x.reshape(*ctx.orig_shape), None, None, grad_bias, None, None
 
 
 def int8_weight_only_forward(self: nn.Linear, x: torch.Tensor) -> torch.Tensor:
@@ -115,4 +193,18 @@ def int8_weight_only_forward(self: nn.Linear, x: torch.Tensor) -> torch.Tensor:
 
 
 def int8_train_forward(self: nn.Linear, x: torch.Tensor) -> torch.Tensor:
-    return _Int8FrozenLinear.apply(x, self.weight.data, self._int8_wscale, self.bias)
+    rot = None
+    if _ROTATED["on"] and torch.is_grad_enabled():
+        rot = getattr(self, "_int8_rot", None)
+        if rot is not None and rot[0].device != self.weight.device:   # the weight moved (block swap): follow it
+            rot = tuple(t.to(self.weight.device, non_blocking=True) for t in rot)
+            self._int8_rot = rot
+        elif rot is None and not getattr(self, "_int8_rot_none", False):
+            rot = rotated_weight(self.weight.data, self._int8_wscale)
+            if rot is None:
+                self._int8_rot_none = True            # no Hadamard block for this size: the exact backward
+            else:
+                self._int8_rot = rot
+    if rot is None:
+        return _Int8FrozenLinear.apply(x, self.weight.data, self._int8_wscale, self.bias)
+    return _Int8FrozenLinear.apply(x, self.weight.data, self._int8_wscale, self.bias, rot[0], rot[1])

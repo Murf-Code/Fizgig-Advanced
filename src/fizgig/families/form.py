@@ -83,7 +83,7 @@ DEFAULTS = {
     "SEED": "42", "BLOCKS_SWAP": "Auto (detect from GPU)", "RESUME_TRAINING": "", "OPTIMIZER_TYPE": "adamw8bit",
     "OPTIMIZER_ARGS": "", "GRADIENT_ACCUMULATION": "1", "BATCH_SIZE": "1", "MAX_GRAD_NORM": "1.0", "LR_SCHEDULER": "constant",
     "LR_WARMUP_STEPS": "", "VALIDATION_LOSS": False, "VALIDATION_IMAGES": "4", "VALIDATION_TIMESTEPS": "4",
-    "VALIDATION_SEED": "42", "VALIDATION_EVERY_STEPS": "0", "VALIDATION_PICKED": [], "VALIDATION_HOLDOUT": True,
+    "VALIDATION_SEED": "42", "VALIDATION_EVERY_STEPS": "0", "VALIDATION_PICKED": [], "VALIDATION_HOLDOUT": True, "INT8_ROTATED_BACKWARD": False,
     "VALIDATION_EARLY_STOP": False, "VALIDATION_PATIENCE": "3", "ADAPTIVE_LR": False, "ADAPTIVE_LR_ON_VAL": True, "ADAPTIVE_LR_MIN": "1e-5", "ADAPTIVE_LR_MAX": "4e-4",
     "CONTEXT_LORA_PATH": "", "CONTEXT_LORA_STRENGTH": "1.0", "FAMILY_DOP": False, "FAMILY_MULTI_PERSON": False, "FAMILY_DOP_TRIGGER": "",
     "FAMILY_DOP_CLASS": "", "FAMILY_DOP_TRIGGER2": "", "FAMILY_DOP_CLASS2": "",
@@ -679,6 +679,13 @@ def form(desc):
              SWAP),
         _row("FAMILY_PRECISION", desc.precision_label or "Base precision", "choice", desc.precision_hint,
              [labels[p] for p in precisions], default=labels["auto"]) if len(desc.precisions) > 1 else None,
+        _row("INT8_ROTATED_BACKWARD", "Rotated INT8 backward (experimental)", "check",
+             "Off (default): with an INT8 base the backward pass runs in bf16, exact. On: it runs in INT8 too, after "
+             "a Hadamard rotation that spreads out the gradients' spikes, so less detail is rounded away. Faster on "
+             "cards with fast INT8, but it keeps a second INT8 copy of the model's block weights (more VRAM), and "
+             "only works with INT8 (with Auto, only when Auto picks INT8).",
+             warn="Experimental: the gradients are less exact, which may harm likeness. Compare against a run "
+                  "with it off before you rely on it.") if "int8" in desc.precisions else None,
         _row("COMPILE_BLOCKS", "Compile Blocks", "choice", desc.compile_hint, ["Auto", "On", "Off"])
         if desc.compiles else None,
         _row("RESUME_TRAINING", "Resume Training", "folder", "Empty for a normal run. The easy way to carry "
@@ -1175,6 +1182,9 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
     if not _ve.isdigit():
         notes["VALIDATION_EVERY_STEPS"] = "Steps must be a whole number above 0 - checking every epoch until then."
     _on = lambda k: str(values.get(k, "")).lower() not in ("", "false", "0", "off", "none")
+    if "int8" in desc.precisions and launch.precision_key(desc, values.get("FAMILY_PRECISION")) not in ("int8",
+                                                                                                      "auto"):
+        hidden.add("INT8_ROTATED_BACKWARD")              # only an INT8 base has an INT8 backward to rotate
     if not _on("VALIDATION_LOSS"):                      # early stop goes by the validation loss
         disabled |= {"VALIDATION_EARLY_STOP", "VALIDATION_PATIENCE"}
         tips["VALIDATION_EARLY_STOP"] = "Turn on Fixed validation loss first: early stop goes by it."

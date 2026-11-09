@@ -1186,6 +1186,9 @@ def train_command(desc, inputs, plan):
         pass
     if len(desc.precisions) > 1:
         cmd += ["--precision", precision_key(desc, st.get("FAMILY_PRECISION"))]
+    if ("int8" in desc.precisions and str(st.get("INT8_ROTATED_BACKWARD", False)).lower() in ("true", "1", "on")
+            and precision_key(desc, st.get("FAMILY_PRECISION")) in ("int8", "auto")):
+        cmd.append("--int8_rotated_backward")     # experimental, opt-in: the trainer uses it only on an INT8 base
     if ft_on(desc, st):
         # the length and cadence in whole rotations; a continuation starts from the paused run's checkpoint
         cmd += ["--finetune", "--ft_rotations", str(_ft_int(st, "FAMILY_FT_ROTATIONS", 10)),

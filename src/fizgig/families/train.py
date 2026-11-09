@@ -1241,6 +1241,8 @@ def train_family(family, dit_path, dataset_config, *args, **kwargs):
         return _train_family(family, dit_path, dataset_config, *args, **kwargs)
     finally:
         _give_back_holdout(dataset_config)
+        from fizgig.modules.int8_train import set_rotated_backward
+        set_rotated_backward(False)          # this run's own (an in-process run after it starts exact again)
 
 
 def _give_back_holdout(dataset_config):
@@ -1283,6 +1285,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                  log_per_image_loss=False, per_image_lr=False, auto_recaption=False, warmup_look_outliers=False,
                  validation_loss=False, validation_images=4, validation_timesteps=4, validation_seed=42,
                  validation_every_steps=0, validation_picked=None, validation_holdout=False,
+                 int8_rotated_backward=False,
                  validation_early_stop=False, validation_patience=3, validation_min_delta=0.001,
                  auto_reclaim_vram=True, reclaim_slowdown=1.5, reclaim_slow_steps=20, reclaim_warmup_steps=50,
                  reclaim_min_free_gb=vram_reclaim.RECLAIM_FREE_GB, reclaim_cooldown=200, reclaim_max_tries=3,
@@ -1901,6 +1904,16 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     send_only = send_only_plan(send_only_swap, blocks_to_swap, precision, gradient_checkpointing, gc_off_blocks,
                                finetune, wont_help="" if send_only_force else send_only_wont_help(blocks_to_swap, _mp))
     dit, swapped = quant.load_base(driver, dit_path, device, precision, blocks_to_swap, send_only=send_only)
+    if int8_rotated_backward:            # experimental, opt-in (modules/int8_train.py): an INT8 backward too
+        from fizgig.modules import int8_train as _i8
+        if precision == "int8" and not getattr(driver, "int8_weight_only", False):
+            _i8.set_rotated_backward(True)
+            say(logger, "[precision] Rotated INT8 backward on (experimental): the gradients are rounded to INT8 "
+                        "after a Hadamard rotation - faster, a little less exact, and it may harm likeness. It keeps "
+                        "a second INT8 copy of the block weights for it.")
+        else:
+            logger.info("[precision] Rotated INT8 backward: off - it needs INT8 (weights and activations), this run "
+                        f"is {precision}" + (" weight-only" if precision == "int8" else ""))
     if gradient_checkpointing:
         driver.enable_gradient_checkpointing(dit, True)
         dit.gc_off_blocks = gc_off_blocks       # the compiled blocks / H3's loop leave the last ones un-checkpointed
@@ -3643,6 +3656,8 @@ def setup_parser():
     p.add_argument("--validation_timesteps", type=int, default=4)
     p.add_argument("--validation_seed", type=int, default=42)
     p.add_argument("--validation_every_steps", type=int, default=0, help="0 = at the end of each epoch")
+    p.add_argument("--int8_rotated_backward", action="store_true",
+                   help="experimental: an INT8 backward for INT8 bases, after a Hadamard rotation (may harm likeness)")
     p.add_argument("--validation_holdout", action="store_true",
                    help="no longer used (kept so older commands still run): the validation hold-out is the dataset "
                         "TOML's holdout_file, set by Start")
@@ -3860,6 +3875,7 @@ def main():
         validation_timesteps=a.validation_timesteps, validation_seed=a.validation_seed,
         validation_every_steps=a.validation_every_steps, validation_picked=a.validation_pick,
         validation_holdout=a.validation_holdout,
+        int8_rotated_backward=a.int8_rotated_backward,
         validation_early_stop=a.validation_early_stop, validation_patience=a.validation_patience,
         validation_min_delta=a.validation_min_delta,
         auto_reclaim_vram=a.auto_reclaim_vram, reclaim_slowdown=a.reclaim_slowdown, send_only_swap=a.send_only_swap,
