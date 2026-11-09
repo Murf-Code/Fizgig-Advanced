@@ -386,7 +386,8 @@ def start(folder, mode, mp, face_label, padding, replace, find="", captions=None
     if mode not in prep.MODES:
         raise ValueError("Pick what to do.")
     words, sam_path = find_words(face_label, find) if mode in prep.FACE_MODES else ([], "")
-    cap_settings, tagger_dir = caption_settings(captions) if mode in prep.FACE_MODES else (None, "")
+    cap_settings, tagger_dir = caption_settings(captions) if mode in prep.FACE_MODES or mode == "Detail Crops (Style)" \
+        else (None, "")
     if mode in prep.FACE_MODES and not words and not faces_available():
         raise ValueError("Face detection isn't installed on this machine: run install_fizgig.py to add it.")
     with _lock:

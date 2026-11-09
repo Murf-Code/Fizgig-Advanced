@@ -321,25 +321,23 @@ def _worker_config(model, captioner, clips, models_dir=None):
 
 
 def _crop_images(images, overwrite, ext):
-    """(the files to caption, the training folders whose detail crops then mirror their captions): a detail crop is
-    captioned at the largest size it has, and that caption is copied over its other sizes (detail_crops.share_captions);
-    without overwrite, one with a caption at its largest size is left out."""
+    """(the files to caption, []): a detail crop is captioned at every size it has, each from its own crop (a smaller
+    crop shows less, so its caption differs); without overwrite, a size that has a caption is left out."""
     from fizgig.dataset import detail_crops
-    out, roots = [], []
+    out = []
     for p in images:
         d = os.path.dirname(p)
         if not detail_crops.is_crop_dir(d):
-            out.append(p)
+            if p not in out:
+                out.append(p)
             continue
-        root = detail_crops.root_of(d)
-        if root not in roots:
-            roots.append(root)
         name = os.path.basename(p)
-        big = next((os.path.join(o, name) for _l, o in detail_crops.sizes(root)[::-1]
-                     if os.path.isfile(os.path.join(o, name))), p)
-        if (overwrite or not os.path.isfile(os.path.splitext(big)[0] + ext)) and big not in out:
-            out.append(big)
-    return out, roots
+        for _l, o in detail_crops.sizes(detail_crops.root_of(d))[::-1]:
+            c = os.path.join(o, name)
+            if os.path.isfile(c) and c not in out and \
+                    (overwrite and c == p or not os.path.isfile(os.path.splitext(c)[0] + ext)):
+                out.append(c)
+    return out, []
 
 
 def _mirror_crops(roots, ext):
@@ -427,7 +425,7 @@ def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_to
                          "No pictures or clips in the training folder.")
     if not only and not overwrite:
         images = [p for p in images if not os.path.exists(os.path.splitext(p)[0] + ext)]
-    images, roots = _crop_images(images, overwrite or bool(only), ext)    # detail crops: at their largest size
+    images, roots = _crop_images(images, overwrite or bool(only), ext)    # detail crops: at each size they have
     if not images:
         raise ValueError("Every file already has a caption. Tick Overwrite to caption them again."
                          if not only else "That file isn't there any more.")

@@ -5702,7 +5702,7 @@ function prepYoloWords() {
 const prepOther = () => ((S.prep.opts || {}).other || "Other…") === $("prepFace").value;
 function prepTrimBlocked() {
   const p = prepSettings();
-  if (!["Auto Prep (Face Crops)", "Face Crop Only"].includes(p.mode) || !(p.capCopy && p.capTrim)) return "";
+  if (!["Auto Prep (Face Crops)", "Face Crop Only", "Detail Crops (Style)"].includes(p.mode) || !(p.capCopy && p.capTrim)) return "";
   const t = prepTaggerInfo(), k = Number(p.keepScore);
   if (!(k > 0 && k < 1)) return `Keep tags scored at least: a number between 0 and 1, like ${TAGGER_KEEP[p.tagger] || "0.35"}.`;
   const a = Number(p.addScore);
@@ -5787,12 +5787,12 @@ async function prepSummary() {
   const p = prepSettings(), faceOn = ["Auto Prep (Face Crops)", "Face Crop Only"].includes(p.mode);
   document.querySelectorAll(".prep-face select, .prep-face input").forEach((i) => {
     i.disabled = !faceOn || (!S.prep.opts.face_tools && !(i.id === "prepFind" || (i.id === "prepFace" && prepOther()))); });
-  $("prepCapCopy").disabled = !faceOn;
-  $("prepCapTrim").disabled = !faceOn || !$("prepCapCopy").checked;
-  $("prepCapCloseup").disabled = !faceOn || !$("prepCapCopy").checked;
-  prepFindShow();
   // Detail crops leave the pictures alone and use no face: no face rows, no originals choice, the size is the crop's
   const crops = p.mode === "Detail Crops (Style)";
+  $("prepCapCopy").disabled = !faceOn && !crops;      // detail crops copy their picture's caption too
+  $("prepCapTrim").disabled = (!faceOn && !crops) || !$("prepCapCopy").checked;
+  $("prepCapCloseup").disabled = (!faceOn && !crops) || !$("prepCapCopy").checked;
+  prepFindShow();
   for (const id of ["prepOriginals", "prepSizingNote", "prepChars"]) $(id).style.display = crops ? "none" : "";
   for (const id of ["prepCropsOnlyRow", "prepCropsOnlyHint"]) $(id).style.display = crops ? "" : "none";
   // the face row and the face test only for the modes that make face close-ups
@@ -8518,8 +8518,8 @@ function renderCaptions() {
       }}) : null;
     card.append(media, el("div", {class: "caption-card-body"},
       el("div", {class: "caption-card-title", text: mediaLabel(it) + (it.crop ? " · detail crop" : ""),
-        title: it.crop ? "This picture's detail crop (Image Prep's Detail crops), the largest size: its caption is " +
-          "copied to the crop at every other size" : ""}),
+        title: it.crop ? "This picture's detail crop (Image Prep's Detail crops), the largest size. Each size has its own " +
+          "caption, written for what that size's crop shows; an edit here changes this size's only" : ""}),
       size ? el("div", {class: "field-hint caption-card-size", text: size + (it.mask ? " · has a mask" : "")}) : null, ta,
       el("div", {class: "field-row"}, save, recap, speech, maskBtn, remove, status)));
     host.append(card);

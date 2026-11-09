@@ -44,11 +44,6 @@ CROP_PREFIX = "Crop_"             # Find this close-ups: Crop_paw_001.png (faces
 CLASS_TARGET = "YOLO class: "     # an older build's Crop to choice for a YOLO class ("YOLO class: penis"): now Other…
 
 
-def crop_sizes(prep_mp):
-    """Detail crops' sizes for Image Prep: every Target megapixels from the smallest up to the one picked."""
-    return [float(m) for m in MEGAPIXELS if float(m) <= float(prep_mp) + 1e-9]
-
-
 def bucket_step():
     """The resolution grid training buckets on (RESOLUTION_STEPS), so prep and bucketing can never drift apart."""
     try:
@@ -322,9 +317,8 @@ def summary(folder, mode, replace, prep_mp, train_mp=None, find="", crops_only=F
         s = side(prep_mp)
         from fizgig.dataset.detail_crops import MASTERS, pictures
         n = len(pictures(folder))
-        sizes = ", ".join(f"{m:g}" for m in crop_sizes(prep_mp))
         lines = [f"Each of your {n or ''} pictures gets a crop at its own scale (from its full-size original when "
-                 f"there is one) at every size up to {prep_mp:g} MP ({sizes} MP), in {DIR}. "
+                 f"there is one) at {prep_mp:g} MP, in {DIR}. "
                  + (f"Then the pictures, with their captions and masks, move into {MASTERS}, which never trains: "
                     f"this folder trains its crops only, at the size each run trains at." if crops_only else
                     f"Your pictures stay as they are, and this folder trains its crops too, at the size each run "
@@ -583,23 +577,29 @@ class Prep:
             self.log(f"Face finder: {self.detector.describe()}\n")      # only when it isn't the usual one
         if mode == "Detail Crops (Style)":           # the folder switched to detail crops, and this size's made now
             from fizgig.dataset import detail_crops
-            detail_crops.switch(folder, True)
+            caps = self.captions if self.captions is not None and self.captions.copy else None
+            if caps is not None:
+                caps.targets = []                    # a detail crop is of no one thing: nothing to keep or add for it
+            detail_crops.switch(folder, True, captions={
+                "copy": caps is not None, "closeup": bool(caps.closeup) if caps else True,
+                "trigger": (caps.keep or [""])[0] if caps else "", "drop": caps.drop if caps else None})
             self.log(f"Mode: Detail crops (for a style)\n\nThis folder now trains detail crops too, at the size each "
-                     f"run trains at. Making them at every size up to {prep_mp:g} MP:\n")
-            for mp in crop_sizes(prep_mp):           # every size up to the one picked
-                detail_crops.make(folder, mp, log=lambda t: self.log(t + "\n"))
+                     f"run trains at. Making them at {prep_mp:g} MP (Start makes any other size a run trains at):\n")
+            detail_crops.make(folder, prep_mp, log=lambda t: self.log(t + "\n"))
             moved = detail_crops.archive(folder, crops_only, log=lambda t: self.log(t + "\n"))
             if moved:                               # Train on the crops only: the pictures kept in detail_masters/
                 self.log((f"\nTraining on the crops only: {moved} file(s) moved into "
                           f"{os.path.join(folder, detail_crops.MASTERS)} (kept, never trained)." if crops_only else
                           f"\nThe pictures train again: {moved} file(s) moved back from "
                           f"{detail_crops.MASTERS}.") + "\n")
-            n = detail_crops.share_captions(folder)
-            todo = sum(1 for _l, d in detail_crops.sizes(folder) for c in detail_crops.uncaptioned(d))
-            self.log(f"\nThe crops are in {os.path.join(folder, detail_crops.DIR)}, one folder per size"
-                     + (f"; {n} caption(s) copied from another size" if n else "")
-                     + (f"; {todo} have no caption yet - caption them on the Captions tab (Show: detail crops; the "
-                        "largest size is captioned and copied to the others), or Start captions them" if todo else "")
+            n = detail_crops.copy_captions(folder, prep_mp, log=lambda t: self.log(t + "\n"), ext=caps.ext,
+                                           captions=caps) if caps is not None else 0
+            todo = len(detail_crops.uncaptioned(detail_crops.size_dir(folder, prep_mp),
+                                                caps.ext if caps is not None else ".txt"))
+            self.log(f"\nThe crops are in {detail_crops.size_dir(folder, prep_mp)}"
+                     + (f"; {n} got their picture's caption" if n else "")
+                     + (f"; {todo} have no caption yet - caption them on the Captions tab (Show: detail crops), "
+                        "or Start captions them with the Captions tab's model" if todo else "")
                      + ".\n")
             return
         if self.finder is not None and mode in FACE_MODES:

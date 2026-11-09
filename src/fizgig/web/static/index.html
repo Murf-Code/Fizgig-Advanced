@@ -292,8 +292,10 @@
                   Detail crops — for a style</label>
                 <div class="field-hint radio-hint">Each picture also trains as one square crop
                   at its own scale, so brushwork and texture aren't shrunk away. The crop is at a random spot, moved off
-                  flat areas, and the same spot at every size. Run it once per folder; after that,
-                  each run makes its own crops at Start, at the size it trains at, captioned with the Style task.</div>
+                  flat areas, and the same spot at every size. It makes the crops at the Target megapixels picked
+                  below; Start makes any other size a run trains at. Each size's crops get their own captions: the
+                  picture's caption when "Copy the picture's caption to its crops" is ticked, else the Captions tab's
+                  model, captioning each crop as it looks at that size.</div>
                 <label class="checkbox-label radio-hint" id="prepCropsOnlyRow"><input type="checkbox" id="prepCropsOnly">
                   Train on the crops only</label>
                 <div class="field-hint radio-hint" id="prepCropsOnlyHint">Moves the full pictures, with their captions

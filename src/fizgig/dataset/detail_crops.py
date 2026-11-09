@@ -29,17 +29,35 @@ RULE = 4                                # the spot rule's version: a crop made b
 FLAT = 0.4                              # a spot with under 40% of the detail of the picture's busiest spot counts as flat
 
 
-def is_on(folder) -> bool:
+def _settings(folder) -> dict:
     try:
         with open(os.path.join(folder, SETTINGS), encoding="utf-8") as f:
-            return bool(json.load(f).get("on"))
+            v = json.load(f)
+        return v if isinstance(v, dict) else {}
     except (OSError, ValueError):
-        return False
+        return {}
 
 
-def switch(folder, on=True):
+def is_on(folder) -> bool:
+    return bool(_settings(folder).get("on"))
+
+
+def switch(folder, on=True, captions=None):
+    """Detail crops on or off for the folder. captions: Image Prep's "Copy the picture's caption to its crops"
+    settings ({copy, closeup, trigger, drop}), kept so Start copies captions to the crops it makes at other sizes the
+    same way; None keeps what was saved."""
+    v = _settings(folder)
+    v["on"] = bool(on)
+    if captions is not None:
+        v["captions"] = captions
     with open(os.path.join(folder, SETTINGS), "w", encoding="utf-8") as f:
-        json.dump({"on": bool(on)}, f)
+        json.dump(v, f)
+
+
+def copy_settings(folder):
+    """The saved "Copy the picture's caption to its crops" settings when that was on, else None."""
+    c = _settings(folder).get("captions")
+    return c if isinstance(c, dict) and c.get("copy") else None
 
 
 def side(mp) -> int:
@@ -197,8 +215,9 @@ def uncaptioned(d, ext=".txt"):
 
 def share_captions(folder, ext=".txt"):
     """Each picture's crop caption, from the largest size that has one, written over the same crop at every other
-    size: every size is cut around the same spot, so one caption fits them all, and the largest is the one the
-    Captions tab shows and edits. Returns how many caption files changed."""
+    size. Only for a caption that fits every size (Static captions: the trigger word): an AI caption is written for
+    each size's own crop (to_caption), since a smaller crop shows less of the picture. Returns how many caption files
+    changed."""
     dirs = [d for _label, d in sizes(folder)][::-1]       # largest first
     stems = set()
     for d in dirs:
@@ -224,6 +243,48 @@ def share_captions(folder, ext=".txt"):
     return n
 
 
+def copy_captions(folder, mp=None, log=print, ext=".txt", captions=None):
+    """Copy the picture's caption to its crops: each crop with no caption yet (at size mp, or every size) gets its
+    picture's caption, the way Image Prep's crops do (crop_captions.CropCaptions: close-up added, the always-dropped
+    tags gone, the trigger word kept). captions: a CropCaptions (Image Prep's, which may trim with a tagger); None:
+    the folder's saved settings (copy_settings), with no trimming - nothing when copying is off. Returns how many."""
+    from fizgig.dataset.crop_captions import CropCaptions, find_caption
+    if captions is None:
+        c = copy_settings(folder)
+        if c is None:
+            return 0
+        captions = CropCaptions(copy=True, ext=ext, keep=[c.get("trigger") or ""], closeup=c.get("closeup", True),
+                                drop=c.get("drop"))
+        captions.targets = []
+    if not captions.copy:
+        return 0
+    dirs = [size_dir(folder, mp)] if mp is not None else [d for _label, d in sizes(folder)]
+    n = 0
+    for d in dirs:
+        man = _load(os.path.join(d, MANIFEST))
+        for c in uncaptioned(d, ext):
+            stem = os.path.splitext(os.path.basename(c))[0]
+            src = (man.get(stem) or {}).get("source") or ""
+            pic = os.path.join(picture_dir(folder, src), src) if src else ""
+            if not (pic and find_caption(pic, ext)):
+                continue
+            img = None
+            if getattr(captions, "tagger", None) is not None:      # trimming: the tagger looks at the crop
+                try:
+                    from PIL import Image
+                    img = Image.open(c).convert("RGB")
+                except Exception:
+                    img = None
+            try:
+                if captions.to_crop(pic, c, lambda t: None, img):
+                    n += 1
+            except Exception as e:
+                log(f"[detail crops] {os.path.basename(c)}: caption not copied ({e})")
+    if n:
+        log(f"[detail crops] {n} crop(s) got their picture's caption")
+    return n
+
+
 def largest(folder):
     """The training folder's largest detail crop folder, the one the Captions tab shows, or "" (none, or off)."""
     if not is_on(folder):
@@ -242,17 +303,13 @@ def root_of(d):
     return os.path.dirname(os.path.dirname(os.path.normpath(d)))
 
 
-def to_caption(folder, ext=".txt"):
-    """The crops a captioner should write after share_captions: each picture with no caption at any size, once, at
-    the largest size it has a crop (share_captions then copies it to the rest)."""
-    out, seen = [], set()
-    for _label, d in sizes(folder)[::-1]:                 # largest first
-        for c in uncaptioned(d, ext):
-            stem = os.path.splitext(os.path.basename(c))[0]
-            if stem not in seen:
-                seen.add(stem)
-                out.append(c)
-    return out
+def to_caption(folder, ext=".txt", mps=None):
+    """The crops a captioner should write: every crop with no caption yet, at each size it was made (mps: only those
+    sizes), largest first. Each size is captioned from its own crop - a small crop shows only part of what a big one
+    does, so their captions differ."""
+    want = None if mps is None else {size_name(m) for m in mps}
+    return [c for _label, d in sizes(folder)[::-1] if want is None or os.path.basename(d) in want
+            for c in uncaptioned(d, ext)]
 
 
 def _load(path):

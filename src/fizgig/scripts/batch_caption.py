@@ -196,24 +196,9 @@ def _load_state_from_config(config: dict, device: str) -> CaptionState:
     return CaptionState(backend, device, model, include_video)
 
 
-def _run_job(state: CaptionState, job: dict) -> bool:
-    """Caption images listed in job. Returns True if stopped early."""
-    list_file = job["list_file"]
-    trigger = (job.get("trigger") or "").strip()
-    max_new_tokens = int(job.get("max_new_tokens") or 120)
-    stop_file = (job.get("stop_file") or "").strip()
-    include_video = state.include_video
-
-    images = _load_image_list(list_file)
-    allowed = IMAGE_EXTENSIONS | (VIDEO_EXTENSIONS if include_video else set())
-    from fizgig.dataset.masks import is_mask_file
-    images = [p for p in images if os.path.isfile(p) and os.path.splitext(p)[1].lower() in allowed
-              and not is_mask_file(p)]
-    total = len(images)
-    if not total:
-        print("FAIL: no images in list", flush=True)
-        return False
-
+def _caption_fn(state, job: dict, trigger: str = "", max_new_tokens: int = 120):
+    """caption_one(path) -> text for the loaded model (state) and a job's settings (tags, florence_task,
+    instruction_file). ValueError when the job lacks what the model needs. Also the Detail crops stage's captioner."""
     if state.backend == "tagger":
         from fizgig.dataset import tag_captions
         tid, tagger = state.model
@@ -234,17 +219,42 @@ def _run_job(state: CaptionState, job: dict) -> bool:
     else:
         instruction_file = job.get("instruction_file") or ""
         if not instruction_file:
-            print("FAIL: instruction_file required", flush=True)
-            return False
+            raise ValueError("instruction_file required")
         with open(instruction_file, encoding="utf-8") as f:
             instruction = f.read().strip()
         if not instruction:
-            print("FAIL: empty instruction", flush=True)
-            return False
+            raise ValueError("empty instruction")
         encoder = state.model
 
         def caption_one(path: str) -> str:
             return _caption_qwen(encoder, path, instruction, max_new_tokens)
+
+    return caption_one
+
+
+def _run_job(state: CaptionState, job: dict) -> bool:
+    """Caption images listed in job. Returns True if stopped early."""
+    list_file = job["list_file"]
+    trigger = (job.get("trigger") or "").strip()
+    max_new_tokens = int(job.get("max_new_tokens") or 120)
+    stop_file = (job.get("stop_file") or "").strip()
+    include_video = state.include_video
+
+    images = _load_image_list(list_file)
+    allowed = IMAGE_EXTENSIONS | (VIDEO_EXTENSIONS if include_video else set())
+    from fizgig.dataset.masks import is_mask_file
+    images = [p for p in images if os.path.isfile(p) and os.path.splitext(p)[1].lower() in allowed
+              and not is_mask_file(p)]
+    total = len(images)
+    if not total:
+        print("FAIL: no images in list", flush=True)
+        return False
+
+    try:
+        caption_one = _caption_fn(state, job, trigger, max_new_tokens)
+    except ValueError as exc:
+        print(f"FAIL: {exc}", flush=True)
+        return False
 
     stopped = False
     for i, path in enumerate(images, 1):

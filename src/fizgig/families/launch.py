@@ -717,21 +717,40 @@ def detail_crop_sizes(desc, inputs):
     return out + ([smp] if smp else [])
 
 
+def detail_crops_captioner(inputs):
+    """The Captions tab's model for detail crop captions, as the caption worker's config, or None: its pick
+    (recaption_with: Florence-2, a tagger such as JTP-3, or Qwen3-VL), else Qwen3-VL from the captioner file."""
+    rw = inputs.get("recaption_with") or {}
+    if isinstance(rw, dict) and rw.get("backend") in ("tagger", "florence"):
+        return rw
+    cap = _s(rw.get("text_encoder") if isinstance(rw, dict) else "") or _s(inputs.get("captioner"))
+    return {"backend": "qwen", "text_encoder": cap} if cap and os.path.isfile(cap) else None
+
+
 def detail_crops_problem(desc, inputs):
     """Detail crops that still need captions, with no captioner to write them: why it can't start, or ""."""
     from fizgig.dataset import detail_crops
-    if _s(inputs.get("captioner")) and os.path.isfile(_s(inputs.get("captioner"))):
+    from fizgig.dataset.crop_captions import find_caption
+    if detail_crops_captioner(inputs):
         return ""
     folder, ext = _s(inputs.get("image_folder")), _s(inputs.get("caption_ext")) or ".txt"
-    if not detail_crop_sizes(desc, inputs):
+    mps = detail_crop_sizes(desc, inputs)
+    if not mps:
         return ""
-    have = set()                         # a picture's crop captioned at any size: the Detail crops stage copies it
-    for _label, d in detail_crops.sizes(folder):
-        have |= {os.path.splitext(n)[0] for n in os.listdir(d) if n.endswith(ext)}
-    have |= detail_crops.deleted(folder, ext=ext, apply=False)   # a crop you deleted needs no caption
-    if any(os.path.splitext(n)[0] not in have for n in detail_crops.pictures(folder)):
-        return ("Detail crops need captions, written by the captioner: set the Krea 2 text encoder (or a secondary "
-                "captioning model) in Preferences, or switch Detail crops off for this folder in Image Prep.")
+    gone = detail_crops.deleted(folder, ext=ext, apply=False)    # a crop you deleted needs no caption
+    copy = detail_crops.copy_settings(folder) is not None        # Image Prep's Copy the caption: the picture's
+    for mp in mps:                       # each size the run trains at is captioned from its own crop
+        d = detail_crops.size_dir(folder, mp)
+        have = {os.path.splitext(n)[0] for n in os.listdir(d) if n.endswith(ext)} if os.path.isdir(d) else set()
+        for n in detail_crops.pictures(folder):
+            stem = os.path.splitext(n)[0]
+            if stem in have or stem in gone:
+                continue
+            if copy and find_caption(os.path.join(detail_crops.picture_dir(folder, n), n), ext):
+                continue
+            return ("Detail crops need captions at the size this run trains at, written by the captioner: pick a "
+                    "model on the Captions tab or set the Krea 2 text encoder in Preferences, tick \"Copy the "
+                    "picture's caption to its crops\" in Image Prep, or switch Detail crops off for this folder.")
     return ""
 
 
@@ -2100,6 +2119,10 @@ def plan(desc, inputs):
         cmd = [inputs["python"], os.path.join(inputs["repo_dir"], "src", "fizgig", "scripts", "detail_crops.py"),
                "--folder", _s(inputs.get("image_folder")), "--captioner", _s(inputs.get("captioner")),
                "--instruction_file", instr, "--ext", _s(inputs.get("caption_ext")) or ".txt"]
+        rw = detail_crops_captioner(inputs)
+        if rw and rw.get("backend") != "qwen":   # the Captions tab's pick (JTP-3, Florence-2, ...): not Qwen3-VL
+            import json as _json
+            cmd += ["--recaption_with", _json.dumps(rw)]
         for mp in crop_sizes:
             cmd += ["--mp", f"{mp:g}"]
         trig = _s(inputs.get("caption_trigger"))

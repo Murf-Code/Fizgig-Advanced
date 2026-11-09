@@ -5103,9 +5103,6 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": "bad folder or file"}, 400)
                 with open(os.path.join(folder, stem + ext), "w", encoding="utf-8") as f:
                     f.write(text)
-                from fizgig.dataset import detail_crops
-                if detail_crops.is_crop_dir(folder):        # a detail crop: the same caption at its other sizes
-                    detail_crops.share_captions(detail_crops.root_of(folder), ext)
                 return self.json({"ok": True})
         except ValueError as e:
             return self.json({"error": str(e)}, 400)
