@@ -1253,8 +1253,14 @@ function vramReclaimCard() {
     .then(() => { S.set.auto_reclaim_vram = on.checked ? "1" : "0"; grey(); }));
   const sendOnly = el("input", {type: "checkbox", id: "prefSendOnlySwap"});
   sendOnly.checked = String(S.set.send_only_block_swap ?? "1") !== "0";
+  // on, it stands down for a run where it won't help (families/train.py send_only_wont_help) unless this is ticked
+  const sendForce = el("input", {type: "checkbox", id: "prefSendOnlyForce"});
+  sendForce.checked = String(S.set.send_only_force ?? "0") === "1";
+  sendForce.disabled = !sendOnly.checked;
   sendOnly.addEventListener("change", () => api("/api/prefs", {changes: {send_only_block_swap: sendOnly.checked}})
-    .then(() => { S.set.send_only_block_swap = sendOnly.checked ? "1" : "0"; }));
+    .then(() => { S.set.send_only_block_swap = sendOnly.checked ? "1" : "0"; sendForce.disabled = !sendOnly.checked; }));
+  sendForce.addEventListener("change", () => api("/api/prefs", {changes: {send_only_force: sendForce.checked}})
+    .then(() => { S.set.send_only_force = sendForce.checked ? "1" : "0"; }));
   grey();
   const adv = el("div", {class: "card-content collapsed"}, ...rows);
   return el("div", {class: "section-card", id: "prefsReclaim"},
@@ -1273,7 +1279,11 @@ function vramReclaimCard() {
         "swap if a run misbehaves."},
         sendOnly, " Faster block swap (send-only)"),
       el("div", {class: "field-hint", text: "On by default. LoRA runs with Blocks Swap on Krea 2 and MOSS-Image; " +
-        "fine-tunes and other models keep the classic swap."})),
+        "fine-tunes and other models keep the classic swap. It switches itself off for a run where it won't help " +
+        "(low system RAM, only a few blocks swapped, or big pictures) and says why in the log."}),
+      el("label", {class: "checkbox-label", style: "margin-left: 24px",
+        title: "Use faster block swap on every run it can, even where Fizgig expects it not to help."},
+        sendForce, " Even when it won't help")),
     el("div", {class: "card-title collapsible-header", onclick: () => adv.classList.toggle("collapsed")},
       el("span", {text: "Advanced: VRAM reclaim"})), adv);
 }

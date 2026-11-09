@@ -287,6 +287,22 @@ def test_plan():
     assert send_only_plan(True, 24, "int8", True, 0, True) is False        # a fine-tune trains the base
 
 
+def test_it_stands_down_where_it_wont_help(caplog):
+    import logging
+    from fizgig.families import train as T
+    big = T.SEND_ONLY_LOW_RAM_GB + 32
+    assert T.send_only_wont_help(24, 0.5, ram_gb=big) == ""                         # helps: plenty of RAM, 24 blocks
+    assert "system RAM" in T.send_only_wont_help(24, 0.5, ram_gb=31.8)              # a 32 GB PC
+    assert "only 3 blocks" in T.send_only_wont_help(3, 0.5, ram_gb=big)
+    assert T.send_only_wont_help(T.SEND_ONLY_MIN_BLOCKS, 0.5, ram_gb=big) == ""
+    assert "MP" in T.send_only_wont_help(24, T.SEND_ONLY_MAX_MP + 0.1, ram_gb=big)  # big pictures
+    assert T.send_only_wont_help(24, T.SEND_ONLY_MAX_MP, ram_gb=big) == ""
+    with caplog.at_level(logging.INFO):
+        assert T.send_only_plan(True, 24, "int8", True, 0, False, wont_help="only 3 blocks swapped") is False
+    assert "Faster block swap is off for this run: only 3 blocks swapped" in caplog.text
+    assert "Even when it won't help" in caplog.text                                 # how to switch it back on
+
+
 def test_falls_back_to_classic():
     torch.manual_seed(0)
     m = SingleStreamDiT(KCFG)
@@ -347,6 +363,10 @@ def test_preference_and_flag():
     assert launch.RECLAIM_PREF_DEFAULTS["send_only_block_swap"] == "1"
     assert launch.send_only_flags({}) == [] and launch.send_only_flags(None) == []
     assert launch.send_only_flags({"send_only_block_swap": "0"}) == ["--no-send_only_swap"]
+    assert launch.RECLAIM_PREF_DEFAULTS["send_only_force"] == "0"
+    assert launch.send_only_flags({"send_only_force": "1"}) == ["--send_only_force"]          # even when it won't help
+    assert launch.send_only_flags({"send_only_block_swap": "0", "send_only_force": "1"}) == ["--no-send_only_swap"]
+    assert launch.clean_reclaim_prefs({"send_only_force": True}) == {"send_only_force": "1"}
     assert launch.clean_reclaim_prefs({"send_only_block_swap": False}) == {"send_only_block_swap": "0"}
     assert launch.reclaim_flags({"send_only_block_swap": "0"}) == []           # the reclaim flags are their own
     js = open(os.path.join(os.path.dirname(__file__), "..", "src", "fizgig", "web", "static", "app.js"), encoding="utf-8").read()
@@ -355,6 +375,9 @@ def test_preference_and_flag():
     req = ["--family", "krea2", "--dit", "x", "--output_dir", "o", "--output_name", "n"]
     assert setup_parser().parse_known_args(req)[0].send_only_swap is True
     assert setup_parser().parse_known_args(req + ["--no-send_only_swap"])[0].send_only_swap is False
+    assert setup_parser().parse_known_args(req)[0].send_only_force is False
+    assert setup_parser().parse_known_args(req + ["--send_only_force"])[0].send_only_force is True
+    assert "send_only_force" in js and "Even when it won't help" in js
 
 
 def test_the_parity_check_catches_a_stale_ring(monkeypatch):

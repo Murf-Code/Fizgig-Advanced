@@ -948,7 +948,7 @@ def _state_flags(st):
 # (trainer flag, default, type). auto_reclaim_vram is "1"/"0" like the other Preferences ticks.
 RECLAIM_PREF_DEFAULTS = {"auto_reclaim_vram": "1", "reclaim_slowdown": "1.5", "reclaim_slow_steps": "20",
                          "reclaim_warmup_steps": "50", "reclaim_min_free_gb": "0.1", "reclaim_cooldown": "200",
-                         "reclaim_max_tries": "3", "send_only_block_swap": "1"}
+                         "reclaim_max_tries": "3", "send_only_block_swap": "1", "send_only_force": "0"}
 RECLAIM_SETTINGS = (
     ("reclaim_slowdown", "--reclaim_slowdown", 1.5, float),
     ("reclaim_slow_steps", "--reclaim_slow_steps", 20, int),
@@ -967,7 +967,7 @@ def clean_reclaim_prefs(changes):
     """A Preferences change as stored: the tick as "1"/"0", each number checked (above 0; a blank box = its
     default; an int box takes 20.0 as 20). Other keys pass through. ValueError for text that isn't a number."""
     ch = dict(changes)
-    for tick in ("auto_reclaim_vram", "send_only_block_swap"):
+    for tick in ("auto_reclaim_vram", "send_only_block_swap", "send_only_force"):
         if tick in ch:
             ch[tick] = "1" if ch[tick] in (True, "1", 1, "true", "True") else "0"
     for key, _flag, dflt, typ in RECLAIM_SETTINGS:
@@ -994,10 +994,14 @@ def reclaim_on(prefs):
 
 def send_only_flags(prefs):
     """Preferences > Training memory > "Faster block swap (send-only)": on unless switched off (the trainer's
-    --send_only_swap defaults on, so only the off switch is passed)."""
-    v = (prefs or {}).get("send_only_block_swap", "1")
-    off = v is False or str(v).strip().lower() in ("false", "0", "off", "no")
-    return ["--no-send_only_swap"] if off else []
+    --send_only_swap defaults on, so only the off switch is passed). On, it still stands down for a run where it
+    won't help (families/train.py send_only_wont_help) unless "Even when it won't help" is ticked (--send_only_force)."""
+    def tick(key, dflt):
+        v = (prefs or {}).get(key, dflt)
+        return not (v is False or str(v).strip().lower() in ("false", "0", "off", "no", ""))
+    if not tick("send_only_block_swap", "1"):
+        return ["--no-send_only_swap"]
+    return ["--send_only_force"] if tick("send_only_force", "0") else []
 
 
 def reclaim_flags(prefs):

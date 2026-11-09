@@ -713,7 +713,43 @@ def _load_dop_cond(path):
     return {k[len("cond__"):]: v[None] for k, v in load_file(path).items() if k.startswith("cond__")}
 
 
-def send_only_plan(wanted, blocks_to_swap, precision, gradient_checkpointing, gc_off_blocks, finetune):
+# Faster block swap (send-only) switches itself off for a run where it won't help - easy to tune here:
+SEND_ONLY_LOW_RAM_GB = 33.0   # system RAM at or under this (a "32 GB" PC reports about 31.8): too little room to spare
+SEND_ONLY_MIN_BLOCKS = 6      # fewer blocks swapped than this: little copying to save
+SEND_ONLY_MAX_MP = 1.0        # pictures bigger than this (megapixels): each step's work hides the copying anyway
+SEND_ONLY_FORCE_TIP = ("To use it anyway, tick \"Even when it won't help\" under Preferences > Training memory.")
+
+
+def _system_ram_gb():
+    try:
+        import psutil
+        return psutil.virtual_memory().total / 1024 ** 3
+    except Exception:
+        return None
+
+
+def send_only_wont_help(blocks_to_swap, megapixels, ram_gb=None):
+    """Why faster block swap (send-only) won't help this run - "" when it will (or it can't tell). ram_gb: the
+    system's RAM (None: read it). The thresholds are the SEND_ONLY_* constants above."""
+    ram = _system_ram_gb() if ram_gb is None else ram_gb
+    if ram is not None and ram <= SEND_ONLY_LOW_RAM_GB:
+        return f"this PC has {ram:.0f} GB of system RAM (it helps above {SEND_ONLY_LOW_RAM_GB:g} GB)"
+    try:
+        n = int(blocks_to_swap)
+    except (TypeError, ValueError):
+        n = 0
+    if 0 < n < SEND_ONLY_MIN_BLOCKS:
+        return f"only {n} block{'s' if n != 1 else ''} swapped (it helps from {SEND_ONLY_MIN_BLOCKS})"
+    try:
+        mp = float(megapixels or 0)
+    except (TypeError, ValueError):
+        mp = 0.0
+    if mp > SEND_ONLY_MAX_MP:
+        return f"pictures of {mp:.2f} MP (it helps up to {SEND_ONLY_MAX_MP:g} MP)"
+    return ""
+
+
+def send_only_plan(wanted, blocks_to_swap, precision, gradient_checkpointing, gc_off_blocks, finetune, wont_help=""):
     """Whether this run's block swap may go send-only (host -> device only, nothing copied back). Only where it is
     exactly the classic swap's maths: a LoRA run (a fine-tune trains the base, and streams its own way), every block
     checkpointed (send-only refills a GPU ring in place, so a block must re-read its weights at the backward's
@@ -726,6 +762,10 @@ def send_only_plan(wanted, blocks_to_swap, precision, gradient_checkpointing, gc
         return False
     if gc_off_blocks:
         logger.info(f"[block swap] send-only off: {gc_off_blocks} block(s) run un-checkpointed - classic swap")
+        return False
+    if wont_help:                     # send_only_wont_help's reason (Preferences' "Even when it won't help": none)
+        say(logger, f"[block swap] Faster block swap is off for this run: {wont_help}, so it won't help. "
+                    f"{SEND_ONLY_FORCE_TIP}")
         return False
     return True
 
@@ -1197,7 +1237,7 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
                  validation_early_stop=False, validation_patience=3, validation_min_delta=0.001,
                  auto_reclaim_vram=True, reclaim_slowdown=1.5, reclaim_slow_steps=20, reclaim_warmup_steps=50,
                  reclaim_min_free_gb=vram_reclaim.RECLAIM_FREE_GB, reclaim_cooldown=200, reclaim_max_tries=3,
-                 send_only_swap=True,
+                 send_only_swap=True, send_only_force=False,
                  trigger_word=None, trigger_position="start", recaption_triggers=None, recaption_instruction=None,
                  recaption_instruction_detailed=None, recaption_task=None, recaption_task_detailed=None,
                  captioner=None, recaption_with=None, finetune=False, ft_rotations=10, ft_save_every_rotations=1, ft_rotate_every=1, ft_max_parts=0,
@@ -1758,8 +1798,10 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
 
     # ---- model ----------------------------------------------------------------------------------
     logger.info(f"Loading {desc.display_name} DiT ({precision}) from {dit_path}")
+    _res = user_config.get("general", {}).get("resolution") or [1024, 1024]
+    _mp = (_res[0] * _res[1] if isinstance(_res, (list, tuple)) else _res * _res) / 1e6
     send_only = send_only_plan(send_only_swap, blocks_to_swap, precision, gradient_checkpointing, gc_off_blocks,
-                               finetune)
+                               finetune, wont_help="" if send_only_force else send_only_wont_help(blocks_to_swap, _mp))
     dit, swapped = quant.load_base(driver, dit_path, device, precision, blocks_to_swap, send_only=send_only)
     if gradient_checkpointing:
         driver.enable_gradient_checkpointing(dit, True)
@@ -3511,6 +3553,8 @@ def setup_parser():
                    help="early stop: checks in a row without a better validation loss before the run stops")
     p.add_argument("--validation_min_delta", type=float, default=0.001,
                    help="early stop: what counts as better - below the best by more than this fraction of it")
+    p.add_argument("--send_only_force", action="store_true",
+                   help="faster block swap even where it won't help (low system RAM, few blocks, big pictures)")
     p.add_argument("--send_only_swap", action=argparse.BooleanOptionalAction, default=True,
                    help="block swap on a LoRA run streams the frozen base host -> device only, never copying a block "
                         "back (Krea 2, MOSS-Image); --no-send_only_swap = the classic swap")
@@ -3711,6 +3755,7 @@ def main():
         validation_early_stop=a.validation_early_stop, validation_patience=a.validation_patience,
         validation_min_delta=a.validation_min_delta,
         auto_reclaim_vram=a.auto_reclaim_vram, reclaim_slowdown=a.reclaim_slowdown, send_only_swap=a.send_only_swap,
+        send_only_force=a.send_only_force,
         reclaim_slow_steps=a.reclaim_slow_steps, reclaim_warmup_steps=a.reclaim_warmup_steps,
         reclaim_min_free_gb=a.reclaim_min_free_gb, reclaim_cooldown=a.reclaim_cooldown,
         reclaim_max_tries=a.reclaim_max_tries,
