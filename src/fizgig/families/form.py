@@ -84,6 +84,7 @@ DEFAULTS = {
     "OPTIMIZER_ARGS": "", "GRADIENT_ACCUMULATION": "1", "BATCH_SIZE": "1", "MAX_GRAD_NORM": "1.0", "LR_SCHEDULER": "constant",
     "LR_WARMUP_STEPS": "", "VALIDATION_LOSS": False, "VALIDATION_IMAGES": "4", "VALIDATION_TIMESTEPS": "4",
     "VALIDATION_SEED": "42", "VALIDATION_EVERY_STEPS": "0", "VALIDATION_PICKED": [], "VALIDATION_HOLDOUT": True, "INT8_ROTATED_BACKWARD": False,
+    "POLORA_MAGNITUDE": "", "POLORA_CURVATURE": "", "POLORA_COMPILE": False,
     "VALIDATION_EARLY_STOP": False, "VALIDATION_PATIENCE": "3", "ADAPTIVE_LR": False, "ADAPTIVE_LR_ON_VAL": True, "ADAPTIVE_LR_MIN": "1e-5", "ADAPTIVE_LR_MAX": "4e-4",
     "CONTEXT_LORA_PATH": "", "CONTEXT_LORA_STRENGTH": "1.0", "FAMILY_DOP": False, "FAMILY_MULTI_PERSON": False, "FAMILY_DOP_TRIGGER": "",
     "FAMILY_DOP_CLASS": "", "FAMILY_DOP_TRIGGER2": "", "FAMILY_DOP_CLASS2": "",
@@ -700,6 +701,15 @@ def form(desc):
     add("optimizer", "Optimizer", "training", [
         _row("OPTIMIZER_TYPE", "Optimizer Type", "choice", choices=_optimizers()),
         _row("OPTIMIZER_ARGS", "Optimizer Args"),
+        # PoLoRA's own settings as boxes (shown with PoLoRA only): each one IS its Optimizer Args word, kept in step
+        # both ways (app.js POLORA_BOXES; state() reads the args back), so the args stay the one record
+        _row("POLORA_MAGNITUDE", "Magnitude", hint="PoLoRA's magnitude_scale: how big each update is, on top of the "
+             "learning rate. Higher learns faster but can overcook; 2.5-3 works well at LR 2e-2. Empty: 1.0."),
+        _row("POLORA_CURVATURE", "Curl", hint="PoLoRA's curvature_beta: how slowly it updates its sense of the "
+             "loss's curve, between 0 and 1. Higher (0.99) is smoother and steadier; lower reacts faster but is "
+             "noisier. Empty: 0.99."),
+        _row("POLORA_COMPILE", "Compile", "check", "PoLoRA's compile: speeds up its maths with torch.compile after a "
+             "short warm-up at the start. The training itself is unchanged."),
         _row("LR_SCHEDULER", "LR Scheduler", "choice", choices=["constant", "constant_with_warmup", "cosine",
                                                                  "cosine_with_restarts", "linear", "polynomial"]),
         _row("LR_WARMUP_STEPS", "Warmup steps"),
@@ -925,9 +935,12 @@ def turbo_ticked_off(desc, values):
     return on is False or str(on).strip().lower() in ("false", "0", "no", "off")
 
 
+# PoLoRA's boxes and the Optimizer Args word each one is (_polora_boxes, app.js POLORA_BOXES)
+POLORA_BOXES = {"POLORA_MAGNITUDE": "magnitude_scale", "POLORA_CURVATURE": "curvature_beta", "POLORA_COMPILE": "compile"}
 NOT_IN_PRESETS = ("FAMILY_TURBO_STRENGTH", "FAMILY_TURBO_ON", "FAMILY_PREVIEW_SMALL", "FAMILY_TURBO_STEPS", "FAMILY_TURBO_PACE", "CACHE_SAMPLE_MODEL",
                   "FAMILY_PREVIEW_LOOK",
-                  "RESUME_TRAINING", "CAPTION_TRIGGER_WORD")     # the trigger word is the training folder's
+                  "RESUME_TRAINING", "CAPTION_TRIGGER_WORD",     # the trigger word is the training folder's
+                  *POLORA_BOXES)                                 # Optimizer Args holds them (no duplicates)
 # boxes a preset can't put an unknown value in (the desktop's _STRICT_COMBO_KEYS): the current choice stays
 # (Adaptive LR's Min / Max take a value of your own, Other..., so a preset or Last Train brings theirs as it is)
 STRICT_CHOICES = ("OPTIMIZER_TYPE", "LR_SCHEDULER", "NETWORK_TYPE", "TIMESTEP_SPREAD")
@@ -962,6 +975,25 @@ LEGACY_AREAS = {"All Layers": "Full Model", "Identity Blocks": "Identity",
 
 
 SLIDER_PREVIEW_EVERY = "5"           # a Slider preset's preview cadence (apply_preset)
+
+
+def _arg_words(raw):
+    """Optimizer Args as {key: value text} (a word without = skipped: the trainer reports it)."""
+    return dict(w.split("=", 1) for w in str(raw or "").split() if "=" in w)
+
+
+def _polora_boxes(values, hidden, force):
+    """PoLoRA's Magnitude / Curl / Compile boxes: hidden unless PoLoRA is the optimizer, and drawn from Optimizer
+    Args (forced where they differ, so a typed arg, a preset or Last Train shows in them)."""
+    if str(values.get("OPTIMIZER_TYPE", "")).strip().lower() != "polora":
+        hidden.update(POLORA_BOXES)
+        return
+    words = _arg_words(values.get("OPTIMIZER_ARGS"))
+    for key, arg in POLORA_BOXES.items():
+        want = (words.get(arg, "").lower() == "true") if key == "POLORA_COMPILE" else words.get(arg, "")
+        have = values.get(key, DEFAULTS[key])
+        if (bool(have) if key == "POLORA_COMPILE" else str(have or "")) != want:
+            force[key] = want
 
 
 def _not_in_preset(k):
@@ -1261,6 +1293,7 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
         notes.update(bad_lr)
     if kind == "finetune":       # a fine-tune trains at its own fixed rate: no Adaptive LR, on any model
         hidden.add("ADAPTIVE_LR")
+    _polora_boxes(values, hidden, force)
     if str(values.get("OPTIMIZER_TYPE", "")).strip().lower() == "polora" and kind not in ("slider", "finetune"):
         notes["ADAPTIVE_LR"] = "With PoLoRA, Min and Max are its real learning rates (it trains around 1e-2 to " \
                                "4e-2), as with Muon; magnitude_scale stays as you set it."
@@ -1765,7 +1798,8 @@ def _default_lr(desc) -> str:
         except (TypeError, ValueError):
             return str(lr)
     for _name, pr in getattr(desc, "presets", None) or ():
-        if (str(pr.get("OPTIMIZER_TYPE") or "").lower() not in ("automagic3", "automagic4", "prodigy")
+        if (str(pr.get("OPTIMIZER_TYPE") or "").lower() not in ("automagic3", "automagic4", "prodigy", "polora",
+                                                                "lora_tsd")
                 and not pr.get("FAMILY_SLIDER") and not pr.get("FAMILY_FT") and pr.get("LEARNING_RATE")):
             v = float(pr["LEARNING_RATE"])
             txt = f"{v:.0e}".replace("e-0", "e-").replace("e+0", "e+")

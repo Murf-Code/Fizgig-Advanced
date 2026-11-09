@@ -403,7 +403,8 @@ def test_lr_scheduler_in_optimizer_section():
     other_keys = by_id["other"]
     assert "LR_SCHEDULER" in opt_keys
     assert "LR_WARMUP_STEPS" in opt_keys
-    assert opt_keys.index("LR_SCHEDULER") == opt_keys.index("OPTIMIZER_ARGS") + 1
+    # PoLoRA's own boxes (shown with PoLoRA only) sit between the args and the scheduler
+    assert opt_keys.index("LR_SCHEDULER") == opt_keys.index("OPTIMIZER_ARGS") + 4
     assert opt_keys.index("LR_WARMUP_STEPS") == opt_keys.index("LR_SCHEDULER") + 1
     assert "LR_SCHEDULER" not in other_keys
     assert "LR_WARMUP_STEPS" not in other_keys

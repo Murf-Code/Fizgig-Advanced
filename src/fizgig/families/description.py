@@ -320,6 +320,19 @@ class FamilyOption:
         return [t.replace("{}", text) for t in self.tokens.split()] if text else []
 
 
+POLORA_PRESET = "PoLoRA"
+
+
+def polora_preset(presets):
+    """The built-in PoLoRA preset: the family's own standard-LoRA preset (its first, not an edit, slider or
+    fine-tune one) with PoLoRA as the optimizer - Adaptive LR moving its real rate from 1e-2 to 4e-2 (2e-2 where a
+    model has no Adaptive LR), magnitude_scale 3, curvature_beta 0.99 and compile on; everything else the family's."""
+    base = next((dict(v) for _n, v in presets or ()
+                 if not (v.get("FAMILY_EDIT") or v.get("FAMILY_SLIDER") or v.get("FAMILY_FT"))), {})
+    return {**base, "OPTIMIZER_TYPE": "polora", "OPTIMIZER_ARGS": "magnitude_scale=3 curvature_beta=0.99 compile=True",
+            "LEARNING_RATE": "2e-2", "ADAPTIVE_LR": True, "ADAPTIVE_LR_MIN": "1e-2", "ADAPTIVE_LR_MAX": "4e-2"}
+
+
 @dataclass(frozen=True)
 class FamilyDescription:
     # identity
@@ -734,6 +747,11 @@ class FamilyDescription:
     train_script = "src/fizgig/families/train.py"
     cache_script = "src/fizgig/families/cache.py"
 
+    def __post_init__(self):
+        # every family's built-in "PoLoRA" preset, last (the first is a first visit's): polora_preset
+        if self.presets is not None and not any(n == POLORA_PRESET for n, _v in self.presets):
+            object.__setattr__(self, "presets", tuple(self.presets) + ((POLORA_PRESET, polora_preset(self.presets)),))
+
     @property
     def training_ready(self) -> bool:
         return bool(self.driver)
@@ -742,7 +760,8 @@ class FamilyDescription:
     def lr(self) -> str:
         """The family's default standard-LoRA learning rate (e.g. '1e-4' or '5e-5')."""
         for _name, pr in self.presets or ():
-            if (str(pr.get("OPTIMIZER_TYPE") or "").lower() not in ("automagic3", "automagic4", "prodigy")
+            if (str(pr.get("OPTIMIZER_TYPE") or "").lower() not in ("automagic3", "automagic4", "prodigy", "polora",
+                                                                    "lora_tsd")
                     and not pr.get("FAMILY_SLIDER") and not pr.get("FAMILY_FT") and pr.get("LEARNING_RATE")):
                 v = float(pr["LEARNING_RATE"])
                 txt = f"{v:.0e}".replace("e-0", "e-").replace("e+0", "e+")

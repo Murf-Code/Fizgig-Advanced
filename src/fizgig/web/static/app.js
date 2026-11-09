@@ -815,6 +815,15 @@ const POLORA_DEFAULT_ARGS = "magnitude_scale=3";
 const POLORA_ADAPTIVE = {ADAPTIVE_LR_MIN: "1e-2", ADAPTIVE_LR_MAX: "4e-2"};   // Adaptive LR's real range for PoLoRA
 const ADAPTIVE_USUAL = {ADAPTIVE_LR_MIN: "1e-5", ADAPTIVE_LR_MAX: "4e-4"};   // the form's defaults (form.py)
 function stripPoloraArgs(raw) { return _stripOptKeys(raw, "", POLORA_ONLY_KEYS); }
+// PoLoRA's Magnitude / Curl / Compile boxes: each one is its Optimizer Args word (form.py POLORA_BOXES; the server's
+// state draws them back from the args), so the args stay the one record
+const POLORA_BOXES = {POLORA_MAGNITUDE: "magnitude_scale", POLORA_CURVATURE: "curvature_beta", POLORA_COMPILE: "compile"};
+function setOptArg(raw, key, val) {      // key=val in place of the word already there (or after the rest); "" drops it
+  const words = String(raw || "").split(/\s+/).filter((w) => w && w.split("=", 1)[0] !== key);
+  const at = String(raw || "").split(/\s+/).filter(Boolean).findIndex((w) => w.split("=", 1)[0] === key);
+  if (val !== "") words.splice(at < 0 ? words.length : at, 0, `${key}=${val}`);
+  return words.join(" ");
+}
 // SOAP's and LoRA-TSD's own args (optimizers.py SOAP_ONLY_KEYS / LORA_TSD_ONLY_KEYS); LoRA-TSD starts at LR 5e-3
 const SOAP_ONLY_KEYS = new Set(["shampoo_beta", "precondition_frequency", "max_precond_dim", "merge_dims",
   "precondition_1d", "normalize_grads", "data_format", "correct_bias"]);
@@ -825,7 +834,7 @@ function familyDefaultLr() {
   for (const p of (S.fam && S.fam.form && S.fam.form.presets) || []) {
     const v = p.values || {};
     const opt = String(v.OPTIMIZER_TYPE || "").toLowerCase();
-    if (opt !== "automagic3" && opt !== "automagic4" && opt !== "prodigy" && !v.FAMILY_SLIDER && !v.FAMILY_FT && v.LEARNING_RATE) {
+    if (!["automagic3", "automagic4", "prodigy", "polora", "lora_tsd"].includes(opt) && !v.FAMILY_SLIDER && !v.FAMILY_FT && v.LEARNING_RATE) {
       const n = Number(v.LEARNING_RATE);
       if (isFinite(n) && n > 0) return n.toExponential().replace("e-0", "e-").replace("e+0", "e+");
     }
@@ -837,6 +846,11 @@ function onValue(r, val) {
   const prev = S.values[r.key];
   S.values[r.key] = val;
   if (r.key === "FAMILY_PREVIEW_SMALL") S.values._chosen_FAMILY_PREVIEW_SMALL = true;   // the person's own choice: kept
+  if (r.key in POLORA_BOXES) {           // a PoLoRA box: its word in Optimizer Args (empty / unticked: PoLoRA's default)
+    const v = r.key === "POLORA_COMPILE" ? (val ? "True" : "") : String(val ?? "").trim();
+    S.values.OPTIMIZER_ARGS = setOptArg(S.values.OPTIMIZER_ARGS, POLORA_BOXES[r.key], v);
+    syncInputs(["OPTIMIZER_ARGS"]);
+  }
   if (r.key === "OPTIMIZER_TYPE") {
     const opt = String(val || "").trim().toLowerCase();
     const prevOpt = String(prev || "").trim().toLowerCase();

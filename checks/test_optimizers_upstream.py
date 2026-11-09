@@ -37,9 +37,11 @@ CHOSEN = {k: "muon" for k in ("qwen_image21", "krea2", "moss_image", "vimoo", "z
 
 def test_no_preset_picks_a_new_optimizer():
     """No preset picks a new optimizer, except the families in CHOSEN, whose presets all use their chosen one with
-    its default arguments."""
+    its default arguments - and every family's own "PoLoRA" preset (test_polora_boxes.py)."""
     for desc in registry.training_families():
         for name, p in desc.presets or ():
+            if name == "PoLoRA":
+                continue
             opt = str(p.get("OPTIMIZER_TYPE") or "").lower()
             if desc.key in CHOSEN:
                 assert opt == CHOSEN[desc.key], (desc.key, name)

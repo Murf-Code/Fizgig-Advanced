@@ -1,0 +1,64 @@
+"""PoLoRA's Magnitude / Curl / Compile boxes (each one its Optimizer Args word, shown with PoLoRA only, kept in step
+both ways) and every family's built-in "PoLoRA" preset."""
+import json
+import os
+import re
+import shutil
+import subprocess
+
+import pytest
+
+from fizgig.families import form
+from fizgig.families.registry import FAMILIES
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def test_boxes_show_with_polora_only_and_read_the_args():
+    desc = FAMILIES["krea2"]
+    rows = {r["key"]: r for s in form.form(desc)["sections"] for r in s["rows"] if r}
+    assert [rows[k]["label"] for k in form.POLORA_BOXES] == ["Magnitude", "Curl", "Compile"]
+    assert all(rows[k]["hint"] for k in form.POLORA_BOXES) and rows["POLORA_COMPILE"]["kind"] == "check"
+    st = form.state(desc, {**form.DEFAULTS})
+    assert set(form.POLORA_BOXES) <= set(st["hidden"])
+    v = {**form.DEFAULTS, "OPTIMIZER_TYPE": "polora", "OPTIMIZER_ARGS": "magnitude_scale=2.5 compile=True ns_steps=6"}
+    st = form.state(desc, v)
+    assert not set(form.POLORA_BOXES) & set(st["hidden"])
+    assert st["force"]["POLORA_MAGNITUDE"] == "2.5" and st["force"]["POLORA_COMPILE"] is True
+    assert "POLORA_CURVATURE" not in st["force"]                     # not in the args: empty (PoLoRA's 0.99)
+    assert not set(form.POLORA_BOXES) & set(form.state(desc, {**v, **st["force"]})["force"])   # in step: nothing
+    # a preset holds the args only (no duplicates)
+    assert not set(form.POLORA_BOXES) & set(form.to_preset(desc, {**v, **st["force"]}))
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="needs node")
+def test_a_box_writes_its_word_into_the_args():
+    src = open(os.path.join(ROOT, "src/fizgig/web/static/app.js"), encoding="utf-8").read()
+    fn = re.search(r"function setOptArg\(raw, key, val\) \{.*?\n\}\n", src, re.S).group()
+    cases = [["magnitude_scale=3 ns_steps=6", "magnitude_scale", "2.5"], ["magnitude_scale=3", "compile", "True"],
+             ["a=1 compile=True b=2", "compile", ""], ["", "curvature_beta", "0.95"]]
+    js = fn + f"console.log(JSON.stringify({json.dumps(cases)}.map((c) => setOptArg(...c))));"
+    out = json.loads(subprocess.run(["node", "-e", js], capture_output=True, text=True, check=True).stdout)
+    assert out == ["magnitude_scale=2.5 ns_steps=6", "magnitude_scale=3 compile=True", "a=1 b=2",
+                   "curvature_beta=0.95"]
+    assert 'POLORA_BOXES = {POLORA_MAGNITUDE: "magnitude_scale", POLORA_CURVATURE: "curvature_beta", ' \
+           'POLORA_COMPILE: "compile"}' in src
+
+
+@pytest.mark.parametrize("key", FAMILIES)
+def test_every_family_has_the_polora_preset(key):
+    desc = FAMILIES[key]
+    names = [n for n, _v in desc.presets]
+    assert names[-1] == "PoLoRA" and names.count("PoLoRA") == 1 and names[0] != "PoLoRA"
+    p = dict(desc.presets)["PoLoRA"]
+    assert (p["OPTIMIZER_TYPE"], p["ADAPTIVE_LR"], p["ADAPTIVE_LR_MIN"], p["ADAPTIVE_LR_MAX"]) == \
+        ("polora", True, "1e-2", "4e-2")
+    assert form._arg_words(p["OPTIMIZER_ARGS"]) == {"magnitude_scale": "3", "curvature_beta": "0.99",
+                                                    "compile": "True"}
+    assert not (p.get("FAMILY_SLIDER") or p.get("FAMILY_FT") or p.get("FAMILY_EDIT"))
+    std = next(dict(v) for _n, v in desc.presets if not (v.get("FAMILY_EDIT") or v.get("FAMILY_SLIDER")
+                                                        or v.get("FAMILY_FT")))
+    assert p.get("NETWORK_DIM") == std.get("NETWORK_DIM")                # the rest: the family's own
+    assert float(desc.lr) < 1e-2                                         # the family's usual rate isn't PoLoRA's
+    out = form.apply_preset(desc, dict(form.DEFAULTS), p)
+    assert out["OPTIMIZER_TYPE"] == "polora" and "compile=True" in out["OPTIMIZER_ARGS"]
