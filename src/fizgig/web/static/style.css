@@ -2813,32 +2813,53 @@ label[title]:has(.tip-mark) { cursor: help; }
 .det-table .det-remove.det-confirm { color: var(--danger-text); border-color: var(--danger); }
 .det-add { flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 
-/* Cosmic Pigeon and Deep Space only: buttons glow and lift, progress and meter bars shimmer.
-   Cheap to draw (transform, opacity, background-position) and off under reduced motion. */
-:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"] {
+/* Every theme: buttons glow and lift, progress and meter bars shimmer with tiny star specks, in the theme's own
+   colours (first built for Cosmic Pigeon and Deep Space). Cheap to draw (transform, opacity, background-position)
+   and off under reduced motion. Each theme sets --fx-bar (the bar's gradient), --fx-glow and --fx-sweep (the light
+   that crosses the bar); the colour-blind safe theme keeps to its own blue / sky blue. The rules below match every
+   theme through :is(:root:not([data-theme]), :root[data-theme]), as specific as a single theme's own, so a theme's
+   tweak further down (Cosmic Pigeon's twinkle, Deep Space's slower stars) still wins. */
+:root {
+  --fx-glow: color-mix(in srgb, var(--accent) 40%, transparent);
+  --fx-bar: linear-gradient(90deg, #2F6FE0, #3B82F6 45%, #7DB4FF 80%, #2F6FE0);
+  --fx-sweep: rgba(255,255,255,.35);
+}
+:root[data-theme="light-orange"] { --fx-glow: color-mix(in srgb, var(--accent) 35%, transparent);
+  --fx-bar: linear-gradient(90deg, #E04F00, #F25C05 45%, #FF9A4D 80%, #E04F00); }
+:root[data-theme="seventies"] { --fx-bar: linear-gradient(90deg, #C2501A, #D9661A 45%, #E5A82E 80%, #C2501A); }
+:root[data-theme="synthwave"] { --fx-glow: color-mix(in srgb, var(--accent) 45%, transparent);
+  --fx-bar: linear-gradient(90deg, #FF2E97, #FF5CAE 45%, #22D3EE 80%, #FF2E97); }
+:root[data-theme="cosmic-pigeon"] {
   --fx-glow: color-mix(in srgb, var(--accent) 45%, transparent);
   --fx-bar: linear-gradient(90deg, #7C4DEA, #A855F7 45%, #E879C6 80%, #7C4DEA);
 }
 :root[data-theme="deep-space"] { --fx-glow: color-mix(in srgb, var(--accent) 35%, transparent);
   --fx-bar: linear-gradient(90deg, #6D4FD6, #7A5AE0 40%, #4CC6DB 80%, #6D4FD6); }
-:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.btn, .runpod-btn, .theme-pick button) {
+:root[data-theme="graphite"] { --fx-bar: linear-gradient(90deg, #0D9488, #14B8A6 45%, #5EEAD4 80%, #0D9488); }
+:root[data-theme="colour-safe"] { --fx-bar: linear-gradient(90deg, #0072B2, #2F8FD8 45%, #56B4E9 80%, #0072B2); }
+:root[data-theme="high-contrast"] { --fx-glow: color-mix(in srgb, var(--accent) 50%, transparent);
+  --fx-bar: linear-gradient(90deg, #FFD400, #FFE45C 45%, #FFF0A0 80%, #FFD400); }
+/* Dim (light sensitivity): the same effects, kept soft - a lower glow and a fainter sweep */
+:root[data-theme="dim"] { --fx-glow: color-mix(in srgb, var(--accent) 20%, transparent); --fx-sweep: rgba(255,255,255,.15);
+  --fx-bar: linear-gradient(90deg, #7A6040, #8A6D45 45%, #A88A5E 80%, #7A6040); }
+:is(:root:not([data-theme]), :root[data-theme]) :is(.btn, .runpod-btn, .theme-pick button) {
   transition: background .15s, border-color .15s, box-shadow .2s ease, transform .15s ease; }
-:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.btn, .runpod-btn, .theme-pick button):not(:disabled):hover {
+:is(:root:not([data-theme]), :root[data-theme]) :is(.btn, .runpod-btn, .theme-pick button):not(:disabled):hover {
   transform: translateY(-1px); box-shadow: 0 2px 12px var(--fx-glow); }
-:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.btn, .runpod-btn, .theme-pick button):not(:disabled):active {
+:is(:root:not([data-theme]), :root[data-theme]) :is(.btn, .runpod-btn, .theme-pick button):not(:disabled):active {
   transform: translateY(0) scale(.98); box-shadow: 0 0 4px var(--fx-glow); transition-duration: .05s; }
 /* the bars: the theme's gradient sliding along, plus a soft light sweeping across (paused, done and failed bars stay plain) */
-:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.run-bar:not([data-state="paused"]):not([data-state="pausing"]):not([data-state="completed"]):not([data-state="failed"]):not([data-state="stopped"]) > span, .meter:not(.warn) .meter-bar > span, .fetch-bar > div) {
+:is(:root:not([data-theme]), :root[data-theme]) :is(.run-bar:not([data-state="paused"]):not([data-state="pausing"]):not([data-state="completed"]):not([data-state="failed"]):not([data-state="stopped"]) > span, .meter:not(.warn) .meter-bar > span, .fetch-bar > div) {
   position: relative; overflow: hidden; background: var(--fx-bar) 0 0 / 240px 100% repeat-x;
   animation: fx-drift 6s linear infinite; box-shadow: 0 0 6px var(--fx-glow); }
-:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.run-bar:not([data-state="paused"]):not([data-state="pausing"]):not([data-state="completed"]):not([data-state="failed"]):not([data-state="stopped"]) > span, .meter:not(.warn) .meter-bar > span, .fetch-bar > div)::after {
+:is(:root:not([data-theme]), :root[data-theme]) :is(.run-bar:not([data-state="paused"]):not([data-state="pausing"]):not([data-state="completed"]):not([data-state="failed"]):not([data-state="stopped"]) > span, .meter:not(.warn) .meter-bar > span, .fetch-bar > div)::after {
   content: ""; position: absolute; inset: 0; pointer-events: none; will-change: background-position, opacity;
-  background: linear-gradient(90deg, transparent 0, rgba(255,255,255,.35) 70px, transparent 140px, transparent 100%) -140px 0 / 2000px 100% repeat-x;
+  background: linear-gradient(90deg, transparent 0, var(--fx-sweep) 70px, transparent 140px, transparent 100%) -140px 0 / 2000px 100% repeat-x;
   animation: fx-sweep 6s linear infinite; }
 /* Cosmic Pigeon's faint twinkle: the sweep fades in and out */
 :root[data-theme="cosmic-pigeon"] :is(.run-bar:not([data-state="paused"]):not([data-state="pausing"]):not([data-state="completed"]):not([data-state="failed"]):not([data-state="stopped"]) > span, .meter:not(.warn) .meter-bar > span, .fetch-bar > div)::after { animation: fx-sweep 6s linear infinite, fx-twinkle 1.5s ease-in-out infinite alternate; }
 /* tiny star specks drifting along the active bars, each twinkling */
-:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.run-bar:not([data-state="paused"]):not([data-state="pausing"]):not([data-state="completed"]):not([data-state="failed"]):not([data-state="stopped"]) > span, .meter:not(.warn) .meter-bar > span, .fetch-bar > div)::before {
+:is(:root:not([data-theme]), :root[data-theme]) :is(.run-bar:not([data-state="paused"]):not([data-state="pausing"]):not([data-state="completed"]):not([data-state="failed"]):not([data-state="stopped"]) > span, .meter:not(.warn) .meter-bar > span, .fetch-bar > div)::before {
   content: ""; position: absolute; inset: 0; pointer-events: none; will-change: background-position, opacity;
   background-image: radial-gradient(circle at 12% 30%, #fff 0 0.6px, transparent 1px),
     radial-gradient(circle at 37% 70%, #fff 0 0.5px, transparent 1px),
@@ -2854,20 +2875,20 @@ label[title]:has(.tip-mark) { cursor: help; }
 @keyframes fx-sweep { from { background-position: -140px 0; } to { background-position: 1860px 0; } }
 @keyframes fx-twinkle { from { opacity: .45; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
-  :is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.run-bar > span, .meter-bar > span, .fetch-bar > div) { animation: none; }
-  :is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.run-bar > span, .meter-bar > span, .fetch-bar > div)::after, :is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.run-bar > span, .meter-bar > span, .fetch-bar > div)::before { display: none; }
-  :is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.btn, .runpod-btn, .theme-pick button) { transition: none; transform: none !important; }
+  :is(:root:not([data-theme]), :root[data-theme]) :is(.run-bar > span, .meter-bar > span, .fetch-bar > div) { animation: none; }
+  :is(:root:not([data-theme]), :root[data-theme]) :is(.run-bar > span, .meter-bar > span, .fetch-bar > div)::after, :is(:root:not([data-theme]), :root[data-theme]) :is(.run-bar > span, .meter-bar > span, .fetch-bar > div)::before { display: none; }
+  :is(:root:not([data-theme]), :root[data-theme]) :is(.btn, .runpod-btn, .theme-pick button) { transition: none; transform: none !important; }
 }
 /* the bars are rebuilt on every status poll; app.js gives each new one --fx-d = minus the page clock, so its
    animations carry on from the same phase instead of starting over (a skip every poll) */
 /* (pseudo-elements can't go inside :is(), so the star and sweep layers are listed on their own) */
-:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.run-bar > span, .meter-bar > span, .fetch-bar > div),
-:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) .run-bar > span::before,
-:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) .meter-bar > span::before,
-:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) .fetch-bar > div::before,
-:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) .run-bar > span::after,
-:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) .meter-bar > span::after,
-:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) .fetch-bar > div::after {
+:is(:root:not([data-theme]), :root[data-theme]) :is(.run-bar > span, .meter-bar > span, .fetch-bar > div),
+:is(:root:not([data-theme]), :root[data-theme]) .run-bar > span::before,
+:is(:root:not([data-theme]), :root[data-theme]) .meter-bar > span::before,
+:is(:root:not([data-theme]), :root[data-theme]) .fetch-bar > div::before,
+:is(:root:not([data-theme]), :root[data-theme]) .run-bar > span::after,
+:is(:root:not([data-theme]), :root[data-theme]) .meter-bar > span::after,
+:is(:root:not([data-theme]), :root[data-theme]) .fetch-bar > div::after {
   animation-delay: var(--fx-d, 0s) !important; }
 
 /* Rent a pod: a new RunPod user counts for Fizgig only when they sign up with Google (RunPod's referral rules) */
