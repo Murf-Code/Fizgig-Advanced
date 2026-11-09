@@ -750,6 +750,7 @@ class ImageDirectoryDatasource:
         family=None,
         caption_replace=None,
         extra_reference_directory: Optional[str] = None,
+        holdout=(set(), False),
     ):
         import re
         self.caption_replace = [(re.compile(r"(?<!\w)" + re.escape(str(a)) + r"(?!\w)", re.I), str(b))
@@ -770,6 +771,10 @@ class ImageDirectoryDatasource:
                                        caption_extension=(None if self.captions_optional
                                                           else self.caption_extension),
                                        extra_extensions=self.extra_extensions)
+        _held, _only = holdout
+        if _held or _only:       # the validation hold-out's pictures: left out, or (its own cache pass) only them
+            self.image_paths = [p for p in self.image_paths
+                                if (os.path.splitext(os.path.basename(p))[0] in _held) == bool(_only)]
         _clips = sum(1 for p in self.image_paths
                      if os.path.splitext(p)[1].lower() in {e.lower() for e in VIDEO_EXTENSIONS})
         _audio = sum(1 for p in self.image_paths if is_audio_path(p))
@@ -992,9 +997,19 @@ class ImageDataset(torch.utils.data.Dataset):
         caption_variants: int = 4,
         caption_variant_cap: int = 8,
         keep_words: Optional[list] = None,
+        holdout_file: Optional[str] = None,
+        holdout_only: bool = False,
         **kwargs,
     ):
         super().__init__()
+        # Validation hold-out (training/holdout.py): the set-aside pictures never cache or train as training pictures;
+        # holdout_only = just them, plain captions, in the cache folder's own sub-folder (validation's)
+        from fizgig.training.holdout import HOLDOUT_CACHE, held_stems
+        self.holdout_stems = held_stems(holdout_file, image_directory)
+        self.holdout_only = bool(holdout_only)
+        if self.holdout_only:
+            cache_directory = os.path.join(cache_directory or image_directory, HOLDOUT_CACHE)
+            tag_shuffle, tag_dropout, caption_dropout = False, 0.0, 0.0
         # Tag shuffle / tag dropout / caption dropout (dataset/tag_variants.py): the cache pass encodes the variants,
         # training picks one per image per step. Percentages in the TOML.
         from fizgig.dataset.tag_variants import TagSettings
@@ -1055,7 +1070,8 @@ class ImageDataset(torch.utils.data.Dataset):
         self.datasource = ImageDirectoryDatasource(image_directory, caption_extension,
                                                    control_directory, extra_extensions=_extra,
                                                    family=self.family, caption_replace=caption_replace,
-                                                   extra_reference_directory=extra_reference_directory)
+                                                   extra_reference_directory=extra_reference_directory,
+                                                   holdout=(self.holdout_stems, self.holdout_only))
 
         if self.cache_directory is None:
             self.cache_directory = self.image_directory
@@ -1398,6 +1414,10 @@ class ImageDataset(torch.utils.data.Dataset):
             _exts |= {e.lower() for e in getattr(self, "extra_extensions", ())}
             valid_keys = {os.path.splitext(f)[0] for f in os.listdir(self.image_directory)
                           if os.path.splitext(f)[1].lower() in _exts and not is_mask_file(f)}
+            _held = getattr(self, "holdout_stems", set())
+            # the validation hold-out: never a training picture (even from a cache an earlier run left); its own
+            # dataset (holdout_only) is just them
+            valid_keys = (valid_keys & _held) if getattr(self, "holdout_only", False) else (valid_keys - _held)
         # The stems that are audio files. Cache filenames strip the extension, so the folder
         # listing is the only place an item's audio-ness can still be seen at this point.
         audio_keys = set()

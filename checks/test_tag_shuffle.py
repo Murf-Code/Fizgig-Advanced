@@ -226,10 +226,10 @@ def test_wiring():
     variants with the encoder it loaded; a caption fix / auto-recaption remakes the item's variants."""
     import inspect
     from fizgig.families import cache, loss_watch, train
-    t = inspect.getsource(train.train_family)
+    t = inspect.getsource(train._train_family)
     assert "variant_seed = int(seed)" in t and "_tag_summary(group.datasets)" in t
     assert t.index("variant_seed = int(seed)") < t.index("generate_dataset_group_by_blueprint(blueprint.dataset_group")
-    assert "_encode_tag_variants(args, datasets, driver, te, desc)" in inspect.getsource(cache.main)
+    assert "_encode_tag_variants(args, datasets, driver, te, desc)" in inspect.getsource(cache._stage)
     c = inspect.getsource(loss_watch.Watch._captions)
     assert c.index("cache.save_cond") < c.index("write_variants")
 

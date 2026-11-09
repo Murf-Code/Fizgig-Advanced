@@ -158,6 +158,8 @@ def main():
     p.add_argument("--slider", action="store_true",
                    help="the control_directory holds a slider's other pole: cache its latents, encode captions "
                         "plainly (not as edit pairs)")
+    p.add_argument("--holdout_cache", action="store_true",
+                   help="also cache the validation hold-out's pictures (the TOML's holdout_file), for validation only")
     p.add_argument("--aux", action="append", default=[], metavar="KEY=VALUE",
                    help="a further model file or option for the family's own caching (e.g. audio_vae=PATH)")
     args = p.parse_args()
@@ -187,6 +189,24 @@ def main():
                                 f"up to {limit} (photo.png, then photo_1.png, photo_2.png ...)"))
 
     aux = dict(a.split("=", 1) for a in args.aux if "=" in a)
+    _stage(args, desc, driver, datasets, device, aux, pairs)
+    if args.holdout_cache:
+        # the validation hold-out's pictures (training/holdout.py): left out above, cached here on their own - plain
+        # captions, in the cache folder's _fizgig_holdout/ - for validation only
+        held = [ds for ds in generate_dataset_group_by_blueprint(
+            BlueprintGenerator(ConfigSanitizer()).generate(load_user_config(args.dataset_config), args,
+                                                           architecture=desc.arch_id, holdout_only=True)
+            .dataset_group).datasets if len(ds.datasource)]
+        if held:
+            logger.info(f"[validation] caching the {sum(len(ds.datasource) for ds in held)} picture(s) set aside "
+                        "for validation (never trained)")
+            for ds in held:
+                os.makedirs(ds.cache_directory, exist_ok=True)
+            _stage(args, desc, driver, held, device, aux, pairs, variants=False)
+
+
+def _stage(args, desc, driver, datasets, device, aux, pairs, variants=True):
+    """This stage (latents or text) for these datasets. variants: the tag shuffle / dropout variants too."""
     if driver.cache_stage(args.stage, datasets, args, device, aux):
         return                              # the family caches in its own layout (H3)
     if args.stage == "latents":
@@ -223,7 +243,8 @@ def main():
                 save_cond(desc, it, c)
         process_batches(args, datasets, files, paths, encode)
         post_process(datasets, files, paths, args.keep_cache)
-        _encode_tag_variants(args, datasets, driver, te, desc)
+        if variants:
+            _encode_tag_variants(args, datasets, driver, te, desc)
         driver.unload_text_encoder(te)
 
 

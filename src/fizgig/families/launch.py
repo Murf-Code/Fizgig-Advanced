@@ -292,18 +292,28 @@ def uncached_pictures(toml_text):
         sets = toml.loads(toml_text or "").get("datasets") or []
     except toml.TomlDecodeError:
         return 0
-    n = 0
-    for ds in sets:
-        img, cdir = ds.get("image_directory"), ds.get("cache_directory")
-        if not img or not cdir or not os.path.isdir(img):
-            continue
+    from fizgig.training.holdout import HOLDOUT_CACHE, held_stems
+    hfile = (toml.loads(toml_text or "").get("general") or {}).get("holdout_file")
+
+    def stems(cdir):
         names = os.listdir(cdir) if os.path.isdir(cdir) else []
         # <stem>_<WxH>_<arch>.safetensors and <stem>_<arch>_te.safetensors: the stem is all but the last two parts
         te = {"_".join(f[:-len(".safetensors")].split("_")[:-2]) for f in names if f.endswith("_te.safetensors")}
         lat = {"_".join(f.split("_")[:-2]) for f in names
                if f.endswith(".safetensors") and not f.endswith(("_te.safetensors", "_tags.safetensors"))}
-        n += sum(1 for f in os.listdir(img) if os.path.splitext(f)[1].lower() in exts and not is_mask_file(f)
-                 and (os.path.splitext(f)[0] not in lat or os.path.splitext(f)[0] not in te))
+        return te & lat
+    n = 0
+    for ds in sets:
+        img, cdir = ds.get("image_directory"), ds.get("cache_directory")
+        if not img or not cdir or not os.path.isdir(img):
+            continue
+        held = held_stems(hfile, img)       # the validation hold-out's pictures: in their own cache folder
+        have, have_held = stems(cdir), (stems(os.path.join(cdir, HOLDOUT_CACHE)) if held else set())
+        for f in os.listdir(img):
+            stem = os.path.splitext(f)[0]
+            if os.path.splitext(f)[1].lower() in exts and not is_mask_file(f) and \
+                    stem not in (have_held if stem in held else have):
+                n += 1
     return n
 
 
@@ -616,7 +626,8 @@ def _media_count(folder):
 # Folders Fizgig itself makes inside a training folder: never trained on as sub-folders. Image Prep's Keep them safe
 # (originals, then originals_2, _3... on later runs; crop tag trimming backs captions up there too), Exclude by look,
 # and the desktop's Remove. Matched in any case.
-OWN_SUBFOLDERS = {"excluded_by_look", "originals", "removed", "skipped", "fizgig_detail_crops", "detail_masters"}
+OWN_SUBFOLDERS = {"excluded_by_look", "originals", "removed", "skipped", "fizgig_detail_crops", "detail_masters",
+                  "_fizgig_holdout"}
 # Image Prep's outputs (resized copies, close-ups): always trained, even with Include sub-folders off; a picture with
 # a copy in resized/ trains from that copy only (the full-size one beside it is left out - no duplicates).
 PREP_OUTPUTS = ("resized", "crops")
@@ -950,6 +961,8 @@ def cache_command(desc, inputs, stage, config=""):
     cmd += option_tokens(desc, inputs)[1]
     if stage == "latents":
         cmd.append("--skip_existing")   # validated against the current bucket
+    if inputs.get("_holdout_file") and not config:
+        cmd.append("--holdout_cache")   # the validation hold-out's pictures, cached on their own for validation
     if slider_on(desc, inputs, "pairs"):
         cmd.append("--slider")          # the control folder is the -1 end: its latents, captions encoded plainly
     return cmd
@@ -1119,7 +1132,8 @@ def train_command(desc, inputs, plan):
         cmd += ["--dop", "--dop_weight", f"{weight * every:g}", "--dop_every", str(every)]
         if trig:
             cmd += ["--dop_trigger", ", ".join(trig), "--dop_class", ", ".join(cls)]
-    if st.get("VALIDATION_LOSS") and str(st.get("VALIDATION_LOSS")).lower() not in ("false", "0", "off"):
+    _val = bool(st.get("VALIDATION_LOSS")) and str(st.get("VALIDATION_LOSS")).lower() not in ("false", "0", "off")
+    if _val or st.get("_holdout_file"):     # the validation hold-out (on by default) checks its pictures every epoch
         from fizgig.training.val_pick import picked_list, validation_every_steps
         def _vi(key, dflt):
             m = re.match(r"\d+", str(st.get(key, dflt) or dflt).strip())
@@ -1130,9 +1144,7 @@ def train_command(desc, inputs, plan):
                 "--validation_every_steps", str(validation_every_steps(st.get("VALIDATION_EVERY_STEPS")))]
         for name in picked_list(st.get("VALIDATION_PICKED")):     # your own images: the count is not used
             cmd += ["--validation_pick", name]
-        if st.get("VALIDATION_HOLDOUT") and str(st.get("VALIDATION_HOLDOUT")).lower() not in ("false", "0", "off"):
-            cmd.append("--validation_holdout")       # the validation pictures never train
-        if st.get("VALIDATION_EARLY_STOP") and str(st.get("VALIDATION_EARLY_STOP")).lower() not in ("false", "0",
+        if _val and st.get("VALIDATION_EARLY_STOP") and str(st.get("VALIDATION_EARLY_STOP")).lower() not in ("false", "0",
                                                                                                     "off"):
             cmd += ["--validation_early_stop", "--validation_patience",
                     str(max(1, int(_vi("VALIDATION_PATIENCE", "3"))))]
@@ -1729,6 +1741,8 @@ def dataset_toml(desc, inputs, cache_suffix=""):
         lines.append(f"clip_megapixels = {cmp_:g}")      # clips cache and train at their own size
     tags = _tag_lines(desc, inputs)
     lines += tags
+    if inputs.get("_holdout_file"):      # the validation hold-out (training/holdout.py): left out of every block
+        lines.append(f'holdout_file = "{_toml_str(inputs["_holdout_file"].replace(chr(92), "/"))}"')
     trig = (lambda w: _keep_words_line(w)) if tags else (lambda w: [])
     reps = _balance_repeats([folder] + extra) if extra and inputs.get("concept_balance") else {}
     mp = {f: (s, w) for f, s, _why, w in multi_person_subjects(desc, inputs) if s} \
@@ -2082,6 +2096,49 @@ def clip_problems(desc, folder):
     return out
 
 
+_HOW = {"picked": "your validation pictures", "auto": "picked by Fizgig: about a tenth, spread over your folders "
+         "and picture shapes", "resume": "the same ones as before the pause"}
+
+
+def holdout_on(st):
+    """Validation hold-out's switch (Image Validation): on unless switched off."""
+    v = st.get("VALIDATION_HOLDOUT", True)
+    return str(v).strip().lower() not in ("false", "0", "off", "none", "")
+
+
+def holdout_pick(desc, st, toml_text):
+    """(paths, names, how, why) of the pictures this run holds out for validation (training/holdout.py): a resume's
+    own list from its restore point; your picked validation pictures; else Fizgig's even pick. Nothing (why says so)
+    for runs that don't validate on a cached picture set: sliders, edits, fine-tunes, Fizgig LoRA Isolation, clips."""
+    from fizgig.training import holdout as _ho
+    if not holdout_on(st):
+        return [], [], "", ""
+    off = next((why for on, why in (
+        (slider_on(desc, st), "a slider trains on pairs or prompts"),
+        (edit_on(desc, st), "an edit trains on before-and-after pairs"),
+        (ft_on(desc, st), "a fine-tune has no fixed validation loss"),
+        (multi_person_on(desc, st), "Fizgig LoRA Isolation builds its own pictures"),
+        (bool({"clip", "voice"} & set(desc.media or ())), f"{desc.display_name} trains clips and voices"),
+        (not st.get("enable_cache", True), "Enable Cache is off")) if on), "")
+    if off:
+        return [], [], "", off
+    state = _s(st.get("RESUME_TRAINING"))
+    if state:                                # a resume: exactly the pictures held out before the pause
+        was = _ho.from_state(state)
+        if not was or not was.get("paths"):
+            return [], [], "", "the run being resumed held none out"
+        keep = [(p, n) for p, n in zip(was["paths"], was.get("names") or was["paths"]) if os.path.isfile(p)]
+        gone = len(was["paths"]) - len(keep)
+        return ([p for p, _n in keep], [n for _p, n in keep], "resume",
+                f"{gone} of them are no longer in the folder" if gone else "")
+    try:
+        cap = max(1, int(re.match(r"\d+", str(st.get("VALIDATION_IMAGES") or "4").strip()).group()))
+    except (AttributeError, ValueError):
+        cap = 4
+    from fizgig.training.val_pick import picked_list
+    return _ho.choose(_ho.candidates(toml_text), cap, picked_list(st.get("VALIDATION_PICKED")))
+
+
 def plan(desc, inputs):
     """The whole launch: problems first (a plan with problems must not start), then the stages in order."""
     from fizgig.families.checks import tidy_name
@@ -2122,6 +2179,21 @@ def plan(desc, inputs):
             p.dataset_toml = dataset_toml(desc, inputs)
         except (TypeError, ValueError):
             p.problems.append("Target Megapixels (Dataset) must be a number above 0")
+    if not p.problems and _s(inputs.get("DATASET_CONFIG")):
+        # the validation hold-out (on by default): its list written fresh every Start (an empty one when off, so a
+        # list an interrupted run left can never hold pictures out of another), named in the TOML when it holds any
+        from fizgig.training import holdout as _ho
+        hpath = _ho.path_for(inputs["DATASET_CONFIG"])
+        paths, names, how, why = holdout_pick(desc, inputs, p.dataset_toml)
+        p.files.append((hpath, _ho.content(paths, names, how, why)))
+        if paths:
+            inputs["_holdout_file"] = hpath
+            p.dataset_toml = dataset_toml(desc, inputs)
+            shown = ", ".join(names[:6]) + (f" and {len(names) - 6} more" if len(names) > 6 else "")
+            p.console.append(f"[validation] Hold-out: {len(paths)} picture(s) set aside for validation for the whole "
+                             f"run, never cached or trained as training pictures ({_HOW.get(how, how)}): {shown}\n")
+        elif why:
+            p.console.append(f"[validation] Hold-out off for this run: {why}\n")
     missing = [k for k in ("python", "repo_dir", "DATASET_CONFIG", "LORA_OUTPUT_DIR", "NETWORK_DIM", "NETWORK_ALPHA",
                            "LEARNING_RATE", "MAX_TRAIN_EPOCHS", "SAVE_EVERY_N_EPOCHS", "SEED") if not _s(inputs.get(k))]
     if missing and not p.problems:

@@ -74,6 +74,11 @@ class BaseDatasetParams:
     caption_dropout: float = 0.0      # percent, 0-100
     caption_variants: int = 4
     caption_variant_cap: int = 8      # the most encodings cached per picture (tag_variants.DEFAULT_CAP)
+    # Validation hold-out (training/holdout.py): the run's list of set-aside pictures, left out of this dataset
+    holdout_file: Optional[str] = None
+    # only the set-aside pictures, cached in the cache folder's _fizgig_holdout/ (never from the TOML: the cache pass
+    # and the trainer set it)
+    holdout_only: bool = False
 
 
 @dataclass
@@ -158,6 +163,7 @@ class ConfigSanitizer:
         "caption_dropout": Any(int, float),
         "caption_variants": int,
         "caption_variant_cap": int,
+        "holdout_file": str,
     }
 
     # Fields specific to an image dataset entry

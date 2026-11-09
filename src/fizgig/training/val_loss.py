@@ -74,42 +74,6 @@ def one_picture(batch, i):
     return out
 
 
-def wanted_keys(keys, images=4, picked=None):
-    """The item keys a FixedValidation over these keys checks (picked ones found, else the even pick)."""
-    found = resolve_picked(picked, keys)[0] if picked_list(picked) else []
-    return list(found) or pick_keys(keys, images)
-
-
-def hold_out(group, images=4, picked=None, wanted=None):
-    """Validation hold-out: the validation pictures taken out of training, so the check measures pictures the LoRA
-    never trains on (how it does on unseen work - overcooking - rather than how well it memorised). Returns (every
-    item key, as before the hold-out - FixedValidation picks from these; {key: (bucket, item)} held out). Nothing is
-    held when that would leave no picture to train. wanted: hold these keys instead (the smaller size's dataset of
-    Start at a smaller size: the same pictures)."""
-    datasets = list(getattr(group, "datasets", []) or [])
-    keys = sorted({str(it.item_key) for ds in datasets for b in ds.batch_manager.buckets.values() for it in b})
-    wanted = set(wanted if wanted is not None else wanted_keys(keys, images, picked))
-    if not wanted or len(wanted) >= len(keys):
-        return keys, {}
-    held = {}
-    for ds in datasets:
-        bm = ds.batch_manager
-        for reso in list(bm.buckets):
-            keep = []
-            for it in bm.buckets[reso]:
-                if str(it.item_key) in wanted:
-                    held.setdefault(str(it.item_key), (reso, it))
-                else:
-                    keep.append(it)
-            bm.buckets[reso] = keep
-        bm.reindex()
-        ds.num_train_items = sum(len(b) for b in bm.buckets.values())
-    group.num_train_items = sum(ds.num_train_items for ds in datasets)
-    if hasattr(group, "cumulative_sizes"):        # a ConcatDataset: its index map follows the new lengths
-        group.cumulative_sizes = torch.utils.data.ConcatDataset.cumsum(datasets)
-    return keys, held
-
-
 class FixedValidation:
     def __init__(self, keys, *, images=4, timesteps=4, seed=42, every_steps=0, picked=None):
         self.picked, self.missing = resolve_picked(picked, keys) if picked_list(picked) else ([], [])
@@ -140,7 +104,7 @@ class FixedValidation:
 
     def prefill(self, datasets, held=None):
         """Keep the picked images' batches straight from the cache, before training (the step-0 baseline): each its
-        own one-image batch with its own caption. held: the held-out pictures ({key: (bucket, item)}, hold_out),
+        own one-image batch with its own caption. held: the held-out pictures ({key: (bucket, item)}, from the hold-out's own cache),
         which training never draws. -> True when all are kept."""
         from fizgig.dataset.image_dataset import BucketBatchManager
         pools = [getattr(getattr(ds, "batch_manager", None), "buckets", {}).items() for ds in datasets or []]

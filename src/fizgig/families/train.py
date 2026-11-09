@@ -1233,7 +1233,31 @@ def _baseline(validator, adaptive, datasets, steplog, step, epoch, run):
     return True
 
 
-def train_family(family, dit_path, dataset_config, output_dir, output_name, *, network_dim=32, network_alpha=32,
+def train_family(family, dit_path, dataset_config, *args, **kwargs):
+    """Train (_train_family). However the run ends - finished, Save & stop, an error - the pictures the validation
+    hold-out set aside go back to the dataset (its list emptied: training/holdout.py). Nothing was moved or copied,
+    so they never left their folder; a run killed outright leaves the list, which the next Start writes afresh."""
+    try:
+        return _train_family(family, dit_path, dataset_config, *args, **kwargs)
+    finally:
+        _give_back_holdout(dataset_config)
+
+
+def _give_back_holdout(dataset_config):
+    try:
+        import toml
+        hfile = ((toml.load(dataset_config).get("general") or {}).get("holdout_file")
+                 if dataset_config and os.path.isfile(dataset_config) else None)
+        if hfile:
+            from fizgig.training import holdout as _holdout
+            names = _holdout.give_back(hfile)
+            if names:
+                logger.info(f"[validation] hold-out: the {len(names)} set-aside picture(s) are back in the dataset")
+    except Exception:                    # never in the way of the run's own result
+        logger.debug("[validation] could not empty the hold-out list", exc_info=True)
+
+
+def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, network_dim=32, network_alpha=32,
                  preview_small_card_cap=0,
                  learning_rate=1e-4, max_train_epochs=16, save_every_n_epochs=1, save_until_epoch=0,
                  save_every_n_epochs_after=0, save_state=False,
@@ -1424,20 +1448,37 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
             logger.info(_line)
     if group.num_train_items == 0:
         raise RuntimeError("No training items - run the cache stages (families/cache.py) first.")
-    # Validation hold-out: the fixed validation pictures never train, so validation measures unseen pictures
-    val_keys, val_held = None, {}
-    if validation_loss and validation_holdout:
-        if slider or finetune:
+    # Validation hold-out (training/holdout.py): the pictures the run's list sets aside were left out of the dataset
+    # before its cache was built, so they never train; their own cache (the cache folder's _fizgig_holdout/) is the
+    # validation set, so validation measures pictures the LoRA has never seen
+    val_keys, val_held, holdout_list = None, {}, None
+    _hfile = (user_config.get("general") or {}).get("holdout_file") if not slider_prompts else None
+    if _hfile:
+        from fizgig.training import holdout as _holdout
+        holdout_list = _holdout.read(_hfile)
+        if not holdout_list.get("paths"):
+            holdout_list = None
+        elif slider or finetune:
             logger.info("[validation] hold-out is off: sliders and fine-tunes have no fixed validation loss")
-        else:
-            from fizgig.training.val_loss import hold_out
-            val_keys, val_held = hold_out(group, validation_images, validation_picked)
-            if val_held:
-                logger.info(f"[validation] hold-out on: {len(val_held)} validation picture(s) never train, so the "
-                            f"validation loss measures pictures the LoRA hasn't seen ({group.num_train_items} items "
-                            "train)")
-            else:
-                logger.warning("[validation] hold-out skipped: it would leave no pictures to train")
+            holdout_list = None
+    if holdout_list:
+        _hbp = BlueprintGenerator(ConfigSanitizer()).generate(user_config, argparse.Namespace(), architecture=arch,
+                                                              holdout_only=True)
+        _hgroup = generate_dataset_group_by_blueprint(_hbp.dataset_group, training=True, num_timestep_buckets=None,
+                                                      shared_epoch=shared_epoch)
+        for ds in _hgroup.datasets:
+            for reso, items in ds.batch_manager.buckets.items():
+                for it in items:
+                    val_held.setdefault(str(it.item_key), (reso, it))
+        names = holdout_list.get("names") or []
+        if val_held:
+            val_keys = sorted(val_held)
+            validation_loss, validation_picked, validation_images = True, None, len(val_keys)
+            logger.info(f"[validation] hold-out on: {len(val_held)} picture(s) set aside for the whole run, never "
+                        f"trained - the validation loss measures pictures the LoRA hasn't seen: {', '.join(names)}")
+        if len(val_held) < len(names):
+            logger.warning(f"[validation] hold-out: {len(names) - len(val_held)} set-aside picture(s) have no "
+                           "validation cache, so they are left out of training and validation alike")
     masked_images = 0
     if masked_training and slider_prompts:
         logger.info("[masks] a prompt-pair slider trains on pictures it makes itself: masked training is off")
@@ -1541,9 +1582,6 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
                                                               argparse.Namespace(), architecture=arch)
         low_group = generate_dataset_group_by_blueprint(_lbp.dataset_group, training=True, num_timestep_buckets=None,
                                                         shared_epoch=shared_epoch)
-        if val_held:                     # the held-out pictures stay out at the smaller size too
-            from fizgig.training.val_loss import hold_out
-            hold_out(low_group, wanted=set(val_held))
         if low_group.num_train_items == 0:
             logger.warning("[stages] the smaller size has no cache - this run trains at the full size throughout")
         else:
@@ -2590,7 +2628,11 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
                                    **({"adaptive_lr_state": adaptive.state_dict()} if adaptive else {}),
                                    **({"mid_epoch": mid} if mid is not None else {}),
                                    **({"early_stop": es.state_dict()} if es is not None else {}),
-                                   **({"batch_size": bsz} if bsz > 1 else {})})
+                                   **({"batch_size": bsz} if bsz > 1 else {}),
+                                   # the pictures set aside for validation: a resume holds out the same ones
+                                   **({"validation_holdout": {"paths": holdout_list["paths"],
+                                                              "names": holdout_list.get("names") or []}}
+                                      if holdout_list else {})})
                 return True
             except (OSError, RuntimeError) as e:
                 if attempt == 2 and mid is not None:
@@ -3602,7 +3644,8 @@ def setup_parser():
     p.add_argument("--validation_seed", type=int, default=42)
     p.add_argument("--validation_every_steps", type=int, default=0, help="0 = at the end of each epoch")
     p.add_argument("--validation_holdout", action="store_true",
-                   help="hold the fixed validation pictures out of training: validation measures unseen pictures")
+                   help="no longer used (kept so older commands still run): the validation hold-out is the dataset "
+                        "TOML's holdout_file, set by Start")
     p.add_argument("--validation_pick", action="append", default=None,
                    help="a training image to check (its file name; repeat for more). None: an even spread")
     p.add_argument("--validation_early_stop", action="store_true",
