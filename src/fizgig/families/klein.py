@@ -4,6 +4,7 @@ and Preferences keys, ComfyUI-compatible kohya keys like the original's, and its
 a fresh cache, never mixed with the original's). Facts are the original trainer's (training/trainer.py,
 klein/model_utils.py, networks/lora_klein.py), cited per value.
 """
+from fizgig.training.optimizers import MUON_DEFAULT_ARGS
 from fizgig.families.description import GENERAL_NEGATIVE, FamilyDescription, LoRAFormat, ModelFile, SamplingSettings
 from fizgig.training import timestep_spread
 
@@ -19,7 +20,7 @@ def _preset(rank, lr, epochs, area, adaptive, ts=("", "")):
         "NETWORK_DIM": rank, "NETWORK_ALPHA": rank, "NETWORK_TYPE": "LoRA (standard)", "LEARNING_RATE": lr,
         "MAX_TRAIN_EPOCHS": epochs, "SAVE_EVERY_N_EPOCHS": 1, "SEED": 42,
         "ADAPTIVE_LR": True, "ADAPTIVE_LR_MIN": adaptive[0], "ADAPTIVE_LR_MAX": adaptive[1],
-        "TARGET_LAYERS": area, "MIN_TIMESTEP": ts[0], "MAX_TIMESTEP": ts[1], "OPTIMIZER_TYPE": "adamw8bit",
+        "TARGET_LAYERS": area, "MIN_TIMESTEP": ts[0], "MAX_TIMESTEP": ts[1], "OPTIMIZER_TYPE": "muon", "OPTIMIZER_ARGS": MUON_DEFAULT_ARGS,
         "FAMILY_PRECISION": "Auto (fits your free VRAM)", "BLOCKS_SWAP": "Auto (detect from GPU)",
         "FAMILY_EMA": "Off",
     }
@@ -32,6 +33,16 @@ KLEIN = FamilyDescription(
     start_lr_bands=(("lora", 3e-5, 1.2e-3),),
     masked_training=True,
     timestep_spread=timestep_spread.FLOW,     # Timestep focus presets (the shift's multiple / the curve's width)
+    batch_training=True,              # Batch size (Other Options): training_loss_batch, exact per picture
+    batch_gb=(0.8, 1.1),            # GB each extra picture takes: fixed, per MP (batch 1 vs 3)
+    # Batch x checkpointing sweep, 6 Nov 2026 (RTX PRO 6000, 8 pictures, 2 epochs, uncompiled, previews off - so the
+    # no-checkpointing peaks below are the larger of that run's and train_memory's preview peak; uncompiled sits
+    # above a compiled run, the safe side). Desktop\Fizgig batch tests\bsgc\MORNING_REPORT.md
+    # no batch_auto: batching measured no faster a picture (one already fills the GPU)
+    # measured on the bf16 file (uncompiled Auto trains the file as it is); a compiled INT8 run takes less, so the same
+    # figure stands for it on the safe side
+    nogc_uncompiled=True,
+    train_memory_nogc={"bf16": ((0.25, 19.4), (1.0, 28.4)), "int8": ((0.25, 19.4), (1.0, 28.4))},   # 1.41x / 1.30x
     arch_id="klein9bdrv",
     display_name="Klein 9B",
     gui_label="Flux 2 Klein Base 9B",
@@ -57,7 +68,9 @@ KLEIN = FamilyDescription(
                   hint="Flux 2 AutoEncoder — use ae.safetensors from FLUX.2-dev root (NOT the vae/ subfolder "
                        "Diffusers file)",
                   download_note="~320MB  ·  get ae.safetensors from FLUX.2-dev root  ·  NOT "
-                                "vae/diffusion_pytorch_model.safetensors (Diffusers format, incompatible)"),
+                                "vae/diffusion_pytorch_model.safetensors (Diffusers format, incompatible)",
+                  # saved under Flux 3's and Fibo's name for the same file: Z-Image's ae.safetensors is another VAE
+                  local_name="flux2-vae.safetensors", signature=("decoder.conv_in.weight", (512, 32, 3, 3))),
         ModelFile("text_encoder", "Text Encoder", True, "Comfy-Org/vae-text-encorder-for-flux-klein-9b",
                   "split_files/text_encoders/qwen_3_8b.safetensors", 15.0, role="text_encoder",
                   hint="Qwen3-8B text encoder (used by Klein 9B)",
@@ -133,7 +146,7 @@ KLEIN = FamilyDescription(
     ema_default="Off",                # the doc's K10: available, off until an A/B says otherwise
     precisions=("bf16", "int8", "nf4"),
     int8_attention=True,              # workbench renders: comfy-kitchen's INT8 attention
-    activation_cache=True,            # Turbo Preview: step-1 replay, identical to a full render
+    activation_cache=True,            # Reuse unchanged blocks: step-1 replay, identical to a full render
     finetune=True,                    # the driver's ft_spec: double then single blocks, NF4 trunk (families/ft.py)
     auto_precisions=("int8", "nf4"),
     precision_labels={"bf16": "As the file (bf16 or fp8)"},

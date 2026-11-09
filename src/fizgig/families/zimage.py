@@ -7,6 +7,7 @@ Sources: the model card, Tongyi's reference code, ComfyUI's implementation, AI-T
 """
 import dataclasses
 
+from fizgig.training.optimizers import MUON_DEFAULT_ARGS
 from fizgig.families.description import GENERAL_NEGATIVE, FamilyDescription, LoRAFormat, ModelFile, SamplingSettings
 from fizgig.training import timestep_spread
 
@@ -26,7 +27,7 @@ def _preset(rank, lr=1e-4, adaptive=None, epochs=30, mp="0.5", slider=False, ada
         "NETWORK_DIM": rank, "NETWORK_ALPHA": rank, "NETWORK_TYPE": "LoRA (standard)", "LEARNING_RATE": lr,
         "MAX_TRAIN_EPOCHS": epochs, "SAVE_EVERY_N_EPOCHS": 1, "SEED": 42,
         "ADAPTIVE_LR": adaptive is not None, "ADAPTIVE_LR_MIN": lo, "ADAPTIVE_LR_MAX": hi,
-        "OPTIMIZER_TYPE": "adamw", "GRADIENT_ACCUMULATION": 1, "MAX_GRAD_NORM": 1.0,
+        "OPTIMIZER_TYPE": "muon", "OPTIMIZER_ARGS": MUON_DEFAULT_ARGS, "GRADIENT_ACCUMULATION": 1, "MAX_GRAD_NORM": 1.0,
         "DATASET_MEGAPIXELS": mp, "BLOCKS_SWAP": "Auto (detect from GPU)",
         "FAMILY_PRECISION": "Auto (fits your free VRAM)", "FAMILY_TRAINING_ADAPTER": adapter,
         "FAMILY_EMA": "0.98 (recommended)",
@@ -41,6 +42,8 @@ ZIMAGE = FamilyDescription(
     start_lr_bands=(("lora", 3e-5, 4.5e-4), ("finetune", 1.7e-5, 3e-4), ("slider", 7e-5, 6e-4)),
     masked_training=True,
     timestep_spread=timestep_spread.FLOW,     # Timestep focus presets (the shift's multiple / the curve's width)
+    batch_training=True,              # Batch size (Other Options): training_loss_batch, exact per picture
+    batch_gb=(0.45, 1.05),          # GB each extra picture takes: fixed, per MP (batch 1 vs 3)
     arch_id="zimageturbo",
     display_name="Z-Image Turbo",
     gui_label="Z-Image Turbo",
@@ -53,7 +56,8 @@ ZIMAGE = FamilyDescription(
                   "split_files/diffusion_models/z_image_turbo_bf16.safetensors", 12.31, role="dit",
                   hint="Z-Image Turbo bf16 (ComfyUI's single file) - trained on and previewed with."),
         ModelFile("zimage_vae", "FLUX.1 VAE", True, _COMFY, "split_files/vae/ae.safetensors", 0.34, role="vae",
-                  hint="The FLUX.1 autoencoder (ae.safetensors). Not the FLUX.2 VAE Klein uses."),
+                  hint="The FLUX.1 autoencoder (ae.safetensors). Not the FLUX.2 VAE Klein uses.",
+                  signature=("decoder.conv_in.weight", (512, 16, 3, 3))),
         ModelFile("zimage_text_encoder", "Qwen3-4B text encoder", True, _COMFY,
                   "split_files/text_encoders/qwen_3_4b.safetensors", 8.04, role="text_encoder",
                   hint="Used for caching only, then unloaded before training."),
@@ -140,7 +144,7 @@ ZIMAGE = FamilyDescription(
                   "Triton and, on Windows, a C++ compiler (VS Build Tools) - both located automatically. Never used "
                   "with Blocks Swap, since swapping moves weights and compiled graphs assume they stay put."),
     int8_attention=True,              # workbench renders through attend(); speed-up to be measured
-    activation_cache=True,            # Turbo Preview: the 30 layers sit in one ModuleList, on_step every step
+    activation_cache=True,            # Reuse unchanged blocks: the 30 layers sit in one ModuleList, on_step every step
     helper_files=(("Tongyi-MAI/Z-Image-Turbo", ("tokenizer/*", "vae/config.json")),),
 
     sampling=(
@@ -212,7 +216,7 @@ ZIMAGE_BASE = dataclasses.replace(
                        "the one to train on."),
         ModelFile("zimage_base_vae", "FLUX.1 VAE", True, _BASE_COMFY, "split_files/vae/ae.safetensors", 0.34,
                   role="vae", hint="The FLUX.1 autoencoder (ae.safetensors), the same file as Z-Image Turbo's.",
-                  same_as="zimage_vae"),
+                  same_as="zimage_vae", signature=("decoder.conv_in.weight", (512, 16, 3, 3))),
         ModelFile("zimage_base_text_encoder", "Qwen3-4B text encoder", True, _BASE_COMFY,
                   "split_files/text_encoders/qwen_3_4b.safetensors", 8.04, role="text_encoder",
                   hint="The same file as Z-Image Turbo's. Used for caching only, then unloaded before training.",
@@ -234,6 +238,8 @@ ZIMAGE_BASE = dataclasses.replace(
     # off for Base: over 25 CFG steps the int8 attention kernel's approximation grows into another picture (17-33/255
     # from the training preview, which renders the plain way, and ComfyUI); without it they are identical (29 Oct 2026)
     int8_attention=False,
+    not_offered={"int8_attention": "over 25 CFG steps its approximation grows into another picture (17-33/255; "
+                                   "29 Oct 2026)"},
     sampling=(
         # ComfyUI's template (ModelSamplingAuraFlow 3, KSampler 25 steps CFG 4 res_multistep simple). The reference's
         # scheduler_config.json says shift 6.0 and its guidance 4 (pos + g * (pos - neg)) is CFG 5 here, 28-50 steps

@@ -17,7 +17,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from fizgig.families.driver import Block, BlockGroup, FamilyDriver, prior_base, weighted_loss, with_prior
+from fizgig.families.driver import Block, BlockGroup, FamilyDriver, picture_losses, prior_base, weighted_loss, with_prior
 from fizgig.training import timestep_spread as TS
 
 CONFIG_REPO = "stabilityai/stable-diffusion-xl-base-1.0"
@@ -219,52 +219,8 @@ class SDXLDriver(FamilyDriver):
         xt = state["xt"]
         return self._unet(dit, xt, torch.tensor([state["t"]], device=xt.device), cond, h, w)
 
-    def _batched_loss(self, dit, latents, cond, generator, min_t, max_t, loss_mask=None, prior=None):
-        """Batch Size > 1: each image its own DDPM timestep and noise, drawn exactly as B batch-1 steps draw them;
-        the loss (Min-SNR weighted per image when on) is their mean. Captions of different lengths (77-token
-        chunks) are brought to one by repetition (pad_conditioning: exact, as cross-attention has no mask) - never
-        by the dataset's zero rows, which are dropped here first."""
-        n = latents.shape[0]
-        hs, pooled = cond["hidden_states"], cond["pooled"]
-        if hs.dim() != 3 or hs.shape[0] != n:
-            raise RuntimeError(f"SDXL: {n} images but {hs.shape[0] if hs.dim() == 3 else 1} captions in the batch")
-        valid = cond.get("hidden_states__valid")
-        ones = [{"hidden_states": hs[i][valid[i].to(hs.device)] if valid is not None else hs[i],
-                 "pooled": pooled[i]} for i in range(n)]
-        ones = self.pad_conditioning([{k: _batched(k, v) for k, v in c.items()} for c in ones])
-        cond = {k: torch.cat([c[k] for c in ones]) for k in ("hidden_states", "pooled")}
-        sts = [self.noise_latents(latents[i:i + 1], generator, min_t=min_t, max_t=max_t) for i in range(n)]
-        xt = torch.cat([s["xt"] for s in sts])
-        x0 = torch.cat([s["x0"] for s in sts])
-        noise = torch.cat([s["noise"] for s in sts])
-        a = torch.stack([s["a"] for s in sts]).view(-1, 1, 1, 1)
-        h, w = sts[0]["hw"]
-        t = torch.tensor([s["t"] for s in sts], device=xt.device)
-        base = prior_base(prior, loss_mask, lambda: self._unet(dit, xt, t, cond, h, w))
-        pred = self._unet(dit, xt, t, cond, h, w).float()
-        target = (a.sqrt() * noise - (1 - a).sqrt() * x0) if self._v_pred() else noise
-        mw = None if loss_mask is None else loss_mask.float().to(x0.device).flatten(1)        # (B, h*w)
-        if mw is None:
-            per = (pred - target).pow(2).flatten(1).mean(1)                             # each image's MSE
-        else:       # masked training: each image weighted as Batch Size 1 weights it (its mask, its own mean 1)
-            se = (pred - target).pow(2).mean(dim=1).flatten(1)
-            sb = None if base is None else (pred - base).pow(2).mean(dim=1).flatten(1)
-            per = torch.stack([with_prior(weighted_loss(se[i:i + 1], mw[i:i + 1]), prior,
-                                          None if sb is None else base[i:i + 1], None if sb is None else sb[i:i + 1],
-                                          mw[i:i + 1]) for i in range(n)])
-        gamma = float(self.options.get("min_snr") or 0.0)
-        if gamma:
-            snr = (a / (1 - a)).flatten()
-            per = per * (torch.clamp(snr, max=gamma) / ((snr + 1) if self._v_pred() else snr))
-        return per.mean(), {"t": sum(s["t"] for s in sts) / 999.0 / n, "ts": [s["t"] / 999.0 for s in sts],
-                            "per": per}     # each image's own loss, for per-image LR and the loss watch
-
     def training_loss(self, dit, latents, cond, generator, *, min_t=0.0, max_t=1.0, refs=None, diff_ref=None,
                       diff_weight=0.0, loss_mask=None, prior=None):
-        if latents.shape[0] > 1:
-            if diff_ref is not None:
-                raise RuntimeError("SDXL: image-pair sliders train at Batch Size 1")
-            return self._batched_loss(dit, latents, cond, generator, min_t, max_t, loss_mask, prior)
         st = self.noise_latents(latents, generator, min_t=min_t, max_t=max_t)
         a, x0, noise = st["a"], st["x0"], st["noise"]
         base = prior_base(prior, loss_mask, lambda: self.predict(dit, st, cond))
@@ -292,6 +248,35 @@ class SDXLDriver(FamilyDriver):
             snr = float(a / (1 - a))
             loss = loss * (min(snr, gamma) / ((snr + 1) if self._v_pred() else snr))
         return loss, {"t": st["t"] / 999.0}
+
+    def training_loss_batch(self, dit, latents, cond, generator, *, min_t=0.0, max_t=1.0, loss_mask=None):
+        """Batch Size above 1: each picture's timestep and noise drawn by noise_latents in turn (training_loss's
+        draws, picture by picture), one UNet call for them all, the loss each picture's own and their mean."""
+        sts = [self.noise_latents(latents[i:i + 1], generator, min_t=min_t, max_t=max_t)
+               for i in range(latents.shape[0])]
+        h, w = sts[0]["hw"]
+        xt = torch.cat([st["xt"] for st in sts])
+        ts = torch.tensor([st["t"] for st in sts], device=xt.device)
+        a = torch.stack([st["a"] for st in sts]).view(-1, 1, 1, 1)
+        x0, noise = torch.cat([st["x0"] for st in sts]), torch.cat([st["noise"] for st in sts])
+        pred = self._unet(dit, xt, ts, cond, h, w).float()
+        target = (a.sqrt() * noise - (1 - a).sqrt() * x0) if self._v_pred() else noise
+        se = (pred - target).pow(2)
+        losses = []
+        for i in range(len(sts)):
+            if loss_mask is None:
+                li = se[i:i + 1].mean()
+            else:
+                li = weighted_loss(se[i:i + 1].mean(dim=1).flatten(1), loss_mask[i:i + 1].float().to(se.device).flatten(1))
+            gamma = float(self.options.get("min_snr") or 0.0)
+            if gamma:
+                ai = sts[i]["a"]
+                snr = float(ai / (1 - ai))
+                li = li * (min(snr, gamma) / ((snr + 1) if self._v_pred() else snr))
+            losses.append(li)
+        per = torch.stack(losses)
+        return per.mean(), {"t": sum(st["t"] for st in sts) / len(sts) / 999.0, "per": per,
+                            "ts": [float(st["t"]) / 999.0 for st in sts]}
 
     # ---- sampling -------------------------------------------------------------------------------
     @torch.no_grad()

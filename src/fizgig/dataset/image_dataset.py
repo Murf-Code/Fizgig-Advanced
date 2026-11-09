@@ -495,19 +495,14 @@ class BucketSelector:
 # ---------------------------------------------------------------------------
 
 def _stack_keys(batch_tensor_data: dict) -> dict:
-    """Each key's per-item tensors stacked into the batch."""
+    """Each key's per-item tensors stacked into the batch, as the loader stacks them: captions of different lengths
+    stay a list (Batch size above 1 - the trainer runs each caption shape's pictures as their own group)."""
     stacked: dict[str, Any] = {}
     for key, tensors in batch_tensor_data.items():
-        if key.startswith("cond__") and len({tuple(t.shape) for t in tensors}) > 1 \
-                and len({t.dim() for t in tensors}) == 1 and len({tuple(t.shape[1:]) for t in tensors}) == 1:
-            # Batch Size > 1: per-caption conditioning of different lengths (dim 0) - zero-padded to the batch's
-            # longest so it stacks, with `<key>__valid` (True = a real row) for the family's DiT to mask. Only
-            # reached where torch.stack would have raised, so batch 1 never gets here
-            n = max(t.shape[0] for t in tensors)
-            stacked[key + "__valid"] = torch.stack([torch.arange(n) < t.shape[0] for t in tensors])
-            tensors = [t if t.shape[0] == n else torch.cat(
-                [t, t.new_zeros((n - t.shape[0],) + tuple(t.shape[1:]))], dim=0) for t in tensors]
-        stacked[key] = torch.stack(tensors)
+        if len(tensors) > 1 and any(t.shape != tensors[0].shape for t in tensors):
+            stacked[key] = tensors
+        else:
+            stacked[key] = torch.stack(tensors)
     return stacked
 
 
@@ -550,9 +545,14 @@ class BucketBatchManager:
 
         self.bucket_batch_indices: list[Tuple[Tuple[int, int], int]] = []
         for reso in self.bucket_resos:
-            num_batches = math.ceil(len(self.buckets[reso]) / self.batch_size)
+            num_batches = math.ceil(len(self.buckets[reso]) / self.bucket_batch(reso))
             for i in range(num_batches):
                 self.bucket_batch_indices.append((reso, i))
+
+    def bucket_batch(self, reso):
+        """Items a step from this bucket: Batch size for pictures, 1 for a clip's or a voice's bucket (a step packs
+        thousands of a clip's tokens already, and its sound rows are its own)."""
+        return 1 if reso and reso[0] in ("clip", "audio") else self.batch_size
 
     def show_bucket_info(self):
         for reso in self.bucket_resos:
@@ -586,8 +586,8 @@ class BucketBatchManager:
     def __getitem__(self, idx: int) -> dict[str, Any]:
         bucket_reso, batch_idx = self.bucket_batch_indices[idx]
         bucket = self.buckets[bucket_reso]
-        start = batch_idx * self.batch_size
-        end = min(start + self.batch_size, len(bucket))
+        start = batch_idx * self.bucket_batch(bucket_reso)
+        end = min(start + self.bucket_batch(bucket_reso), len(bucket))
 
         batch_tensor_data: dict[str, list[torch.Tensor]] = {}
         picks = []
@@ -693,7 +693,12 @@ class BucketBatchManager:
             batch_tensor_data["loss_mask"] = masks
 
         # Stack tensors per key
-        stacked: dict[str, Any] = _stack_keys(batch_tensor_data)
+        stacked: dict[str, Any] = {}
+        for key, tensors in batch_tensor_data.items():
+            if len(tensors) > 1 and any(t.shape != tensors[0].shape for t in tensors):
+                stacked[key] = tensors      # Batch Size above 1: captions of different lengths, grouped by the trainer
+            else:
+                stacked[key] = torch.stack(tensors)
 
         if self.timestep_pool is not None:
             stacked["timesteps"] = self.timestep_pool[idx][:end - start]
@@ -1437,13 +1442,11 @@ class ImageDataset(torch.utils.data.Dataset):
                     # A VRAM-capped clip (or one cached at an older, lower Target Megapixels)
                     # — train it at its cached size rather than dropping it: dropping made a
                     # clips-only dataset crash with "No training items" right after a clean
-                    # cache run. Batch size 1 only: mixed sizes cannot stack into one batch
-                    # (H3 always runs batch 1, so this guard is belt-and-braces).
-                    if self.batch_size != 1:
-                        skipped_wrong_reso += 1
-                        continue
+                    # cache run. A clip trains on a step of its own at any Batch size (below).
                     accepted_smaller_clips += 1
                 bucket_key = bucket_reso
+                if self.batch_size > 1 and self.latent_cache_frames(cache_file) > 1:
+                    bucket_key = ("clip",) + bucket_reso      # Batch size batches pictures; a clip trains on its own
             item_info = ItemInfo(self.item_prefix + item_key, "", image_size, bucket_reso,
                                  latent_cache_path=cache_file)
             item_info.text_encoder_output_cache_path = te_cache
@@ -1474,8 +1477,9 @@ class ImageDataset(torch.utils.data.Dataset):
                               latent_cache_path=cache_file)
                 ff.text_encoder_output_cache_path = te_cache
                 ff.still_only = True
+                stills = bucket if bucket_key == bucket_reso else bucketed.setdefault(bucket_reso, [])
                 for _ in range(self.num_repeats):
-                    bucket.append(ff)
+                    stills.append(ff)
                 still_items += self.num_repeats
                 if not self.latent_cache_has_still(cache_file):
                     still_frame0_fallback += 1

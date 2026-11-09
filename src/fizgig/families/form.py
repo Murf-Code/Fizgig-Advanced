@@ -81,7 +81,7 @@ DEFAULTS = {
     "NETWORK_TYPE": "LoRA (standard)", "LOKR_FACTOR": "8", "MAX_TRAIN_EPOCHS": "12", "SAVE_EVERY_N_EPOCHS": "1",
     "SAVE_LATER": False, "SAVE_UNTIL_EPOCH": "10", "SAVE_EVERY_AFTER": "1",
     "SEED": "42", "BLOCKS_SWAP": "Auto (detect from GPU)", "RESUME_TRAINING": "", "OPTIMIZER_TYPE": "adamw8bit",
-    "OPTIMIZER_ARGS": "", "GRADIENT_ACCUMULATION": "1", "DATASET_BATCH_SIZE": "1", "MAX_GRAD_NORM": "1.0", "LR_SCHEDULER": "constant",
+    "OPTIMIZER_ARGS": "", "GRADIENT_ACCUMULATION": "1", "BATCH_SIZE": "1", "MAX_GRAD_NORM": "1.0", "LR_SCHEDULER": "constant",
     "LR_WARMUP_STEPS": "", "VALIDATION_LOSS": False, "VALIDATION_IMAGES": "4", "VALIDATION_TIMESTEPS": "4",
     "VALIDATION_SEED": "42", "VALIDATION_EVERY_STEPS": "0", "VALIDATION_PICKED": [],
     "VALIDATION_EARLY_STOP": False, "VALIDATION_PATIENCE": "3", "ADAPTIVE_LR": False, "ADAPTIVE_LR_ON_VAL": True, "ADAPTIVE_LR_MIN": "1e-5", "ADAPTIVE_LR_MAX": "4e-4",
@@ -117,6 +117,11 @@ DEFAULTS = {
     "SAMPLE_EVERY_AFTER": "1", "SAMPLE_AT_FIRST": True, "SAMPLE_CHECKPOINT": True, "CACHE_SAMPLE_MODEL": "auto",
 }
 
+
+BATCH_HINT = ("How many pictures train together each step. Faster when blocks are swapped, and on smaller models "
+              "like SDXL and Anima. Uses more memory (Auto allows for it). Settings that need 1 grey out. Auto (where "
+              "offered): the batch measured fastest for this model at your size, on a 40 GB+ card; 1 elsewhere.")
+BATCH_OFF = "Off while Batch size is above 1: it reads one picture a step."
 
 TRAINING_ORDER = ("model", "output", "params", "edit", "slider", "finetune", "memory", "optimizer", "other")
 # any other Training card (Masked training, Subjects) comes after these, under the Extras divider
@@ -288,8 +293,7 @@ def form(desc):
             sections.append({"id": sid, "title": title, "tab": tab, "rows": rows, "collapsed": collapsed,
                              **({"help": help} if help else {})})
 
-    add("model", "Base Model", "training",
-        by_section("model") + ([_row("_model_note", desc.model_note, "note")] if desc.model_note else []))
+    add("model", "Base Model", "training", by_section("model"))
     add("output", "Output", "training", [
         _row("LORA_OUTPUT_DIR", "Output Directory", "folder", "Where the LoRA, its checkpoints and the previews go. A folder picked here is kept for "
              "this model; empty (or Reset to default) uses the LoRA output folder in Preferences.",
@@ -382,8 +386,8 @@ def form(desc):
                  "picture. Each image's progress, with its thumbnail and its caption to edit, is under Per-image loss "
                  "on the run card while it trains, and in Runs & outputs."),
             _row("KREA2_PER_IMAGE_LR", "Per-image adaptive LR (throttle stuck images, boost healthy learned ones)",
-                 "check", "Images that stay hard without improving train more gently (x0.7, then x0.5 down to x0.1); "
-                 "mined-out ones ease off (x0.6) and healthy learned ones get a gentle boost (x1.1). Works at any Batch Size: each image keeps its own weight."),
+                 "check", "Images that stay hard without improving train more gently (x0.7, then x0.5 down to x0.25); "
+                 "mined-out ones ease off (x0.6) and healthy learned ones get a gentle boost (x1.1). Batch size 1."),
             _row("KREA2_WARMUP_LOOK", "Warm up look outliers (unusual angles ease in at low LR - needs a Look "
                  "Filter scan)", "check", "Person LoRAs: images the Image Prep Look Filter scored as look outliers (tight angles, "
                  "profiles - real but unusual) start at x0.4 and ramp to x1.0 over the first ~4 epochs, so they refine "
@@ -550,9 +554,12 @@ def form(desc):
             _row("_edit_edited_dir", "2. Edited folder (after editing)", "shown", "The same photos after your edit, "
                  "with the same file names as the originals. It is the training folder on the Start tab: choosing it "
                  "here changes it there too.", sets_training_folder=True),
-            _row("FAMILY_EDIT_CAPTION", "3. Edit instruction", hint="What the edit is, e.g. \"Apply my concert grade.\" "
-                 "Write captions saves it as the caption of every photo in the Edited folder.",
-                 action="write_captions"),
+            _row("FAMILY_EDIT_CAPTION", "3. Edit instruction", "text",
+                 hint="What the edit is, e.g. \"Apply my concert grade.\" Write captions saves the first line as "
+                 "the caption of every photo in the Edited folder.\n"
+                 "Every line is a preview on the test photo: for a LoRA trained on several kinds of edit, put one "
+                 "instruction per line (Enter starts the next) and each round previews them all.",
+                 lines=True, action="write_captions"),
             _row("FAMILY_EDIT_REF", "4. Test photo (optional)", "path",
                  "Optional - you can leave this empty. A photo for the previews to edit, so you can watch the LoRA "
                  "learn: an original, unedited photo that is in neither folder. One it never trains on shows whether "
@@ -679,22 +686,17 @@ def form(desc):
         _row("LR_WARMUP_STEPS", "Warmup steps"),
         _row("CAPTION_DROPOUT", "Caption dropout", "choice", CAPTION_DROPOUT_HINT, CAPTION_DROPOUTS,
              default=CAPTION_DROPOUTS[0]) if desc.caption_dropout and pictures else None,
-        _row("DATASET_BATCH_SIZE", "Batch Size", hint="Images trained together in one step (same size, from one "
-             "bucket). Faster per image when the card has room; more memory. 2 or 3 is the most a 12 GB card "
-             "usually fits at 1 MP - above that, expect block swap. Above 1, these switch off: " +
-             "; ".join(launch.BATCH_OFF) + ". Sliders, edit, fine-tune and multi-person runs stay at 1.",
-             default="1") if getattr(desc, "supports_batch", False) else None,
-        _row("GRADIENT_ACCUMULATION", "Gradient Accumulation", hint=("Raise this for a larger effective batch at "
-             "no extra memory: the same averaged gradient as a bigger batch." if getattr(desc, "supports_batch", False)
-             else "Every model trains one image at a time. For a "
+        _row("GRADIENT_ACCUMULATION", "Gradient Accumulation", hint="Every model trains one image at a time. For a "
              "larger effective batch, raise this: the same averaged gradient as a bigger batch, at the memory of "
-             "batch 1.")),
+             "batch 1."),
         _row("MAX_GRAD_NORM", "Max Grad Norm"),
     ], collapsed=True)
     add("other", "Other Options", "training", [
         _row("DATASET_CAPTION_EXT", "Caption Extension"),
         _row("ENABLE_BUCKET", "Enable Bucket", "check"),
         _row("BUCKET_NO_UPSCALE", "No Upscale (keep small images at native size)", "check"),
+        _row("BATCH_SIZE", "Batch size", "choice", BATCH_HINT, launch.batch_choices(desc))
+        if desc.batch_training and pictures else None,
         *by_section("training", "other", "lora"),
         _row("METADATA_TITLE", "Title"), _row("METADATA_AUTHOR", "Author"),
         _row("METADATA_DESCRIPTION", "Description"), _row("METADATA_LICENSE", "License"),
@@ -737,6 +739,16 @@ def form(desc):
                      if desc.train_preview_checkpoint else "")
                   + (" Default " + f"{spd[1]:g}." if spd[1] else "")),
             turbo={"on": live, "off": plain})]
+        if desc.samples_turbo_tick:
+            turbo_rows = [
+                _row("FAMILY_TURBO_ON", f"Use the {sp.name} for previews", "check", default=True,
+                     hint=f"On: previews render in {spd[0]} steps{cfg_on} with the {sp.name} at the strength beside "
+                          f"it ({spd[1]:g} is Fizgig's recommended setting). Off: full-quality previews "
+                          f"({desc.preview_steps} steps{cfg_off}), slower. Steps and CFG switch with it. Previews "
+                          "only, never the saved LoRA. It works on previews of your Base, not on SFT."),
+                dict(turbo_rows[0], label="Strength",
+                     hint=f"The {sp.name}'s strength while the tick is on. {spd[1]:g} is Fizgig's recommended "
+                          "setting.")]
     if sp is not None and sp.pref_key:
         turbo_rows.append(_row("TURBO_MISSING", "", "note",
                                f"Set the {sp.name} in Preferences for fast Turbo previews; without it previews use "
@@ -745,8 +757,10 @@ def form(desc):
         # an edit run's previews come from the Edit pairs card, not these prompts (shown only while Edit is picked)
         _row("_edit_samples_note", "Edit LoRA previews: each round makes one picture from your edit instruction and "
              "test photo (Training tab, Edit pairs" + (", with its extra pictures" if desc.edit_references > 1 else "")
-             + "). The prompts below are not used - to try other instructions while it trains, type them below "
-             "(one per line) and tick Change the previews of the run going now.", "note")
+             + "). The prompts below aren't used: to preview several instructions, put one per line in the Edit "
+             "instruction box and each renders on the test photo. With no test photo set, previews use your first "
+             "original. While a run trains, instructions typed below (one per line, with Change the previews of the "
+             "run going now ticked) replace its previews from the next one.", "note")
         if desc.edit_training else None,
         _row("SAMPLE_ENABLED", "Make previews while training", "check"),
         _row("_prompts_note", " ".join(t for k, t in desc.samples_text if k == "prompts"), "note")
@@ -773,9 +787,16 @@ def form(desc):
                                "off": {"SAMPLE_STEPS": str(desc.preview_steps),
                                        "SAMPLE_CFG_SCALE": f"{desc.preview_cfg:g}"}}}
                    if desc.preview_checkpoint_sampling else {}))] if desc.train_preview_checkpoint else []),
-        _row("FAMILY_PREVIEW_LOOK", desc.preview_look_tick, "check", desc.preview_look_hint, default=False,
+        _row("FAMILY_PREVIEW_LOOK", desc.preview_look_tick, "check", desc.preview_look_hint,
+             default=desc.preview_look_on,
              **({"bold": desc.preview_look_bold} if desc.preview_look_bold else {}))
         if desc.preview_look() is not None else None,
+        _row("FAMILY_PREVIEW_SMALL", f"Faster, smaller previews ({desc.preview_small_card_option} px)", "check",
+             f"For cards under 20 GB. Previews render at {desc.preview_small_card_option} px on the long side instead "
+             f"of full size, so they finish sooner. {desc.display_name} looks noticeably worse below its normal size "
+             "(softer, odd colours, faces can break), so use them to watch progress, not to judge how good the LoRA "
+             "is. On by default on these cards until you choose; untick it for full-size previews.", default=False)
+        if desc.preview_small_card_option else None,
         _row("SAMPLE_STRENGTHS", "Also preview at strength " + ", ".join(f"{x:g}" for x in desc.preview_strengths),
              "check", "Each preview is rendered again at that strength (same prompt and seed), beside the "
              "full-strength one: how the LoRA will look or sound the way you'll use it.", default=True)
@@ -859,7 +880,26 @@ def form(desc):
 
 # what a preset never carries (the desktop's): the Samples tab and the Turbo boxes are the model's own, a resume path
 # is one run's
-NOT_IN_PRESETS = ("FAMILY_TURBO_STRENGTH", "FAMILY_TURBO_STEPS", "FAMILY_TURBO_PACE", "CACHE_SAMPLE_MODEL",
+def small_canvas(width, height, cap):
+    """A preview canvas with its long side capped to `cap` px, rounded down to multiples of 32 - the trainer's
+    _cap_canvas (Faster, smaller previews), here so the Samples tab can say the size before a run."""
+    long = max(width, height)
+    if long <= cap:
+        return width, height
+    s = cap / long
+    return max(64, int(width * s) // 32 * 32), max(64, int(height * s) // 32 * 32)
+
+
+def turbo_ticked_off(desc, values):
+    """The Samples tab's Use the Turbo LoRA tick (description.samples_turbo_tick) unticked: previews without the Turbo,
+    whatever its strength box says. A form that never saved the tick has it on."""
+    if not getattr(desc, "samples_turbo_tick", False):
+        return False
+    on = (values or {}).get("FAMILY_TURBO_ON")
+    return on is False or str(on).strip().lower() in ("false", "0", "no", "off")
+
+
+NOT_IN_PRESETS = ("FAMILY_TURBO_STRENGTH", "FAMILY_TURBO_ON", "FAMILY_PREVIEW_SMALL", "FAMILY_TURBO_STEPS", "FAMILY_TURBO_PACE", "CACHE_SAMPLE_MODEL",
                   "FAMILY_PREVIEW_LOOK",
                   "RESUME_TRAINING", "CAPTION_TRIGGER_WORD")     # the trigger word is the training folder's
 # boxes a preset can't put an unknown value in (the desktop's _STRICT_COMBO_KEYS): the current choice stays
@@ -1006,6 +1046,26 @@ def _kind(desc, values):
     return next((k for k, lab in kinds(desc) if lab == label or k == label), "standard")
 
 
+def batch_blockers(desc, values):
+    """What in a run's Training-tab values trains one picture a step (Batch size above 1 greys it out or keeps the run
+    at 1), in plain words; [] when the run can batch."""
+    if not desc.batch_training:
+        return ["this model trains one picture a step"]
+    kind = _kind(desc, values)
+    out = [w for on, w in ((kind == "edit", "an edit"), (kind == "slider", "a slider"),
+                           (values.get("FAMILY_DOP"), "DOP"), (values.get("FAMILY_MULTI_PERSON"), "Fizgig LoRA Isolation"),
+                           (str(values.get("STAGE_MP") or "Off") != "Off", "Start at a smaller size"),
+                           (values.get("MASKED_TRAINING") and str(values.get("MASK_PRIOR") or "Off") != "Off",
+                            "keeping the model's own picture outside the mask")) if on]
+    return out + [o.label.strip() for o in desc.options if getattr(o, "batch_off", False) and _on(values, o)]
+
+
+def _on(values, o):
+    """A family check's value in the Training-tab values, its default when unset."""
+    v = values.get(o.key, (values.get("FAMILY_OPTIONS") or {}).get(o.key, getattr(o, "default", "")))
+    return v not in (None, "", False, "0", 0)
+
+
 SUBFOLDERS_LABEL = "Include sub-folders"
 SUBFOLDERS_HINT = ("Off: only the pictures directly in the training folder are used.\nOn: the pictures in its "
                    "sub-folders are trained on too, at any depth, each sub-folder as its own set with its own captions "
@@ -1111,7 +1171,7 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
     poll = False                                  # something is under way (a download): the page asks again soon
     ck_turbo = False                              # previews on a preview checkpoint that takes the Turbo LoRA
     hidden |= ({"TURBO_MISSING"} if speed_file else
-               {"FAMILY_TURBO_STRENGTH", "FAMILY_TURBO_STEPS", "FAMILY_TURBO_PACE"})
+               {"FAMILY_TURBO_STRENGTH", "FAMILY_TURBO_STEPS", "FAMILY_TURBO_PACE", "FAMILY_TURBO_ON"})
     if speed_file and desc.samples_turbo_pace:     # H3 with its Turbo on renders at the Turbo row's steps
         try:
             pace = float(str(values.get("FAMILY_TURBO_PACE", "") or round(100 * desc.preview_speed_defaults()[1])))
@@ -1438,12 +1498,28 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
             ck_turbo = True                       # Kromoss as the preview model: the Turbo LoRA joins it
         elif speed_file and desc.preview_speed() is not None and not desc.samples_turbo_pace:
             # previews on this checkpoint never take the speed LoRA (it joins previews on the training model)
-            disabled.add("FAMILY_TURBO_STRENGTH")
+            disabled |= {"FAMILY_TURBO_STRENGTH", "FAMILY_TURBO_ON"}
             notes["FAMILY_TURBO_STRENGTH"] = (
                 f"Greyed out: the {desc.preview_speed().name} doesn't work with this preview model. Set Kromoss as the "
                 "preview model in Preferences to use it." if desc.checkpoint_speed_except else
                 f"The {desc.preview_speed().name} applies to previews on the training model: untick "
                 f"\"{desc.preview_checkpoint_tick.split(' (')[0]}\" to use it.")
+    if turbo_ticked_off(desc, values):
+        disabled.add("FAMILY_TURBO_STRENGTH")
+    cap = int(getattr(desc, "preview_small_card_option", 0) or 0)
+    if cap:                                       # Faster, smaller previews: the size they will really render at
+        try:
+            w = int(str(values.get("SAMPLE_WIDTH") or desc.preview_width))
+            h = int(str(values.get("SAMPLE_HEIGHT") or desc.preview_height))
+        except ValueError:
+            w = h = 0
+        if w > 0 and h > 0:
+            cw, ch = small_canvas(w, h, cap)
+            on = bool(values.get("FAMILY_PREVIEW_SMALL"))
+            notes["FAMILY_PREVIEW_SMALL"] = (
+                f"Your previews are already {cap} px or smaller, so this changes nothing." if (cw, ch) == (w, h) else
+                f"Your {w} × {h} previews will render at {cw} × {ch}." if on else
+                f"Ticked, your {w} × {h} previews would render at {cw} × {ch}.")
     if desc.preview_look() is not None:
         # the preview look LoRA (MOSS-Image's SFT look, Z-Image Base's Turbo look): on previews of the training model
         # only; its file comes down the first time it's ticked (look_fetch: that download's state)
@@ -1466,38 +1542,25 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
                                                 "or download it from Preferences.")
             elif state == "done":
                 notes["FAMILY_PREVIEW_LOOK"] = "Downloaded: previews use it from the next one."
-    # Batch Size (a family with supports_batch): above 1, what assumes one image a step greys out, with why
-    if getattr(desc, "supports_batch", False):
-        try:
-            asked = int(str(values.get("DATASET_BATCH_SIZE", "1")).strip() or 1)
-        except ValueError:
-            asked = 1
-        bs = run_batch_size(desc, values)
-        if asked > 1 and bs == 1:
-            notes["DATASET_BATCH_SIZE"] = ("This kind of training runs at Batch Size 1 (" +
-                                           ", ".join(launch.BATCH_ONE_KINDS) + " always do).")
-        elif bs > 1:
-            # a switch that still needs Batch Size 1 (none of the per-image loss switches now: each image of a batch
-            # keeps its own loss) shows off and greyed, with no note beside it: your tick stays saved for Batch
-            # Size 1 (the run sends it off, batch_off); the why on hover, as a greyed pill's
-            off = BATCH_ONE_SWITCHES
-            disabled |= set(off)
+    if desc.batch_training:
+        one_a_step = kind in ("edit", "slider") or values.get("FAMILY_DOP") or \
+            values.get("FAMILY_MULTI_PERSON")
+        if one_a_step:
+            disabled.add("BATCH_SIZE")
+            notes["BATCH_SIZE"] = ("Greyed out: sliders, edits, DOP and Fizgig LoRA Isolation train one picture a "
+                                   "step.")
+        elif str(values.get("BATCH_SIZE") or "").strip().lower() == "auto":
+            notes["BATCH_SIZE"] = launch.batch_auto_note(desc, values.get("DATASET_MEGAPIXELS") or 1.0)
+        elif str(values.get("BATCH_SIZE") or "1") not in ("", "1"):
+            off = {"STAGE_MP", "STAGE_UNTIL", "MASK_PRIOR"}
+            off |= {o.key for o in desc.options if getattr(o, "batch_off", False)}
+            disabled |= off
             for k in off:
-                shown[k] = False
-                tips[k] = f"Batch Size 1 only: this works one image at a time, and Batch Size {bs} trains {bs}."
-            if values.get("FAMILY_DOP"):
-                notes["FAMILY_PEOPLE_MODE"] = f"DOP is off at Batch Size {bs}: set Batch Size 1 to use it."
-            notes["DATASET_BATCH_SIZE"] = (f"Batch Size {bs}: switched off - " + "; ".join(launch.BATCH_OFF) + "." +
-                                           (" Above 3 will likely need block swap on a 12 GB card." if bs > 3 else ""))
+                notes.setdefault(k, BATCH_OFF)
     return {"hidden": sorted(hidden), "disabled": sorted(disabled), "notes": notes, "kind": kind,
             "media": sorted(media), "turbo_file": bool(speed_file), "force": force, "actions": actions,
             "shown": shown, "checkpoint_file": bool(checkpoint_file), "labels": labels, "checkpoint_turbo": ck_turbo,
             "disabled_choices": disabled_choices, "poll": poll, "tips": tips}
-
-
-# switches the trainer ignores above Batch Size 1. Empty: the loss watch, per-image LR, the look warm-up and
-# auto-recaption work at any Batch Size (each image of a batch keeps its own loss, families/train.py)
-BATCH_ONE_SWITCHES = ()
 
 
 def adaptive_lr_notes(values):
@@ -1512,23 +1575,6 @@ def adaptive_lr_notes(values):
     if lo is not None and hi is not None and lo >= hi:
         out["ADAPTIVE_LR_MIN"] = "Min LR must be lower than Max LR."
     return out
-
-
-def run_batch_size(desc, values):
-    """The Batch Size a run of these values trains at (launch.batch_size on the form's box)."""
-    try:
-        asked = int(str(values.get("DATASET_BATCH_SIZE", "1")).strip() or 1)
-    except ValueError:
-        asked = 1
-    return launch.batch_size(desc, {**values, "batch_size": asked})
-
-
-def batch_off(desc, values):
-    """values as a run takes them: above Batch Size 1 the BATCH_ONE_SWITCHES are off (the form keeps your ticks for
-    Batch Size 1; the run, its record and its card see them off). None are left today."""
-    if getattr(desc, "supports_batch", False) and run_batch_size(desc, values) > 1:
-        return {**values, **{k: False for k in BATCH_ONE_SWITCHES if k in values}}
-    return values
 
 
 def _extras_found(desc, values, image_folder):
@@ -1730,7 +1776,7 @@ def _option_values(desc, values):
 def inputs(desc, values, *, models, python, repo_dir, image_folder, cache_root, samples_dir, inference_int8=False,
            captioner="", caption_overrides=None, vram_reclaim=None, recaption_with=None, caption_concept=""):
     """The launch plan's inputs from the form's values, as the desktop's _family_launch_inputs builds them."""
-    v = batch_off(desc, {**DEFAULTS, **({"SAMPLE_PROMPT": desc.sample_prompt} if desc.sample_prompt else {}), **values})      # above Batch Size 1 any batch-1-only switch goes as off
+    v = {**DEFAULTS, **({"SAMPLE_PROMPT": desc.sample_prompt} if desc.sample_prompt else {}), **values}
     kind = _kind(desc, v)
     b = lambda k: bool(v.get(k))
     s = lambda k: str(v.get(k, "") if v.get(k) is not None else "").strip()
@@ -1758,13 +1804,14 @@ def inputs(desc, values, *, models, python, repo_dir, image_folder, cache_root, 
             "FAMILY_TRAIN_BLOCKS": [k for k, on in (v.get("TRAINING_BLOCKS") or {}).items() if on]}
            if desc.train_areas else {}),
         FAMILY_TRAINING_ADAPTER=b("FAMILY_TRAINING_ADAPTER"),
-        FAMILY_TURBO_STRENGTH=s("FAMILY_TURBO_STRENGTH"), FAMILY_TURBO_STEPS=s("FAMILY_TURBO_STEPS"),
-        FAMILY_TURBO_PACE=s("FAMILY_TURBO_PACE"), FAMILY_PREVIEW_LOOK=b("FAMILY_PREVIEW_LOOK"),
+        FAMILY_TURBO_STRENGTH="0" if turbo_ticked_off(desc, v) else s("FAMILY_TURBO_STRENGTH"),
+        FAMILY_TURBO_STEPS=s("FAMILY_TURBO_STEPS"),
+        FAMILY_TURBO_PACE=s("FAMILY_TURBO_PACE"), FAMILY_PREVIEW_LOOK=b("FAMILY_PREVIEW_LOOK"), FAMILY_PREVIEW_SMALL=b("FAMILY_PREVIEW_SMALL"),
         CAPTION_DROPOUT=caption_dropout_share(s("CAPTION_DROPOUT")) if desc.caption_dropout else 0.0,
         MASKED_TRAINING=b("MASKED_TRAINING") and desc.masked_training, MASK_FLOOR=s("MASK_FLOOR"),
         MASK_PRIOR=s("MASK_PRIOR"),
         python=python, repo_dir=repo_dir, models=models, image_folder=image_folder,
-        caption_ext=s("DATASET_CAPTION_EXT") or ".txt", batch_size=(s("DATASET_BATCH_SIZE") or "1") if getattr(desc, "supports_batch", False) else 1,
+        caption_ext=s("DATASET_CAPTION_EXT") or ".txt", batch_size=1,
         megapixels=s("DATASET_MEGAPIXELS"),
         STAGE_MP=s("STAGE_MP") if desc.resolution_stages else "", STAGE_UNTIL=s("STAGE_UNTIL"),
         clip_megapixels=s("CLIP_MEGAPIXELS") if "clip" in desc.media else "",

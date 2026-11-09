@@ -19,7 +19,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from fizgig.families.driver import FamilyDriver, prior_base, weighted_loss, with_prior
+from fizgig.families.driver import FamilyDriver, picture_losses, prior_base, weighted_loss, with_prior
 from fizgig.training import timestep_spread as TS
 
 DTYPE = torch.bfloat16
@@ -145,28 +145,12 @@ class AnimaDriver(FamilyDriver):
     # ---- the model call -------------------------------------------------------------------------
     @staticmethod
     def _context(dit, cond, device):
-        if "qwen__valid" in cond or "t5_ids__valid" in cond:       # Batch Size > 1 with captions of different lengths
-            return AnimaDriver._batch_context(dit, cond, device)
         qwen = _batched("qwen", cond["qwen"]).to(device, DTYPE)
         ids = _batched("t5_ids", cond["t5_ids"]).to(device).long()
         ctx = dit.llm_adapter(qwen, ids)
         if ctx.shape[1] < CONTEXT_LEN:
             ctx = F.pad(ctx, (0, 0, 0, CONTEXT_LEN - ctx.shape[1]))
         return ctx
-
-    @staticmethod
-    def _batch_context(dit, cond, device):
-        """A batch whose captions the dataset zero-padded to the longest (`<key>__valid` = the real rows): each
-        caption's own rows through the LLM adapter, then each context zero-padded to 512 as batch 1 does - the
-        adapter's attention takes no mask, so its padding must never reach it."""
-        qwen, ids = cond["qwen"], cond["t5_ids"]
-        qv = cond.get("qwen__valid", torch.ones(qwen.shape[:2], dtype=torch.bool))
-        tv = cond.get("t5_ids__valid", torch.ones(ids.shape[:2], dtype=torch.bool))
-        out = []
-        for i in range(qwen.shape[0]):
-            one = {"qwen": qwen[i][qv[i].to(qwen.device)], "t5_ids": ids[i][tv[i].to(ids.device)]}
-            out.append(AnimaDriver._context(dit, one, device))
-        return torch.cat(out)
 
     def _velocity(self, dit, x, t, cond):
         """x (B, 16, 1, h, w), t (B,) in [0, 1] -> the predicted velocity (noise - x0), (B, 16, 1, h, w)."""
@@ -183,22 +167,9 @@ class AnimaDriver(FamilyDriver):
         if x0.dim() == 4:
             x0 = x0.unsqueeze(2)                                                    # (B, 16, 1, h, w)
         n = x0.shape[0]
-        if n > 1 and diff_ref is not None:
-            raise RuntimeError("Anima: image-pair sliders train at Batch Size 1")
-        rows = cond["qwen"].shape[0] if cond["qwen"].dim() == 3 else 1
-        if rows not in (1, n):
-            raise RuntimeError(f"Anima: {n} images but {rows} captions in the batch")
-        if n == 1:
-            t = TS.logit_normal(torch.randn(n, generator=generator), self.timestep_spread, min_t, max_t)
-            t = (min_t + (max_t - min_t) * t).to(x0.device)
-            noise = torch.randn(x0.shape, generator=generator).to(x0.device)
-        else:       # Batch Size > 1: per image, in the order B batch-1 steps draw them (t, then noise)
-            ts, ns = [], []
-            for i in range(n):
-                ts.append(TS.logit_normal(torch.randn(1, generator=generator), self.timestep_spread, min_t, max_t))
-                ns.append(torch.randn(x0[i:i + 1].shape, generator=generator))
-            t = (min_t + (max_t - min_t) * torch.cat(ts)).to(x0.device)
-            noise = torch.cat(ns).to(x0.device)
+        t = TS.logit_normal(torch.randn(n, generator=generator), self.timestep_spread, min_t, max_t)
+        t = (min_t + (max_t - min_t) * t).to(x0.device)
+        noise = torch.randn(x0.shape, generator=generator).to(x0.device)
         tb = t.view(-1, 1, 1, 1, 1)
         xt = (1 - tb) * x0 + tb * noise
         base = prior_base(prior, loss_mask, lambda: self._velocity(dit, xt, t, cond))
@@ -215,22 +186,39 @@ class AnimaDriver(FamilyDriver):
             w = w / w.mean(dim=1, keepdim=True).clamp_min(1e-8)
             w = torch.where(dm > 1e-6, w, torch.ones_like(w))      # identical pair: uniform, never all-zero
         mw = None if loss_mask is None else loss_mask.float().to(x0.device).flatten(1)        # (B, h*w), one frame
-        if n > 1:   # Batch Size > 1 (no slider weights here): each image's own loss, as its batch-1 step gives it
-            se = (pred - (noise - x0)).pow(2).mean(dim=1).flatten(1)
-            if mw is None:
-                per = se.mean(1)
-            else:
-                sb = None if base is None else (pred - base).pow(2).mean(dim=1).flatten(1)
-                per = torch.stack([with_prior(weighted_loss(se[i:i + 1], mw[i:i + 1]), prior,
-                                              None if sb is None else base[i:i + 1],
-                                              None if sb is None else sb[i:i + 1], mw[i:i + 1]) for i in range(n)])
-            return per.mean(), {"t": float(t.mean()), "ts": [float(x) for x in t], "per": per}
         if w is None and mw is None:
             return F.mse_loss(pred, noise - x0), {"t": float(t.mean())}
         loss = weighted_loss((pred - (noise - x0)).pow(2).mean(dim=1).flatten(1), w, mw)
         if base is not None:
             loss = with_prior(loss, prior, base, (pred - base).pow(2).mean(dim=1).flatten(1), mw, w)
         return loss, {"t": float(t.mean())}
+
+    def stack_conds(self, conds):
+        """Batch Size above 1: every picture's own caption, kept apart - each goes through the LLM adapter alone and
+        comes out the fixed 512 tokens the DiT takes (_context), so a batch never pads a caption."""
+        return {"items": conds}
+
+    def training_loss_batch(self, dit, latents, cond, generator, *, min_t=0.0, max_t=1.0, loss_mask=None):
+        """Batch Size above 1: each picture's t and noise drawn as training_loss draws them, picture by picture, its
+        context made alone, one DiT call for them all; the MSE (and a mask's per-picture weights) is their mean."""
+        x0 = latents.float()
+        if x0.dim() == 4:
+            x0 = x0.unsqueeze(2)                                                    # (B, 16, 1, h, w)
+        ts, noises = [], []
+        for i in range(x0.shape[0]):
+            t = TS.logit_normal(torch.randn(1, generator=generator), self.timestep_spread, min_t, max_t)
+            ts.append(min_t + (max_t - min_t) * t)          # training_loss's draw, Timestep focus preset included
+            noises.append(torch.randn(x0[i:i + 1].shape, generator=generator))
+        t, noise = torch.cat(ts).to(x0.device), torch.cat(noises).to(x0.device)
+        tb = t.view(-1, 1, 1, 1, 1)
+        xt = (1 - tb) * x0 + tb * noise
+        ctx = torch.cat([self._context(dit, c, x0.device) for c in cond["items"]])
+        mask = torch.zeros(xt.shape[0], 1, xt.shape[-2], xt.shape[-1], device=xt.device, dtype=DTYPE)
+        pred = dit.forward_mini_train_dit(xt.to(DTYPE), t.to(xt.device, DTYPE)[:, None], ctx,
+                                          padding_mask=mask).float()
+        mw = None if loss_mask is None else loss_mask.float().to(x0.device).flatten(1)
+        per = picture_losses((pred - (noise - x0)).pow(2).mean(dim=1).flatten(1), mw)
+        return per.mean(), {"t": float(t.mean()), "per": per, "ts": [float(v) for v in t]}
 
     def noise_latents(self, latents, generator, *, min_t=0.0, max_t=1.0):
         x0 = latents.float()

@@ -15,7 +15,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from fizgig.families.driver import FamilyDriver, prior_base, weighted_loss, with_prior
+from fizgig.families.driver import FamilyDriver, picture_losses, prior_base, weighted_loss, with_prior
 from fizgig.training import timestep_spread as TS
 from fizgig.zimage import pipeline as P
 
@@ -187,6 +187,28 @@ class ZImageDriver(FamilyDriver):
         if base is not None:
             loss = with_prior(loss, prior, base, (pred.float() - base).pow(2).mean(dim=1).flatten(1), mw, w)
         return loss, {"t": float(sig.mean())}
+
+    def stack_conds(self, conds):
+        """Batch Size above 1: every picture's own caption, kept apart - the DiT takes a list of captions of any
+        lengths (_velocity), so a batch never pads one."""
+        return {"items": conds}
+
+    def training_loss_batch(self, dit, latents, cond, generator, *, min_t=0.0, max_t=1.0, loss_mask=None):
+        """Batch Size above 1: each picture's sigma and noise drawn as training_loss draws them, picture by picture,
+        one DiT call over the list of captions; the MSE (and a mask's per-picture weights) is the pictures' mean."""
+        x0 = latents.float()
+        sigs, noises = [], []
+        for i in range(x0.shape[0]):
+            sigs.append(self._sample_sigma(1, generator, min_t, max_t))
+            noises.append(torch.randn(x0[i:i + 1].shape, generator=generator))
+        sig, noise = torch.cat(sigs).to(x0.device), torch.cat(noises).to(x0.device)
+        sb = sig.view(-1, 1, 1, 1)
+        xt = (1 - sb) * x0 + sb * noise
+        pred = self._velocity(dit, xt, sig, [_cap(c, 0) for c in cond["items"]])
+        target = noise - x0
+        mw = None if loss_mask is None else loss_mask.float().to(x0.device).flatten(1)
+        per = picture_losses((pred - target).pow(2).mean(dim=1).flatten(1), mw)
+        return per.mean(), {"t": float(sig.mean()), "per": per, "ts": [float(v) for v in sig.reshape(-1)]}
 
     def noise_latents(self, latents, generator, *, min_t=0.0, max_t=1.0):
         x0 = latents.float()

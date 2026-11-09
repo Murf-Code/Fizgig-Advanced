@@ -18,7 +18,7 @@ import logging
 
 import torch
 
-from fizgig.families.driver import Block, BlockGroup, FamilyDriver
+from fizgig.families.driver import Block, BlockGroup, FamilyDriver, picture_losses, prior_base, weighted_loss, with_prior
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,13 @@ class MiniMaxDriver(FamilyDriver):
         from fizgig.minimax import common as T
         eff, clip_t = T._max_effective_mp(group)
         if clip_t > 1:
+            # the clip figures were measured with TREAD routing half the video tokens past the middle blocks and the
+            # Default clip window: without either a clip step keeps about twice as much for its backward (a 9 MP
+            # clip job with TREAD off went without checkpointing and ran out at 88 GB - @spaghettified26, PR #282),
+            # so a clip run set up any other way has no figure and keeps checkpointing on
+            o = getattr(self, "options", {})
+            if o.get("tread") != "0.5@2-47" or o.get("clip_blocks") != "20-49":
+                return "clips:unmeasured", eff
             return "clips", eff
         return super().nogc_load(group)
 
@@ -81,10 +88,6 @@ class MiniMaxDriver(FamilyDriver):
         plan up front: a streamed plan leaves ~4 GB, so clips start at 22 frames; a 16 GB-class card caps them at
         768x640 / 22 frames."""
         from fizgig.minimax import common as T
-        from fizgig.utils.device import plannable_free_vram
-        path = run["dit_path"]
-        free = plannable_free_vram()
-        pruned = T.is_pruned_checkpoint(path)
         mp = 0.25
         try:
             mp = max(k[-2] * k[-1] / 1e6 for ds in group.datasets for k in ds.batch_manager.bucket_resos)
@@ -96,6 +99,25 @@ class MiniMaxDriver(FamilyDriver):
         if clip_t > 1:
             logger.info(f"[vram] the heaviest item is a {clip_t}-latent-frame clip - planning against its effective "
                         f"{mp:.2f} MP (spatial size x frames).")
+        bsz = max(int(getattr(ds, "batch_size", 1) or 1) for ds in group.datasets)
+        stills = [k[-2] * k[-1] / 1e6 for ds in group.datasets for k in ds.batch_manager.bucket_resos
+                  if k[0] not in ("clip", "audio")]
+        mode, n, why = self._plan(precision, blocks_to_swap, run, mp, max(stills or [0.0]), bsz)
+        self._plan_previews(n)
+        return mode, n, why
+
+    def plan_pictures(self, precision, blocks_to_swap, *, megapixels, pictures, run):
+        """plan_run's choice for pictures of `megapixels`, `pictures` a step, with no dataset (web/batch_plan: the
+        Batch size note, and the batch a moved run takes on a pod)."""
+        return self._plan(precision, blocks_to_swap, run, megapixels, megapixels, pictures, quiet=True)[:2]
+
+    def _plan(self, precision, blocks_to_swap, run, mp, still_mp, bsz, quiet=False):
+        """(precision, blocks_to_swap, why) for the heaviest item at mp and `bsz` pictures a step at still_mp."""
+        from fizgig.minimax import common as T
+        from fizgig.utils.device import plannable_free_vram
+        path = run["dit_path"]
+        free = plannable_free_vram()
+        pruned = T.is_pruned_checkpoint(path)
         pats = [x for x in T.DEFAULT_INCLUDE_PATTERNS
                 if "token_refiner" not in x or self.options.get("train_token_refiner") == "1"]
         params = T.adapter_param_count(path, pats,
@@ -106,6 +128,12 @@ class MiniMaxDriver(FamilyDriver):
                                                  training_adapter_path=run.get("training_adapter"),
                                                  context_lora_path=run.get("context_lora_path"),
                                                  ema_decay=run.get("ema_decay") or 0.0)
+        if bsz > 1:                   # Batch size: each picture past the first's measured cost (planned on any clip too)
+            from fizgig.families import quant
+            more = quant.batch_extra(self.description, still_mp, bsz)
+            if not quiet:
+                logger.info(f"[vram] {bsz} pictures a step: +{more:.1f} GB planned for the pictures past the first")
+            adapter += more
         if precision == "auto" and blocks_to_swap >= 0:
             # a hand-set swap skips the planner: the precision is the file's own, as in the old trainer
             mode, n = ("int8" if pruned else "nf4"), blocks_to_swap
@@ -121,6 +149,8 @@ class MiniMaxDriver(FamilyDriver):
             n, _ckpt = T.plan_vram(free, mp=mp, resident_gb=resident,
                                    transient_gb=T._INT8_TRANSIENT_GB if mode == "int8" else 0.0, adapter_gb=adapter)
             why = f"base precision pinned to {mode} by the user"
+        if quiet:
+            return mode, n, why
         extra = (f" +{frozen:.2f} GB frozen LoRAs" if frozen else "") + (f" +{ema:.2f} GB EMA shadow" if ema else "")
         logger.info(f"[vram] auto plan: free {free:.1f} GB, largest item {mp:.2f} MP, adapter ~{adapter:.1f} GB "
                     f"({params / 1e6:.0f} M params){extra} -> {mode}, blocks_to_swap={n}")
@@ -130,7 +160,6 @@ class MiniMaxDriver(FamilyDriver):
                            "quantization error that will NOT exist at inference. To force the accurate base, set Base "
                            "Precision to int8 - expect block swap and a slower run - or close other GPU apps and "
                            "re-launch.")
-        self._plan_previews(n)
         return mode, n, why
 
     def _plan_previews(self, n_swap):
@@ -411,13 +440,31 @@ class MiniMaxDriver(FamilyDriver):
         shift = self.options.get("shift")
         return float(shift) if shift not in (None, "", "sigmoid", "resolution") else (shift or None)
 
+    def _mask_step_note(self, loss_mask, prior):
+        """The run's first masked step says so once. families/train.py's [masks] lines count the pictures that
+        carry a mask; this is the driver-side proof it is weighting the loss with one."""
+        if loss_mask is None or getattr(self, "_mask_logged", False):
+            return
+        self._mask_logged = True
+        logger.info("[masks] H3 weighting this step per cell: mask on %s, x%.2f..x%.2f, prior %s",
+                    tuple(loss_mask.shape[-2:]), float(loss_mask.min()), float(loss_mask.max()),
+                    f"x{float(prior.weight):g}" if prior is not None else "off")
+
     # ---- training: the old compute_loss ------------------------------------------------------------
     def training_loss(self, dit, latents, cond, generator, *, min_t=0.0, max_t=1.0, refs=None, diff_ref=None,
-                      diff_weight=0.0):
+                      diff_weight=0.0, loss_mask=None, prior=None):
         from fizgig.minimax.common import compute_distill_loss, compute_loss, sample_sigmas
+        if loss_mask is not None and prior is not None and float(loss_mask.min()) >= 1.0:
+            # An all-white mask leaves nothing outside it: a clip step's (the dataset makes those all-white) and a
+            # fully-painted picture's both preserve nothing, so skip the extra LoRA-off forward that would cost.
+            prior = None
         if diff_ref is not None and diff_weight > 0.0:
-            return self._slider_loss(dit, latents, cond, generator, min_t, max_t, diff_ref, diff_weight)
+            return self._slider_loss(dit, latents, cond, generator, min_t, max_t, diff_ref, diff_weight,
+                                     loss_mask=loss_mask, prior=prior)
         teacher = self._teacher_phase()
+        # A distill step trains on the model's own picture, not on the photograph, so masked training does not apply
+        # to it (compute_distill_loss takes no loss_mask): a run that distills also masks takes the mask on its
+        # ordinary steps only.
         if (getattr(self, "_distill", False) and (teacher or not self._p1) and "ref_hidden_states" in cond
                 and not cond.get("audio_only")):
             # the old distillation step: teacher = base + frozen adapters WITH the reference, trainable LoRA off;
@@ -443,12 +490,14 @@ class MiniMaxDriver(FamilyDriver):
         audio = cond.get("audio_latent")
         if audio is not None and audio.dim() == 3:
             audio = audio[0]                                                   # cached (2T, 32), batched
+        self._mask_step_note(loss_mask, prior)
         # audio_weight (CLI only, default 1.0 = parity): the weight on the sound term for clips that carry it - audio is
         # ~4% of the packed sequence, so parity may teach a voice too quietly. Stills and muted clips have no sound term.
         loss, s = compute_loss(dit, lat.to(DTYPE), cond["hidden_states"].to(DTYPE), sigma=sigma.to(lat.device),
                                noise=noise, audio_latent=audio,
                                audio_weight=float(self.options.get("audio_weight") or 1.0),
-                               video_weight=0.0 if cond.get("audio_only") else 1.0)
+                               video_weight=0.0 if cond.get("audio_only") else 1.0,
+                               loss_mask=loss_mask, prior=prior)
         info = {"t": float(s)}
         hn = float(self.options.get("highnoise_lr") or 1.0)
         if self.options.get("highnoise_lr_pct") not in (None, ""):
@@ -459,6 +508,60 @@ class MiniMaxDriver(FamilyDriver):
             from fizgig.minimax.common import MINIMAX_LOWNOISE_SIGMA
             info["lr_mult"] = hn if float(s) >= MINIMAX_LOWNOISE_SIGMA else 1.0
         return loss, info
+
+    def stack_conds(self, conds):
+        """Batch Size above 1: the pictures' own conditioning, for forward_packed to pack one after another (captions of
+        any length, nothing padded)."""
+        return {"items": conds}
+
+    def training_loss_batch(self, dit, latents, cond, generator, *, min_t=0.0, max_t=1.0, loss_mask=None):
+        """Batch Size above 1 - pictures (a clip or a voice trains on its own step, the dataset's rule): each picture's
+        sigma and noise drawn as training_loss draws them, picture by picture, then one forward_packed over them. The
+        loss is the pictures' mean, each at its own noise band's LR share (highnoise_lr) as its own step would be."""
+        import torch.nn.functional as F
+        from fizgig.minimax.common import MINIMAX_LOWNOISE_SIGMA, sample_sigmas
+        if getattr(self, "_distill", False):
+            raise RuntimeError("Reference distillation trains one picture a step: set Batch size to 1")
+        n = latents.shape[0]
+        _pt, ph, pw = getattr(dit, "patch_size", (1, 2, 2))
+        shift = self._shift()
+        hn = float(self.options.get("highnoise_lr") or 1.0)
+        if self.options.get("highnoise_lr_pct") not in (None, ""):
+            hn = max(0.0, min(1.0, float(str(self.options["highnoise_lr_pct"]).rstrip("%")) / 100.0))
+        self._mask_step_note(loss_mask, None)
+        items, parts = [], []
+        for i, c in enumerate(cond["items"]):
+            if c.get("audio_only") or c.get("audio_latent") is not None:
+                raise RuntimeError("H3 batches pictures: a clip or a voice trains on its own step")
+            lat = latents[i:i + 1]
+            lat = lat if lat.dim() == 5 else lat.unsqueeze(2)                    # (1, 24, 1, H, W)
+            sigma = sample_sigmas(1, "cpu", shift=shift, generator=generator,
+                                  image_tokens=(lat.shape[-2] // ph) * (lat.shape[-1] // pw))
+            if min_t > 0.0 or max_t < 1.0:
+                sigma = min_t + (max_t - min_t) * sigma
+            noise = torch.randn(lat.shape, generator=generator, dtype=torch.float32)
+            # compute_loss's step: the latent cropped to the patch grid, noised at sigma
+            hc, wc = (lat.shape[-2] // ph) * ph, (lat.shape[-1] // pw) * pw
+            x0 = lat.to(DTYPE).float()[..., :hc, :wc].contiguous()
+            noise = noise.to(device=x0.device)[..., :hc, :wc]
+            sigma = sigma.to(x0.device)
+            s = sigma.reshape(1, 1, 1, 1, 1).to(torch.float32)
+            items.append((((1.0 - s) * x0 + s * noise).to(DTYPE), (1.0 - sigma).to(x0.device),
+                          c["hidden_states"].to(DTYPE)))
+            mw = None if loss_mask is None else loss_mask[i:i + 1].float().to(x0.device)[..., :hc, :wc]
+            parts.append((x0, noise, mw, float(sigma.reshape(-1)[0])))
+        preds = dit.forward_packed(items)
+        per, raw = [], []
+        for pred, (x0, noise, mw, s) in zip(preds, parts):
+            target = (x0 - noise).to(pred.dtype).float()
+            one = F.mse_loss(pred.float(), target) if mw is None else \
+                weighted_loss((pred.float() - target).pow(2).mean(dim=1), mw)
+            raw.append(float(one.detach()))
+            per.append(one * (hn if hn != 1.0 and s >= MINIMAX_LOWNOISE_SIGMA else 1.0))
+        per = torch.stack(per)
+        # per: what each picture adds to the step (its noise band's LR share in it); per_raw: its loss as recorded
+        return per.sum() / n, {"t": sum(p[3] for p in parts) / n, "per": per, "per_raw": raw,
+                               "ts": [p[3] for p in parts]}
 
     # ---- sliders (families/train.py): image / clip pairs through training_loss's diff_ref, prompt pairs through
     #      noise_latents / predict. compute_loss's still / clip path, video only (a pole's sound is not the dial) ----
@@ -477,10 +580,12 @@ class MiniMaxDriver(FamilyDriver):
         noise = torch.randn(x0.shape, generator=generator, dtype=torch.float32).to(x0.device)
         return x0, noise, sigma
 
-    def _slider_loss(self, dit, latents, cond, generator, min_t, max_t, diff_ref, diff_weight):
+    def _slider_loss(self, dit, latents, cond, generator, min_t, max_t, diff_ref, diff_weight, loss_mask=None,
+                     prior=None):
         """An image- or clip-pair slider step: the plain flow loss with each patch token weighted by how much the two
         poles differ there (the Krea 2 / Qwen formula), over every frame of a clip pair; poles of different lengths
-        weigh every token the same."""
+        weigh every token the same. A masked-training mask weights the step as it does on a plain step (every family
+        that takes masks takes them here too), and masked prior preservation rides along with it."""
         import torch.nn.functional as F
         self._patch = getattr(dit, "patch_size", (1, 2, 2))
         _pt, ph, pw = self._patch
@@ -489,12 +594,20 @@ class MiniMaxDriver(FamilyDriver):
         noised = (1.0 - s) * x0 + s * noise
         txt = cond["hidden_states"]
         txt = (txt[None] if txt.dim() == 2 else txt).to(x0.device, DTYPE)
-        pred = dit(noised.to(DTYPE), (1.0 - sigma).to(x0.device), txt).float()
+        tt = (1.0 - sigma).to(x0.device)
+        # the mask is on the uncropped latent grid (_noised cropped x0 to the patch multiple): crop it the same way
+        mw = None if loss_mask is None else loss_mask.float().to(x0.device)[..., :x0.shape[-2], :x0.shape[-1]]
+        self._mask_step_note(loss_mask, prior)
+        base = prior_base(prior, loss_mask, lambda: dit(noised.to(DTYPE), tt, txt))
+        pred = dit(noised.to(DTYPE), tt, txt).float()
         ref = diff_ref if diff_ref.dim() == 5 else diff_ref.unsqueeze(2)
         ref = ref[..., :x0.shape[-2], :x0.shape[-1]].to(x0.device).float()
         if ref.shape != x0.shape:            # poles of different lengths (an edit that drops frames): even weights
             se = (pred - (x0 - noise)).pow(2)
-            return se.mean(), {"t": s}
+            loss = se.mean() if mw is None else weighted_loss(se.mean(dim=1), mw)
+            if base is not None:
+                loss = with_prior(loss, prior, base, (pred - base).pow(2).mean(dim=1), mw)
+            return loss, {"t": s}
         d = (x0 - ref).abs().mean(dim=1)                                       # (1, T, H, W)
         b, t_, h, w = d.shape
         d = F.interpolate(F.avg_pool2d(d.reshape(b * t_, 1, h, w), (ph, pw)), scale_factor=(ph, pw),
@@ -506,7 +619,10 @@ class MiniMaxDriver(FamilyDriver):
         else:
             wt = torch.ones_like(d)                                            # identical pair: uniform
         se = (pred - (x0 - noise)).pow(2).mean(dim=1)
-        return (se * wt).mean(), {"t": s}
+        loss = weighted_loss(se, wt, mw)
+        if base is not None:
+            loss = with_prior(loss, prior, base, (pred - base).pow(2).mean(dim=1), mw, wt)
+        return loss, {"t": s}
 
     def noise_latents(self, latents, generator, *, min_t=0.0, max_t=1.0):
         x0, noise, sigma = self._noised(latents, generator, min_t, max_t)
@@ -653,12 +769,13 @@ class MiniMaxDriver(FamilyDriver):
         load_context_lora did - on for every training step; in previews the adapter's come off, the context's stay."""
         pairs = self._adaln_pairs(dit, path, strength)
         if not pairs:
-            return
+            return 0
         if not hasattr(self, "_frozen_adaln"):
             self._frozen_adaln = {}
         self._frozen_adaln[role] = pairs
         logger.info(f"[{role}] {len(pairs)} AdaLN rows injected at run time")
         self._patch_adaln(dit, ("adapter", "context"))
+        return len(pairs)
 
     def _patch_adaln(self, dit, roles, extra=()):
         """One patch for the union of the active frozen files' AdaLN rows (a patch replaces the module forward

@@ -337,15 +337,17 @@ def lycoris_scale_from_keys(mod_keys: Dict[str, torch.Tensor]) -> float:
         r1 = int(mod_keys["hada_w1_a"].shape[1])
         r2 = int(mod_keys["hada_w2_a"].shape[1])
         return alpha / max(1, min(r1, r2))
-    # LoKR: dim = min of the decomposition ranks that are actually in use;
-    # a full-matrix LoKR (no w1_a/w2_a factors) has dim 1 → scale = alpha.
+    # LoKR: dim = min of the decomposition ranks that are actually in use. A full-matrix LoKR (no w1_a/w2_a factors)
+    # has no rank to normalise, so its scale is 1 and the stored alpha is ignored, as LyCORIS (which writes the
+    # network dim there) and ComfyUI do (#304, @Nessa2026691). Fizgig's own LoKRs are full-matrix with alpha 1: the same.
     dims = []
     if mod_keys.get("lokr_w1_a") is not None:
         dims.append(int(mod_keys["lokr_w1_a"].shape[1]))
     if mod_keys.get("lokr_w2_a") is not None:
         dims.append(int(mod_keys["lokr_w2_a"].shape[1]))
-    dim = max(1, min(dims)) if dims else 1
-    return alpha / dim
+    if not dims:
+        return 1.0
+    return alpha / max(1, min(dims))
 
 
 def _lokr_forward_update(x: torch.Tensor, w1: torch.Tensor, w2: torch.Tensor,
@@ -354,13 +356,15 @@ def _lokr_forward_update(x: torch.Tensor, w1: torch.Tensor, w2: torch.Tensor,
        kron(A, B) @ vec(X) = vec(B @ X @ A.T)   (column-major vec)
 
     Shapes:  x (..., N=b·d)  →  out (..., M=a·c)
+
+    Run as two large GEMMs over all tokens at once, (T·b, d) @ w2ᵀ then (T·c, b) @ w1ᵀ, not one small (c, d) @ (d, b)
+    matmul per token: 4-6x faster forward + backward at Klein sizes on a 5090 (12288x4096 Linear, w1 8x8: 10.6 ->
+    2.7 ms), same result (#307: a LoKR Context LoRA made training 5x slower).
     """
     orig = x.shape[:-1]
-    # x viewed as column-major vec(X) with X of shape (d, b).
-    # Row-major x.reshape(b, d) gives X.T; transpose gives X of shape (d, b).
-    X = x.reshape(*orig, b, d).transpose(-1, -2)              # (..., d, b)
-    Y = w2 @ X @ w1.transpose(-1, -2)                          # (..., c, a)
-    return Y.transpose(-1, -2).reshape(*orig, a * c)           # (..., M=a·c)
+    y = x.reshape(-1, b, d) @ w2.transpose(0, 1)                         # (T, b, c)
+    z = y.transpose(1, 2).reshape(-1, b) @ w1.transpose(0, 1)            # (T·c, a)
+    return z.view(-1, c, a).transpose(1, 2).reshape(*orig, a * c)        # (..., M=a·c)
 
 
 def factorization(n: int, factor: int) -> tuple:
@@ -508,10 +512,11 @@ class LoKRInfModule(torch.nn.Module):
             if self.w2_decomposed and k2 is not None:
                 dim_candidates.append(k2)
             if not dim_candidates:
-                # No decomposition — use a safe dim of 1 so scale = alpha (LyCORIS default).
-                dim_candidates.append(1)
-            dim = max(1, min(dim_candidates))
-            self.scale = float(alpha) / dim
+                # No decomposition: full matrices have no rank to normalise, so scale = 1 and the stored alpha is
+                # ignored, as LyCORIS and ComfyUI do (#304)
+                self.scale = 1.0
+            else:
+                self.scale = float(alpha) / max(1, min(dim_candidates))
 
         self.multiplier = float(multiplier)
         self.enabled = True

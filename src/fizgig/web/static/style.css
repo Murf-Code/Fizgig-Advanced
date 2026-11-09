@@ -72,6 +72,10 @@
   --coffee-hover: #E5C700;
   --runpod: #7C3AED;
   --runpod-hover: #6D28D9;
+  --google-blue: #4285F4;
+  --google-red: #EA4335;
+  --google-yellow: #FBBC05;
+  --google-green: #34A853;
   --youtube: #CC0000;
   --youtube-hover: #990000;
   --win-close: #E81123;        /* The window's close button */
@@ -1961,6 +1965,7 @@ img.see-through { background: repeating-conic-gradient(var(--pic-text) 0 25%,
 .st-label small { font-weight: 400; color: var(--text-muted); margin-left: 4px; }
 .st-row input[type="range"] { width: 100%; }
 .st-val { font-variant-numeric: tabular-nums; font-size: 9pt; text-align: right; }
+.st-row input.st-val { width: 100%; min-width: 0; height: 24px; padding: 0 4px; }
 .st-btns { display: flex; gap: 2px; }
 .st-btns { gap: 3px; }
 .st-btns .btn-sm { padding: 0 7px; height: 26px; min-width: 28px; font-size: 10.5pt; font-weight: 700; justify-content: center; }
@@ -2455,6 +2460,11 @@ a.pick-pill-vast:hover { border-color: var(--success); }
 .loss-graph-svg .lg-stop-label { fill: var(--danger-text); }
 .loss-graph-svg .lg-stop-best { fill: none; stroke: var(--danger); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .lg-sw-best { width: 9px; height: 9px; border: 0; border-radius: 50%; background: var(--success); }
+.lg-sw-emean { border-color: var(--data-orange); border-top-width: 3px; }
+.lg-sw-ravg { border-color: var(--data-olive); border-top-width: 3px; }
+.lg-emean { fill: none; stroke: var(--data-orange); stroke-width: 2.5; }
+.lg-emean-dot { fill: var(--data-orange); stroke: var(--bg-deep); stroke-width: 1; }
+.lg-ravg { fill: none; stroke: var(--data-olive); stroke-width: 2.5; }
 .lg-sw-epoch { width: 0; height: 12px; border-top: 0; border-left: 1px solid var(--border); }
 .loss-graph-svg .lg-axis-title { font-weight: 600; }
 
@@ -2493,6 +2503,7 @@ a.pick-pill-vast:hover { border-color: var(--success); }
 .run-helper .pod-dot { display: inline-block; vertical-align: -1px; }
 
 /* the sample prompts: one numbered box each, every other one dark grey, across the card */
+.prompt-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .prompt-lines { display: flex; flex-direction: column; gap: 0; width: 100%; margin: 4px 0 6px;
   border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
 .prompt-line { display: flex; align-items: flex-start; background: var(--bg-inset); }
@@ -2858,3 +2869,19 @@ label[title]:has(.tip-mark) { cursor: help; }
 :is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) .meter-bar > span::after,
 :is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) .fetch-bar > div::after {
   animation-delay: var(--fx-d, 0s) !important; }
+
+/* Rent a pod: a new RunPod user counts for Fizgig only when they sign up with Google (RunPod's referral rules) */
+.google-pill { display: inline-flex; align-items: center; gap: 9px; margin: 0 0 12px; padding: 7px 16px 7px 10px;
+  border-radius: 999px; background: var(--bg-surface); color: var(--text-primary); font-size: 13px;
+  border: 1px solid color-mix(in srgb, var(--google-blue) 45%, transparent);
+  box-shadow: 0 1px 6px color-mix(in srgb, var(--google-blue) 18%, transparent); }
+a.google-pill { text-decoration: none; transition: transform .12s, box-shadow .12s; }
+a.google-pill:hover { color: var(--text-primary); transform: translateY(-1px);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--google-blue) 30%, transparent); }
+a.google-pill:visited { color: var(--text-primary); }
+.google-pill svg { width: 17px; height: 17px; flex: 0 0 17px; }
+.google-pill b { color: var(--google-blue); font-weight: 700; }
+.google-pill .g-r { fill: var(--google-red); }
+.google-pill .g-b { fill: var(--google-blue); }
+.google-pill .g-y { fill: var(--google-yellow); }
+.google-pill .g-g { fill: var(--google-green); }

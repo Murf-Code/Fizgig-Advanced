@@ -2,6 +2,7 @@
 Pony, RealVis and the rest load the same way). The checkpoint carries the UNet, VAE and both CLIP text encoders, so
 the VAE and text-encoder rows are optional overrides (ModelFile.inside). Driver: sdxl/driver.py.
 """
+from fizgig.training.optimizers import MUON_DEFAULT_ARGS
 from fizgig.families.description import FamilyDescription, FamilyOption, LoRAFormat, ModelFile, SamplingSettings
 from fizgig.training import timestep_spread
 
@@ -19,7 +20,7 @@ def _preset(rank, lr=1e-4, adaptive=None, epochs=20, mp="1.0", alpha=None, slide
         "LEARNING_RATE": lr, "FAMILY_SLIDER": slider, "FAMILY_FT": False,
         "MAX_TRAIN_EPOCHS": epochs, "SAVE_EVERY_N_EPOCHS": 1, "SEED": 42,
         "ADAPTIVE_LR": adaptive is not None, "ADAPTIVE_LR_MIN": lo, "ADAPTIVE_LR_MAX": hi,
-        "OPTIMIZER_TYPE": "adamw", "GRADIENT_ACCUMULATION": 1, "MAX_GRAD_NORM": 1.0,
+        "OPTIMIZER_TYPE": "muon", "OPTIMIZER_ARGS": MUON_DEFAULT_ARGS, "GRADIENT_ACCUMULATION": 1, "MAX_GRAD_NORM": 1.0,
         "DATASET_MEGAPIXELS": mp, "BLOCKS_SWAP": "Auto (detect from GPU)",
         "FAMILY_PRECISION": "Auto (fits your free VRAM)", "FAMILY_EMA": "0.98 (recommended)",
         # the loss watch with per-image LR and auto-recaption on, except for sliders (Peter, 5 Oct 2026)
@@ -33,8 +34,16 @@ SDXL = FamilyDescription(
     start_lr_bands=(("lora", 1.7e-5, 1.5e-4), ("finetune", 1e-6, 3e-5), ("slider", 1.7e-5, 1.5e-4)),
     masked_training=True,
     timestep_spread=timestep_spread.DDPM,     # Timestep focus presets (no Balanced: its even draw already is)
+    batch_training=True,              # Batch size (Other Options): training_loss_batch, exact per picture
+    batch_gb=(0.1, 0.55),           # GB each extra picture takes: fixed, per MP (batch 1 vs 3)
+    # Batch x checkpointing sweep, 6 Nov 2026 (RTX PRO 6000, 8 pictures, 2 epochs, uncompiled, previews off - so the
+    # no-checkpointing peaks below are the larger of that run's and train_memory's preview peak; uncompiled sits
+    # above a compiled run, the safe side). Desktop\Fizgig batch tests\bsgc\MORNING_REPORT.md
+    batch_auto=((0.25, 8), (1.0, 4)),          # 7.3x / 3.3x a picture over batch 1 with checkpointing off
+    batch_gb_nogc=((0.25, 2.3), (1.0, 5.5)),
+    nogc_uncompiled=True,
+    train_memory_nogc={"bf16": ((0.25, 10.3), (1.0, 11.8))},   # 1.9x / 2.3x faster than checkpointed
     arch_id="sdxl",
-    supports_batch=True,              # Batch Size > 1: per-image t / noise (families/batching.py)
     display_name="SDXL",
     gui_label="SDXL (any checkpoint)",
     lora_name_suffix="sdxl",
@@ -126,6 +135,12 @@ SDXL = FamilyDescription(
     # SDXL's per-epoch loss swings with its uniform timesteps, so Adaptive LR's plateau detector reacts to noise:
     # hidden and never sent (Peter, 5 Oct 2026)
     adaptive_lr=False,
+    not_offered={
+        "adaptive_lr": "SDXL's per-epoch loss swings with its uniform timesteps, so the plateau detector reacts to "
+                       "noise (Peter, 5 Oct 2026)",
+        "activation_cache": "not built yet (6 Nov 2026 ability audit): the UNet's blocks need the step-1 replay hook",
+        "int8_attention": "not built yet (6 Nov 2026 ability audit): SDXL's attention doesn't go through attend()",
+    },
     # Slider LoRAs (prompt pairs, or before/after photo pairs): epsilon prediction works as Concept Sliders' SDXL
     # recipe does - the target is built from the UNet's own predictions (families/train.py)
     slider_training=True,

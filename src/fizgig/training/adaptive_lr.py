@@ -18,12 +18,18 @@ class AdaptiveLR:
 
     State (streaks/best_loss/prev_weight_norm) is JSON round-trippable for pause/resume; the
     CPU rollback snapshot is in-memory only (too big to persist) — so the first post-resume
-    epoch can't roll back, exactly as in Klein. Call epoch_boundary() at each epoch end."""
+    epoch can't roll back, exactly as in Klein. Call epoch_boundary() at each epoch end.
+
+    Learned ceiling: a cut (plateau or stability) within CEILING_EPOCHS of a probe up, from the rate that probe set,
+    marks that rate too high for this run; later probes stop one step (x1.25) below it. Without it, a run that
+    plateaued after 2.83e-4 -> 3.54e-4 and was cut to 2e-4 would climb back past 3.54e-4 (Peter, 6 Nov - Qwen Image 2.1
+    on Muon). It persists with the rest of the state, so pause / resume / Move keep it."""
 
     BLEND = 0.7
     WEIGHT_GROWTH_THRESHOLD = 0.30
 
     CLIP_RATIO_THRESHOLD = 0.5
+    CEILING_EPOCHS = 3  # a cut this many epochs or fewer after a probe up blames that probe's rate
     SMOOTH_EPOCHS = 3   # plateau / improving is judged on the mean loss of the last 3 epochs: an epoch's loss jitters
                         # by about ±0.005, which on its own read as a plateau every other epoch and walked the LR to Min
     VAL_MIN_REL = 0.0002    # with the fixed validation loss on, it is the signal: steady but tiny drops (0.02%+ of the
@@ -55,6 +61,9 @@ class AdaptiveLR:
         self.raise_epoch = None   # the last raise: epoch, the LR before it and the trigger epoch's train loss
         self.pre_raise_lr = None
         self.raise_loss = None
+        self.ceiling = None           # the learned top: a probe stops here (None: max_lr only)
+        self.probe_epoch = None       # the last probe up: its epoch and the rate it set
+        self.probe_lr = None
         self.snapshot = None  # {"weights": {...cpu...}, "optim": cpu state} — not persisted
 
     def set_baseline(self, val_loss):
@@ -80,7 +89,8 @@ class AdaptiveLR:
                 "prev_weight_norm": self.prev_weight_norm, "recent_losses": list(self.recent_losses),
                 "best_val": self.best_val, "cooldown": self.cooldown,
                 "loss_hist": list(self.loss_hist), "raise_epoch": self.raise_epoch,
-                "pre_raise_lr": self.pre_raise_lr, "raise_loss": self.raise_loss}
+                "pre_raise_lr": self.pre_raise_lr, "raise_loss": self.raise_loss,
+                "ceiling": self.ceiling, "probe_epoch": self.probe_epoch, "probe_lr": self.probe_lr}
 
     def load_state_dict(self, d):
         if not d:
@@ -98,6 +108,26 @@ class AdaptiveLR:
         self.raise_epoch = d.get("raise_epoch")
         self.pre_raise_lr = d.get("pre_raise_lr")
         self.raise_loss = d.get("raise_loss")
+        self.ceiling = d.get("ceiling")
+        self.probe_epoch = d.get("probe_epoch")
+        self.probe_lr = d.get("probe_lr")
+
+    def _top(self):
+        """The highest rate a probe may set: max_lr, or the learned ceiling when it is lower."""
+        return self.max_lr if self.ceiling is None else min(self.max_lr, self.ceiling)
+
+    def _learn_ceiling(self, epoch, cur_lr):
+        """A cut is being made at `epoch` from `cur_lr`: when it follows a probe up closely and comes from the rate
+        that probe set, that rate was too high - cap later probes one step below it. Returns a log note or ''."""
+        if (self.probe_epoch is None or self.probe_lr is None or epoch - self.probe_epoch > self.CEILING_EPOCHS
+                or cur_lr < self.probe_lr * 0.999):
+            return ""
+        cap = max(self.min_lr, self.probe_lr / 1.25)
+        self.probe_epoch = self.probe_lr = None
+        if self.ceiling is not None and self.ceiling <= cap:
+            return ""
+        self.ceiling = cap
+        return f"; ceiling {cap:.2e} learned (the probe to {cap * 1.25:.2e} led to this cut)"
 
     @staticmethod
     def _weight_norm(network):
@@ -231,6 +261,7 @@ class AdaptiveLR:
                     self._rollback(network, optimizer)
                     note = f"; blended {int(self.BLEND*100)}/{int((1-self.BLEND)*100)} + optim restored"
                 if candidate < cur_lr:
+                    note += self._learn_ceiling(epoch, cur_lr)
                     new_lr = candidate
                     action = "REDUCE+ROLLBACK" if self.snapshot is not None else "REDUCE"
                 else:
@@ -248,14 +279,18 @@ class AdaptiveLR:
             self.good_streak += 1
             self.bad_streak = 0
             if self.good_streak >= patience_up:
-                candidate = min(cur_lr * 1.25, self.max_lr)
-                if candidate > cur_lr:
+                candidate = min(cur_lr * 1.25, self._top())
+                if candidate > cur_lr * 1.001:
                     new_lr = candidate
                     action = "PROBE UP"
                     reason = f"loss improving, streak {self.good_streak}"
+                    if self.ceiling is not None and candidate >= self.ceiling * 0.999:
+                        reason += f", to the learned ceiling {self.ceiling:.2e}"
+                    self.probe_epoch, self.probe_lr = epoch, candidate
                 else:
                     action = "HOLD (capped)"
-                    reason = "loss improving, at max_lr"
+                    reason = ("loss improving, at max_lr" if self._top() >= self.max_lr
+                              else f"loss improving, at the learned ceiling {self.ceiling:.2e}")
                 self.good_streak = 0
             else:
                 reason = f"loss improving, streak {self.good_streak}/{patience_up}"
@@ -270,9 +305,9 @@ class AdaptiveLR:
             if self.bad_streak >= patience_down:
                 candidate = max(cur_lr * 0.5, self.min_lr)
                 if candidate < cur_lr:
+                    reason = f"loss plateau, streak {self.bad_streak}" + self._learn_ceiling(epoch, cur_lr)
                     new_lr = candidate
                     action = "REDUCE"
-                    reason = f"loss plateau, streak {self.bad_streak}"
                     self.cooldown = self.COOLDOWN + 1     # this epoch's -1 below leaves COOLDOWN
                 else:
                     action = "HOLD (floored)"

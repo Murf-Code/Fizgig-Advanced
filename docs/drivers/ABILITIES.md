@@ -45,6 +45,7 @@ The full field list, with comments, is `FamilyDescription` in `src/fizgig/famili
 | `train_areas` | Model Area to Train: named block sets with optional timestep windows, plus a Custom block pick. |
 | `identity_blocks` | Fast Identity Mode: a standard LoRA trains only the identity blocks, faster. |
 | `multi_concept`, `multi_concept_defaults`, `multi_concept_hint` | The Subjects card's "Who is this LoRA of?" (2 to 4 subjects): extra subject folders, each its own dataset block. The card's protection choices (DOP, the side-by-side pictures) need nothing more from a driver than training does. |
+| `batch_training` | Batch size in Other Options: several pictures of one size bucket in one forward. The driver gives `training_loss_batch` (each picture draws its noise and timestep in the order its own `training_loss` would, the loss is their mean) and, when its captions vary in length, `stack_conds` (pad with a mask the model honours per picture, or keep each caption apart; the default stacks only same-shape captions and the trainer groups the rest). Opt in only after a parity check: from the same generator, the batched loss equals the mean of the pictures' own losses. Sliders, edits, fine-tunes, DOP, LoRA Isolation, the per-image loss watch, Start at a smaller size and the mask prior stay at batch 1 by themselves. |
 | `caption_dropout` (default on) | Caption dropout in Other Options: that share of steps trains on the empty caption's encoding, made once with the family's own `encode_text`. Turn it off for a family with its own (H3) or no pictures (ACE-Step). |
 | `options` (`FamilyOption`) | Your own Training / Samples tab controls; each value becomes trainer flags, `--family_option` pairs for `set_options`, or cache `--aux` values. |
 
@@ -65,7 +66,7 @@ Set each band from your shipped presets: a third of the lowest preset's learning
 | Field | What users get | Driver |
 |---|---|---|
 | `workbench` | Which tabs offer the family: any of `"repair"`, `"profiler"`, `"extract"`, `"royale"`. | — |
-| `activation_cache` | Repair Studio's Turbo Preview tick: a slider change replays the unchanged blocks on step 1, the same picture as a full render. | `generate` calls `on_step(i, steps)` before every step, and your blocks sit in a `ModuleList` the block map points into. |
+| `activation_cache` | Repair Studio's Reuse unchanged blocks tick: a slider change replays the unchanged blocks on step 1, the same picture as a full render. | `generate` calls `on_step(i, steps)` before every step, and your blocks sit in a `ModuleList` the block map points into. |
 | `repair_presets`, `block_categories`, `category_masters` | Repair Studio presets, category colours, and master sliders per category. | — |
 | `extract_presets` | Extract's block presets (`(name, ((block id, multiplier), ...))`), beside Custom. | — |
 | `preview_image` | A reference picture conditions previews through the text encoder's vision path. | `encode_text_with_image`. |
@@ -78,6 +79,6 @@ These change text only, so the family reads right without per-family GUI code:
 
 - **Preferences:** `prefs_title`, `prefs_intro`, `prefs_note`, `fetch_note`, `fetch_optional_label`, and per model file `hint`, `download_label`, `download_note`, `alt_repo` / `alt_path` (a second build of the same file), `gated`.
 - **New files:** `ModelFile.announce` + `announce_intro`, a one-time popup for users who set the family up before the file existed.
-- **Training tab:** `model_note` (under the Base Model picker), `preset_notes`, `network_hint`, `ema_hint`, `precision_labels`, `precision_hint`, `compile_hint`.
+- **Training tab:** `model_note` (under the Base Model picker; usage only, never the licence, which goes in the family's guide), `preset_notes`, `network_hint`, `ema_hint`, `precision_labels`, `precision_hint`, `compile_hint`.
 - **Samples tab:** `samples_text` (per-place wording, including `"sampler"`: the sampler and schedule named beside the Steps box), `samples_cfg_free` (hide CFG and the negative for a CFG-free model), `preview_cfg_note`, `preview_negative` (the default negative prompt; each family keeps the user's own edit, and `None` greys the box).
 - **Repair Studio:** `repair_size` (its starting preview size; 1024 for a 1 MP model).

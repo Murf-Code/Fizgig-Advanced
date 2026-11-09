@@ -1,5 +1,39 @@
 # Fizgig news
 
+## 8 Nov 2026: Faster MOSS-Image training and previews, faster training on every model, and a faster Studio
+
+**Training is much faster, uses far less memory, and likeness is unchanged.** On an RTX 5090, a MOSS-Image LoRA at batch 1 (94 pictures, Muon, 70 epochs) takes about 20 minutes instead of 49. At batch 3, MOSS-Image now matches OneTrainer's speed on the same card in less memory (1.07 s a step in 6.9 GB, against 1.07 s in 7.4 GB). Thanks to @tsk5cb-cmyk, whose logs in #221 showed where the time was going.
+
+**Quick MOSS-Image previews that still look right.** Previews now render on the Base with the Turbo LoRA at 0.6, 8 steps, CFG 2 and the SFT look LoRA: much quicker than full-quality previews, and a good read of how the LoRA looks. Both LoRAs download with the models. Untick Use the Turbo LoRA for full-quality previews.
+
+**A faster Studio.** Studio, LoRA Royale and the Profiler follow the Samples tab, so on MOSS-Image they render with the same quick recipe. On MiniMax H3, Show early's mid-render look takes a third of a second instead of a second and a half.
+
+**What makes training faster.** PyTorch 2.15 keeps far less in memory with gradient checkpointing on (Krea 2 22.9 → 14.9 GB). Muon's step handles a LoRA's matrices together: 12× faster, same results. Batches with captions of different lengths no longer slow attention down. LoKR runs 4–6× faster on every model, including as a Context LoRA (thanks @Nessa2026691, #307).
+
+**Also:** onnxruntime's and Hugging Face's telemetry is off, and Adaptive LR learns a ceiling.
+
+**Your NVIDIA driver must support CUDA 13** (version 580 or newer). The update downloads PyTorch 2.15 (about 3 GB); if Fizgig won't start afterwards, run the updater again and press R to rebuild its Python environment. Fizgig now needs Python 3.11 or newer: the release notes say what to do if yours is on 3.10. AMD installs keep their own PyTorch. Restart your pods to pick up 9.2. [Fizgig v9.2.1 release notes](https://github.com/shootthesound/Fizgig/releases/tag/v9.2.1)
+
+## 6 Nov 2026: Muon for every picture model
+
+**Improved likeness and training performance across most of the models, thanks to the Muon optimizer.** Every picture model's built-in presets now train on Muon: Klein 9B, Flux 3 Image Klein, Fibo 2.0, Krea 2, Qwen Image 2.1, MOSS-Image, Z-Image Turbo and Base, SDXL, Anima and Vimoo 1.0 Lite.
+
+**Why it helps.** Muon steps each weight matrix as a whole and evens out the update across all its directions, so fine detail (skin texture, hair, fabric) learns as fast as the broad shapes instead of waiting behind them.
+
+**Nothing else to change.** Fizgig scales Muon's step to match AdamW's, so the presets keep their learning rates. It also uses less memory than AdamW. Load a preset again to get it: the Training form and your saved presets keep the optimizer they had. AdamW8bit and AdamW are still in the Optimizer Type row. Full fine-tunes keep Adafactor, and MiniMax H3 and ACE-Step keep their own optimizers. Thanks to @Murf-Code, who brought Muon to Fizgig.
+
+Update Fizgig on your computers, and restart your pods. [Fizgig v9.0.8 release notes](https://github.com/shootthesound/Fizgig/releases/tag/v9.0.8)
+
+## 6 Nov 2026: Vimoo 1.0 Lite
+
+**Fizgig trains Vimoo-AI's 9.5B video model**, released under Apache 2.0: one checkpoint for text-to-video and image-to-video at 720p and 24 fps. In our tests its quality and performance sit closer to Wan 2.2 5B than to the newer video models; it's a young model and may improve with later releases.
+
+**Why Lite, and not the full Vimoo 1.0.** If your hardware can run the full Vimoo 1.0, there are probably better video models you can run instead. The full model is two ≈11.7B checkpoints, one per task, working on four times as many tokens per clip. Lite's reason to exist is that it's light, and it trains on a 16 GB card.
+
+**What you get:** LoRA and LoKR from photos and clips, slider LoRAs, full fine-tunes, masked training, and an image-to-video share that trains part of each clip from its own first frame. Training previews render as clips in 12 steps with Vimoo's distilled LoRA; Studio, the Profiler and LoRA Royale work with it, and Studio can start a clip from a picture. **Download models for me** on Preferences fetches the files (about 40 GB), and LoRAs load in ComfyUI with Vimoo's own nodes.
+
+Update Fizgig on your computers, and restart your pods. [Vimoo guide](https://github.com/shootthesound/Fizgig/blob/master/docs/VIMOO.md) · [Fizgig v9.0.7 release notes](https://github.com/shootthesound/Fizgig/releases/tag/v9.0.7)
+
 ## 25 Oct 2026: Masks from words with SAM 3.1
 
 **Make masks of anything by naming it.** On the Image Prep tab's masks card, choose **SAM 3.1: from words** and type what the masks show ("person", "hair", "the dog", "red dress"), and optionally what to leave out ("glasses"). Meta's Segment Anything model finds it, with much sharper edges than the person finder, around hair especially.

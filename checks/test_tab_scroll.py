@@ -26,18 +26,11 @@ def _node(js):
     return json.loads(subprocess.check_output(["node", "-e", js], text=True))
 
 
-def test_pane_top_scrolls_the_pane_and_the_page():
-    js = ("const pane = {scrollTop: 900}; let win = null;"
-          "const document = {querySelector: (s) => s === '.notebook-pane' ? pane : null};"
-          "const window = {scrollTo: (x, y) => { win = [x, y]; }};"
-          + _fn(_src(), "paneTop") +
-          "paneTop(); console.log(JSON.stringify({pane: pane.scrollTop, win}));")
-    assert _node(js) == {"pane": 0, "win": [0, 0]}
-
-
 def test_preferences_opens_at_its_top():
+    # each tab returns to its own scroll place (upstream's showTab), except Preferences: always its top
     show = _fn(_src(), "showTab")
-    assert re.search(r'if \(name === "prefs"\) paneTop\(\);', show)
+    assert re.search(r'const \[py, wy\] = name === "prefs" \? \[0, 0\] : S\.tabScroll\["tab-" \+ name\]', show)
+    assert "put();" in show
 
 
 def _rows_js(results):

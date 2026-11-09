@@ -126,7 +126,8 @@ def _moss_fwd(m, step, batch=2):
     ctx = torch.randn(batch, 9, 48, generator=g)
     mask = torch.zeros(batch, 9, dtype=torch.bool)
     mask[0, :9] = True
-    mask[1, :4] = True
+    if batch > 1:
+        mask[1, :4] = True
     t = torch.tensor([900.0, 300.0][:batch])
     return (m(x, t, ctx, mask) - x).square().mean()
 
@@ -256,7 +257,9 @@ def test_copies_per_step(monkeypatch, family, capsys):
     if family == "krea2":
         classic, send, fwd, cls = _krea("classic"), _krea("send"), _krea_fwd, offloading.ModelOffloader
     else:
-        classic, send, fwd, cls = _moss("classic"), _moss("send"), _moss_fwd, shared_offloading.ModelOffloader
+        # one picture: MOSS's forward runs a batch's pictures one by one (upstream's forward_batch is the batched one)
+        classic, send, cls = _moss("classic"), _moss("send"), shared_offloading.ModelOffloader
+        fwd = lambda m, step: _moss_fwd(m, step, batch=1)      # noqa: E731
     assert type(classic.offloader) is cls
     s = _send_tally(send, fwd)
     c = _classic_tally(monkeypatch, cls, classic, fwd)

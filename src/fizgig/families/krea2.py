@@ -3,6 +3,7 @@ to train the same: the same model files and Preferences keys, ComfyUI-compatible
 its own cache files (arch_id krea2drv - the cache layout differs from the original's, so its caches are rebuilt).
 Facts are the original trainer's (src/fizgig/krea2/trainer.py - removed with the original family on 30 Sep 2026, in git history - utils.py, sampling.py), cited per value.
 """
+from fizgig.training.optimizers import MUON_DEFAULT_ARGS
 from fizgig.families.description import (
     GENERAL_NEGATIVE,
     FamilyDescription, LoRAFormat, ModelFile, SamplingSettings, SpeedLoRA, TextEncoderBuild,
@@ -20,7 +21,7 @@ def _preset(rank, lr=1e-4, adaptive=None, epochs=30, slider=False, mp="0.25"):
         "NETWORK_DIM": rank, "NETWORK_ALPHA": rank, "NETWORK_TYPE": "LoRA (standard)", "LEARNING_RATE": lr,
         "MAX_TRAIN_EPOCHS": epochs, "SAVE_EVERY_N_EPOCHS": 1, "SEED": 42, "FAMILY_SLIDER": slider,
         "ADAPTIVE_LR": adaptive is not None, "ADAPTIVE_LR_MIN": lo, "ADAPTIVE_LR_MAX": hi,
-        "OPTIMIZER_TYPE": "adamw8bit", "GRADIENT_ACCUMULATION": 1, "MAX_GRAD_NORM": 1.0,
+        "OPTIMIZER_TYPE": "muon", "OPTIMIZER_ARGS": MUON_DEFAULT_ARGS, "GRADIENT_ACCUMULATION": 1, "MAX_GRAD_NORM": 1.0,
         "DATASET_MEGAPIXELS": mp, "BLOCKS_SWAP": "Auto (detect from GPU)",
         "FAMILY_PRECISION": "Auto (fits your free VRAM)", "FAMILY_EMA": "0.98 (recommended)",
         "KREA2_LOSS_WATCH": True, "KREA2_PER_IMAGE_LR": True, "KREA2_AUTO_RECAPTION": False,
@@ -35,6 +36,8 @@ KREA2 = FamilyDescription(
     start_lr_bands=(("lora", 3e-5, 3e-4), ("slider", 7e-5, 6e-4)),
     masked_training=True,
     timestep_spread=timestep_spread.FLOW,     # Timestep focus presets (the shift's multiple / the curve's width)
+    batch_training=True,              # Batch size (Other Options): training_loss_batch, exact per picture
+    batch_gb=(1.2, 2.0),            # GB each extra picture takes: fixed, per MP (batch 1 vs 3)
     arch_id="krea2drv",
     display_name="Krea 2",
     gui_label="Krea 2",
@@ -129,7 +132,7 @@ KREA2 = FamilyDescription(
         note="The distilled Turbo: CFG-free, mu pinned at 1.15, as the original workbench.",
         source="the original Krea 2 workbench engine (removed with the original family)"),
     int8_attention=True,              # workbench renders: comfy-kitchen's INT8 attention
-    activation_cache=True,            # Turbo Preview: step-1 replay, identical to a full render
+    activation_cache=True,            # Reuse unchanged blocks: step-1 replay, identical to a full render
     finetune=True,
     workbench=("repair", "profiler", "extract", "royale"),
     # the text-fusion boosts (15 Sep 2026, #137): the four text-fusion blocks at x2 / x3, everything else untouched.
@@ -190,6 +193,7 @@ KREA2 = FamilyDescription(
     ),
     preview_speed_lora="Krea 2 Turbo LoRA (8-step)",
     preview_speed_steps=10,
+    preview_small_card_cap=768,       # previews on a card under 20 GB: canvas capped to 768 px (#123)
     preview_speed_strength=0.7,       # Samples previews: Turbo 0.7, 10 steps, CFG 1 (Peter's setup)
     preview_steps=8,
     preview_cfg=1.0,

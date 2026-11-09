@@ -51,6 +51,18 @@ def weighted_loss(se, *weights):
     return (se * w).mean()
 
 
+def picture_losses(se, *weights):
+    """Batch Size above 1: each picture's weighted_loss, `se`'s first dim being the pictures -> (B,). Their mean is
+    weighted_loss over the batch (each picture's weights scaled to mean 1 on its own)."""
+    ws = [w for w in weights if w is not None]
+    if ws:
+        w = ws[0].to(se.device, se.dtype)
+        for x in ws[1:]:
+            w = w * x.to(se.device, se.dtype)
+        se = se * (w / w.mean(dim=tuple(range(1, w.dim())), keepdim=True).clamp_min(1e-8))
+    return se.reshape(se.shape[0], -1).mean(dim=1)
+
+
 def prior_base(prior, loss_mask, forward):
     """Masked prior preservation: the model's own prediction at this step's noised input with the LoRA at 0
     (prior.base runs `forward` that way), or None - no prior asked for, or a picture without a mask. Taken BEFORE the
@@ -255,6 +267,32 @@ class FamilyDriver:
         Returns (loss tensor, info dict e.g. {"t": 0.63}). Owns the family's noise/target/timestep rules."""
         raise NotImplementedError
 
+    def training_loss_batch(self, dit, latents, cond: dict, generator, *, min_t: float = 0.0, max_t: float = 1.0,
+                            loss_mask=None):
+        """Batch Size above 1 (description batch_training): latents (B, C, h, w) of one bucket, cond = the B pictures'
+        batch_cond dicts joined by stack_conds, loss_mask (B, 1, h, w) or None. Each picture draws its noise and
+        timestep in the order B training_loss calls would, so with the same generator the loss is the mean of
+        theirs. Returns (loss tensor, info dict with "t", the pictures' mean; "per", each picture's own loss (B,) as
+        its training_loss would give it (picture_losses), and "ts", each picture's t) - the per-image loss watch
+        weighs and records the pictures one by one from them."""
+        raise NotImplementedError
+
+    def stack_conds(self, conds: list):
+        """B pictures' batch_cond dicts (each batch 1) -> one dict with a batch of B, or None when their shapes
+        differ: the trainer then runs each shape's pictures as their own group. Nothing is padded, so a group trains
+        as its pictures would one at a time."""
+        import torch
+        keys = list(conds[0])
+        if any(list(c) != keys for c in conds):
+            return None
+        out = {}
+        for k in keys:
+            vs = [c[k] for c in conds]
+            if not all(torch.is_tensor(v) and v.shape == vs[0].shape for v in vs):
+                return None
+            out[k] = torch.cat(vs)
+        return out
+
     # ---- prompt-pair sliders (optional) ------------------------------------------------------------
     def slider_setup(self, group) -> None:
         """A slider run's data is known (an image-pair group, or a prompt slider's practice bank)."""
@@ -360,6 +398,12 @@ class FamilyDriver:
         Default: as is."""
         return sd
 
+    def export_lora_state_dict(self, sd: dict) -> dict:
+        """The LoRA file's tensors as written for export - the inverse of convert_lora_state_dict. Fibo 2.0's ComfyUI
+        driver fuses the separate q/k/v (and w1/w3) projections back together here so the exported keys match the
+        ComfyUI checkpoint; default: as is."""
+        return sd
+
     def lora_target_names(self, dit) -> list:
         """Dotted module names (relative to dit) of the Linears a LoRA wraps: every module in the block map."""
         return [m for g in self.block_map(dit) for b in g.blocks for m in b.modules]
@@ -397,6 +441,14 @@ class FamilyDriver:
         from fizgig.families.ft import source_unfit_reason
         return source_unfit_reason(path)
 
+    def ft_load_mp(self, group):
+        """Megapixels the fine-tune plans its activations at: the run's largest bucket. A video family whose clips
+        cost by their token load (frames x area) returns that instead."""
+        try:
+            return max(k[-2] * k[-1] / 1e6 for ds in group.datasets for k in ds.batch_manager.bucket_resos)
+        except Exception:
+            return None
+
     def install_ft_streamer(self, dit, streamer) -> None:
         """Hand the fine-tune's block streamer to the model: it implements the block-swap interface the forward
         already calls (wait_for_block / submit_move_blocks_forward). The default suits the common
@@ -412,11 +464,12 @@ class FamilyDriver:
         dit.offloader = streamer
         dit.blocks_to_swap = 1
 
-    def frozen_file_added(self, dit, path: str, strength: float, role: str) -> None:
+    def frozen_file_added(self, dit, path: str, strength: float, role: str) -> int:
         """A frozen LoRA file (role "adapter": on for training, off in previews; "context": on for both; "speed": the
         preview speed LoRA, on for previews only) has been
         added to the family LoRA. A family whose LoRAs carry weights the family LoRA cannot wrap (H3's AdaLN rows on
-        the pruned base, injected at run time) applies them here."""
+        the pruned base, injected at run time) applies them here and returns how many it applied."""
+        return 0
 
     # ---- room beside the training model (preview decode, override encode) ----------------------------
     def park_for(self, dit, device, need_gb, purpose: str):
@@ -464,12 +517,19 @@ class FamilyDriver:
         why)."""
         return None
 
+    def plan_pictures(self, precision: str, blocks_to_swap: int, *, megapixels: float, pictures: int,
+                      run: dict) -> Optional[tuple]:
+        """A family with its own Auto plan (plan_run): that plan for pictures of `megapixels`, `pictures` a step,
+        with no dataset - (precision, blocks_to_swap) - for the Batch size note and a moved run's batch
+        (web/batch_plan). None: the shared plan over the description's train_memory."""
+        return None
+
     def nogc_load(self, group) -> tuple:
         """What the checkpointing-off figures are read at: (kind, megapixels). kind "" reads
         description.train_memory_nogc[precision], any other reads [f"{precision}:{kind}"]. Default: the largest
         bucket, as stills."""
         try:
-            return "", max(w * h / 1e6 for ds in group.datasets for (w, h) in ds.batch_manager.bucket_resos)
+            return "", max(k[-2] * k[-1] / 1e6 for ds in group.datasets for k in ds.batch_manager.bucket_resos)
         except Exception:
             return "", 1.0
 

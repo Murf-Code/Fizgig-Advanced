@@ -5,6 +5,46 @@ _ARTICLE = "https://github.com/shootthesound/Fizgig/blob/master/docs/NEWS.md"
 
 NEWS = [
     {
+        "date": "8 Nov 2026",
+        "title": "Faster MOSS-Image training and previews, faster training on every model, and a faster Studio",
+        "body": (
+            "Training is much faster on every model, uses far less memory, and likeness is unchanged. On an RTX 5090, "
+            "a MOSS-Image LoRA at batch 1 takes about 20 minutes instead of 49, and at batch 3 Fizgig matches "
+            "OneTrainer's speed in less memory. Muon is 12\u00d7 faster and LoKR 4-6\u00d7 faster.\n\n"
+            "MOSS-Image previews now use the Turbo LoRA at 0.6, 8 steps, CFG 2, with the SFT look LoRA: much quicker, "
+            "and still a good read of your LoRA. Studio follows the Samples tab, so it renders that quickly too.\n\n"
+            "Fizgig 9.2 needs an NVIDIA driver with CUDA 13 (580 or newer) and Python 3.11 or newer."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#8-nov-2026-faster-moss-image-training-and-previews-faster-training-on-every-model-and-a-faster-studio"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.2.1"}],
+    },
+    {
+        "date": "6 Nov 2026",
+        "title": "Muon for every picture model",
+        "body": (
+            "Improved likeness and training performance across most of the models, thanks to the Muon optimizer. "
+            "Every picture model's built-in presets now train on it, from Klein and Krea 2 to MOSS-Image, Z-Image, "
+            "SDXL and Vimoo.\n\n"
+            "Muon evens out each update, so fine detail (skin texture, hair, fabric) learns as fast as the broad "
+            "shapes. The presets keep their learning rates, and it uses less memory than AdamW. Load a preset again "
+            "to get it: your saved presets keep the optimizer they had."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#6-nov-2026-muon-for-every-picture-model"}],
+    },
+    {
+        "date": "6 Nov 2026",
+        "title": "Vimoo 1.0 Lite",
+        "body": (
+            "Fizgig trains Vimoo-AI's 9.5B Apache 2.0 video model from photos and clips: LoRAs, LoKR, sliders, full "
+            "fine-tunes and masked training, with 12-step clip previews and image-to-video in Studio, on a 16 GB card. "
+            "In our tests it sits closer to Wan 2.2 5B than to the newer video models.\n\n"
+            "We support Lite because it's light: if your card can run the full Vimoo 1.0, there are probably better "
+            "video models for it."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#6-nov-2026-vimoo-10-lite"},
+                  {"text": "The guide", "href": "https://github.com/shootthesound/Fizgig/blob/master/docs/VIMOO.md"}],
+    },
+    {
         "date": "25 Oct 2026",
         "title": "Masks from words with SAM 3.1",
         "body": (

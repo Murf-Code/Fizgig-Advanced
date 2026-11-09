@@ -20,6 +20,10 @@ Press **Now** instead of **At the end of this epoch**. It stops at once and move
 
 Start the pod from the **Pods** tab, add it on the **Helpers** tab, then use **Move to…** as above. A fresh pod downloads the model files first, and the run waits paused here while it does (about 10 minutes for Krea 2 in testing). See [A fresh pod](#a-fresh-pod).
 
+### …make it faster on a big pod?
+
+Tick **Train several pictures a step there** in **Move to…**. The pod works out the largest Batch size its card fits at the run's precision without swapping more blocks, and the run card says how many it took (Training on *pod*, 3 pictures a step). For SDXL, MiniMax H3, Anima, Flux 3 and Fibo 2.0 it takes the batch measured fastest for the run's size instead (as Batch size Auto picks; SDXL 8 at 0.25 MP), when the card fits it: past that a picture trains no faster. A run set to Batch size Auto, moved without the tick, uses Auto on the pod's card. Each epoch makes fewer steps, each averaging that many pictures, as [Gradient Accumulation](CLI.md#batch-size) does. Brought back, the run carries on at this computer's own Batch size. A fine-tune takes the largest batch that leaves its window plan on that card as it is at one picture a step. The tick is greyed out for a run that trains one picture a step: an edit, a slider, DOP, Fizgig LoRA Isolation, Start at a smaller size, or keeping the model's own picture outside the mask.
+
 ### …see how it's doing over there?
 
 Watch the run card here: it shows the epoch and time left there. Press **Open** *(computer name)* to see that computer's Fizgig.

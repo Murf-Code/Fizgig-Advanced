@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from fizgig.families.driver import Block, BlockGroup, FamilyDriver, prior_base, weighted_loss, with_prior
+from fizgig.families.driver import Block, BlockGroup, FamilyDriver, picture_losses, prior_base, weighted_loss, with_prior
 from fizgig.training import timestep_spread as TS
 
 DTYPE = torch.bfloat16
@@ -190,9 +190,11 @@ class Krea2Driver(FamilyDriver):
         with torch.autocast(device_type=device.type, dtype=DTYPE):
             return dit(img=img, context=txt, t=t.to(DTYPE), pos=pos, mask=mask)
 
-    def loss_at(self, dit, latents, noise, t, cond, *, diff_ref=None, diff_weight=0.0, loss_mask=None, prior=None):
+    def loss_at(self, dit, latents, noise, t, cond, *, diff_ref=None, diff_weight=0.0, loss_mask=None, prior=None,
+                per=False):
         """The training loss for a given latent, noise and t - the original compute_loss's arithmetic, in the same
-        dtype order. training_loss draws noise and t; tests call this directly to compare with the original."""
+        dtype order. training_loss draws noise and t; tests call this directly to compare with the original. per:
+        each picture's own loss, (B,) (training_loss_batch)."""
         from fizgig.krea2.sampling import patchify_block
         patch = dit.config.patch
         latent = latents.to(dtype=DTYPE)
@@ -215,6 +217,8 @@ class Krea2Driver(FamilyDriver):
         mw = None
         if loss_mask is not None:                                  # a token's weight: its patch's average
             mw = patchify_block(loss_mask.to(latent.device).float(), patch)[0].mean(dim=-1)
+        if per:
+            return picture_losses((pred.float() - target.float()).pow(2).mean(dim=-1), w, mw)
         if w is None and mw is None:
             return F.mse_loss(pred.float(), target.float())
         loss = weighted_loss((pred.float() - target.float()).pow(2).mean(dim=-1), w, mw)
@@ -233,6 +237,20 @@ class Krea2Driver(FamilyDriver):
         loss = self.loss_at(dit, latents, noise, t, cond, diff_ref=diff_ref, diff_weight=diff_weight,
                             loss_mask=loss_mask, prior=prior)
         return loss, {"t": float(t.mean())}
+
+    def training_loss_batch(self, dit, latents, cond, generator, *, min_t=0.0, max_t=1.0, loss_mask=None):
+        """Batch Size above 1: each picture's noise and t drawn as training_loss draws them, picture by picture, then
+        one loss_at over the batch. Captions stack as encoded (512 tokens + validity mask each); _text gathers each
+        one's valid tokens and pads to the batch's longest with a mask, as the shared attention expects."""
+        patch = dit.config.patch
+        n_tokens = (latents.shape[-2] // patch) * (latents.shape[-1] // patch)
+        noises, ts = [], []
+        for i in range(latents.shape[0]):
+            noises.append(torch.randn(latents[i:i + 1].shape, generator=generator))
+            ts.append(self._sample_t(n_tokens, generator, min_t, max_t))
+        t = torch.cat(ts)
+        per = self.loss_at(dit, latents, torch.cat(noises), t, cond, loss_mask=loss_mask, per=True)
+        return per.mean(), {"t": float(t.mean()), "per": per, "ts": [float(v) for v in t]}
 
     def noise_latents(self, latents, generator, *, min_t=0.0, max_t=1.0):
         patch = 2

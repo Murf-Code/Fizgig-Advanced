@@ -425,20 +425,9 @@ function renderRow(r) {
     if (r.suffix) row.append(el("span", {class: "field-hint", text: r.suffix}));
     let actMsg = null;
     if (r.action === "write_captions") {          // the typed line as every photo's caption (Edit, Slider pairs)
-      actMsg = el("div", {class: "field-hint"});
-      const write = async (overwrite) => {
-        try {
-          const res = await api("/api/captions/write_all", {text: input.value, folder: S.imageFolder,
-            ext: S.values.DATASET_CAPTION_EXT || ".txt", overwrite});
-          if (res.exists) {
-            actMsg.replaceChildren(document.createTextNode(`${res.exists} of the ${res.total} photos already have a ` +
-              "caption. "), el("button", {class: "btn btn-sm btn-danger", text: "Replace them", onclick: () => write(true)}));
-            return;
-          }
-          actMsg.textContent = `Captions written for ${res.written} photos.`;
-        } catch (e) { actMsg.textContent = e.message; }
-      };
-      row.append(el("button", {class: "btn", text: "Write captions", onclick: () => write(false)}));
+      const w = writeCaptions(() => input.value);
+      actMsg = w.msg;
+      row.append(w.button);
     }
     wrap.append(row);
     if (input._pairs) {               // after the prompts' own hint and the overtraining tip (the row below)
@@ -606,6 +595,27 @@ function splitRow(r, wrap) {
 }
 
 // a list of prompts, one numbered box each (the gallery's Prompt 1, 2, 3…), saved as the one-per-line text it always was
+// "Write captions": the box's first line saved as every photo's caption in the training folder (Edit, Slider pairs)
+function writeCaptions(getText) {
+  const msg = el("div", {class: "field-hint"});
+  const write = async (overwrite) => {
+    try {
+      const first = String(getText() || "").split("\n").map((t) => t.trim()).find(Boolean) || "";
+      const res = await api("/api/captions/write_all", {text: first, folder: S.imageFolder,
+        ext: S.values.DATASET_CAPTION_EXT || ".txt", overwrite});
+      if (res.exists) {
+        msg.replaceChildren(document.createTextNode(`${res.exists} of the ${res.total} photos already have a ` +
+          "caption. "), el("button", {class: "btn btn-sm btn-danger", text: "Replace them", onclick: () => write(true)}));
+        return;
+      }
+      msg.textContent = `Captions written for ${res.written} photos.`;
+    } catch (e) { msg.textContent = e.message; }
+  };
+  return {button: el("button", {class: "btn", text: "Write captions", onclick: () => write(false),
+    title: "Saves the first line above as the caption (.txt) of every photo in the training folder, so every pair "
+         + "trains on it. Photos that already have a caption are left alone unless you choose to replace them."}), msg};
+}
+
 function promptLines(r, wrap) {
   const list = el("div", {class: "prompt-lines"});
   const boxes = () => [...list.querySelectorAll("textarea")];
@@ -671,11 +681,18 @@ function promptLines(r, wrap) {
   }
   const sync = el("input", {type: "hidden", id: "f_" + r.key});    // syncInputs (a preset, Last Train) redraws it
   sync._sync = draw;
-  const add = el("button", {class: "btn btn-sm", text: "+ Add prompt", onclick: () => {
-    const last = list.lastElementChild;
-    line("", last).focus(); renumber(); save();
-  }});
-  wrap.append(el("span", {class: "field-label", text: r.label + ":"}), list, add, sync);
+  const add = el("button", {class: "btn btn-sm", text: r.key === "SAMPLE_PROMPT" ? "+ Add prompt" : "+ Add a line",
+    onclick: () => {
+      const last = list.lastElementChild;
+      line("", last).focus(); renumber(); save();
+    }});
+  const actions = el("div", {class: "prompt-actions"}, add);
+  wrap.append(el("span", {class: "field-label", text: r.label + ":"}), list, actions, sync);
+  if (r.action === "write_captions") {            // the Edit instruction: its first line as the photos' caption
+    const w = writeCaptions(() => String(S.values[r.key] ?? ""));
+    actions.append(w.button);
+    wrap.append(w.msg);
+  }
   if (r.key === "SAMPLE_PROMPT") wrap.append(promptSetsBar(r, draw));
   if (r.hint) wrap.append(el("div", {class: "field-hint", text: r.hint}));
   wrap.append(el("div", {class: "field-hint row-note", id: "note_" + r.key}));
@@ -812,6 +829,7 @@ function familyDefaultLr() {
 function onValue(r, val) {
   const prev = S.values[r.key];
   S.values[r.key] = val;
+  if (r.key === "FAMILY_PREVIEW_SMALL") S.values._chosen_FAMILY_PREVIEW_SMALL = true;   // the person's own choice: kept
   if (r.key === "OPTIMIZER_TYPE") {
     const opt = String(val || "").trim().toLowerCase();
     const prevOpt = String(prev || "").trim().toLowerCase();
@@ -859,7 +877,7 @@ function onValue(r, val) {
   }
   if (r.key === "__SAMPLE_LIVE" || (S.values.__SAMPLE_LIVE &&
       ["SAMPLE_PROMPT", "SAMPLE_SEED", "SAMPLE_WIDTH", "SAMPLE_HEIGHT", "SAMPLE_STEPS", "SAMPLE_CFG_SCALE",
-       "FAMILY_TURBO_STRENGTH", "SAMPLE_EVERY_N_EPOCHS", "SAMPLE_LATER", "SAMPLE_UNTIL_EPOCH",
+       "FAMILY_TURBO_STRENGTH", "FAMILY_TURBO_ON", "SAMPLE_EVERY_N_EPOCHS", "SAMPLE_LATER", "SAMPLE_UNTIL_EPOCH",
        "SAMPLE_EVERY_AFTER", "FAMILY_PREVIEW_LOOK", "SAMPLE_CHECKPOINT"].includes(r.key))) sampleLiveSoon();
   if (r.key === "CAPTION_TRIGGER_WORD") { S.trigger = String(val).trim(); $("capTrigger").value = S.trigger; saveTriggerSoon(S.trigger); }
   const extra = r.sets && r.sets[val];            // a kind of training that also sets others (Fine-tune's LR)
@@ -1012,7 +1030,7 @@ function turboFollow() {
     if (pass === "turbo") {
       const raw = S.values.FAMILY_TURBO_STRENGTH;
       const strength = parseFloat(raw === undefined || raw === "" ? row.default : raw);
-      live = !!S.state.turbo_file && strength > 0; flags.__turbo_live = live;
+      live = !!S.state.turbo_file && strength > 0 && S.values.FAMILY_TURBO_ON !== false; flags.__turbo_live = live;
     } else {
       const v = S.values[row.key];
       live = !!S.state.checkpoint_file && !!(v === undefined ? row.default : v); flags["__follow_" + row.key] = live;
@@ -1807,7 +1825,7 @@ async function start(path, body) {
 const SIZE_KEYS = {DATASET_MEGAPIXELS: "Target Megapixels", CLIP_MEGAPIXELS: "Clip Megapixels"};
 // what Resume takes from the form as it is now (server.py _RESUME_SAMPLE_KEYS); the rest trains on as the run began
 const RESUME_KEYS = ["SAMPLE_PROMPT", "SAMPLE_PAIRS", "SAMPLE_PAIRED", "SAMPLE_SEED", "SAMPLE_WIDTH", "SAMPLE_HEIGHT", "SAMPLE_STEPS", "SAMPLE_CFG_SCALE",
-  "FAMILY_TURBO_STRENGTH", "SAMPLE_CHECKPOINT", "BLOCKS_SWAP", "FAMILY_PREVIEW_LOOK",
+  "FAMILY_TURBO_STRENGTH", "FAMILY_TURBO_ON", "SAMPLE_CHECKPOINT", "BLOCKS_SWAP", "FAMILY_PREVIEW_LOOK",
   "SAMPLE_EVERY_N_EPOCHS", "SAMPLE_LATER", "SAMPLE_UNTIL_EPOCH", "SAMPLE_EVERY_AFTER",
   "SAVE_EVERY_N_EPOCHS", "SAVE_LATER", "SAVE_UNTIL_EPOCH", "SAVE_EVERY_AFTER",
   "LEARNING_RATE", "ADAPTIVE_LR_MIN", "ADAPTIVE_LR_MAX"];
@@ -1952,8 +1970,8 @@ function renderChoiceDraw(id, L) {
         "previews are on your Base"),
     opt("samples", "Follow Samples tab settings", "Renders as the Samples tab's previews do: your Base" +
         (rc.look ? ", with the SFT look LoRA" : "") + ", at the Samples tab's steps and CFG"),
-    el("span", {class: "field-hint", text: "Applies from Studio's next Load, and the next Royale or Profiler render " +
-      "(the model reloads, so that one takes longer)"}));
+    el("span", {class: "field-hint", text: "Applies at Studio's next Start or Update, and the next Royale or Profiler " +
+      "render (the model reloads, so that one takes longer)"}));
 }
 
 // every tab's box (and Studio's note) after a change, or a tab's model changing
@@ -1993,7 +2011,8 @@ function moveDraw(mv) {
       rm.state === "away" ? `Training on ${mv.to} (it isn't answering just now).` :
       rm.state === "login" ? `On ${mv.to}: its login ran out, so this computer can't see it. Add it again on the Helpers tab.` :
       rm.state === "running" || rm.state === "starting" ?
-        `Training on ${mv.to}` + (rm.epoch ? `: epoch ${rm.epoch} of ${rm.epochs}` : rm.stage ? `: ${rm.stage}` : "") +
+        `Training on ${mv.to}` + (mv.batch > 1 ? `, ${mv.batch} pictures a step` : "") +
+        (rm.epoch ? `: epoch ${rm.epoch} of ${rm.epochs}` : rm.stage ? `: ${rm.stage}` : "") +
         (rm.eta ? ` · ${rm.eta} left` : "") : `On ${mv.to}.`;
     if (mv.error) say += ` (${mv.error})`;
     if (mv.home_text) say += ` Coming home as they're saved: ${mv.home_text}.`;
@@ -2044,9 +2063,14 @@ async function moveOpen() {
   const pick = el("select", {class: "w-combo"}, ...ready.map((h) => el("option", {value: h.id,
     text: `${h.name}${h.gpu ? ` (${h.gpu}${h.vram ? `, ${h.vram} GB` : ""})` : ""}`})));
   const home = el("input", {type: "checkbox", checked: true});
+  // Batch size there: as many pictures a step as that computer's card fits, worked out there; back here it trains
+  // at this run's own Batch size again. Shown for a model that batches; greyed, with why, when the run can't
+  const why = (S.run && S.run.move_batch) || ["no run"];
+  const batchable = !why.includes("this model trains one picture a step") && !why.includes("no run");
+  const batch = el("input", {type: "checkbox", ...(why.length ? {disabled: true} : {})});
   const send = (now) => async () => {
     try {
-      await api("/api/helpers/move", {id: pick.value, now, home: home.checked});
+      await api("/api/helpers/move", {id: pick.value, now, home: home.checked, batch: batch.checked});
       S.moveOpen = false;
     } catch (e) { showProblems([e.message]); }
     pollRun();
@@ -2065,7 +2089,12 @@ async function moveOpen() {
       el("button", {class: "btn btn-sm", text: "Cancel", onclick: close})),
     el("label", {class: "checkbox-label", title: "Each checkpoint and preview comes back to this run's folder here as " +
       "it's saved there, one after another (a slow link just queues them), so bringing the run back only has the " +
-      "last few to fetch."}, home, " Bring its checkpoints and previews back here as they're saved"));
+      "last few to fetch."}, home, " Bring its checkpoints and previews back here as they're saved"),
+    ...(batchable ? [el("label", {class: "checkbox-label", title: why.length ?
+      `Not for this run: ${why.join(", ")} trains one picture a step.` :
+      "As many pictures a step as its card fits without more block swap: quicker epochs on a big card, each " +
+      "step averaging the batch, as Gradient Accumulation does. Brought back, it trains as it does here again."},
+      batch, " Train several pictures a step there, as many as its memory allows")] : []));
 }
 
 // ---- a prompt slider's live prompts: edited here while it trains, taken by the trainer at its next epoch boundary
@@ -2370,7 +2399,7 @@ function runSummary() {
     cell("Model", fam + (v.FAMILY_PRECISION ? ` · ${first(v.FAMILY_PRECISION)}` : "")),
     cell("Dataset", String(r.image_folder || "").split(/[\\/]/).filter(Boolean).pop()),
     cell("Training", [v.MAX_TRAIN_EPOCHS ? `${v.MAX_TRAIN_EPOCHS} epochs` : "", p.total_steps ? `${p.total_steps} steps` : "",
-      "batch 1", v.DATASET_MEGAPIXELS ? `${v.DATASET_MEGAPIXELS} MP` : "",
+      `batch ${v.BATCH_SIZE || 1}`, v.DATASET_MEGAPIXELS ? `${v.DATASET_MEGAPIXELS} MP` : "",
       v.STAGE_MP && v.STAGE_MP !== "Off" ? `${v.STAGE_MP} MP for the first ${v.STAGE_UNTIL || "30%"}` : ""].filter(Boolean).join(" · ")),
     cell("Optimizer", [v.OPTIMIZER_TYPE, yes("ADAPTIVE_LR") ? `Adaptive LR ${v.ADAPTIVE_LR_MIN} to ${v.ADAPTIVE_LR_MAX}` :
       v.LEARNING_RATE ? `from ${v.LEARNING_RATE}` : ""].filter(Boolean).join(" · ")),
@@ -2933,7 +2962,7 @@ async function likenessPicker(single) {
 // the picker's grid: the Samples gallery's 3 photos (from the training images), a single / multi pick (paired
 // likeness, validation, Image Prep's Test), or LoRA Royale's 1-3 (any folder)
 async function likGridShow(folder, picked) {
-  const royale = S.lik.mode === "royale";
+  const royale = S.lik.mode !== "gallery";     // Royale's or the Profiler's subject photos: any folder, up to 3
   if (royale) { S.lik.single = null; S.lik.multi = false; $("likModal").classList.remove("lik-multi");
     $("likHint3").style.display = ""; if ($("likCount")) $("likCount").style.display = "none"; }
   const one = !!S.lik.single;
@@ -2986,7 +3015,7 @@ function likenessMarks() {
     f.querySelector(".lik-check")?.remove();
     if (i >= 0) f.append(multi ? el("span", {class: "lik-check", text: "✓"}) : el("span", {class: "lik-num", text: String(i + 1)}));
   }
-  $("likStart").disabled = S.lik.mode === "royale" ? !S.lik.picked.length : S.lik.picked.length !== 3;
+  $("likStart").disabled = S.lik.mode !== "gallery" ? !S.lik.picked.length : S.lik.picked.length !== 3;
   if (multi && $("likCount")) $("likCount").textContent = `${S.lik.picked.length} selected`;
   $("likPickStatus").textContent = multi ? `${S.lik.picked.length} selected` : S.lik.single ? "Click one picture" : `${S.lik.picked.length}/3 selected`;
 }
@@ -3421,7 +3450,7 @@ async function loadRuns() {
       onclick: async () => {
         if (ilBox.style.display !== "none") { ilBox.style.display = "none"; return; }
         ilBox.style.display = ""; ilBox.textContent = "Loading…";
-        try { imageLossPanel(ilBox, await api("/api/runs/image_loss?id=" + encodeURIComponent(run.id)), run); }
+        try { const load = imageLossLoad(run.id); imageLossPanel(ilBox, await load(), run, load); }
         catch (e) { ilBox.replaceChildren(el("div", {class: "problems", text: e.message})); }
       }}) : null;
     host.append(el("div", {class: "run-row", "data-result": run.result || ""},
@@ -3464,16 +3493,27 @@ const IL_ORDER = ["excluded", "stuck", "suspect", "watch", "warmup", "exhausted"
 const IL_PROBLEMS = new Set(["excluded", "stuck", "suspect", "watch"]);
 const IL_PAGE = 48;
 
-function imageLossPanel(box, d, run) {
-  const imgs = d.images || [], rep = d.report || {};
-  // one scale for every tile, so tiles compare: room for every image's recent level with a margin (a one-epoch
-  // spike past it is clipped; a consistently hard image keeps its shape)
-  const ymax = Math.max(1e-6, 1.25 * Math.max(...imgs.map((im) => Math.abs(im.recent)), 0));
-  const counts = {};
-  for (const im of imgs) counts[im.verdict || "mid"] = (counts[im.verdict || "mid"] || 0) + 1;
-  const tally = IL_ORDER.filter((v) => counts[v]).map((v) => `${counts[v]} ${v}`).join(" · ");
-  const head = [`${imgs.length} images · ${d.epochs.length} epochs`, rep.epoch ? `the watch's verdicts as of epoch ${rep.epoch}` : "",
-    tally].filter(Boolean).join(" · ");
+// the per-image loss of a run, fetched fresh each time (the panel's Refresh and its dropdowns call it again)
+const imageLossLoad = (id) => () => api("/api/runs/image_loss?id=" + encodeURIComponent(id));
+
+function imageLossPanel(box, d, run, load) {
+  let imgs, rep, ymax;
+  const headEl = el("div", {class: "field-hint"}), plateau = el("div", {class: "il-plateau"});
+  const take = (data) => {             // a fetch's results: the counts line, the plateau banner, the shared scale
+    d = data; imgs = d.images || []; rep = d.report || {};
+    // one scale for every tile, so tiles compare: room for every image's recent level with a margin (a one-epoch
+    // spike past it is clipped; a consistently hard image keeps its shape)
+    ymax = Math.max(1e-6, 1.25 * Math.max(...imgs.map((im) => Math.abs(im.recent)), 0));
+    const counts = {};
+    for (const im of imgs) counts[im.verdict || "mid"] = (counts[im.verdict || "mid"] || 0) + 1;
+    const tally = IL_ORDER.filter((v) => counts[v]).map((v) => `${counts[v]} ${v}`).join(" · ");
+    headEl.textContent = [`${imgs.length} images · ${d.epochs.length} epochs`,
+      rep.epoch ? `the watch's verdicts as of epoch ${rep.epoch}` : "", tally].filter(Boolean).join(" · ");
+    plateau.textContent = rep.plateaued && rep.best_epoch_estimate ? `The run plateaued: the best checkpoint is likely ` +
+      `around epoch ${rep.best_epoch_estimate} - compare a few epochs either side.` : "";
+    plateau.style.display = plateau.textContent ? "" : "none";
+  };
+  take(d);
   const sort = el("select", {class: "w-combo"}, ...[["hard", "Hardest now first"], ["easy", "Easiest now first"],
     ["verdict", "By verdict"], ["name", "By name"]].map(([v, t]) => el("option", {value: v, text: t})));
   const show = el("select", {class: "w-combo"}, el("option", {value: "all", text: "All images"}),
@@ -3495,17 +3535,26 @@ function imageLossPanel(box, d, run) {
       el("span", {class: "field-hint", text: `page ${page + 1} of ${pages}`}),
       el("button", {class: "btn btn-sm", text: "Next ›", disabled: page >= pages - 1, onclick: () => { page++; draw(); }})] : []));
   };
-  sort.addEventListener("change", () => { page = 0; draw(); });
-  show.addEventListener("change", () => { page = 0; draw(); });
+  // Refresh, and a change of either dropdown, fetch the latest results first (a run going on adds an epoch at a time)
+  const refreshBtn = el("button", {class: "btn btn-sm", text: "↻ Refresh", title: "Load the latest results"});
+  const refresh = async (keepPage) => {
+    if (!load) { if (!keepPage) page = 0; draw(); return; }
+    refreshBtn.disabled = true; refreshBtn.textContent = "Refreshing…";
+    try { take(await load()); } catch (e) { headEl.textContent = e.message; }
+    finally { refreshBtn.disabled = false; refreshBtn.textContent = "↻ Refresh"; }
+    if (!keepPage) page = 0;
+    draw();
+  };
+  refreshBtn.addEventListener("click", () => refresh(true));
+  sort.addEventListener("change", () => refresh(false));
+  show.addEventListener("change", () => refresh(false));
   box.replaceChildren(
-    el("div", {class: "field-hint", text: head}),
-    rep.plateaued && rep.best_epoch_estimate ? el("div", {class: "il-plateau",
-      text: `The run plateaued: the best checkpoint is likely around epoch ${rep.best_epoch_estimate} - compare a few epochs either side.`}) : "",      // (replaceChildren writes a null as the word)
+    headEl, plateau,
     el("div", {class: "field-hint", text: "Each line is one image's loss minus the dataset's average at the same noise level, " +
       "epoch by epoch. Above the dotted line it is harder than the rest; a line falling is the image being learned. " +
       "All tiles share one scale." + (d.live ? " Edit caption fixes one while the run goes: the trainer re-encodes it at " +
       "the next epoch and that image's history starts again - it should turn blue (learning) if the fix worked." : "")}),
-    el("div", {class: "field-row"}, el("span", {class: "field-label", text: "Sort:"}), sort, show), grid, pager);
+    el("div", {class: "field-row"}, el("span", {class: "field-label", text: "Sort:"}), sort, show, refreshBtn), grid, pager);
   draw();
 }
 
@@ -4036,7 +4085,6 @@ function pfPhotosDraw() {
     el("img", {src: `/api/thumb?path=${encodeURIComponent(p)}&t=${encodeURIComponent(TOKEN)}`, alt: ""}),
     el("button", {class: "btn btn-sm", text: "×", onclick: () => { S.pf.photos.splice(i, 1); pfPhotosDraw(); pfRemember(); }}))));
   if (!S.pf.photos.length) $("pfPhotos").append(el("span", {class: "field-hint", text: "None (picture change only)"}));
-  $("pfPhotoBtns").style.display = S.pf.photos.length >= 3 ? "none" : "";
 }
 
 async function pfLora(p, fresh) {
@@ -4096,8 +4144,13 @@ function wireProfiler() {
     pick($("pfLora").value || loraStart(), false, (p) => pfLora(p, true))}), up.btn, up.status);
   const addPhoto = (p) => { if (S.pf.photos.length < 3 && !S.pf.photos.includes(p)) S.pf.photos.push(p); pfPhotosDraw(); pfRemember(); };
   const pup = uploadButton({kind: "path", key: "PROFILER_PHOTO"}, el("input", {type: "text"}), addPhoto);
-  $("pfPhotoBtns").replaceChildren(el("button", {class: "btn btn-sm", text: "Add photo…", onclick: () => pick(S.imageFolder, false, addPhoto)}),
-    pup.btn, pup.status);
+  $("pfPhotoBtns").replaceChildren(el("button", {class: "btn btn-sm", text: "Choose…", onclick: () => {
+    // the Samples gallery's picker (as LoRA Royale's), from the photos' folder; Choose folder… points it anywhere
+    const dir = (p) => p.replace(/[\\/][^\\/]*$/, "");
+    const folder = S.pf.photos.length ? dir(S.pf.photos[0]) : S.imageFolder || refStart() || "";
+    S.lik.mode = "profiler";
+    likGridShow(folder, S.pf.photos.filter((p) => dir(p) === folder).map((p) => p.split(/[\\/]/).pop()));
+  }}), pup.btn, pup.status);
   $("pfPhotosClear").addEventListener("click", () => { S.pf.photos = []; pfPhotosDraw(); pfRemember(); });
   $("pfRun").addEventListener("click", profilerRun);
   $("pfStop").addEventListener("click", () => api("/api/profile/stop", {}).then(profilerPoll));
@@ -4112,6 +4165,7 @@ function exRemember() {
   try { localStorage.setItem(EX_KEY, JSON.stringify({family: $("exFamily").value, source: $("exSource").value,
     rank: $("exRank").value, preset: $("exPreset").value, mode: S.ex.mode, ftBase: $("exFtBase").value,
     ftTuned: $("exFtTuned").value, ftName: $("exFtName").value, ftOut: $("exFtOut").value,
+    id: $("exId").checked, ftId: $("exFtId").checked,
     ftRanks: [...$("exFtRanks").querySelectorAll("input:checked")].map((c) => Number(c.value))})); } catch (e) { /* private */ }
 }
 function exMode(mode) {
@@ -4137,6 +4191,7 @@ async function extractOpen() {
     if (sv.source) $("exSource").value = sv.source;
     if (sv.rank) $("exRank").value = sv.rank;
     exRankShow();
+    $("exId").checked = !!sv.id; $("exFtId").checked = !!sv.ftId;
     const on = new Set(sv.ftRanks || [32, 64]);
     $("exFtRanks").replaceChildren(...EX_FT_RANKS.map((r) => { const c = el("input", {type: "checkbox", value: r, onchange: exRemember});
       c.checked = on.has(r); return el("label", {class: "checkbox-label"}, c, " " + r); }));
@@ -4157,6 +4212,10 @@ async function extractFamily(key, preset) {
   $("exFamily").replaceChildren(...r.families.map((f) => el("option", {value: f.key, text: f.name})));
   $("exFamily").value = r.family;
   $("exOutDir").value = r.out_dir;
+  // Identity mode: a model with identity blocks keeps 4x the rank there
+  $("exIdRow").style.display = r.identity ? "" : "none";
+  $("exIdHint").textContent = r.identity ? `For a person or character: ${r.identity} (the identity blocks) keep 4x ` +
+    "the target rank (up to the LoRA's own), so the likeness survives a small file. Saved with _id in the name." : "";
   const names = r.presets.map((p) => p.name).concat(r.presets.length ? ["Custom"] : []);
   $("exPresetCard").style.display = names.length ? "" : "none";
   $("exPreset").replaceChildren(...names.map((n) => el("option", {value: n, text: n})));
@@ -4191,7 +4250,8 @@ function extractName() {
   if (!src) return;
   const base = src.split(/[\\/]/).pop().replace(/\.safetensors$/i, "");
   const slug = ($("exPreset").value || "all_blocks").toLowerCase().replace(/\+/g, "_").replace(/ /g, "_");
-  $("exName").value = `${base}_${slug}_r${$("exRank").value}.safetensors`;
+  const id = S.ex.info && S.ex.info.identity && $("exId").checked ? "_id" : "";
+  $("exName").value = `${base}_${slug}_r${$("exRank").value}${id}.safetensors`;
 }
 
 async function extractSource(p) {
@@ -4209,7 +4269,7 @@ async function extractRun() {
     const ranks = [...$("exFtRanks").querySelectorAll("input:checked")].map((c) => Number(c.value));
     try {
       await api("/api/extract/finetune", {base: $("exFtBase").value.trim(), tuned: $("exFtTuned").value.trim(),
-        out_dir: $("exFtOut").value.trim(), name: $("exFtName").value.trim(), ranks});
+        out_dir: $("exFtOut").value.trim(), name: $("exFtName").value.trim(), ranks, identity: $("exFtId").checked});
       $("exStatus").textContent = "Extracting…";
       $("exDone").replaceChildren();
       exRemember();
@@ -4225,7 +4285,8 @@ async function extractRun() {
   try {
     const r = await api("/api/extract/run", {family: $("exFamily").value, source: $("exSource").value.trim(),
       name: $("exName").value.trim(), out_dir: $("exOutDir").value.trim(), rank,
-      preset: custom || !(S.ex.info.presets || []).length ? "" : $("exPreset").value, blocks});
+      preset: custom || !(S.ex.info.presets || []).length ? "" : $("exPreset").value, blocks,
+      identity: !!S.ex.info.identity && $("exId").checked});
     $("exStatus").textContent = `Extracting to ${r.output}…`;
     $("exDone").replaceChildren();
     extractPoll();
@@ -4262,6 +4323,8 @@ function wireExtract() {
   $("exFamily").addEventListener("change", () => { extractFamily($("exFamily").value, $("exPreset").value); exRemember(); });
   $("exPreset").addEventListener("change", extractPresetChanged);
   for (const ev of ["change", "input"]) $("exRank").addEventListener(ev, () => { extractName(); exRemember(); });
+  $("exId").addEventListener("change", () => { extractName(); exRemember(); });
+  $("exFtId").addEventListener("change", exRemember);
   $("exRankPick").addEventListener("change", () => {      // a listed rank, or Other… and a box for any number
     const other = $("exRankPick").value === "__other";
     if (!other) $("exRank").value = $("exRankPick").value;
@@ -4733,7 +4796,8 @@ async function sampleLiveSend() {
   try {
     const r = await api("/api/run/sample_override", {on: !!v.__SAMPLE_LIVE, prompts: v.SAMPLE_PROMPT || "",
       seed: v.SAMPLE_SEED, width: v.SAMPLE_WIDTH, height: v.SAMPLE_HEIGHT, steps: v.SAMPLE_STEPS,
-      cfg: v.SAMPLE_CFG_SCALE, turbo: v.FAMILY_TURBO_STRENGTH, every: v.SAMPLE_EVERY_N_EPOCHS,
+      cfg: v.SAMPLE_CFG_SCALE, turbo: v.FAMILY_TURBO_ON === false ? "0" : v.FAMILY_TURBO_STRENGTH,
+      every: v.SAMPLE_EVERY_N_EPOCHS,
       until: v.SAMPLE_LATER ? v.SAMPLE_UNTIL_EPOCH : 0, after: v.SAMPLE_LATER ? v.SAMPLE_EVERY_AFTER : 0,
       look: !!v.FAMILY_PREVIEW_LOOK, checkpoint: !!valueOrDefault("SAMPLE_CHECKPOINT")});
     if (note) note.textContent = r.on ? "Sent: the run's next previews use these." : "The run is back on its own prompts.";
@@ -6300,36 +6364,57 @@ function studioKind(L, sv) {
   studioMixShow(L);
   studioMetricsShow();
   if (!video) return;
-  const V = L.video, h3 = sv.h3 || {};
+  // the clip row's values are remembered per model (H3's under the old "h3" key), each starting from its own defaults
+  const V = L.video, h3 = (sv.video || {})[L.key] || (L.key === "minimax" ? sv.h3 : null) || {};
   const fill = (id, opts, val) => { const s = $(id); s.innerHTML = ""; for (const o of opts) s.append(el("option", {value: o, text: o})); s.value = opts.includes(val) ? val : opts[0]; };
   fill("stH3Model", V.models, h3.model || V.models[0]);
   fill("stH3Base", V.bases, h3.base);
   fill("stH3Len", V.lengths, h3.len || V.length);
   fill("stH3W", V.dims, h3.w || V.size[0]);
   fill("stH3H", V.dims, h3.h || V.size[1]);
-  if (h3.steps) $("stH3Steps").value = h3.steps;
-  if (h3.turbo != null) $("stH3Turbo").value = h3.turbo;
+  $("stH3ModelRow").style.display = (V.models || []).length || (V.bases || []).length ? "" : "none";
+  $("stH3Steps").value = h3.steps || V.steps || $("stH3Steps").defaultValue;
+  $("stH3Turbo").value = h3.turbo != null ? h3.turbo : (V.speed_strength != null ? V.speed_strength
+    : $("stH3Turbo").defaultValue);
+  $("stH3TurboLabel").textContent = `${V.speed_label || "Turbo"} LoRA`;      // the speed LoRA's strength box
+  {   // the two boxes' tooltips, in this model's own terms
+    const sp = V.speed_label || "speed", fast = V.steps || $("stH3Steps").defaultValue, at = V.speed_strength != null ?
+      V.speed_strength : 1, full = V.base_steps ? `about ${V.base_steps}` : "many more";
+    $("stH3Steps").title = `Sampling steps for the clip. With ${sp} at ${at}, ${fast} steps is the fast loop; with ` +
+      `${sp} at 0 (the base model alone) it needs ${full}.`;
+    $("stH3Turbo").title = `Strength of the built-in ${sp} LoRA: ${at} for the fast previews. 0 switches it off - the ` +
+      `render is the base model plus your LoRAs at the steps set (raise Steps to ${full}). That is also how you edit a ` +
+      `${sp} LoRA: load it as the primary and set this to 0.`;
+  }
+  $("stH3TurboLabel").style.display = $("stH3Turbo").style.display = V.speed_label ? "" : "none";
   $("stH3Sound").checked = V.sound && h3.sound !== false;
   $("stH3Sound").disabled = !V.sound;
+  $("stH3SoundBox").style.display = V.sound ? "" : "none";       // a model with no sound has no sound to switch
+  $("stH3EarlyBox").style.display = V.show_early ? "" : "none";
   $("stH3Boost").checked = h3.boost !== false;           // on unless turned off
   $("stH3Boost").parentElement.style.display = V.speed_boost ? "" : "none";   // a family ability (H3 has it)
   $("stH3Early").checked = h3.early !== false;
   S.st.kf = h3.kf || {};
   S.st.kfRect = h3.kfRect || {};
+  studioClipNote();
   studioSlots();
 }
 
 function studioSlots() {
   const ref = !!S.st.layout.video.references[$("stH3Model").value];
-  $("stFramesTitle").textContent = ref ? "Reference Images" : "First / Last Frame";
+  const lastToo = (S.st.layout.video.frame_slots || ["first", "last"]).includes("last");
+  $("stFramesTitle").textContent = ref ? "Reference Images" : lastToo ? "First / Last Frame" : "Start Frame";
   $("stFramesDesc").textContent = ref ? "Optional: up to two photos the clip should look like (this checkpoint's " +
     "references), each cropped to the clip's shape - you place the crop when you pick one. Say <Picture 1> and " +
     "<Picture 2> in the prompt for them, e.g. \"the woman in <Picture 1> walks along the beach in <Picture 2>\"." :
-    "Optional: photos the clip starts and ends on (a still uses the first only), each cropped to the clip's shape - " +
-    "you place the crop when you pick one.";
+    lastToo ? "Optional: photos the clip starts and ends on (a still uses the first only), each cropped to the clip's " +
+    "shape - you place the crop when you pick one." : "Optional: a photo the clip starts on (image-to-video; a still " +
+    "ignores it), cropped to the clip's shape - you place the crop when you pick one.";
   const host = $("stFrameSlots");
   host.innerHTML = "";
-  const slots = ref ? [["ref1", "Reference 1"], ["ref2", "Reference 2"]] : [["first", "First frame"], ["last", "Last frame"]];
+  const fs = S.st.layout.video.frame_slots || ["first", "last"];
+  const slots = ref ? [["ref1", "Reference 1"], ["ref2", "Reference 2"]] :
+    [["first", "First frame"], ["last", "Last frame"]].filter(([s]) => fs.includes(s));
   for (const [slot, label] of slots) {
     const input = el("input", {type: "text", class: "w-path", value: (S.st.kf[slot] || ""), placeholder: "a photo (optional)"});
     const thumb = el("canvas", {width: 1, height: 1});
@@ -6342,9 +6427,9 @@ function studioSlots() {
     };
     // a new photo: place its crop (Cancel keeps what was there); Re-crop moves the box of the one there
     const set = (p) => {
-      if (!p) { delete S.st.kf[slot]; delete S.st.kfRect[slot]; show(); studioH3Remember(); studioSchedule(); return; }
+      if (!p) { delete S.st.kf[slot]; delete S.st.kfRect[slot]; show(); studioH3Remember(); studioPending(); return; }
       studioCrop(p, p === S.st.kf[slot] ? S.st.kfRect[slot] : null, (rect) => {
-        S.st.kf[slot] = p; S.st.kfRect[slot] = rect; show(); studioH3Remember(); studioSchedule();
+        S.st.kf[slot] = p; S.st.kfRect[slot] = rect; show(); studioH3Remember(); studioPending();
       }, show);
     };
     input.addEventListener("change", () => set(input.value.trim()));
@@ -6450,7 +6535,8 @@ function studioCrop(path, initial, ok, cancel) {
 function studioH3Remember() {
   try {
     const d = stSaved();
-    d.h3 = {model: $("stH3Model").value, base: $("stH3Base").value, len: $("stH3Len").value, w: $("stH3W").value,
+    d.video = d.video || {};
+    d.video[(S.st.layout || {}).key || "minimax"] = {model: $("stH3Model").value, base: $("stH3Base").value, len: $("stH3Len").value, w: $("stH3W").value,
       h: $("stH3H").value, steps: $("stH3Steps").value, turbo: $("stH3Turbo").value,
       sound: $("stH3Sound").checked, boost: $("stH3Boost").checked, early: $("stH3Early").checked, kf: S.st.kf,
       kfRect: S.st.kfRect};
@@ -6466,11 +6552,12 @@ function studioExtra() {
   const V = L.video;
   const w = Number($("stH3W").value) || 640, h = Number($("stH3H").value) || 768;     // the clip at its Width x Height
   const ref = !!V.references[$("stH3Model").value];
-  const slots = ref ? ["ref1", "ref2"] : ["first", "last"];
+  const slots = ref ? ["ref1", "ref2"] : (V.frame_slots || ["first", "last"]);
   return {video: {frames: V.length_frames[$("stH3Len").value] || 22, width: w, height: h,
     steps: Math.max(1, Math.min(40, parseInt($("stH3Steps").value, 10) || 4)),
     turbo: Math.max(0, Math.min(1.5, Number($("stH3Turbo").value) || 0)), sound: $("stH3Sound").checked,
-    speed_boost: !!V.speed_boost && $("stH3Boost").checked, early: $("stH3Early").checked},
+    speed_boost: !!V.speed_boost && $("stH3Boost").checked, early: $("stH3Early").checked,
+    negative: $("stNeg").value.trim()},
     keyframes: slots.filter((s) => S.st.kf[s]).map((s) => ({slot: s, path: S.st.kf[s], rect: S.st.kfRect[s] || null})),
     ref_mode: ref};
 }
@@ -6645,7 +6732,7 @@ function songRegion(r) {
   S.st.region = r;
   if (r) $("stSongLoop").checked = true;
   studioAceRemember();
-  if ($("stSrcOn").checked && $("stSrcMode").value === "repaint") studioSchedule();   // Repaint remakes the new section
+  if ($("stSrcOn").checked && $("stSrcMode").value === "repaint") studioPending();    // Repaint remakes it at Update
   if (songPlaying()) songPlay(S.song.side, r ? r[0] : undefined);
   else if (r) S.song.pos = r[0];
   for (const s of Object.keys(SONG_SIDES)) songPlayer(s).loop = $("stSongLoop").checked && !r;
@@ -6825,7 +6912,7 @@ function studioRecordButton(input, set) {
 }
 
 function wireStudioAce() {
-  const change = () => { studioAceLayout(); studioAceRemember(); studioRegionDraw(); studioSchedule(); };
+  const change = () => { studioAceLayout(); studioAceRemember(); studioRegionDraw(); studioPending(); };
   for (const id of ["stPbOn", "stSrcOn", "stSndOn", "stSrcMode", "stPbKeep", "stPbBlend", "stSrcFollow", "stSrcDenoise", "stSrcStrength"])
     $(id).addEventListener("change", change);
   for (const id of ["stPbBlend"]) $(id).addEventListener("input", studioAceLayout);
@@ -6833,7 +6920,7 @@ function wireStudioAce() {
   const typed = () => { studioAceRemember(); if (S.st.ready) $("stStart").textContent = "Update"; };
   for (const id of ["stPromptB", "stSrcPath", "stSndPath"]) $(id).addEventListener("input", typed);
   for (const [id, host] of [["stSrcPath", "stSrcBtns"], ["stSndPath", "stSndBtns"]]) {
-    const input = $(id), set = (p) => { input.value = p; studioAceRemember(); studioSchedule(); };
+    const input = $(id), set = (p) => { input.value = p; studioAceRemember(); studioPending(); };
     const up = uploadButton({kind: "path", key: "STUDIO_" + id}, input, set);
     $(host).replaceChildren(el("button", {class: "btn", text: "Choose…", onclick: () => pick(input.value || S.imageFolder, false, set)}),
       up.btn, studioRecordButton(input, set), up.status);
@@ -6850,7 +6937,7 @@ function wireStudioAce() {
       studioAceLayout(); studioAceRemember(); studioRegionDraw();
       $("stStatus").textContent = "The Tweaked song is now the source: drag across the waveform to choose the section to repaint" +
         (S.st.region ? " (or keep this one)." : ".");
-      if (S.st.region) studioSchedule();
+      if (S.st.region) studioPending();
     } catch (e) { $("stStatus").textContent = e.message; }
   });
 }
@@ -6902,7 +6989,7 @@ function studioEq(role, on, restore = true) {
     if (S.st.ready) $("stStart").textContent = "Update";
   } else {
     $(pathId).value = prev;
-    if (S.st.ready) api("/api/studio/donor", {path: prev}).then(() => { studioPoll(); studioSchedule(); });
+    if (S.st.ready) api("/api/studio/donor", {path: prev}).then(() => { studioPoll(); studioPending(); });
   }
   stRemember();
 }
@@ -6981,12 +7068,12 @@ function studioMixRows() {
     const val = el("span", {class: "field-hint", text: Number(amount).toFixed(2)});
     const range = el("input", {type: "range", min: "-1", max: "2", step: "0.05", value: String(amount)});
     range.addEventListener("input", () => { val.textContent = Number(range.value).toFixed(2); });
-    range.addEventListener("change", () => { S.st.mix.rows[i][1] = snap05(range.value); studioSchedule(); });
+    range.addEventListener("change", () => { S.st.mix.rows[i][1] = snap05(range.value); studioPending(); });
     host.append(el("div", {class: "field-row"}, el("span", {class: "field-label"}), el("div", {class: "st-mixrow"},
       el("span", {class: "st-mixname", title: path, text: (i === 0 ? "★ " : "") + name}), range, val,
       i === 0 ? el("span", {class: "field-hint", text: "(the primary)"}) :
         el("button", {class: "btn btn-sm", text: "✕", title: "Take it out of the mix", onclick: () => {
-          S.st.mix.rows.splice(i, 1); studioMixRows(); studioSchedule(); }}))));
+          S.st.mix.rows.splice(i, 1); studioMixRows(); studioPending(); }}))));
   });
 }
 
@@ -7008,7 +7095,7 @@ async function studioMixMode(mode) {
   }
   if (m.mode === "off") $("stMixInfo").textContent = "Off: the primary file alone.";
   studioMixLayout();
-  studioSchedule();
+  studioPending();
 }
 
 function studioMixExtra() {
@@ -7028,13 +7115,13 @@ function wireStudioMix() {
   document.querySelectorAll('input[name="stMixMode"]').forEach((r) => r.addEventListener("change", () => studioMixMode(r.value)));
   for (const p of ["stMix", "stDmix"]) for (const id of [p + "Upto", p + "Hist"]) {
     $(id).addEventListener("input", studioMixLayout);
-    $(id).addEventListener("change", () => { studioMixLayout(); studioSchedule(); });
+    $(id).addEventListener("change", () => { studioMixLayout(); studioPending(); });
   }
   $("stDmixOn").addEventListener("change", async () => {
     S.st.dmix.on = $("stDmixOn").checked;
     if (S.st.dmix.on && !(await studioMixEpochs("donor"))) { S.st.dmix.on = false; $("stDmixOn").checked = false; }
     if (!S.st.dmix.on) $("stDmixInfo").textContent = "Off: the donor file alone.";
-    studioMixLayout(); studioSchedule();
+    studioMixLayout(); studioPending();
   });
   $("stMixAdd").addEventListener("click", () => pick($("stPrimary").value.trim(), false, async (p) => {
     if (S.st.mix.rows.some((r) => r[0].toLowerCase() === p.toLowerCase())) return;
@@ -7045,7 +7132,7 @@ function wireStudioMix() {
         return;
       }
     } catch (e) { /* unreadable: the render says so */ }
-    S.st.mix.rows.push([p, 0.5]); studioMixRows(); studioSchedule();
+    S.st.mix.rows.push([p, 0.5]); studioMixRows(); studioPending();
   }));
 }
 
@@ -7168,6 +7255,10 @@ async function studioSetupLoad(name) {
   let d;
   try { d = await api(`/api/studio/setup?name=${encodeURIComponent(name)}`); }
   catch (e) { $("stSetupMsg").textContent = e.message; return; }
+  await studioSetupApply(d, name);
+}
+
+async function studioSetupApply(d, name) {        // a saved setup, or one read from a picture Download tweaked saved
   const fam = d.family && [...$("stFamily").options].some((o) => o.value === d.family) ? d.family : $("stFamily").value;
   if (fam !== $("stFamily").value) { $("stFamily").value = fam; await studioFamily(); stRemember(); }
   const v = d.values || {};
@@ -7228,10 +7319,48 @@ async function studioSetupMix() {
   studioSchedule();
 }
 
+// a PNG's fizgig_studio_setup text (Download tweaked writes it), or null
+function studioSetupFromPng(buf) {
+  const u = new Uint8Array(buf), dv = new DataView(buf);
+  if (u.length < 8 || u[0] !== 0x89 || u[1] !== 0x50) return null;
+  for (let i = 8; i + 8 <= u.length;) {
+    const n = dv.getUint32(i), type = String.fromCharCode(...u.subarray(i + 4, i + 8));
+    if (type === "IEND") break;
+    if (type === "iTXt" || type === "tEXt") {
+      const body = u.subarray(i + 8, i + 8 + n), z = body.indexOf(0);
+      if (z > 0 && new TextDecoder("latin1").decode(body.subarray(0, z)) === "fizgig_studio_setup") {
+        let k = z + 1;
+        if (type === "iTXt") { k += 2; for (let s = 0; s < 2; s++) k = body.indexOf(0, k) + 1; }   // flags, language, keyword
+        try { return JSON.parse(new TextDecoder().decode(body.subarray(k))); } catch (e) { return null; }
+      }
+    }
+    i += 12 + n;
+  }
+  return null;
+}
+
 function wireStudioSetups() {
   $("stSetupSave").addEventListener("click", () => studioSetupSave(false));
   $("stSetupList").addEventListener("change", () => { const n = $("stSetupList").value; $("stSetupList").value = ""; if (n) studioSetupLoad(n); });
   studioSetupList();
+  // Download tweaked (a still): the setup goes up first, so the server writes it into the PNG
+  $("stDlTweak").addEventListener("click", async (e) => {
+    if ($("stDlTweak").dataset.go || (S.st.layout && S.st.layout.kind !== "stills")) return;
+    e.preventDefault();
+    try { await api("/api/studio/download_setup", {data: studioSetupData()}); } catch (err) { /* the picture alone */ }
+    $("stDlTweak").dataset.go = "1"; $("stDlTweak").click(); delete $("stDlTweak").dataset.go;
+  });
+  // a picture Download tweaked saved, dropped anywhere on Studio: its LoRAs, sliders and settings back
+  const tab = $("tab-studio");
+  tab.addEventListener("dragover", (e) => { if ([...e.dataTransfer.types].includes("Files")) e.preventDefault(); });
+  tab.addEventListener("drop", async (e) => {
+    const f = [...e.dataTransfer.files].find((x) => /\.png$/i.test(x.name) || x.type === "image/png");
+    if (!f || e.defaultPrevented) return;
+    e.preventDefault();
+    const d = studioSetupFromPng(await f.arrayBuffer());
+    if (!d || !d.fizgig_repair_setup) { $("stSetupMsg").textContent = `${f.name} has no Studio settings in it (Download tweaked saves them).`; return; }
+    await studioSetupApply(d, f.name.replace(/\.png$/i, ""));
+  });
 }
 
 function studioCanvas() {
@@ -7241,11 +7370,26 @@ function studioCanvas() {
   return [x.video.width, x.video.height, x.video.frames, x.ref_mode ? 0 : n, x.ref_mode ? n : 0];
 }
 
+// the clip row's line under the boxes: what the Steps and speed-LoRA boxes give (a model with a speed LoRA)
+function studioClipNote() {
+  const L = S.st.layout, V = L && L.kind === "video" ? L.video : null, note = $("stH3Note");
+  if (!note) return;
+  if (!V || !V.speed_label || !V.clip_note) { note.textContent = ""; return; }
+  const steps = parseInt($("stH3Steps").value, 10) || 0, s = Number($("stH3Turbo").value), lora = `${V.speed_label} LoRA`;
+  note.textContent = !(s > 0) ? `${steps} steps on the base model, CFG ${L.cfg_full} with the Negative.` :
+    (steps === V.steps ? `${steps} steps on the ${lora}'s own schedule, no CFG.` :
+     `${steps} steps on the model's standard schedule, no CFG - the ${lora} is tuned for ${V.steps} steps on its own ` +
+     `schedule, so other counts are untested.`) +
+    (s < 1 ? ` At ${s} the ${lora} is part-way to the base model, which is meant to run with CFG - untested.` : "");
+}
+
 function studioNegRow() {
   const L = S.st.layout;
   if (!L) return;
   const fast = (document.querySelector('input[name="stDit"]:checked') || {}).value !== "full";
-  const cfg = L.follows_samples ? (L.follow_ck ? L.cfg_fast : L.follow_cfg) : fast && L.dit_fast ? L.cfg_fast : L.cfg_full;   // Samples-tab models: theirs
+  let cfg = L.follows_samples ? (L.follow_ck ? L.cfg_fast : L.follow_cfg) : fast && L.dit_fast ? L.cfg_fast : L.cfg_full;   // Samples-tab models: theirs
+  if (L.kind === "video" && L.video && L.video.speed_label)      // a clip runs with CFG when its speed LoRA box is 0
+    cfg = Number($("stH3Turbo").value) > 0 ? L.cfg_fast : L.cfg_full;
   $("stNegRow").style.display = L.negative_default != null && cfg > 1 ? "" : "none";
 }
 
@@ -7272,7 +7416,14 @@ function studioRow(b) {
       onchange: (e) => studioSet(b.id, en, e.target.checked)});
     const range = el("input", {type: "range", min: "-3", max: "3", step: "0.05",
       oninput: (e) => studioSet(b.id, sv, Number(e.target.value), true), onchange: () => studioCommit()});
-    const val = el("span", {class: "st-val"});
+    // the value: type one in (Enter or leaving the box sets it, -3 to 3), Esc puts the slider's back
+    const val = el("input", {type: "text", class: "st-val", title: "Type a value from -3 to 3, then Enter",
+      onkeydown: (e) => { if (e.key === "Enter") e.target.blur(); else if (e.key === "Escape") { row._sync(); e.target.blur(); } },
+      onchange: (e) => {
+        const v = Number(String(e.target.value).replace(",", ".").replace(/^\+/, ""));
+        if (!Number.isFinite(v)) { row._sync(); return; }
+        studioSet(b.id, sv, Math.max(-3, Math.min(3, Math.round(v * 100) / 100))); studioCommit();
+      }});
     const btn = (t, title, f) => el("button", {class: "btn btn-sm", text: t, title, onclick: () => { f(); studioCommit(); }});
     const label = side === "p" ? el("span", {class: "st-label", style: b.color ? `color:${b.color}` : ""},
       b.label, b.cat ? el("small", {text: `[${b.cat}]`}) : null) : el("span", {class: "st-label", text: "donor"});
@@ -7293,7 +7444,8 @@ function studioRow(b) {
           const o = side === "p" ? "ds" : "ps", v = st()[sv];
           if (S.st.donor && v >= 0 && v <= 1) { studioSet(b.id, o, Math.round((1 - v) * 100) / 100); studioSet(b.id, "de", true); }
         })));
-    row._sync = () => { tick.checked = st()[en]; range.value = st()[sv]; val.textContent = stFmt(st()[sv]);
+    row._sync = () => { tick.checked = st()[en]; range.value = st()[sv];
+      if (document.activeElement !== val) val.value = stFmt(st()[sv]);
       const on = locks().has(b.id); lock.textContent = on ? "🔒" : "🔓"; lock.classList.toggle("on", on); };
     row._sync();
     return row;
@@ -7587,6 +7739,14 @@ function studioState() {
     donor_scale: num("stDScale", 1)};
 }
 
+// a setting changed (size, length, steps, seed, a LoRA's strength, the negative, a reference...): nothing renders until
+// Update, so several can change first - only the block sliders render as they move
+function studioPending() {
+  if (!S.st.ready) return;
+  $("stStart").textContent = "Update";
+  $("stStatus").textContent = "Changed - press Update to render.";
+}
+
 function studioSchedule(live) {
   if (!S.st.ready) return;
   clearTimeout(S.st.timer);
@@ -7595,19 +7755,36 @@ function studioSchedule(live) {
 
 async function studioRender() {
   if (!$("stPrompt").value.trim()) { $("stStatus").textContent = "Enter a prompt (include the LoRA's trigger word) to see previews."; return; }
-  try { await api("/api/studio/render", {state: studioState(), ...studioExtra(), ...studioMixExtra()}); studioPoll(); }
+  // seed 0: random, rolled by Update / Start (studioStart) and kept while sliders and the other controls render, so
+  // a tweak is judged on the same picture; Baseline and Tweaked share it
+  const state = studioState();
+  if (state.seed === 0) {
+    if (!S.st.seedUsed) studioRollSeed();
+    state.seed = S.st.seedUsed;
+  }
+  try { await api("/api/studio/render", {state, ...studioExtra(), ...studioMixExtra()}); studioPoll(); }
   catch (e) { $("stStatus").textContent = e.message; }
 }
 
+function studioRollSeed() { S.st.seedUsed = 1 + Math.floor(Math.random() * (2 ** 31 - 2)); }
+
 async function studioStart() {
   stRemember();
+  if (seedOf("stSeed") === 0) studioRollSeed();      // Update with seed 0: a new random picture
   const L = S.st.layout;
   try {
     const st = await api("/api/studio/status");
+    // what the model loads with as of now - Render with, the Samples tab's checkpoint tick, look LoRA and Turbo may have
+    // changed on another tab since Studio drew: any of them is a reload, not a re-render on the old model
+    const rc = await api("/api/studio/render_choice?family=" + encodeURIComponent(L.key)).catch(() => null);
+    if (rc && rc.key === L.key) Object.assign(L, rc);
     const fast = (document.querySelector('input[name="stDit"]:checked') || {}).value !== "full";
-    const key = [L.key, $("stPrimary").value.trim(), fast, L.kind === "video" ? $("stH3Model").value + $("stH3Base").value : ""].join("|");
+    const key = [L.key, $("stPrimary").value.trim(), fast, L.kind === "video" ? $("stH3Model").value + $("stH3Base").value : "",
+      (L.render_choice || {}).value || "", L.follow_ck || "", L.follow_look || "", L.follow_turbo || ""].join("|");
     if (st.state === "ready" && S.st.loadedKey === key) {     // the same LoRA: the donor may change, then a render
       if ($("stDonor").value.trim() !== (st.donor || "")) await api("/api/studio/donor", {path: $("stDonor").value.trim()});
+      // the Samples tab's steps and CFG (a model that follows it) apply without a reload: sent before each render
+      if (L.follows_samples) await api("/api/studio/settings", {family: L.key, negative: $("stNeg").value.trim()});
       studioRender();
       return;
     }
@@ -7659,6 +7836,16 @@ async function studioPoll() {
     const donorOn = st.donor && Object.values(S.st.blocks).some((b) => b.de);
     S.st.autoOut = $("stOut").value = stem(st.primary) + (donorOn ? "_with_" + stem(st.donor.split(/[\\/]/).pop()) : "_repaired") + ".safetensors";
   }
+  if (st.baseline_early && st.baseline_early !== S.st.baseEarlyShown && st.baseline_early !== S.st.shown) {
+    // the Baseline landed first: it shows (and plays) while the Tweaked one is still rendering
+    S.st.baseEarlyShown = st.baseline_early;
+    const q = (w) => `/api/studio/image?which=${w}&gen=${st.baseline_early}&t=${encodeURIComponent(TOKEN)}`;
+    const kind = S.st.layout && S.st.layout.kind, has = st.media && st.media.baseline;
+    $("stBase").src = q("baseline");
+    $("stBaseVid").style.display = kind === "video" && has ? "" : "none";
+    $("stBase").style.display = kind === "video" && has ? "none" : "";
+    if (kind === "video" && has) { $("stBaseVid").poster = q("baseline"); $("stBaseVid").src = q("baseline_media"); }
+  }
   if (st.early && st.early !== S.st.earlyShown) {        // H3 Show early: the unfinished look, until the clip lands
     S.st.earlyShown = st.early;
     $("stTweakVid").style.display = "none"; $("stTweak").style.display = "";
@@ -7667,10 +7854,13 @@ async function studioPoll() {
   if (st.shown && st.shown !== S.st.shown) {
     S.st.shown = st.shown;
     const q = (w) => `/api/studio/image?which=${w}&gen=${st.shown}&t=${encodeURIComponent(TOKEN)}`;
-    $("stBase").src = q("baseline"); $("stTweak").src = q("tweaked");
+    const keepBase = S.st.baseEarlyShown === st.shown;      // the Baseline already showed (and plays): left alone
+    if (!keepBase) $("stBase").src = q("baseline");
+    $("stTweak").src = q("tweaked");
     // a clip plays in its pane (the picture its poster); a song gets its player under the waveform
     const kind = S.st.layout && S.st.layout.kind;
     for (const [w, img, vid, aud] of [["baseline", "stBase", "stBaseVid", "stBaseAud"], ["tweaked", "stTweak", "stTweakVid", "stTweakAud"]]) {
+      if (w === "baseline" && keepBase) continue;
       const has = st.media && st.media[w];
       $(vid).style.display = kind === "video" && has ? "" : "none";
       $(aud).style.display = "none";
@@ -7714,7 +7904,7 @@ function studioDownloads(st, q) {
   row.style.display = on ? "" : "none";
   if (!on) return;
   const lora = ($("stPrimary").value.trim().split(/[\\/]/).pop() || "render").replace(/\.safetensors$/i, "");
-  const seed = ($("stSeed").value || "").trim();
+  const seed = String(seedOf("stSeed") === 0 && S.st.seedUsed ? S.st.seedUsed : ($("stSeed").value || "").trim());
   for (const [w, id, word] of [["baseline", "stDlBase", "original"], ["tweaked", "stDlTweak", "tweaked"]]) {
     const video = kind === "video" && st.media && st.media[w];
     const name = `${lora}_${word}${seed ? "_seed" + seed : ""}${video ? ".mp4" : ".png"}`;
@@ -7895,9 +8085,9 @@ function wireStudio() {
   new MutationObserver(studioDockPlay).observe($("stPlayBoth"), {attributes: true, attributeFilter: ["style"]});
   window.addEventListener("resize", debounce(() => { const d = $("stDock"); if (d && d.classList.contains("floating")) studioDockClamp(d); }, 150));
   $("stFamily").addEventListener("change", () => { studioFamily(); stRemember(); });
-  // H3: a length / size / steps / sound change renders; Model and Base take effect at the next Start
+  // the clip row: length / size / steps / speed LoRA / sound wait for Update, as Model and Base do
   for (const id of ["stH3Len", "stH3W", "stH3H", "stH3Steps", "stH3Turbo", "stH3Sound", "stH3Boost"])
-    $(id).addEventListener("change", () => { studioH3Remember(); studioSchedule(); });
+    $(id).addEventListener("change", () => { studioH3Remember(); studioPending(); });
   $("stH3Early").addEventListener("change", studioH3Remember);
   $("stH3Model").addEventListener("change", () => { studioH3Remember(); studioSlots(); $("stStart").textContent = "Update"; });
   $("stH3Base").addEventListener("change", () => { studioH3Remember(); $("stStart").textContent = "Update"; });
@@ -7920,21 +8110,40 @@ function wireStudio() {
     studioDmixOff();
     if (S.st.ready) api("/api/studio/donor", {path: p}).then(studioPoll).catch((e) => { $("stStatus").textContent = e.message; }); }));
   $("stDonorUnload").addEventListener("click", () => { $("stDonor").value = ""; stRemember(); studioDmixOff();
-    if (S.st.ready) api("/api/studio/donor", {path: ""}).then(() => { studioPoll(); studioSchedule(); }); });
-  $("stRefPick").addEventListener("click", () => pick($("stRef").value || refStart(), false, (p) => { $("stRef").value = p; stRemember(); studioSchedule(); }));
-  $("stRefClear").addEventListener("click", () => { $("stRef").value = ""; stRemember(); studioSchedule(); });
-  $("stSeedNew").addEventListener("click", () => { $("stSeed").value = 1 + Math.floor(Math.random() * 99999); stRemember(); studioSchedule(); });
+    if (S.st.ready) api("/api/studio/donor", {path: ""}).then(() => { studioPoll(); studioPending(); }); });
+  $("stRefPick").addEventListener("click", () => pick($("stRef").value || refStart(), false, (p) => { $("stRef").value = p; stRemember(); studioPending(); }));
+  $("stRefClear").addEventListener("click", () => { $("stRef").value = ""; stRemember(); studioPending(); });
+  // ↻ New seed renders at once, as Update would (with any other change still waiting); typing a seed still waits
+  $("stSeedNew").addEventListener("click", () => {
+    $("stSeed").value = 1 + Math.floor(Math.random() * 99999); stRemember();
+    if (S.st.ready) studioStart();
+  });
   for (const id of ["stSeed", "stRes", "stW", "stH", "stRefMp", "stRefStr", "stPScale", "stDScale"])
-    $(id).addEventListener("change", () => { stRemember(); studioSchedule(); });
+    $(id).addEventListener("change", () => { stRemember(); studioPending(); });
   for (const id of ["stPrompt", "stPrimary", "stDonor", "stLuckyLo", "stLuckyHi"]) $(id).addEventListener("input", stRemember);
+  for (const id of ["stPrompt", "stPrimary", "stDonor"]) $(id).addEventListener("change", studioPending);
   $("stLuckyWho").addEventListener("change", () => { stRemember(); studioFreezeState(); });
   $("stLuckyCount").addEventListener("change", stRemember);
   $("stFreeze").addEventListener("click", () => studioFreeze(true));
   $("stUnfreeze").addEventListener("click", () => studioFreeze(false));
   $("stNeg").addEventListener("change", () => { stRemember();
-    if (S.st.ready) api("/api/studio/settings", {family: S.st.layout.key, negative: $("stNeg").value.trim()}).then(() => studioSchedule()); });
+    if (S.st.ready) api("/api/studio/settings", {family: S.st.layout.key, negative: $("stNeg").value.trim()}).then(studioPending); });
   $("stTurbo").addEventListener("change", () => { stRemember(); if (S.st.ready) api("/api/studio/settings", {family: S.st.layout.key, turbo: $("stTurbo").checked}); });
-  document.querySelectorAll('input[name="stDit"]').forEach((r) => r.addEventListener("change", studioNegRow));
+  $("stH3Turbo").addEventListener("input", () => { studioNegRow(); studioClipNote(); });
+  $("stH3Steps").addEventListener("input", studioClipNote);
+  document.querySelectorAll('input[name="stDit"]').forEach((r) => r.addEventListener("change", () => {
+    // a video model renders from the clip row's Steps and speed-LoRA boxes: Preview with sets them - the fast loop
+    // (its steps at its strength) or the full model (its own steps, the speed LoRA off, so CFG and the negative apply)
+    const L = S.st.layout, V = L && L.kind === "video" ? L.video : null;
+    if (V) {
+      const full = r.value === "full" && r.checked;
+      if (full && V.base_steps) { $("stH3Steps").value = V.base_steps; $("stH3Turbo").value = 0; }
+      else if (!full && V.steps) { $("stH3Steps").value = V.steps; $("stH3Turbo").value = V.speed_strength ?? 1; }
+      studioH3Remember();
+    }
+    studioNegRow();        // after the boxes: a clip's Negative shows when its speed LoRA box is 0 (CFG on)
+    studioClipNote();
+  }));
   document.querySelectorAll('input[name="stTarget"]').forEach((r) => r.addEventListener("change", studioMastersFollow));
   document.querySelectorAll("[data-bulk]").forEach((b) => b.addEventListener("click", () => studioBulk(b.dataset.bulk)));
   $("stPreset").addEventListener("change", () => { if ($("stPreset").value) studioPresetApply($("stPreset").value); });
@@ -9847,14 +10056,14 @@ function tabRunScroll(name) {
   if (spot) requestAnimationFrame(() => spot.scrollIntoView({block: "start", behavior: "smooth"}));
   return !!spot;
 }
-// the tabs share one scrolling pane (the page itself on a phone): back to its top
-function paneTop() {
-  const pane = document.querySelector(".notebook-pane");
-  if (pane) pane.scrollTop = 0;
-  window.scrollTo(0, 0);
-}
 function showTab(name) {
   if (name !== "prep" && S.me && S.me.dirty) meSave();      // leaving Image Prep saves the mask being edited
+  // each tab keeps its own scroll place: back on Training, the loss chart is where you left it (the tabs share one
+  // scrolling pane; a phone scrolls the page itself). Read before anything below scrolls (the tab button's
+  // scrollIntoView can move a phone's page)
+  const pane = document.querySelector(".notebook-pane"), was = document.querySelector(".tab-panel.active");
+  S.tabScroll = S.tabScroll || {};
+  if (was && was.id !== "tab-" + name) S.tabScroll[was.id] = [pane ? pane.scrollTop : 0, window.scrollY];
   const tb = document.querySelector(`.tab-item[data-tab="${name}"] span`);
   if (tb) $("tabsToggleName").textContent = tb.textContent;
   tabsMenu(false);
@@ -9863,7 +10072,23 @@ function showTab(name) {
     if (b.dataset.tab === name) b.scrollIntoView({block: "nearest", inline: "nearest"});
   });
   document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + name));
-  if (name === "prefs") paneTop();                          // Preferences opens at its top, not where the last tab was
+  if (!was || was.id !== "tab-" + name) {
+    const [py, wy] = name === "prefs" ? [0, 0] : S.tabScroll["tab-" + name] || [0, 0];   // Preferences: always its top
+    const put = () => { if (pane) pane.scrollTop = py; window.scrollTo(0, wy); };
+    // a tab that fills in as it opens (the gallery, the charts) may be too short for the place at first: tried again as
+    // it grows, for up to ~2.5 s, until it's there - and never once you've scrolled, or left the tab
+    const now = () => [pane ? pane.scrollTop : 0, window.scrollY];
+    put();
+    let at = now();
+    const again = (left) => setTimeout(() => {
+      const [p, w] = now();
+      if (p !== at[0] || w !== at[1] || !$("tab-" + name).classList.contains("active")) return;
+      if (Math.abs(p - py) < 2 && Math.abs(w - wy) < 2) return;
+      put(); at = now();
+      if (left > 1) again(left - 1);
+    }, 250);
+    again(10);
+  }
   if (name === "captions") loadCaptions();
   if (name === "prep") loadPrep();
   if (name === "studio") studioOpen();
@@ -10392,7 +10617,7 @@ function wire() {
     if (!id || $("btnImageLoss").classList.contains("is-off")) return;
     if (box.style.display !== "none") { box.style.display = "none"; return; }
     box.style.display = ""; box.textContent = "Loading…";
-    try { imageLossPanel(box, await api("/api/runs/image_loss?id=" + encodeURIComponent(id)), {...S.run, id}); }
+    try { const load = imageLossLoad(id); imageLossPanel(box, await load(), {...S.run, id}, load); }
     catch (e) { box.replaceChildren(el("div", {class: "problems", text: e.message})); }
   });
   document.querySelectorAll(".tab-item").forEach((b) => b.addEventListener("click", () => {
@@ -10552,9 +10777,10 @@ function wire() {
   new MutationObserver(() => { if (!$("rvModal").classList.contains("active")) rvStop(); })
     .observe($("rvModal"), {attributes: true, attributeFilter: ["class"]});
   $("likStart").addEventListener("click", held($("likStart"), async () => {
-    if (S.lik.mode !== "royale") return likenessSet(S.lik.picked);
-    S.ry.likeRefs = S.lik.picked.map((n) => S.lik.paths[n]).filter(Boolean);
-    ryLikeShow(); ryRemember();
+    if (S.lik.mode === "gallery") return likenessSet(S.lik.picked);
+    const refs = S.lik.picked.map((n) => S.lik.paths[n]).filter(Boolean);
+    if (S.lik.mode === "profiler") { S.pf.photos = refs; pfPhotosDraw(); pfRemember(); }
+    else { S.ry.likeRefs = refs; ryLikeShow(); ryRemember(); }
     $("likModal").classList.remove("active");
   }));
   $("likFolderPick").addEventListener("click", () => pick(S.lik.folder || refStart(), true, (p) => likGridShow(p, [])));

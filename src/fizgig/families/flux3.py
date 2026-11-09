@@ -4,6 +4,7 @@
 Sources: the model cards (huggingface.co/black-forest-labs/flux-3-image-klein, -base, -comfy) and the reference code
 (github.com/black-forest-labs/flux-3-image-klein, Apache-2.0).
 """
+from fizgig.training.optimizers import MUON_DEFAULT_ARGS
 from fizgig.families.description import FamilyDescription, LoRAFormat, ModelFile, SamplingSettings, TextEncoderBuild
 from fizgig.training import timestep_spread
 
@@ -23,7 +24,7 @@ def _preset(rank, lr=1e-4, adaptive=None, epochs=30, mp="0.25", edit=False, slid
         "NETWORK_DIM": rank, "NETWORK_ALPHA": rank, "NETWORK_TYPE": "LoRA (standard)", "LEARNING_RATE": lr,
         "MAX_TRAIN_EPOCHS": epochs, "SAVE_EVERY_N_EPOCHS": 1, "SEED": 42,
         "ADAPTIVE_LR": adaptive is not None, "ADAPTIVE_LR_MIN": lo, "ADAPTIVE_LR_MAX": hi,
-        "OPTIMIZER_TYPE": "adamw8bit", "GRADIENT_ACCUMULATION": 1, "MAX_GRAD_NORM": 1.0,
+        "OPTIMIZER_TYPE": "muon", "OPTIMIZER_ARGS": MUON_DEFAULT_ARGS, "GRADIENT_ACCUMULATION": 1, "MAX_GRAD_NORM": 1.0,
         "DATASET_MEGAPIXELS": mp, "BLOCKS_SWAP": "Auto (detect from GPU)",
         "FAMILY_PRECISION": "Auto (fits your free VRAM)", "FAMILY_EMA": "0.98 (recommended)",
         "KREA2_LOSS_WATCH": True, "KREA2_PER_IMAGE_LR": True, "KREA2_AUTO_RECAPTION": False,
@@ -38,6 +39,15 @@ FLUX3 = FamilyDescription(
     start_lr_bands=(("lora", 3e-5, 3e-4), ("finetune", 1.7e-5, 1.5e-4), ("slider", 7e-5, 6e-4)),
     masked_training=True,
     timestep_spread=timestep_spread.FLOW,     # Timestep focus presets (the shift's multiple / the curve's width)
+    batch_training=True,              # Batch size (Other Options): training_loss_batch, exact per picture
+    batch_gb=(0.4, 0.9),            # GB each extra picture takes: fixed, per MP (batch 1 vs 3)
+    # Batch x checkpointing sweep, 6 Nov 2026 (RTX PRO 6000, 8 pictures, 2 epochs, uncompiled, previews off - so the
+    # no-checkpointing peaks below are the larger of that run's and train_memory's preview peak; uncompiled sits
+    # above a compiled run, the safe side). Desktop\Fizgig batch tests\bsgc\MORNING_REPORT.md
+    batch_auto=((0.25, 4), (1.0, 1)),          # 1.45x a picture at 0.25 MP; nothing gained at 1 MP
+    batch_gb_nogc=((0.25, 5.7), (1.0, 13.1)),
+    nogc_uncompiled=True,
+    train_memory_nogc={"bf16": ((0.25, 16.7), (1.0, 24.0))},   # 1.3x / 1.47x faster than checkpointed
     arch_id="flux3klein",
     display_name="Flux 3 Image Klein",
     gui_label="Flux 3 Image Klein",
@@ -46,16 +56,17 @@ FLUX3 = FamilyDescription(
 
     model_files=(
         ModelFile("flux3_dit", "Flux 3 Image Klein Base DiT", True, _COMFY,
-                  "diffusion_models/flux3_image_klein_bf16.safetensors", 11.08,
-                  "bf16 Base (undistilled) for training. Files with _sd_ in the name are the distilled model.",
+                  "diffusion_models/flux3-image-klein-base-bf16.safetensors", 11.08,
+                  "bf16 Base (undistilled) for training: the file with base in its name, not the distilled one.",
                   role="dit", gated=True),
         ModelFile("flux3_vae", "Flux 3 autoencoder", True, _COMFY, "vae/flux2-vae.safetensors", 0.34,
-                  "The FLUX.2 autoencoder, as Klein 9B's.", role="vae", gated=True),
+                  "The FLUX.2 autoencoder, as Klein 9B's.", role="vae", gated=True,
+                  signature=("decoder.conv_in.weight", (512, 32, 3, 3))),
         ModelFile("flux3_text_encoder", "Qwen3-VL-4B text encoder", True, _COMFY,
                   "text_encoders/qwen3vl_4b_bf16.safetensors", 8.88,
                   "Used for caching only, then unloaded.", role="text_encoder", gated=True),
         ModelFile("flux3_distilled_dit", "Flux 3 Image Klein (distilled, previews)", False, _COMFY,
-                  "diffusion_models/flux3_image_klein_sd_bf16.safetensors", 11.10,
+                  "diffusion_models/flux3-image-klein-bf16.safetensors", 11.10,
                   "16 steps, no CFG: fast previews and the workbench.", role="preview_dit", gated=True),
     ),
     # measured 21 Oct 2026 with scripts/check_te_builds.py against qwen3vl_4b_bf16 (the same weights as Krea 2's
@@ -153,7 +164,7 @@ FLUX3 = FamilyDescription(
         ("✨ Flux 3 Fine-tune (5e-5)", _preset(16, lr=5e-5, ft=True)),
     ),
     workbench=("repair", "profiler", "extract", "royale"),
-    activation_cache=True,            # Turbo Preview: step-1 replay, identical to a full render
+    activation_cache=True,            # Reuse unchanged blocks: step-1 replay, identical to a full render
 
     notes=(
         ("Text conditioning keeps the padding: prompts are padded to a multiple of 80 tokens and the DiT attends "

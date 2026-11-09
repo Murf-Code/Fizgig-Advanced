@@ -158,7 +158,10 @@ def test_batch_loads_the_picked_variant_and_resume_repeats_it(tmp_path):
     bm2.variants = tv.VariantPicker(s, seed=42)
     again = _epoch(bm2, 3)
     assert [b["caption_pick"] for b in again] == [b["caption_pick"] for b in first[3]]
-    assert all(torch.equal(a["cond__hidden_states"], b["cond__hidden_states"]) for a, b in zip(again, first[3]))
+    rows = lambda h: list(h) if torch.is_tensor(h) else h      # a list when the captions' lengths differ
+    assert all(len(rows(a["cond__hidden_states"])) == len(rows(b["cond__hidden_states"])) and
+               all(torch.equal(x, y) for x, y in zip(rows(a["cond__hidden_states"]), rows(b["cond__hidden_states"])))
+               for a, b in zip(again, first[3]))
     # a repeated image may pick differently on each of its steps in an epoch
     reps = [(k, p) for b in first[1] for k, p in zip(b["item_keys"], b["caption_pick"]) if k == "img0"]
     assert len(reps) == 2
@@ -182,14 +185,13 @@ def test_validation_keeps_the_original_caption(tmp_path):
     orig = original_text_batch(b)
     for j, k in enumerate(orig["item_keys"]):
         row = _enc_one(items[int(k[3:])].caption)["hidden_states"]
-        valid = orig.get("cond__hidden_states__valid")
-        n = int(valid[j].sum()) if valid is not None else orig["cond__hidden_states"].shape[1]
-        assert torch.equal(orig["cond__hidden_states"][j][:n], row)
+        assert torch.equal(orig["cond__hidden_states"][j], row)    # a list when the captions' lengths differ
     v = FixedValidation(["img0", "img1"], images=2)
     v.offer(b)
-    kept = v.batches["img0"]
-    assert kept["caption_pick"] == ["orig", "orig"]
-    assert torch.equal(kept["cond__hidden_states"], orig["cond__hidden_states"])
+    j = [str(k) for k in b["item_keys"]].index("img0")
+    kept = v.batches["img0"]                    # that picture alone, with its own caption
+    assert kept["caption_pick"] == ["orig"] and kept["item_keys"] == ["img0"]
+    assert torch.equal(kept["cond__hidden_states"][0], orig["cond__hidden_states"][j])
 
 
 def test_caption_edit_invalidates_and_rebuild_encodes_only_whats_new(tmp_path):
@@ -256,9 +258,16 @@ def test_moss_batch_of_variants_trains(tmp_path):
     for e in range(1, 6):
         b = _epoch(bm, e)[0]
         seen |= set(b["caption_pick"])
-        loss, info = drv.training_loss(dit, b["latents"], drv.batch_cond(b, "cpu"), torch.Generator().manual_seed(e))
-        loss.backward()
-        assert torch.isfinite(loss)
+        # upstream's Batch size: each caption shape's pictures trained together (training_loss_batch)
+        hs = b["cond__hidden_states"]
+        groups = {}
+        for i in range(len(b["item_keys"])):
+            groups.setdefault(tuple(hs[i].shape), []).append(i)
+        for ix in groups.values():
+            cond = drv.stack_conds([{"hidden_states": hs[i][None]} for i in ix])
+            loss, info = drv.training_loss_batch(dit, b["latents"][ix], cond, torch.Generator().manual_seed(e))
+            loss.backward()
+            assert torch.isfinite(loss) and len(info["per"]) == len(ix)
     assert len(seen) > 1
 
 

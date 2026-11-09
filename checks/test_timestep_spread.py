@@ -175,16 +175,39 @@ def test_flow_presets_are_the_shift_and_width():
 
 
 # ---- a CPU training step with a preset ------------------------------------------------------------------------------
+class _UNet(torch.nn.Module):
+    """Stands in for the diffusers UNet (not in the checks' environment): a per-image function of the latent, the
+    timestep, the pooled text and the MEAN over caption rows - like cross-attention, unchanged when every row is
+    repeated (pad_conditioning's exact padding), changed by zero rows."""
+
+    def __init__(self):
+        super().__init__()
+        self.w = torch.nn.Parameter(torch.randn(4, 4) * 0.1)
+        self.h = torch.nn.Linear(2048, 4)
+        self.p = torch.nn.Linear(1280, 4)
+
+    def forward(self, x, t, encoder_hidden_states, added_cond_kwargs, return_dict=False):
+        x = x.float()
+        tt = torch.as_tensor(t, dtype=torch.float32).reshape(-1).expand(x.shape[0])
+        c = self.h(encoder_hidden_states.float().mean(1)) + self.p(added_cond_kwargs["text_embeds"].float())
+        y = torch.einsum("oc,bchw->bohw", self.w, x) + c[:, :, None, None] + (tt / 1000.0)[:, None, None, None]
+        return (y,)
+
+
+
 @pytest.mark.parametrize("preset", ["detail", "composition"])
 def test_sdxl_trains_with_a_preset(tmp_path, preset):
-    from checks.test_batch_size import _UNet, _check_family
+    from test_batch_training import _driver_parity
     drv = get("sdxl").load_driver()
     drv.set_options({"timestep_spread": preset})
     g = torch.Generator().manual_seed(5)
     items = [{"hidden_states": torch.randn(77 * c, 2048, generator=g), "pooled": torch.randn(1280, generator=g)}
              for c in (1, 2, 1, 2)]
     torch.manual_seed(0)
-    _check_family(drv, _UNet(), tmp_path, items, (4, 8, 8), 2, 1e-5)       # batched = mean of singles, a step taken
+    # Batch size above 1 (upstream's training_loss_batch): the preset's t for each picture, as one at a time
+    same = [{"hidden_states": it["hidden_states"][None], "pooled": it["pooled"][None]} for it in items[::2]]
+    b, s = _driver_parity(drv, _UNet(), torch.randn(2, 4, 8, 8, generator=g), same, None)
+    assert abs(b - s) <= 1e-5 * abs(s)
     unet = _UNet()
     opt = torch.optim.SGD(unet.parameters(), lr=1e-2)
     gen = torch.Generator().manual_seed(1)
@@ -203,7 +226,7 @@ def test_sdxl_trains_with_a_preset(tmp_path, preset):
 @pytest.mark.parametrize("preset", ["composition", "balanced"])
 def test_anima_trains_with_a_preset(tmp_path, preset):
     pytest.importorskip("einops")
-    from checks.test_batch_size import _check_family
+    from test_batch_training import _driver_parity
     from fizgig.anima.driver import DIT_CONFIG
     from fizgig.anima.model import Anima
     torch.manual_seed(0)
@@ -215,7 +238,9 @@ def test_anima_trains_with_a_preset(tmp_path, preset):
              for nq, nt in ((7, 9), (3, 4), (5, 2), (2, 6))]
     drv = get("anima").load_driver()
     drv.set_options({"timestep_spread": preset})
-    _check_family(drv, dit, tmp_path, items, (16, 8, 8), 2, 5e-2)       # batched = mean of singles, a step taken
+    # Batch size above 1 (upstream's training_loss_batch): the preset's t for each picture, as one at a time
+    b, s = _driver_parity(drv, dit, torch.randn(4, 16, 8, 8, generator=g), items, None)
+    assert abs(b - s) <= 5e-2 * abs(s)
 
 
 class _ZDiT(torch.nn.Module):

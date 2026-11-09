@@ -46,11 +46,18 @@ def quantize(dit, driver, precision, compute_device, store_device=None):
         dit._nf4_quantized = True
     gc.collect()
     torch.cuda.empty_cache()
-    logger.info(f"[precision] {precision}: {len(targets)} block Linears quantised; everything else stays bf16")
+    logger.info(f"[precision] {precision}{_int8_kind(driver, precision)}: {len(targets)} block Linears quantised; everything else stays bf16")
     return len(targets)
 
 
 @torch.no_grad()
+def _int8_kind(driver, precision):
+    """The log's word on which INT8: weight-only (activations stay bf16) or the default, activations rounded too."""
+    if precision != "int8":
+        return ""
+    return " (weight-only, activations bf16)" if getattr(driver, "int8_weight_only", False) else " (weights and activations)"
+
+
 def _quantize_one(m, driver, precision, compute_device, store_device=None):
     """One block-map Linear to `precision` ("int8" or "nf4"), in place - the step quantize() takes for each."""
     from fizgig.modules.nf4 import _dequantize_source_weight
@@ -65,8 +72,11 @@ def _quantize_one(m, driver, precision, compute_device, store_device=None):
         m.weight.data = q if store_device is None else q.to(store_device)
         m.register_buffer("_int8_wscale", scale.reshape(1, -1).to(torch.float32), persistent=False)
         m._is_int8 = True
-        m._int8_grad_mode = "bf16"
-        m.forward = int8_train_forward.__get__(m, type(m))
+        if getattr(driver, "int8_weight_only", False):    # the activations stay bf16 (description: why)
+            from fizgig.modules.int8_train import int8_weight_only_forward
+            m.forward = int8_weight_only_forward.__get__(m, type(m))
+        else:
+            m.forward = int8_train_forward.__get__(m, type(m))
         del w
     else:
         from bitsandbytes.functional import quantize_nf4
@@ -105,7 +115,7 @@ def _stream_load(driver, path, device, precision, swap):
     dit.eval().requires_grad_(False)
     gc.collect()
     torch.cuda.empty_cache()
-    logger.info(f"[precision] {precision}: {len(_targets(dit, driver))} block Linears quantised; everything else stays bf16")
+    logger.info(f"[precision] {precision}{_int8_kind(driver, precision)}: {len(_targets(dit, driver))} block Linears quantised; everything else stays bf16")
     return dit
 
 
@@ -209,7 +219,16 @@ def _peak(entry, megapixels):
 TIGHT_MARGIN_GB = 0.5      # nf4 with no swap beats a swapped int8 base down to this much headroom
 
 
-def plan(desc, driver, precision="auto", blocks_to_swap=-1, free_gb=None, margin_gb=1.5, megapixels=1.0):
+def small_card_figures(desc) -> bool:
+    """Whether the Auto plan reads desc.train_memory_small: the family has small-card figures and this card gets the
+    trainer's small-card preview treatment (under 20 GB)."""
+    if not getattr(desc, "train_memory_small", None):
+        return False
+    from fizgig.families.train import _small_card_previews
+    return _small_card_previews()
+
+
+def plan(desc, driver, precision="auto", blocks_to_swap=-1, free_gb=None, margin_gb=1.5, megapixels=1.0, pictures=1):
     """Resolve 'auto' precision and/or block swap (-1) from free VRAM and the description's measured training
     memory (desc.train_memory: {precision: (peak GB at no swap, GB saved per swapped block)}).
 
@@ -217,13 +236,18 @@ def plan(desc, driver, precision="auto", blocks_to_swap=-1, free_gb=None, margin
     far more speed than quantisation. If none fits with the full margin, nf4 still goes first when it fits with a
     small one: swapping int8 instead cost 4.4x the step time and 4x the CPU on a 16 GB card (#216; measured July
     2026). Only if nothing fits does it swap (int8, the smaller swappable base). An explicit precision with auto swap
-    gets the fewest blocks that fit. Returns (precision, blocks_to_swap, reason)."""
+    gets the fewest blocks that fit. pictures: a batched step's (Batch size), each past the first adding
+    desc.batch_gb's figure at megapixels. Returns (precision, blocks_to_swap, reason)."""
     if free_gb is None:
         free_gb = free_vram_gb()
-    mem = {p: (_peak(v, megapixels), v[1]) for p, v in (desc.train_memory or {}).items()}
+    extra = batch_extra(desc, megapixels, pictures)
+    small = small_card_figures(desc)
+    table = desc.train_memory_small if small else desc.train_memory
+    mem = {p: (_peak(v, megapixels) + extra, v[1]) for p, v in (table or {}).items()}
     offered = [p for p in PRECISIONS if p in desc.precisions]
-    if precision == "auto" and getattr(desc, "auto_precisions", ()):
-        offered = [p for p in desc.auto_precisions if p in desc.precisions]
+    order = (getattr(desc, "auto_precisions_small", ()) if small else ()) or getattr(desc, "auto_precisions", ())
+    if precision == "auto" and order:
+        offered = [p for p in order if p in desc.precisions]
     cap = driver.max_blocks_to_swap()
     budget = free_gb - margin_gb
 
@@ -260,6 +284,23 @@ def plan(desc, driver, precision="auto", blocks_to_swap=-1, free_gb=None, margin
     return precision, blocks_to_swap, "as set"
 
 
+def batch_extra(desc, megapixels=1.0, pictures=1):
+    """GB a batched step needs past one picture's: desc.batch_gb (fixed, per megapixel) for each picture after the
+    first."""
+    fixed, per_mp = getattr(desc, "batch_gb", None) or (0.0, 0.0)
+    return max(0, int(pictures) - 1) * (float(fixed) + float(per_mp) * float(megapixels))
+
+
+def fits(desc, precision, blocks_to_swap, free_gb, megapixels=1.0, pictures=1, margin_gb=1.5):
+    """Whether `precision` with `blocks_to_swap` swapped fits free_gb by the description's figures (as plan() weighs
+    them); True when there is no figure for it."""
+    if precision not in (desc.train_memory or {}):
+        return True
+    v = desc.train_memory[precision]
+    extra = batch_extra(desc, megapixels, pictures)
+    return _peak(v, megapixels) + extra - max(0, blocks_to_swap) * v[1] <= free_gb - margin_gb
+
+
 def share_shortfall(desc, driver, precision, blocks_to_swap, megapixels, free_gb=None, margin_gb=0.5):
     """Why `precision` with `blocks_to_swap` swapped won't fit this card ("needs ~X GB, Y GB free"), or "" when it
     does or the description has no figure for it - read from the same train_memory figures Auto plans with."""
@@ -290,7 +331,25 @@ def card_gb():
     return torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
 
 
-def plan_checkpointing(desc, precision, blocks_to_swap, megapixels, free_gb=None, compiled=True, kind="", rank=8):
+def auto_batch(desc, megapixels):
+    """Batch size Auto's batch for this size (desc.batch_auto), before the memory check: 1 when the family has none,
+    or the run is past its measured sizes."""
+    return desc.auto_batch(megapixels)
+
+
+def nogc_batch_gb(desc, megapixels, pictures):
+    """GB the pictures past the first add with checkpointing off (desc.batch_gb_nogc), or None when unmeasured at
+    this size."""
+    if pictures <= 1:
+        return 0.0
+    pts = getattr(desc, "batch_gb_nogc", None) or ()
+    if not pts or megapixels > max(p[0] for p in pts) + 0.01:
+        return None
+    return _peak((pts, 0.0), max(megapixels, min(p[0] for p in pts))) * (pictures - 1)
+
+
+def plan_checkpointing(desc, precision, blocks_to_swap, megapixels, free_gb=None, compiled=True, kind="", rank=8,
+                       pictures=1):
     """Gradient checkpointing on or off: (on, reason). Off only on a big card (NOGC_MIN_CARD_GB+), for a compiled run with no block swap whose measured
     no-checkpointing peak (desc.train_memory_nogc, at the largest bucket) fits free VRAM with NOGC_MARGIN_GB to spare.
     The figures are compiled runs - uncompiled blocks without checkpointing take more - and a swapped block's weights
@@ -301,8 +360,8 @@ def plan_checkpointing(desc, precision, blocks_to_swap, megapixels, free_gb=None
         return True, f"no measured figure for {key} without it"
     if blocks_to_swap > 0:
         return True, "blocks are swapped"
-    if not compiled and desc.compiles:       # a family that never compiles was measured uncompiled
-        return True, "the blocks aren't compiled this run"
+    if not compiled and desc.compiles and not getattr(desc, "nogc_uncompiled", False):
+        return True, "the blocks aren't compiled this run"     # (a family that never compiles was measured uncompiled)
     if card_gb() < NOGC_MIN_CARD_GB:
         return True, f"a {card_gb():.0f} GB card (only {NOGC_MIN_CARD_GB:.0f} GB+ cards go without it)"
     if rank > NOGC_MAX_RANK:
@@ -312,9 +371,14 @@ def plan_checkpointing(desc, precision, blocks_to_swap, megapixels, free_gb=None
     if megapixels > max(p[0] for p in pts) + 0.01:
         return True, f"on: {megapixels:.2f} MP is past the measured sizes"
     need = _peak((pts, 0.0), max(megapixels, min(p[0] for p in pts)))    # below the first point: that point's peak
+    more = nogc_batch_gb(desc, megapixels, pictures)
+    if more is None:
+        return True, f"on: no measured figure for {pictures} pictures a step without it at {megapixels:.2f} MP"
+    need += more
+    at = f"{megapixels:.2f} MP" + (f" x {pictures} pictures" if pictures > 1 else "")
     if need + NOGC_MARGIN_GB <= free_gb:
-        return False, f"off: needs ~{need:.1f} GB at {megapixels:.2f} MP, {free_gb:.1f} GB free"
-    return True, f"on: off would need ~{need + NOGC_MARGIN_GB:.1f} GB at {megapixels:.2f} MP, {free_gb:.1f} GB free"
+        return False, f"off: needs ~{need:.1f} GB at {at}, {free_gb:.1f} GB free"
+    return True, f"on: off would need ~{need + NOGC_MARGIN_GB:.1f} GB at {at}, {free_gb:.1f} GB free"
 
 
 def plan_partial_checkpointing(desc, precision, blocks_to_swap, megapixels, free_gb=None, compiled=True, kind="",

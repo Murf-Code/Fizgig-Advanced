@@ -4,6 +4,7 @@ Facts from the phase-0 research (26 Sep 2026; full notes in the Desktop fizgig_f
 RESEARCH_qwen_image_2_1_*.md files). Sources are cited per value. Training entry points stay None until
 the family is trained through its driver (qwen_image21/driver.py) by the generic cache + train entry points.
 """
+from fizgig.training.optimizers import MUON_DEFAULT_ARGS
 from fizgig.families.description import (
     GENERAL_NEGATIVE, FamilyDescription, LoRAFormat, ModelFile, SamplingSettings, SpeedLoRA,
 )
@@ -19,7 +20,8 @@ _TEMPLATE = "Comfy-Org workflow_templates templates/image_qwen_image_2_1_t2i.jso
 _REDDIT = "r/StableDiffusion 'Qwen Image 2.1 4 Steps Turbo Lora is here by Viggle' (community, Sep 2026)"
 
 def _preset(rank, lr=1e-4, adaptive=None, epochs=30, edit=False, slider=False):
-    # 0.5 MP, adamw8bit, 30 epochs saved every epoch. adaptive=(min, max) turns Adaptive LR on (the run starts at
+    # 0.5 MP, Muon (Peter, 6 Nov: source-matching detail sharpness; step size matched to AdamW's, so the rates
+    # below carry over), 30 epochs saved every epoch. adaptive=(min, max) turns Adaptive LR on (the run starts at
     # the geometric midpoint and the LR box is ignored); None trains flat at lr. Detection runs; per-image LR is
     # off, as in the runs these were measured on.
     lo, hi = adaptive or ("2e-4", "4e-4")
@@ -28,7 +30,7 @@ def _preset(rank, lr=1e-4, adaptive=None, epochs=30, edit=False, slider=False):
         "MAX_TRAIN_EPOCHS": epochs, "SAVE_EVERY_N_EPOCHS": 1, "SEED": 42, "FAMILY_EDIT": edit,
         "FAMILY_SLIDER": slider,
         "ADAPTIVE_LR": adaptive is not None, "ADAPTIVE_LR_MIN": lo, "ADAPTIVE_LR_MAX": hi,
-        "OPTIMIZER_TYPE": "adamw8bit", "GRADIENT_ACCUMULATION": 1, "MAX_GRAD_NORM": 1.0,
+        "OPTIMIZER_TYPE": "muon", "OPTIMIZER_ARGS": MUON_DEFAULT_ARGS, "GRADIENT_ACCUMULATION": 1, "MAX_GRAD_NORM": 1.0,
         "DATASET_MEGAPIXELS": "0.5", "BLOCKS_SWAP": "Auto (detect from GPU)",
         "FAMILY_PRECISION": "Auto (fits your free VRAM)", "FAMILY_TRAINING_ADAPTER": True,
         "FAMILY_EMA": "0.98 (recommended)",
@@ -44,6 +46,8 @@ QWEN_IMAGE_21 = FamilyDescription(
     start_lr_bands=(("lora", 3e-5, 4.5e-4), ("slider", 7e-5, 6e-4)),
     masked_training=True,
     timestep_spread=timestep_spread.FLOW,     # Timestep focus presets (the shift's multiple / the curve's width)
+    batch_training=True,              # Batch size (Other Options): training_loss_batch, exact per picture
+    batch_gb=(0.55, 1.35),          # GB each extra picture takes: fixed, per MP (batch 1 vs 3)
     rgba=True,
     arch_id="qwenimage21",
     display_name="Qwen Image 2.1",
@@ -197,7 +201,7 @@ QWEN_IMAGE_21 = FamilyDescription(
         note="Qwen-Image-2.1-Turbo: 8 steps, CFG 1, its own sigmas with no shift.",
         source=f"https://huggingface.co/{_TURBO} (model_index.json, scheduler_config.json)"),
     int8_attention=True,              # workbench renders: comfy-kitchen's INT8 attention
-    activation_cache=True,            # Turbo Preview: step-1 replay, identical to a full render
+    activation_cache=True,            # Reuse unchanged blocks: step-1 replay, identical to a full render
     finetune=True,                  # the driver's ft_spec (families/ft.py)
     # measured 28 Sep 2026: 40-48 pairs learned a grade on held-out photos in 6-8 epochs at 0.5 MP
     edit_note=("About 40 pairs (20 at least; more if your photos vary a lot). Each photo 1 MP or larger, e.g. "

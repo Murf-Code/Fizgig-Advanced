@@ -48,6 +48,9 @@ class _Dit(nn.Module):
         return x
 
 
+PRESS = {"at": 0, "n": 0, "out": ""}     # _run's Pause-then-Pause press: at which training step
+
+
 class TinyDriver(FamilyDriver):
     supports_references = False
 
@@ -82,6 +85,11 @@ class TinyDriver(FamilyDriver):
 
     def training_loss(self, dit, latents, cond, generator, *, min_t=0.0, max_t=1.0, refs=None, diff_ref=None,
                       diff_weight=0.0, loss_mask=None, prior=None, **kw):
+        if PRESS["at"] and torch.is_grad_enabled():     # a training step (validation and previews run without grad)
+            PRESS["n"] += 1
+            if PRESS["n"] == PRESS["at"]:
+                open(os.path.join(PRESS["out"], ".pause_requested"), "w").write("pause\n")
+                open(os.path.join(PRESS["out"], ".savestop_now"), "w").close()
         b = latents.shape[0]
         t = torch.rand(b, generator=generator) * (max_t - min_t) + min_t
         noise = torch.randn(latents.shape, generator=generator)
@@ -89,6 +97,10 @@ class TinyDriver(FamilyDriver):
         v = dit(xt.flatten(2).transpose(1, 2), cond["emb"].view(b, 1, 4)).transpose(1, 2).reshape(latents.shape)
         per = ((v - (noise - latents)) ** 2).flatten(1).mean(1)
         return per.mean(), {"t": float(t[0]), "ts": [float(x) for x in t], "per": per}
+
+    def training_loss_batch(self, dit, latents, cond, generator, *, min_t=0.0, max_t=1.0, loss_mask=None):
+        # Batch size above 1 (upstream's batch_training): the toy loss already takes a stack, each picture its own
+        return self.training_loss(dit, latents, cond, generator, min_t=min_t, max_t=max_t, loss_mask=loss_mask)
 
     def noise_latents(self, latents, generator, *, min_t=0.0, max_t=1.0):
         t = torch.full((latents.shape[0],), (min_t + max_t) / 2)
@@ -134,7 +146,7 @@ def tiny(monkeypatch, data):
     """The trainer on a tiny CPU family (zimage's description, this file's driver), the cache made."""
     import fizgig.families.cache as C
     import fizgig.families.train as T
-    desc = dataclasses.replace(registry.FAMILIES["zimage"], driver=f"{__name__}:TinyDriver", supports_batch=True)
+    desc = dataclasses.replace(registry.FAMILIES["zimage"], driver=f"{__name__}:TinyDriver", batch_training=True)
     monkeypatch.setitem(registry.FAMILIES, "zimage", desc)
     monkeypatch.setattr(T, "torch", _CpuTorch("torch"))
     monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda *a, **k: None)
@@ -150,15 +162,9 @@ def tiny(monkeypatch, data):
 
 def _run(T, cfg, out, press_at=0, resume=None, **kw):
     """One training run of 3 epochs; press_at: Pause, then Pause again, right after that step (as the UI does)."""
-    if press_at:
-        class _Presses(T.StepLog):
-            def add(self, step, *a, **k):
-                super().add(step, *a, **k)
-                if step == press_at:
-                    open(os.path.join(str(out), ".pause_requested"), "w").write("pause\n")
-                    open(os.path.join(str(out), ".savestop_now"), "w").close()
-        T_StepLog = T.StepLog
-        T.StepLog = _Presses
+    # the press is made from the toy driver's training forward of step press_at (a step's logged numbers arrive one
+    # step late since upstream #221, so the step log can't time it), and seen between steps, right after that one
+    PRESS.update(at=press_at, n=0, out=str(out))
     args = dict(network_dim=4, network_alpha=4, learning_rate=1e-3, lr_scheduler="cosine", max_train_epochs=3,
                 save_state=True, compile_blocks="off", seed=7)
     args.update(kw)
@@ -169,8 +175,7 @@ def _run(T, cfg, out, press_at=0, resume=None, **kw):
         assert e.code in (0, None)
         return "stopped"
     finally:
-        if press_at:
-            T.StepLog = T_StepLog
+        PRESS["at"] = 0
 
 
 def _losses(out):

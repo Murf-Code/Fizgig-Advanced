@@ -173,7 +173,7 @@ class H3RepairEngine(ClipContract):
         # The community Turbo LoRA (6-step previews). Applied ONCE at ensure_pipeline and left
         # enabled — it conditions every render identically, so baseline-vs-tweaked comparisons
         # are apples to apples. (This is the ~780 MB preview accelerator, not Phase C's
-        # activation-cache "Turbo Preview".)
+        # activation-cache "Turbo Preview", now "Reuse unchanged blocks".)
         self._turbo_net = None
         self._turbo_adaln = []
         self._steps = 20               # 6 when the Turbo LoRA loads
@@ -1293,7 +1293,7 @@ class H3RepairEngine(ClipContract):
             except sampling.PreviewAborted:
                 raise
             except Exception:
-                logger.exception("Turbo Preview failed — falling back to a full forward")
+                logger.exception("Reuse unchanged blocks failed — falling back to a full forward")
                 self._invalidate_activation_cache()
                 lat = _render(None)
         else:
@@ -1562,6 +1562,7 @@ class H3RepairEngine(ClipContract):
     # the shared video contract (families/video_workbench.py ClipContract); these are H3's hooks.
     default_clip_frames = H3_PREVIEW_FRAMES
     supports_keyframes = supports_base_modes = supports_banks = True
+    supports_show_early = True
 
     def _clip_regimes(self):
         from fizgig.families.minimax import MINIMAX
@@ -1613,7 +1614,7 @@ class H3RepairEngine(ClipContract):
         def _on_denoised(step, n, x0):
             if on_early is None or step != int(early_step):
                 return
-            on_early(self.decode_middle_frame_image(x0), step, n)
+            on_early(self.early_frame_image(x0), step, n)
 
         lat, aud = self.render_latent(state, seed=int(seed), prompt=prompt, width=width,
                                       height=height, frames=frames, steps=st,
@@ -1629,6 +1630,52 @@ class H3RepairEngine(ClipContract):
                 "sig": "refmod", "int8_attention": self._int8_tag()}
 
     @torch.no_grad()
+    def early_frame_image(self, latent) -> Optional[Image.Image]:
+        """Show early's mid-render look (after pass 2), or None when the card can't take it. The decode happens while
+        the render's own memory is still in use, and the decoder's weights are 4.5 GB: on a 32 GB card a 25 GB render
+        plus the desktop plus those weights filled it, and Windows' driver then spilled the model to system RAM - the
+        rest of the render crawled at "pass 2 of 6" (7 Nov 2026). So: only when the whole card (other apps counted)
+        has the room, and the decoder goes back off the card straight after, the render still running.
+        First choice is taeh3 (22.7 MB, 11x faster, fizgig/minimax/taeh3.py): until it's downloaded - or if it fails -
+        the full decoder below is the fallback."""
+        tae = getattr(self, "_taeh3", None)
+        if tae is None:
+            try:
+                from fizgig.minimax import taeh3
+                tae = self._taeh3 = taeh3.load(self.device)       # None until downloaded (a background fetch starts)
+            except Exception:
+                logger.exception("[h3-workbench] taeh3 didn't load - Show early uses the full decoder")
+                tae = None
+        if tae is not None:
+            try:
+                from fizgig.minimax import taeh3
+                return taeh3.middle_frame(tae, latent)
+            except Exception:
+                logger.exception("[h3-workbench] taeh3 decode failed - Show early uses the full decoder")
+        dec = self._ensure_decoder()
+        on_card = next(dec.parameters()).device.type == "cuda"
+        need = (0.0 if on_card else sum(p.numel() * p.element_size() for p in dec.parameters()) / 2**30) + 1.0
+        try:
+            from fizgig.utils.device import card_free_vram_gb
+            free = card_free_vram_gb(torch.device(self.device).index or 0) if torch.cuda.is_available() else None
+        except Exception:
+            free = None
+        if free is not None and free < need + 1.5:
+            logger.info("[h3-workbench] Show early skipped: %.1f GB free on the card, its decode needs ~%.1f GB "
+                        "(the clip renders on)", free, need)
+            self.early_skipped_gb = need
+            return None
+        try:
+            dec = dec.to(self.device)
+            px = dec.decode_middle_frame(latent.to(self.device).float())[0]
+            arr = (px.permute(1, 2, 0).clamp(0, 1) * 255).byte().cpu().numpy()
+        finally:
+            self.decoder = dec.to("cpu")              # never resident mid-render: the rest of the render needs it
+            self._decoder_resident = False
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        return Image.fromarray(arr)
+
     def decode_middle_frame_image(self, latent) -> Image.Image:
         """One PIL frame (the clip's middle) from a latent — the early-look decode."""
         dec = self._ensure_decoder().to(self.device)

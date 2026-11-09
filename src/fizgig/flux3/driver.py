@@ -15,7 +15,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from fizgig.families.driver import Block, BlockGroup, FamilyDriver, prior_base, weighted_loss, with_prior
+from fizgig.families.driver import Block, BlockGroup, FamilyDriver, picture_losses, prior_base, weighted_loss, with_prior
 from fizgig.training import timestep_spread as TS
 from fizgig.flux3 import sampling as S
 
@@ -213,6 +213,40 @@ class Flux3Driver(FamilyDriver):
         if base is not None:
             loss = with_prior(loss, prior, base, (pred.float() - base).pow(2).mean(dim=-1), mw, wgt)
         return loss, {"t": t}
+
+    def stack_conds(self, conds):
+        """Captions of any length batch as they are: the DiT packs each picture as its own sample (its own text,
+        image and attention bounds), so nothing is padded."""
+        return {"items": conds}
+
+    def training_loss_batch(self, dit, latents, cond, generator, *, min_t=0.0, max_t=1.0, loss_mask=None):
+        """Batch Size above 1: each picture's noise and t drawn as training_loss draws them, picture by picture, then
+        one forward over the pictures packed as samples (each its own text, image and timestep). The loss is the
+        pictures' mean: a mask weighs each picture's tokens on their own."""
+        h, w = latents.shape[-2:]
+        device = latents.device
+        n = latents.shape[0]
+        x0s, xts, ts = [], [], []
+        for i in range(n):
+            x0 = S.to_tokens(latents[i].float())
+            noise = torch.randn(x0.shape, generator=generator).to(device)
+            t = self._sample_t(generator, min_t, max_t)
+            x0s.append(x0)
+            xts.append((1 - t) * x0 + t * noise)
+            ts.append((t, noise))
+        packed = S.pack([[S.text_item(c["tokens"], device), None, (xt, S.image_ids(h, w, device))]
+                         for c, xt in zip(cond["items"], xts)])
+        for (a, b), (t, _) in zip(packed.mode_indices["image"], ts):
+            packed.timesteps["image"][a:b] = t
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=latents.is_cuda):
+            if dit.flow_map:
+                raise RuntimeError("Flux 3 trains on the Base checkpoint, not the distilled one")
+            pred = dit(packed)
+        target = torch.cat([noise - x0 for x0, (_, noise) in zip(x0s, ts)])
+        mw = None if loss_mask is None else \
+            torch.stack([S.to_tokens(loss_mask[i].float().to(device)).mean(dim=-1) for i in range(n)])
+        per = picture_losses((pred.float() - target).pow(2).mean(dim=-1).view(n, -1), mw)
+        return per.mean(), {"t": sum(t for t, _ in ts) / n, "per": per, "ts": [float(t) for t, _ in ts]}
 
     def noise_latents(self, latents, generator, *, min_t=0.0, max_t=1.0):
         h, w = latents.shape[-2:]

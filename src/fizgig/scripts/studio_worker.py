@@ -81,7 +81,8 @@ def cmd_load(c):
         S["mix_files"] = {}
         eng.turbo_preview = bool(c.get("turbo", True))
         if getattr(desc, "video_workbench", False):
-            eng.int8_attention = True                # as the desktop's Repair Studio (comfy-kitchen where it exists)
+            # comfy-kitchen's INT8 attention where the model takes it (its description; H3 yes, Vimoo no)
+            eng.int8_attention = bool(getattr(desc, "int8_attention", False))
             eng.on_status = lambda text: emit(ev="status", text=str(text))
             S["kf"] = {}                             # keyframe / reference latents, per slot, photo, crop and canvas
         if c.get("preview_settings") is not None:
@@ -159,12 +160,14 @@ def _render(c):
                 paths, nolora = _render_songs(eng, st, c, out, gen)
             else:
                 base = eng.generate_baseline(st)
-                tweak = base if eng.same_as_baseline(st) else eng.generate_preview(st)   # nothing moved: one render
-                paths = {}
-                for name, img in (("baseline", base), ("tweaked", tweak)):
-                    p = os.path.join(out, f"{name}_{gen}.png")
-                    img.save(p)
-                    paths[name] = p
+                paths = {"baseline": os.path.join(out, f"baseline_{gen}.png")}
+                base.save(paths["baseline"])
+                same = eng.same_as_baseline(st)                 # nothing moved: one render for both panes
+                if not same:                                    # the Baseline shows while the Tweaked one renders
+                    emit(ev="baseline_ready", gen=gen, baseline=paths["baseline"])
+                tweak = base if same else eng.generate_preview(st)
+                paths["tweaked"] = os.path.join(out, f"tweaked_{gen}.png")
+                tweak.save(paths["tweaked"])
             emit(ev="rendered", gen=gen, nolora_pending=nolora is not None, notes=S.get("notes"), **paths)
             _tidy(out, gen)
             if nolora is not None:               # as the desktop: the pair first, then the base model's own
@@ -172,6 +175,10 @@ def _render(c):
                     emit(ev="nolora", gen=gen, **nolora())
                 except Exception as e:           # a newer edit took the engine (or it failed: say so)
                     emit(ev="nolora", gen=gen, aborted=_aborted(e), msg="" if _aborted(e) else str(e))
+            # every model (pictures and songs as clips): the render's cached memory goes back to the card between
+            # renders, the model staying loaded - room for whatever else runs beside Studio
+            import torch
+            torch.cuda.empty_cache()
     except Exception as e:
         if _aborted(e):
             emit(ev="aborted", gen=gen)
@@ -246,10 +253,27 @@ def _write_clip(clip, path_png, path_mp4, fps, rate):
     arr = np.stack([np.asarray(f.convert("RGB")) for f in frames])
     ten = torch.from_numpy(arr).permute(3, 0, 1, 2).float() / 255.0
     wav = clip.get("wav")
+    if not rate:                    # a model with no sound (Vimoo: audio_rate 0): a silent MP4, no track
+        write_preview_mp4(path_mp4, ten, None, fps=fps)
+        return path_mp4
     wav_path = os.path.join(tempfile.gettempdir(), f"fizgig_studio_{os.getpid()}.wav")
     write_wav(wav_path, wav if wav is not None else torch.zeros(2, int(rate * len(frames) / fps)), sample_rate=rate)
     write_preview_mp4(path_mp4, ten, wav_path, fps=fps)
     return path_mp4
+
+
+def _clip_same_as_baseline(eng, st):
+    """The tweaked clip would be the baseline (the picture engines' same_as_baseline rule): every primary block on at
+    1.0, and no donor contributing - none loaded, its strength 0, or each of its blocks off or at 0. The donor sliders
+    count only when a donor is loaded: the page starts them at 1, so judging them without one never matched."""
+    if any(not bs.primary_enabled or float(bs.primary_strength) != 1.0 for bs in st.blocks.values()):
+        return False
+    if getattr(eng, "donor_network", None) is None and not getattr(eng, "donor_path", None):
+        return True
+    if float(getattr(st, "donor_scale", 1.0)) == 0.0:
+        return True
+    donors = getattr(eng, "donor_block_ids", None) or set(st.blocks)
+    return not any(bs.donor_enabled and float(bs.donor_strength) != 0.0 for b, bs in st.blocks.items() if b in donors)
 
 
 def _render_clips(eng, desc, st, c, out, gen):
@@ -260,6 +284,7 @@ def _render_clips(eng, desc, st, c, out, gen):
     st.preview_width, st.preview_height, st.preview_frames = width, height, frames
     st.keyframes, st.references = _cond(eng, c, width, height, frames)
     eng.speed_boost = bool(v.get("speed_boost"))      # the Studio's H3 tick: the first half of the steps at half size
+    eng.clip_negative = v.get("negative")             # the page's Negative (used when the render runs with CFG)
     opts = dict(frames=frames, regime="custom", steps=int(v.get("steps") or 4),
                 turbo_strength=float(v.get("turbo") if v.get("turbo") not in (None, "") else 1.0),
                 with_audio=bool(v.get("sound", True)))
@@ -269,24 +294,41 @@ def _render_clips(eng, desc, st, c, out, gen):
     torch.cuda.reset_peak_memory_stats()
     rest = torch.cuda.memory_allocated() / 2**30
     base = eng.baseline_clip(st, cache=None, **opts)
+    if _clip_same_as_baseline(eng, st):
+        # nothing moved: the tweaked clip IS the baseline - one render for both panes, as the picture path does
+        tweak = base
+    else:
+        tweak = None
     early = {}
     if v.get("early") and opts["steps"] > 2:     # Show early: the pass-2 estimate while the rest runs (the desktop's)
         def on_early(img, step, n):
+            if img is None:
+                emit(ev="status", text=f"Show early skipped this time: not enough free VRAM on the card for its decode "
+                                       f"(~{getattr(eng, 'early_skipped_gb', 5):.0f} GB) - the clip renders on.")
+                return
             p = os.path.join(out, f"early_{gen}.png")
             img.save(p)
             emit(ev="early", gen=gen, png=p, step=step, n=n)
         early = dict(early_step=2, on_early=on_early)
-    tweak = eng.render_clip(st, cache=None, **opts, **early)
+    paths = {}
+    png = os.path.join(out, f"baseline_{gen}.png")
+    paths["baseline"], paths["baseline_media"] = png, _write_clip(base, png, os.path.join(out, f"baseline_{gen}.mp4"),
+                                                                  fps, rate)
+    if tweak is None:                                   # the Baseline plays while the Tweaked clip renders
+        emit(ev="baseline_ready", gen=gen, baseline=paths["baseline"], baseline_media=paths["baseline_media"])
+        tweak = eng.render_clip(st, cache=None, **opts, **early)
     print(f"[studio] clip {width}x{height} x{frames}, {len(st.keyframes or [])} keyframe(s), "
           f"{len(st.references or [])} reference(s): peak {torch.cuda.max_memory_allocated() / 2**30:.2f} GB allocated, "
           f"{torch.cuda.max_memory_reserved() / 2**30:.2f} GB reserved, from {rest:.2f} GB at rest "
           f"(base {getattr(eng, 'base_plan', None)})", flush=True)
-    paths = {}
-    for name, clip in (("baseline", base), ("tweaked", tweak)):
-        png = os.path.join(out, f"{name}_{gen}.png")
-        mp4 = _write_clip(clip, png, os.path.join(out, f"{name}_{gen}.mp4"), fps, rate)
-        paths[name], paths[name + "_media"] = png, mp4
+    png = os.path.join(out, f"tweaked_{gen}.png")
+    paths["tweaked"], paths["tweaked_media"] = png, _write_clip(tweak, png, os.path.join(out, f"tweaked_{gen}.mp4"),
+                                                                fps, rate)
 
+    # hand the render's cached memory back (the model stays loaded): the page plays these clips next, and a card the
+    # worker leaves full - Vimoo bf16 + the decode's cache held 30.5 of 32 GB - gives the video decode and the desktop
+    # compositor nothing, which with Windows' DWM over-committed froze the whole PC on play (6 Nov 2026)
+    torch.cuda.empty_cache()
     return paths, None                  # no No-LoRA clip: a third H3 render was too slow (ACE-Step's song keeps one)
 
 
@@ -516,7 +558,7 @@ def _engine_for(c, status_ev="royale_status"):
         eng = desc.make_workbench_engine()
     S["engine"], S["desc"], S["plan_sig"] = eng, desc, sig
     if getattr(desc, "video_workbench", False):
-        eng.int8_attention = True
+        eng.int8_attention = bool(getattr(desc, "int8_attention", False))
         eng.on_status = lambda text: emit(ev=status_ev, text=str(text))
         if c.get("canvas"):
             eng.plan_canvas = tuple(c["canvas"])  # H3 Auto: room for the clip about to render
@@ -814,6 +856,8 @@ def cmd_refmod(c):
                           turbo_strength=float(job["turbo"]))
 
                 def early(img, step, n_, gen=gen):
+                    if img is None:                  # Show early skipped (not enough free VRAM for its decode)
+                        return
                     p = os.path.join(out, f"rm_{gen}_early.png")
                     img.save(p)
                     emit(ev="rm_early", gen=gen, png=p, step=step, n=n_)

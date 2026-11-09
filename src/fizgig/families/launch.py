@@ -152,28 +152,6 @@ def slider_on(desc, inputs, source=None):
     return on
 
 
-# what switches off at Batch Size > 1: each assumes one image (one loss, one caption) per step
-BATCH_OFF = ("DOP (Leave the rest of the model alone)", "LR boost")
-# kinds of training that keep Batch Size 1 (their steps are per image, or untested batched)
-BATCH_ONE_KINDS = ("sliders", "edit training", "full fine-tune", "multi-person mode")
-
-
-def batch_size(desc, inputs):
-    """The Batch Size the run trains at: the box's value on a family that supports batching (description
-    supports_batch), on a standard LoRA run; 1 otherwise (and for anything that is not a whole number above 0)."""
-    if not getattr(desc, "supports_batch", False):
-        return 1
-    try:
-        n = int(str(inputs.get("batch_size", 1)).strip() or 1)
-    except ValueError:
-        return 1
-    if n <= 1 or slider_on(desc, inputs) or edit_on(desc, inputs) or ft_on(desc, inputs):
-        return 1
-    if bool(inputs.get("FAMILY_MULTI_PERSON")) and desc.subject_isolation:
-        return 1
-    return n
-
-
 def ft_on(desc, inputs):
     """A full fine-tune of the base model, for a family whose driver offers one (description.finetune)."""
     return bool(desc.finetune and inputs.get("FAMILY_FT"))
@@ -467,11 +445,12 @@ def pair_problems(after_dir, before_dir, caption_ext=".txt", exts=PAIR_EXTS):
     return uncaptioned, shapes
 
 
-def edit_instruction(inputs):
-    """The edit instruction for previews: the typed instruction, else the first edited photo's caption file."""
-    text = _s(inputs.get("edit_caption"))
-    if text:
-        return text
+def edit_instructions(inputs):
+    """The edit instructions for previews, one per line of the Edit instruction box (each renders on the test
+    photo), else the first edited photo's caption file."""
+    lines = [ln.strip() for ln in str(inputs.get("edit_caption") or "").splitlines() if ln.strip()]
+    if lines:
+        return lines
     folder = _s(inputs.get("image_folder"))
     ext = inputs.get("caption_ext") or ".txt"
     try:
@@ -482,10 +461,10 @@ def edit_instruction(inputs):
                 with open(cap, encoding="utf-8") as fh:
                     line = fh.read().strip().splitlines()
                 if line and line[0].strip():
-                    return line[0].strip()
+                    return [line[0].strip()]
     except OSError:
         pass
-    return ""
+    return []
 
 
 # the Training tab's window-size choice -> the planner's cap on parts per window (0 = as many as fit)
@@ -869,6 +848,8 @@ def option_tokens(desc, inputs, missing=None):
     vals = inputs.get("FAMILY_OPTIONS") or {}
     if multi_person_on(desc, inputs):   # checks that can't run beside Fizgig LoRA Isolation (H3 reference distillation)
         vals = {**vals, **{o.key: "" for o in desc.options if getattr(o, "isolation_off", False)}}
+    if batch_size(desc, inputs) > 1:    # checks that read one picture a step (H3 reference distillation)
+        vals = {**vals, **{o.key: "" for o in desc.options if getattr(o, "batch_off", False)}}
     models = inputs.get("models") or {}
 
     def path(v):
@@ -1071,9 +1052,9 @@ def train_command(desc, inputs, plan):
         cmd += ["--caption_dropout", f"{_cd:g}"]
     if masked_on(desc, st):
         cmd += ["--masked_training", "--mask_floor", f"{mask_floor(st):g}"]
-        if mask_prior(desc, st):
+        if mask_prior(desc, st) and batch_size(desc, st) <= 1:
             cmd += ["--mask_prior", f"{mask_prior(desc, st):g}"]
-    if (dop_on(desc, st) or mp_subs) and batch_size(desc, st) <= 1:     # DOP is per image: off at Batch Size > 1
+    if dop_on(desc, st) or mp_subs:
         trig, cls = dop_rules(st)
         if mp_subs:          # the captions are read fused: DOP swaps "zwxemwoman" for "a woman"
             trig, cls = [s["fused"] for s in mp_subs], [s["phrase"] for s in mp_subs]
@@ -1122,6 +1103,8 @@ def train_command(desc, inputs, plan):
             cmd += ["--compile_blocks", cb]
     if st.get("keep_checkpointing"):
         cmd += ["--gradient_checkpointing", "on"]
+    if batch_auto(desc, st):
+        cmd += ["--batch_size_auto"]
     try:
         if int(float(str(st.get("GRADIENT_ACCUMULATION", "") or 1))) > 1:
             cmd += ["--gradient_accumulation_steps", str(int(float(st["GRADIENT_ACCUMULATION"])))]
@@ -1133,10 +1116,7 @@ def train_command(desc, inputs, plan):
     except ValueError:
         pass
     if len(desc.precisions) > 1:
-        lab = str(st.get("FAMILY_PRECISION", "") or "")
-        labels = {**PRECISION_LABELS, **desc.precision_labels}
-        prec = next((k for k, v in labels.items() if v == lab), "auto")
-        cmd += ["--precision", prec if prec == "auto" or prec in desc.precisions else "auto"]
+        cmd += ["--precision", precision_key(desc, st.get("FAMILY_PRECISION"))]
     if ft_on(desc, st):
         # the length and cadence in whole rotations; a continuation starts from the paused run's checkpoint
         cmd += ["--finetune", "--ft_rotations", str(_ft_int(st, "FAMILY_FT_ROTATIONS", 10)),
@@ -1190,13 +1170,9 @@ def train_command(desc, inputs, plan):
     if ("lokr" in desc.network_types and str(st.get("NETWORK_TYPE", "")).startswith("LoKR")
             and not slider_on(desc, st)):        # a slider is always a plain LoRA
         cmd += ["--network_type", "lokr", "--lokr_factor", str(st.get("LOKR_FACTOR", 8))]
-    raw_swap = str(st.get("blocks_swap") or "").strip()
-    if raw_swap.lower().startswith("auto"):
-        cmd += ["--blocks_to_swap", "-1"]            # the trainer sizes it for the precision that runs
-    else:
-        m = re.match(r"\d+", raw_swap)
-        if m and int(m.group()) > 0:
-            cmd += ["--blocks_to_swap", m.group()]
+    swap = swap_blocks(st.get("blocks_swap"))
+    if swap:
+        cmd += ["--blocks_to_swap", str(swap)]       # -1: the trainer sizes it for the precision that runs
     if desc.ema_default:
         ema = str(st.get("FAMILY_EMA", "") or desc.ema_default).split(" ")[0]
         if ema != "Off":
@@ -1294,11 +1270,11 @@ def _preview_flags(desc, st, plan, cmd):
     samples_dir = st.get("samples_dir") or os.path.join(_s(st.get("LORA_OUTPUT_DIR")), "sample")
     prompts = None
     if edit_on(desc, st):              # edit previews: the edit instruction, not the Samples-tab prompts
-        instr = edit_instruction(st)
+        instr = edit_instructions(st)
         if instr:
             prompts = os.path.join(samples_dir, f"{desc.key}_edit_prompt.txt")
             plan.dirs.append(samples_dir)
-            plan.files.append((prompts, instr + "\n"))
+            plan.files.append((prompts, "\n".join(instr) + "\n"))
     elif slider_on(desc, st):          # slider previews: the dial on its own picture, not the Samples tab
         own = (st.get("FAMILY_SLIDER_BASE") if slider_on(desc, st, "prompts")
                else st.get("FAMILY_SLIDER_CAPTION"))
@@ -1351,6 +1327,8 @@ def _preview_flags(desc, st, plan, cmd):
                 "--sample_height", str(sm.get("height") or "").strip() or str(desc.preview_height)]
         if turbo_steps and turbo_steps.isdigit():
             out += ["--sample_steps", turbo_steps]
+        if st.get("FAMILY_PREVIEW_SMALL") and getattr(desc, "preview_small_card_option", 0):
+            out += ["--preview_small_card_cap", str(desc.preview_small_card_option)]   # the trainer applies it <20 GB
         elif str(sm.get("steps") or "").strip():
             out += ["--sample_steps", str(sm["steps"]).strip()]
         try:
@@ -1476,11 +1454,11 @@ def _cd_share(value):
 
 
 def _batch_size(desc, inputs):
-    """Batch Size from a run's settings (batch_size) or the form's values (DATASET_BATCH_SIZE)."""
-    if desc is not None and not getattr(desc, "supports_batch", False):
-        return 1
+    """Pictures a step for these values: batch_size() (Other Options' Batch size); with no family, the box itself."""
+    if desc is not None:
+        return batch_size(desc, inputs)
     try:
-        return int(float(_s(inputs.get("batch_size") or inputs.get("DATASET_BATCH_SIZE")) or 1))
+        return int(float(_s(inputs.get("BATCH_SIZE")) or 1))
     except ValueError:
         return 1
 
@@ -1555,6 +1533,81 @@ def cache_dir_for(cache_root, image_dir):
 STAGE_BLEND = 0.1      # the share of the run the change from the smaller size to the full one blends over
 
 
+BATCH_SIZES = ("1", "2", "3", "4", "6", "8")
+BATCH_AUTO = "Auto"
+
+
+def batch_choices(desc):
+    """The Batch size row's choices: Auto (after 1) for a family with a measured sweet spot (description batch_auto)."""
+    return (BATCH_SIZES[0], BATCH_AUTO) + BATCH_SIZES[1:] if desc.batch_auto else BATCH_SIZES
+
+
+def batch_auto(desc, inputs):
+    """Batch size Auto: the trainer picks the family's measured fastest batch on a 40 GB+ card (--batch_size_auto); the
+    dataset config says 1 (batch_size() reads Auto as 1) and the trainer raises it before the dataset is built."""
+    if str(_s(inputs.get("BATCH_SIZE")) or "").strip().lower() != "auto" or not (desc.batch_training and desc.batch_auto):
+        return False
+    return not (edit_on(desc, inputs) or slider_on(desc, inputs) or dop_on(desc, inputs)
+                or multi_person_on(desc, inputs))
+
+
+BATCH_AUTO_MIN_CARD_GB = 38.0   # quant.NOGC_MIN_CARD_GB (a 40 GB card reports ~39.4 GiB), without importing torch here
+
+
+def batch_auto_note(desc, megapixels, card_gb=None):
+    """What Auto picks at this size, for the row's note - on this card when its size is known (card_gb, GiB)."""
+    try:
+        mp = float(megapixels)
+        n = desc.auto_batch(mp)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 1:
+        return f"Auto: 1 at {mp:g} MP - {desc.display_name} measured fastest a picture at a time there."
+    if card_gb and card_gb < BATCH_AUTO_MIN_CARD_GB:
+        return (f"Auto: 1 picture a step on this {card_gb:.0f} GB card. Auto batches on 40 GB+ cards, where "
+                f"{n} at {mp:g} MP measured fastest for {desc.display_name}.")
+    where = f"this {card_gb:.0f} GB card" if card_gb else "a 40 GB+ card"
+    return (f"Auto: {n} pictures a step at {mp:g} MP on {where} - the fastest measured for {desc.display_name}. "
+            f"1 when a setting reads one picture a step.")
+
+
+
+def precision_key(desc, label):
+    """The trainer's --precision for the Training tab's Base precision label ("auto" for anything it doesn't name)."""
+    labels = {**PRECISION_LABELS, **desc.precision_labels}
+    prec = next((k for k, v in labels.items() if v == str(label or "")), "auto")
+    return prec if prec == "auto" or prec in desc.precisions else "auto"
+
+
+def swap_blocks(text):
+    """The trainer's --blocks_to_swap for the Blocks Swap value: -1 for Auto, else the number (0 = none)."""
+    raw = str(text or "").strip()
+    if raw.lower().startswith("auto"):
+        return -1
+    m = re.match(r"\d+", raw)
+    return int(m.group()) if m else 0
+
+
+def train_side(mp):
+    """The square side the dataset TOML trains Target Megapixels at (that area on the 16-pixel grid)."""
+    return int((mp * 1_000_000) ** 0.5) // 16 * 16
+
+def batch_size(desc, inputs):
+    """Pictures a step (Other Options' Batch size): 1 unless the family trains batches (description batch_training)
+    and the run is a LoRA or a fine-tune - an edit, a slider, DOP and Fizgig LoRA Isolation read one picture a
+    step."""
+    try:
+        n = int(str(_s(inputs.get("BATCH_SIZE")) or 1).strip())
+    except ValueError:
+        return 1
+    if n <= 1 or not desc.batch_training:
+        return 1
+    if edit_on(desc, inputs) or slider_on(desc, inputs) or dop_on(desc, inputs) \
+            or multi_person_on(desc, inputs):
+        return 1
+    return n
+
+
 def stage_mp(desc, inputs):
     """Start at a smaller size: its Target Megapixels, or 0 (off, not below Target Megapixels, or a run it isn't for:
     an edit, a slider, a fine-tune, Fizgig LoRA Isolation)."""
@@ -1566,6 +1619,8 @@ def stage_mp(desc, inputs):
     if not (desc.resolution_stages and 0.25 <= smp < full):
         return 0.0
     if edit_on(desc, inputs) or slider_on(desc, inputs) or ft_on(desc, inputs) or multi_person_on(desc, inputs):
+        return 0.0
+    if batch_size(desc, inputs) > 1:
         return 0.0
     return smp
 
@@ -1581,13 +1636,12 @@ def stage_until(inputs):
 def dataset_toml(desc, inputs, cache_suffix=""):
     """The dataset TOML for the run: the training folder at Target Megapixels (a square of that area on the
     16-pixel grid), an edit's originals or a slider's -1 end as its control folder, and its own cache folder.
-    Raises ValueError on a Target Megapixels that is not a number. Batch size: launch.batch_size (1 unless the family
-    supports batching)."""
+    Raises ValueError on a Target Megapixels that is not a number. Batch size: batch_size()."""
     mp = float(inputs.get("megapixels"))
     if mp <= 0:
         raise ValueError(f"Target Megapixels {mp}")
-    side = int((mp * 1_000_000) ** 0.5) // 16 * 16
-    batch = batch_size(desc, inputs)    # 1 unless the family supports batching (families/train.py)
+    side = train_side(mp)
+    batch = batch_size(desc, inputs)      # 1 unless Other Options' Batch size is up and the family trains batches
     folder = _s(inputs.get("image_folder"))
     extra = [_s(f) for f in (inputs.get("extra_folders") or []) if _s(f)] if desc.multi_concept else []
     lines = ["[general]", f"resolution = [{side}, {side}]",

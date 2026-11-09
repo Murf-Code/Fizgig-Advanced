@@ -6,6 +6,7 @@ the model cards and pipeline_moss_image.py (huggingface.co/OpenMOSS-Team/MOSS-Im
 (huggingface.co/Comfy-Org/MOSS-Image) and ComfyUI's core support (Comfy-Org/ComfyUI PR #17095, merge e087d8f6cb).
 
 """
+from fizgig.training.optimizers import MUON_DEFAULT_ARGS
 from fizgig.families.description import (FamilyDescription, FamilyOption, LoRAFormat, ModelFile, SamplingSettings,
                                          SpeedLoRA, TextEncoderBuild)
 
@@ -24,7 +25,9 @@ _NEGATIVE = "worst quality, bad anatomy, watermark, jpeg artifact"
 
 # a LoRA's: 60 until epoch 7, 30 from epoch 8, then 60 with every 3rd epoch at 30 (half LR) - led 60:7:30:15:2 by about
 # 0.05 ArcFace from epoch 9 to 20 on a 53-photo dataset (Peter's test1 / test3, 28 Oct 2026)
-_LORA_SHARE = "60:7:30:8:3"
+# 8 Nov 2026: reversed to 30 until epoch 7, 60 from epoch 8, then 60 with every 3rd epoch at 30 (half LR) - best with
+# Muon, now every preset's optimizer (Peter)
+_LORA_SHARE = "30:7:60:8:3"
 # a fine-tune's Clean-end share starts on the model's own schedule (about 11%) so the body and the model's knowledge
 # hold, then slides to 30: at 60 a fine-tune's plain "a woman" turned into the subject from epoch 10, even with DOP
 # (Peter, 28 Oct 2026, #223)
@@ -33,20 +36,20 @@ _FT_SHARE = "11:4:30:8:2"
 
 def _preset(rank, lr=1e-4, adaptive=None, epochs=30, mp="1.0", slider=False, ft=False):
     # Not yet trained on MOSS-Image (the driver was built without a GPU): Flux 3's preset shape (Krea 2's values,
-    # families/flux3.py), at 1 MP (the last pretraining stage's area), with fused AdamW as CHECKLIST.md asks for LoRA presets. EMA 0.98, the
+    # families/flux3.py), at 1 MP (the last pretraining stage's area), on Muon (Peter, 6 Nov). EMA 0.98, the
     # per-image loss watch off, saved every epoch. adaptive=(min, max) turns Adaptive LR on.
     lo, hi = adaptive or ("1e-4", "4e-4")
     return {
         "NETWORK_DIM": rank, "NETWORK_ALPHA": rank, "NETWORK_TYPE": "LoRA (standard)", "LEARNING_RATE": lr,
         "MAX_TRAIN_EPOCHS": epochs, "SAVE_EVERY_N_EPOCHS": 1, "SEED": 42,
         "ADAPTIVE_LR": adaptive is not None, "ADAPTIVE_LR_MIN": lo, "ADAPTIVE_LR_MAX": hi,
-        "OPTIMIZER_TYPE": "adamw", "GRADIENT_ACCUMULATION": 1, "MAX_GRAD_NORM": 1.0,
+        "OPTIMIZER_TYPE": "muon", "OPTIMIZER_ARGS": MUON_DEFAULT_ARGS, "GRADIENT_ACCUMULATION": 1, "MAX_GRAD_NORM": 1.0,
         "DATASET_MEGAPIXELS": mp, "BLOCKS_SWAP": "Auto (detect from GPU)",
         "FAMILY_PRECISION": "Auto (fits your free VRAM)", "FAMILY_EMA": "0.98 (recommended)",
         "KREA2_LOSS_WATCH": False, "KREA2_PER_IMAGE_LR": False, "KREA2_AUTO_RECAPTION": False,
         "KREA2_WARMUP_LOOK": False, "FAMILY_FT": ft, "FAMILY_EDIT": False, "FAMILY_SLIDER": slider,
         "FAMILY_FAST_ID": False, "FAMILY_SLIDER_GUIDANCE": "3",
-        # the Clean-end share: Slide, 60% until epoch 7, 30% from epoch 8, then 60% with every 3rd at 30% (_LORA_SHARE);
+        # the Clean-end share: Slide, 30% until epoch 7, 60% from epoch 8, then 60% with every 3rd at 30% (_LORA_SHARE);
         # every preset sets it
         "MOSS_LOWNOISE_PCT": _FT_SHARE if ft else _LORA_SHARE,
         **({"FAMILY_FT_ROTATIONS": "10"} if ft else {}),
@@ -57,8 +60,9 @@ MOSS_IMAGE = FamilyDescription(
     key="moss_image",
     start_lr_bands=(("lora", 1.7e-5, 3e-4), ("finetune", 3e-6, 3e-5), ("slider", 7e-5, 6e-4)),
     masked_training=True,
+    batch_training=True,              # Batch size (Other Options): training_loss_batch, exact per picture
+    batch_gb=(0.45, 1.35),          # GB each extra picture takes: fixed, per MP (batch 1 vs 3)
     arch_id="mossimage",
-    supports_batch=True,              # batched DiT forward (moss_image/model.py), per-sample t / noise
     display_name="MOSS-Image",
     gui_label="MOSS-Image",
     lora_name_suffix="moss",
@@ -90,13 +94,15 @@ MOSS_IMAGE = FamilyDescription(
                   hint="FLUX.2's encoder with the small decoder MOSS-Image was released with. Flux 3's or Klein's "
                        "full autoencoder also works (same latents), but the small decoder avoids spots in the "
                        "pictures."),
-        ModelFile("moss_image_turbo_lora", "Turbo LoRA (optional)", False, _TURBO, "8-steps-dmd-lora.safetensors", 1.19,
-                  "Optional speed LoRA for previews; leave empty to preview at full quality.", role="speed_lora",
-                  bulk_fetch=False,           # its own Download link only: soft on Base today (Peter, 18 Oct 2026)
-                  hint="Optional. lodestones' 8-step Turbo LoRA, distilled from MOSS-Image Base: fast previews on "
-                       "your Base (untick the SFT samples tick; previews on SFT never take a Turbo LoRA). Leave it "
-                       "empty for full-quality previews. With one set, set its strength, steps and CFG on the Samples "
-                       "tab; the workbench follows."),
+        # a default download since 8 Nov 2026: Fizgig's MOSS preview recipe is this LoRA at 0.6, 8 steps, CFG 2, with
+        # the SFT look LoRA (Peter)
+        ModelFile("moss_image_turbo_lora", "Turbo LoRA", False, _TURBO, "8-steps-dmd-lora.safetensors", 1.19,
+                  "Speed LoRA for previews (Fizgig's recipe: strength 0.6, 8 steps, CFG 2, with the SFT look LoRA).",
+                  role="speed_lora", fetch_optional=False,
+                  hint="lodestones' 8-step Turbo LoRA, distilled from MOSS-Image Base: fast previews on your Base. "
+                       "Fizgig's recommended previews use it at 0.6 (8 steps, CFG 2) with the SFT look LoRA. Previews "
+                       "on SFT never take it. Its strength, steps and CFG are on the Samples tab; the workbench "
+                       "follows."),
         ModelFile("moss_image_text_encoder", "Qwen3.5-9B text encoder", True, "Comfy-Org/Qwen3.5",
                   "text_encoders/qwen3.5_9b_bf16.safetensors", 19.31,
                   "Used for caching only, then unloaded. Loads text-only (about 15 GB), or 8-bit (about 9 GB) on "
@@ -126,8 +132,9 @@ MOSS_IMAGE = FamilyDescription(
         # about 32% of the difference overall, 51-61% of the late blocks. At 1.5 on Base it gave previews much of
         # SFT's look (Peter, 20 Oct 2026). Downloaded the first time the Samples tick is on (fetch_on_use), not by
         # Download models for me
-        ModelFile("moss_image_sft_look_lora", "SFT look LoRA (optional)", False, _LOOK,
-                  "moss_image_sft_look_lora.safetensors", 2.07, role="look_lora", bulk_fetch=False, fetch_on_use=True,
+        ModelFile("moss_image_sft_look_lora", "SFT look LoRA", False, _LOOK,
+                  "moss_image_sft_look_lora.safetensors", 2.07, role="look_lora", fetch_optional=False,
+                  fetch_on_use=True,
                   hint="Optional. Fizgig's SFT look LoRA: previews on your Base get much of SFT's look without "
                        "loading SFT, so they're much quicker. Downloaded for you the first time you tick \"Give "
                        "Base previews the SFT look\" on the Samples tab. Previews only, never training.",
@@ -190,13 +197,26 @@ MOSS_IMAGE = FamilyDescription(
     network_types=("lora", "lokr"),
     ema_default="0.98",
     compiles=True,                    # driver.compile_targets: the 42 blocks
-    compile_boundary="outside",       # as Qwen 2.1's and Flux 3's: the checkpoint wraps the compiled block
+    compile_boundary="inside",        # the checkpoint inside the compiled block, as Qwen 2.1's and Flux 3's (#221; on torch 2.15 it costs no extra memory)
     # measured 17 Oct 2026, 5090, bf16, 1 MP, one bucket: 1.45 -> 1.07 s/step compiled (-26%), the first epoch
     # 13 s slower (compiling) = paid back in ~35 steps; 200 leaves room for runs with several bucket shapes.
     # INT8 / NF4 not measured yet: bf16's figure, and Klein's NF4 one, so Auto compiles the default INT8 base.
     compile_payback_steps={"bf16": 200, "int8": 200, "nf4": 400},
+    not_offered={"int8_attention": "routed through attend(), but the speed-up isn't measured yet"},
     # int8_attention left off: the model routes attention through int8_attention.attend(), but the speed-up isn't
     # measured yet (ABILITIES.md: keep it where it measures faster)
+    # Identity in blocks 24-35 (5 Nov 2026): Peter's eye on the Profiler's group renders of a character LoRA
+    # (Nicola, epoch 21), and its numbers - 24-29 alone changed the picture most (0.54, twice any other group) and
+    # 30-35 left out nearly as much (0.50); the largest weights sit in 29, 24, 30 and 28. Confirmed the same day: a Fast
+    # Identity Mode run (24-35 only) gave superb likeness (Peter). Used by Extract's identity mode, Fast Identity Mode
+    # and Studio's identity / look colours.
+    block_categories=tuple((f"block_{i}", "identity" if 24 <= i <= 35 else "look") for i in range(42)),
+    identity_blocks=tuple(f"block_{i}" for i in range(24, 36)),
+    repair_presets=(
+        ("✨Identity only", tuple((f"block_{i}", 1.0 if 24 <= i <= 35 else 0.0) for i in range(42))),
+        ("✨Look only (no identity)", tuple((f"block_{i}", 0.0) for i in range(24, 36))),
+        ("✨Identity ×0.5", tuple((f"block_{i}", 0.5) for i in range(24, 36))),
+    ),
     finetune=True,                    # driver.ft_spec: every block's six Linears on an NF4 trunk
     ft_learning_rate=1e-5,            # FINETUNE.md's default; the report's pretraining LR was 5e-5 (Muon + AdamW)
     kind_values=(("finetune", (("MOSS_LOWNOISE_PCT", _FT_SHARE),)), ("standard", (("MOSS_LOWNOISE_PCT", _LORA_SHARE),)),
@@ -207,7 +227,7 @@ MOSS_IMAGE = FamilyDescription(
     # ... reference-image variants"). The RoPE keeps a reference-index axis for a later release.
     workbench_follows_samples=True,
     workbench_checkpoint_follows_tick=True,   # Repair Studio / Royale render on SFT only while the Samples tick is on   # CFG 3 needs the Samples tab's negative (empty = the reference's default)
-    activation_cache=True,            # Turbo Preview: step-1 replay; generate calls on_step before every step
+    activation_cache=True,            # Reuse unchanged blocks: step-1 replay; generate calls on_step before every step
     repair_size=1024,                 # a 1 MP model (CHECKLIST.md Workbench)
 
     sampling=(
@@ -244,9 +264,13 @@ MOSS_IMAGE = FamilyDescription(
             pairs_with="MOSS-Image Base",
             strength=1.0,             # the Kromoss card: strength 1
             # 12 steps, not the card's 8: previews looked much better at 12 (Peter, 19 Oct 2026)
-            settings=SamplingSettings("Turbo 12-step", steps=12, cfg=1.0, sampler="euler", scheduler="simple",
+            # Fizgig's MOSS preview recipe (Peter, 8 Nov 2026): strength 0.6 (preview_speed_strength), 8 steps, CFG 2,
+            # with the SFT look LoRA; replaced 12 steps at strength 1, CFG 1
+            settings=SamplingSettings("Turbo 8-step", steps=8, cfg=2.0, sampler="euler", scheduler="simple",
                                       options=(("shift", 5.0), ("uncond_skip", ()), ("sampler", "euler")),
-                                      note="12 steps, no CFG, the reference's shift-5 grid.",
+                                      negative_prompt=True,
+                                      note="8 steps at CFG 2 with the Turbo LoRA at 0.6 and the SFT look LoRA, the "
+                                           "reference's shift-5 grid.",
                                       source=f"https://huggingface.co/{_TURBO} (load in ComfyUI's LoRA loader)"),
             load_unmerged=True,       # an fp32 rank-128 adapter: its delta is below bf16's rounding step
             pref_key="moss_image_turbo_lora",
@@ -254,14 +278,19 @@ MOSS_IMAGE = FamilyDescription(
             # SFT and soft on Base, while Fizgig's Turbo previews only ever run on the training model (Base)
             caveats=("Distilled from MOSS-Image Base (Kromoss card: Base 27.19 -> 27.53 CLIP with it, Kromoss 27.82).",),
             # people judged likeness on Turbo previews and found it lacking (Peter, 20 Oct 2026)
-            gallery_note="MOSS-Image Turbo LoRAs aren't mature yet: they can reduce likeness a lot in previews, so "
+            gallery_note="MOSS-Image Turbo LoRAs aren't mature yet: they can reduce likeness in previews, so "
                          "judge likeness on full-quality previews.",
             source=f"https://huggingface.co/{_TURBO}",
         ),
     ),
     preview_speed_lora="MOSS-Image Turbo LoRA",      # used only when its Preferences row is set (empty by default)
-    preview_speed_strength=0.0,       # the Samples tab's Turbo LoRA strength starts at 0 (full-quality previews);
-    #                                   raise it with the Steps / CFG boxes set for the turbo (1 at 12 steps, CFG 1)
+    # the orange line under the Training tab's model picker (Peter, 8 Nov 2026)
+    status_note="8 Nov 2026: lots of changes recently. Start from a ✨ preset to train with the new Muon optimiser and the new "
+                "Clean-end share Slide defaults (30% until epoch 7, then 60%) for the best results.",
+    preview_small_card_option=768,   # the Faster, smaller previews tick on cards under 20 GB (off: full size, #309)
+    samples_turbo_tick=True,          # a Use the Turbo LoRA tick, strength box beside it (Peter, 8 Nov 2026)
+    preview_speed_strength=0.6,       # Fizgig's preview recipe: Turbo 0.6, 8 steps, CFG 2, SFT look on (Peter, 8 Nov
+    #                                   2026); 0 = full-quality previews (30 steps, CFG 4)
     preview_steps=30,                 # res_multistep 30 at CFG 4: the best of the side-by-side (Peter, 18 Oct)
     preview_cfg=4.0,                  # USERGUIDE.md: 3-6 recommended; 4 won the side-by-side
     preview_negative=_NEGATIVE,
@@ -284,21 +313,27 @@ MOSS_IMAGE = FamilyDescription(
                       "look. Not as good as SFT itself, but a really good indicator, and previews are much quicker "
                       "with no model swap. Previews only, never training. Downloaded for you the first time (about "
                       "2.1 GB).",
-    preview_look_bold="We still recommend not using the Turbo LoRA for previews.",
+    preview_look_on=True,             # part of the preview recipe (Peter, 8 Nov 2026)
     preview_look_strength=1.5,
-    workbench_render_choice=True,             # Studio / Royale / Profiler: SFT, or the Samples tab's Base and look
+    # Studio / Royale / Profiler follow the Samples tab only (SFT while its tick is on): no separate SFT choice
+    # (Peter, 8 Nov 2026)
     # over an enlarged preview in the gallery: how it was made, and what gives a better read of quality (Peter, 20 Oct)
     preview_labels=(("checkpoint", "Previewed on MOSS-Image SFT."),
                     ("look", "Previewed on the Base with the SFT look LoRA. For maximum quality, look at it in ComfyUI."),
                     ("base", "Previewed on the Base model. For a better read of quality, tick Give Base previews the "
                              "SFT look, or preview on SFT (slower)."),
-                    ("turbo", "⚡ Turbo LoRA in use: not full quality. We recommend leaving it off.")),        # Peter's test, 20 Oct 2026, as a context LoRA: 1.5 worked very well
-    preview_checkpoint_on=True,       # samples on the SFT model by default: where most people use a MOSS LoRA (Peter)
+                    ("turbo", "⚡ Turbo LoRA in use: quick previews, not full quality.")),        # Peter's test, 20 Oct 2026, as a context LoRA: 1.5 worked very well
+    preview_checkpoint_on=False,      # previews on the Base with the Turbo + SFT look recipe by default (Peter, 8 Nov
+    #                                   2026; was SFT)
     # the released Base's last-block norm (measured 19 Oct 2026: Base 3658.7021484375, SFT bf16 and int8 3658.7646484375,
     # Kromoss 3658.6904296875); any other Base DiT previews on itself
     standard_base=("layers.41.norm2.weight", 3658.7021484375),
     value_moves=(("MOSS_LOWNOISE_PCT", "60", "30"),     # 8.7.0 defaulted to 60, 8.7.1 to 30 (saved forms kept 60)
-                 ("SAMPLE_STEPS", "8", "12", "FAMILY_TURBO_STRENGTH")),   # the Turbo's 8 steps became 12 (8.7.4)
+                 ("SAMPLE_STEPS", "8", "12", "FAMILY_TURBO_STRENGTH"),
+                 # the preview recipe (9.2.2): saved forms still on the old defaults move to it once; the Steps / CFG
+                 # boxes follow the Turbo on their own
+                 ("FAMILY_TURBO_STRENGTH", "0", "0.6"), ("SAMPLE_CHECKPOINT", "True", False),
+                 ("FAMILY_PREVIEW_LOOK", "False", True)),   # the Turbo's 8 steps became 12 (8.7.4)
     preview_checkpoint_steps_note="Base samples only - the SFT samples use their own 30 steps, CFG 4",
     preview_checkpoint_sampling=SamplingSettings(
         "MOSS-Image SFT", steps=30, cfg=4.0, sampler="res_multistep", scheduler="simple",
@@ -320,6 +355,11 @@ MOSS_IMAGE = FamilyDescription(
         ("✨ MOSS-Image Standard (rank 32, 1e-4)", _preset(32, epochs=70)),
         ("✨ MOSS-Image Style (rank 16, 5e-5)", {**_preset(16, lr=5e-5, epochs=50), "FAMILY_EMA": "Off"}),   # no EMA: a style at 5e-5 is slow enough
         ("✨ MOSS-Image Slider (rank 8, 2e-4)", _preset(8, lr=2e-4, epochs=20, slider=True)),
+        # Fast with Adaptive LR (2e-4 to 4e-4) and the per-image loss watch + per-image LR (Peter, 8 Nov 2026); rank 32
+        # alpha 16 (Peter, 9 Nov); just above Fine-tune
+        ("✨ MOSS-Image Turbo Train (Experimental)", {**_preset(32, adaptive=("2e-4", "4e-4"), epochs=70, mp="0.25"),
+                                                     "NETWORK_ALPHA": 16,
+                                                     "KREA2_LOSS_WATCH": True, "KREA2_PER_IMAGE_LR": True}),
         ("✨ MOSS-Image Fine-tune (1e-5)", _preset(16, lr=1e-5, ft=True)),
     ),
     options=(
@@ -327,7 +367,8 @@ MOSS_IMAGE = FamilyDescription(
                      hint="A LoRA or a fine-tune trains only attention (q, k, v, o), not the feed-forward layers. "
                           "Recommended on MOSS-Image SFT or a fine-tune of it, where training the feed-forward "
                           "layers breaks anatomy. Uses less VRAM, so a fine-tune fits a smaller card, but on Base "
-                          "it may cost quality or slow convergence.",
+                          "it may cost quality or slow convergence. Training on SFT isn't recommended: train on Base "
+                          "and use the LoRA on SFT.",
                      section="after", summary="attention only"),
         FamilyOption("MOSS_LOWNOISE_PCT", "Clean-end share", kind="entry", tokens="lownoise_pct={}", default=_LORA_SHARE,
                      width=8, suffix="% of steps",
@@ -341,7 +382,7 @@ MOSS_IMAGE = FamilyDescription(
                      slide=tuple(_LORA_SHARE.split(":")),
                      single="40",             # one value for the whole run: 40 beat 30 (Peter, 20 Oct 2026)
                      slide_hint="Slide: one share until an epoch, then sliding a few points an epoch to another by a "
-                                "later epoch. 60 until epoch 7, then 30 from epoch 8, works well with datasets of up to "
+                                "later epoch. 30 until epoch 7, then 60 from epoch 8 (the default) works best with Muon on datasets of up to "
                                 "about 55 images; with many more, drop from 60 earlier. Ticked: after "
                                 "the slide, training runs at the higher of the two shares, which keeps likeness from "
                                 "fading on a small dataset, and every Nth epoch at the lower share, at half the "
@@ -354,7 +395,7 @@ MOSS_IMAGE = FamilyDescription(
     notes=(
         ("Training timesteps follow the released weights' last pretraining interval: sigma = 1 - sigmoid(Z), "
          "Z ~ N(-1.09, 0.95^2), truncated at 0.95 and rescaled onto the 1000-step grid, mixed with 1% uniform (Fizgig's "
-         "Clean-end share moves the curve's centre: by default 60% of steps below sigma 0.5 until epoch 7, 30% at epoch 8, then 60% with every 3rd epoch at 30%; the reference is about 11%); the "
+         "Clean-end share moves the curve's centre: by default 30% of steps below sigma 0.5 until epoch 7, 60% at epoch 8, then 60% with every 3rd epoch at 30%; the reference is about 11%); the "
          "DiT is told 1000 * sigma; loss is the unweighted per-token MSE on noise - x0.",
          f"{_REPORT} Appendix A.2, eq. 3-4, Table 6"),
         ("Text conditioning: Qwen3.5-9B's final hidden state through the chat template with an open <think> block, "

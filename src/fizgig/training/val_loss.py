@@ -57,6 +57,23 @@ def _cpu(v):
     return v
 
 
+def one_picture(batch, i):
+    """Picture i of a loaded batch as a batch of its own: tensors and per-picture lists cut to it (a list of
+    tensors - captions of different lengths - gives its one tensor, batched); a batch of one comes back as it is."""
+    n = len(batch.get("item_keys") or [])
+    if n <= 1:
+        return batch
+    out = {}
+    for k, v in batch.items():
+        if torch.is_tensor(v) and v.dim() and v.shape[0] == n:
+            out[k] = v[i:i + 1]
+        elif isinstance(v, list) and len(v) == n:
+            out[k] = v[i][None] if torch.is_tensor(v[i]) else [v[i]]
+        else:
+            out[k] = v
+    return out
+
+
 class FixedValidation:
     def __init__(self, keys, *, images=4, timesteps=4, seed=42, every_steps=0, picked=None):
         self.picked, self.missing = resolve_picked(picked, keys) if picked_list(picked) else ([], [])
@@ -75,11 +92,12 @@ class FixedValidation:
 
     def offer(self, batch):
         """Keep a copy of this training batch when it is one of the picked images and not kept yet."""
-        for k in (str(x) for x in (batch.get("item_keys") or [])):    # Batch Size > 1: the batch it trains in
+        for i, k in enumerate(str(x) for x in (batch.get("item_keys") or [])):
             if k in self.wanted and k not in self.batches:
-                # always the image's own caption, as written: never a shuffled, tag-dropped or empty variant
+                # always the image's own caption, as written: never a shuffled, tag-dropped or empty variant; at
+                # Batch size above 1, that picture alone (its batch's captions may differ in length)
                 from fizgig.dataset.image_dataset import original_text_batch
-                self.batches[k] = {n: _cpu(v) for n, v in original_text_batch(batch).items()}
+                self.batches[k] = {n: _cpu(v) for n, v in one_picture(original_text_batch(batch), i).items()}
                 if self.ready:
                     self.save()
                 return

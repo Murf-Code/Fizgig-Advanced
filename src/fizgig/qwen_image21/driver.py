@@ -17,7 +17,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from fizgig.families.driver import FamilyDriver, prior_base, weighted_loss, with_prior
+from fizgig.families.driver import FamilyDriver, picture_losses, prior_base, weighted_loss, with_prior
 from fizgig.training import timestep_spread as TS
 from fizgig.qwen_image21 import sampling as S
 
@@ -235,6 +235,41 @@ class QwenImage21Driver(FamilyDriver):
         if base is not None:
             loss = with_prior(loss, prior, base, (pred.float() - base).pow(2).mean(dim=-1), mw, w)
         return loss, {"t": t}
+
+    def stack_conds(self, conds):
+        """Batch Size above 1: the captions zero-padded to the longest, rounded up to a multiple of 16 (few shapes for
+        cuDNN's attention plans, #221), with a mask of each one's real tokens. The DiT drops the padded keys and places
+        each picture's image after its own real tokens, as its unpadded caption would (QwenImage21DiT.forward)."""
+        if any("ref_mask" in c for c in conds):
+            return None                     # an edit's before-images: batch 1
+        hs = [c["hidden_states"][0] for c in conds]
+        L = max(h.shape[0] for h in hs)
+        L += -L % 16
+        return {"hidden_states": torch.stack([torch.cat([h, h.new_zeros(L - h.shape[0], h.shape[1])]) for h in hs]),
+                "mask": torch.stack([torch.arange(L, device=h.device) < h.shape[0] for h in hs])}
+
+    def training_loss_batch(self, dit, latents, cond, generator, *, min_t=0.0, max_t=1.0, loss_mask=None):
+        """Batch Size above 1: each picture's noise and t drawn as training_loss draws them, picture by picture, one
+        DiT call over the padded captions; the MSE (and a mask's per-picture weights) is the pictures' mean."""
+        device = latents.device
+        h, w = latents.shape[-2:]
+        n = h * w
+        x0 = S.pack(latents.float())
+        noises, ts = [], []
+        for i in range(x0.shape[0]):
+            noises.append(torch.randn(x0[i:i + 1].shape, generator=generator))
+            ts.append(self._sample_t(n, generator, min_t, max_t))
+        noise = torch.cat(noises).to(device)
+        t = torch.tensor(ts, device=device, dtype=torch.float32).view(-1, 1, 1)
+        xt = (1 - t) * x0 + t * noise
+        enc, enc_mask = cond["hidden_states"].to(device), cond["mask"].to(device)
+        L = enc.shape[1]
+        img_mask = torch.cat([torch.zeros(L, dtype=torch.bool), torch.ones(n // 4, dtype=torch.bool)])[None].to(device)
+        tt = torch.tensor(ts, device=device, dtype=torch.bfloat16)
+        pred = dit(xt.to(torch.bfloat16), enc.to(torch.bfloat16), tt, [[(1, h, w)]], img_mask, enc_mask)[:, -n:]
+        mw = None if loss_mask is None else S.pack(loss_mask.to(device).float()).mean(dim=-1)
+        per = picture_losses((pred.float() - (noise - x0)).pow(2).mean(dim=-1), mw)
+        return per.mean(), {"t": sum(ts) / len(ts), "per": per, "ts": [float(v) for v in ts]}
 
     def noise_latents(self, latents, generator, *, min_t=0.0, max_t=1.0):
         h, w = latents.shape[-2:]

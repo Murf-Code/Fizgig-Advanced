@@ -4,6 +4,7 @@ adapter, Qwen3 0.6B text encoder, Qwen-Image VAE. Driver: anima/driver.py.
 Facts from the model card, ComfyUI's implementation and the trainers that support it (diffusion-pipe, sd-scripts,
 AI-Toolkit, OneTrainer), and community reports (Hugging Face discussions, note.com, the Japanese wikis), Oct 2026.
 """
+from fizgig.training.optimizers import MUON_DEFAULT_ARGS
 from fizgig.families.description import FamilyDescription, LoRAFormat, ModelFile, SamplingSettings, SpeedLoRA
 from fizgig.training import timestep_spread
 
@@ -17,7 +18,7 @@ def _preset(rank, lr, epochs=30, mp="1.0", slider=False):
     return {
         "NETWORK_DIM": rank, "NETWORK_ALPHA": rank, "NETWORK_TYPE": "LoRA (standard)", "LEARNING_RATE": lr,
         "MAX_TRAIN_EPOCHS": epochs, "SAVE_EVERY_N_EPOCHS": 1, "SEED": 42, "ADAPTIVE_LR": False,
-        "OPTIMIZER_TYPE": "adamw", "GRADIENT_ACCUMULATION": 1, "MAX_GRAD_NORM": 1.0,
+        "OPTIMIZER_TYPE": "muon", "OPTIMIZER_ARGS": MUON_DEFAULT_ARGS, "GRADIENT_ACCUMULATION": 1, "MAX_GRAD_NORM": 1.0,
         "DATASET_MEGAPIXELS": mp, "BLOCKS_SWAP": "Auto (detect from GPU)",
         "FAMILY_PRECISION": "Auto (fits your free VRAM)", "FAMILY_EMA": "0.98 (recommended)",
         "KREA2_LOSS_WATCH": True, "KREA2_PER_IMAGE_LR": False, "KREA2_AUTO_RECAPTION": False,
@@ -30,8 +31,17 @@ ANIMA = FamilyDescription(
     start_lr_bands=(("lora", 7e-6, 3e-4), ("finetune", 3e-7, 3e-5), ("slider", 7e-5, 6e-4)),
     masked_training=True,
     timestep_spread=timestep_spread.FLOW,     # Timestep focus presets (the shift's multiple / the curve's width)
+    batch_training=True,              # Batch size (Other Options): training_loss_batch, exact per picture
+    not_offered={"activation_cache": "not built yet (6 Nov 2026 ability audit)"},
+    batch_gb=(0.25, 0.65),          # GB each extra picture takes: fixed, per MP (batch 1 vs 3)
+    # Batch x checkpointing sweep, 6 Nov 2026 (RTX PRO 6000, 8 pictures, 2 epochs, uncompiled, previews off - so the
+    # no-checkpointing peaks below are the larger of that run's and train_memory's preview peak; uncompiled sits
+    # above a compiled run, the safe side). Desktop\Fizgig batch tests\bsgc\MORNING_REPORT.md
+    batch_auto=((0.25, 4), (1.0, 1)),          # 2.3x a picture at 0.25 MP; nothing gained at 1 MP
+    batch_gb_nogc=((0.25, 5.1), (1.0, 10.7)),       # 0.25: 24.2 GB at batch 4 on a 5090, previews on (6 Nov)
+    nogc_uncompiled=True,
+    train_memory_nogc={"bf16": ((0.25, 9.1), (1.0, 15.1))},    # 1.6x faster than checkpointed
     arch_id="anima",
-    supports_batch=True,              # Batch Size > 1: per-image t / noise (families/batching.py)
     display_name="Anima",
     gui_label="Anima",
     lora_name_suffix="anima",

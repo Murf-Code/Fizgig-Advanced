@@ -231,6 +231,8 @@ class InsightFaceBackend:
             if app is None:
                 if not self.available():
                     raise ImportError("InsightFace is not installed. Run install_fizgig.py to set up face detection.")
+                from fizgig.utils import ort_telemetry
+                ort_telemetry.off()
                 from insightface.app import FaceAnalysis
                 app = FaceAnalysis(name='buffalo_l', allowed_modules=list(self.modules),
                                    providers=['CPUExecutionProvider'])
@@ -413,6 +415,8 @@ class YoloOnnxBackend:
             sess = self._sessions.get(path)
             if sess is None:
                 import onnxruntime as ort
+                from fizgig.utils import ort_telemetry
+                ort_telemetry.off()
                 so = ort.SessionOptions()
                 so.log_severity_level = 3
                 sess = ort.InferenceSession(path, sess_options=so, providers=self.providers)

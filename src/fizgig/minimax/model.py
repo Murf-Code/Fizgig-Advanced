@@ -95,6 +95,12 @@ FRAME_RESCALE = 5.0 / 3.0
 VISUAL_COND_TIMESTEP = 0.999
 
 
+def _wdtype(lin):
+    """A Linear's weight dtype, read through a LoRA wrapper (a frozen file - a Context LoRA from another trainer - can
+    adapt the patch projections and the output heads, and the wrapper has no .weight of its own; #298)."""
+    return getattr(lin, "base", lin).weight.dtype
+
+
 def _axis_from_sqrt_area(dim, patch, sqrt_area):
     ratio = dim / sqrt_area
     n = dim // patch
@@ -342,7 +348,7 @@ class TimeEmbedder(nn.Module):
         # rejects the mix. (Pre-existing: the bf16-checkpoint path could never forward;
         # unnoticed because everyone trains the pruned int8 file, which has no
         # time_embedder at all. Found by the NF4-ring bf16-shape test, 25 Aug.)
-        return self.proj_out(F.silu(self.proj_in(emb.to(self.proj_in.weight.dtype))))
+        return self.proj_out(F.silu(self.proj_in(emb.to(_wdtype(self.proj_in)))))
 
 
 class Attention(nn.Module):
@@ -356,7 +362,9 @@ class Attention(nn.Module):
         self.k_norm = nn.RMSNorm(head_dim, eps=eps)
         self.out_proj = nn.Linear(inner, hidden, bias=False)
 
-    def forward(self, x, cos=None, sin=None):
+    def forward(self, x, cos=None, sin=None, segs=None):
+        """segs: the row counts of the samples packed one after another (MiniMaxH3DiT.forward_packed) - each
+        attends over its own rows only."""
         s = x.shape[0]
         q, k, v = self.qkv_proj(x).split(self.heads * self.head_dim, dim=-1)
         q = self.q_norm(q.view(s, self.heads, self.head_dim))
@@ -365,6 +373,13 @@ class Attention(nn.Module):
         if cos is not None:
             q = apply_rope_split_half(q, cos, sin)
             k = apply_rope_split_half(k, cos, sin)
+        if segs:
+            outs, a = [], 0
+            for n in segs:
+                part = [z[a:a + n].transpose(0, 1).unsqueeze(0) for z in (q, k, v)]
+                outs.append(h3_attention(*part).squeeze(0).transpose(0, 1))
+                a += n
+            return self.out_proj(torch.cat(outs).reshape(s, self.heads * self.head_dim))
         # [S, H, D] -> [1, H, S, D] for SDPA
         q = q.transpose(0, 1).unsqueeze(0)
         k = k.transpose(0, 1).unsqueeze(0)
@@ -539,10 +554,10 @@ class DiTBlock(nn.Module):
         self.mlp = MLP(hidden, ffn)
         self.adaln_proj = AdalnProj(t_dim, hidden, 6, 3, apply_silu=apply_silu)
 
-    def forward(self, x, t_emb, mod_row, cos, sin):
+    def forward(self, x, t_emb, mod_row, cos, sin, segs=None):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(t_emb)
         h = _mod_scale_shift(self.norm1(x), shift_msa, scale_msa, mod_row)
-        x = _mod_gate(x, gate_msa, self.attn(h, cos=cos, sin=sin), mod_row)
+        x = _mod_gate(x, gate_msa, self.attn(h, cos=cos, sin=sin, segs=segs), mod_row)
         h = _mod_scale_shift(self.norm2(x), shift_mlp, scale_mlp, mod_row)
         return _mod_gate(x, gate_mlp, self.mlp(h), mod_row)
 
@@ -563,7 +578,7 @@ class FinalLayer(nn.Module):
         video rows' own timestep."""
         shift, scale = self.adaln_proj(t_emb)
         hv = self.norm(x_video) * (1.0 + scale[t_index]) + shift[t_index]
-        return self.video_out(hv.to(self.video_out.weight.dtype))
+        return self.video_out(hv.to(_wdtype(self.video_out)))
 
     def forward_audio(self, x_audio, t_emb, t_index: int = 0):
         """Same shared norm+modulation, but at the AUDIO rows' timestep and through the audio
@@ -571,7 +586,7 @@ class FinalLayer(nn.Module):
         applies the per-modality head. Used by joint audio denoising in the sampler."""
         shift, scale = self.adaln_proj(t_emb)
         ha = self.norm(x_audio) * (1.0 + scale[t_index]) + shift[t_index]
-        return self.audio_out(ha.to(self.audio_out.weight.dtype))
+        return self.audio_out(ha.to(_wdtype(self.audio_out)))
 
 
 # --- model -------------------------------------------------------------------------------
@@ -582,8 +597,8 @@ class ForwardAborted(RuntimeError):
     the next sampler step (up to ~7 s at 56 frames full size)."""
 
 
-def _run_block(blocks, i, swap_from, h, t_emb, mod_row, cos, sin):
-    """One DiT block, optionally CPU-parked ('block swap').
+def _run_block(blocks, i, swap_from, h, t_emb, mod_row, cos, sin, segs=None):
+    """One DiT block, optionally CPU-parked ('block swap'). segs: packed samples' row counts (forward_packed).
 
     Lives at module level (not a closure) and is the unit torch.utils.checkpoint re-runs in
     backward — which is exactly what makes swap work with bnb NF4: the packed weights move to
@@ -604,12 +619,12 @@ def _run_block(blocks, i, swap_from, h, t_emb, mod_row, cos, sin):
         # physically move, so the checkpoint early-stop has nothing to skip, and a recompute
         # arriving after the ring rotated is healed inside wait_for_block.
         offloader.wait_for_block(i)
-        return blocks[i](h, t_emb, mod_row, cos, sin)
+        return blocks[i](h, t_emb, mod_row, cos, sin, *(() if segs is None else (segs,)))
     if swapped:
         blocks[i].to(h.device)
         if i + 1 < len(blocks):
             blocks[i + 1].to("cpu")            # successor's backward is done (reverse order)
-    out = blocks[i](h, t_emb, mod_row, cos, sin)
+    out = blocks[i](h, t_emb, mod_row, cos, sin, *(() if segs is None else (segs,)))
     if swapped:
         blocks[i].to("cpu")                     # forward-pass park (skipped by recompute)
     return out
@@ -802,8 +817,9 @@ class MiniMaxH3DiT(nn.Module):
                 text_embeds: torch.Tensor, audio_noise: torch.Tensor = None, *,
                 audio_rows: torch.Tensor = None, return_audio: bool = False,
                 ref_latents=None, text_token_tags: torch.Tensor = None, seed: int = 0,
-                visual_cond_noise_aug: float = VISUAL_COND_TIMESTEP, keyframes=None):
+                visual_cond_noise_aug: float = VISUAL_COND_TIMESTEP, keyframes=None, _pack_only=False):
         """
+        _pack_only   : return the packed sequence instead of running the blocks (forward_packed).
         keyframes    : optional list of (frame_index, latent [1, C, 1, h, w]) — fl2va first /
                        last-frame conditioning. Each is packed as a condition frame on the
                        TARGET grid right after the text (before any refs), noise-augmented at
@@ -858,7 +874,7 @@ class MiniMaxH3DiT(nn.Module):
         # the checkpoint stored (fp32 island on the pruned file, bf16 elsewhere) — feed
         # it its own dtype, same rule as TimeEmbedder (review, 25 Aug).
         video_embed = self.video_patch_proj(
-            video_rows.to(self.video_patch_proj.weight.dtype)).to(dtype)
+            video_rows.to(_wdtype(self.video_patch_proj))).to(dtype)
 
         # r2v reference condition rows. Same patchify + projection as the target, but blended
         # with a trace of noise first: r = aug*r + (1-aug)*noise. The reference restarts the SAME
@@ -876,7 +892,7 @@ class MiniMaxH3DiT(nn.Module):
                 _rows.append(r)
                 ref_shapes.append((z.shape[-2], z.shape[-1], z.shape[2]))
             ref_embed = self.video_patch_proj(
-                torch.cat(_rows, dim=0).to(self.video_patch_proj.weight.dtype)).to(dtype)
+                torch.cat(_rows, dim=0).to(_wdtype(self.video_patch_proj))).to(dtype)
 
         # fl2va keyframe condition rows: the same row machinery as a reference, on the
         # target's own grid, with a role-pinned noise seed per frame (see the docstring).
@@ -902,7 +918,7 @@ class MiniMaxH3DiT(nn.Module):
                 _rows.append(r)
                 kf_indices.append(idx)
             kf_embed = self.video_patch_proj(
-                torch.cat(_rows, dim=0).to(self.video_patch_proj.weight.dtype)).to(dtype)
+                torch.cat(_rows, dim=0).to(_wdtype(self.video_patch_proj))).to(dtype)
 
         # audio: silence (x0 = 0) noised on the audio schedule at the same schedule position as
         # the video rows. Present because the base model has never seen a pack without it.
@@ -938,7 +954,7 @@ class MiniMaxH3DiT(nn.Module):
                                       device=device, dtype=torch.float32)
                 _arows = sigma_a * eps.to(device=device, dtype=torch.float32)
             audio_embed = self.audio_patch_proj(
-                _arows.to(self.audio_patch_proj.weight.dtype)).to(dtype)
+                _arows.to(_wdtype(self.audio_patch_proj))).to(dtype)
 
         # pack [text | keyframes | refs | audio | video] — the reference's segment order
         parts = ([text_states.to(dtype)]
@@ -995,6 +1011,9 @@ class MiniMaxH3DiT(nn.Module):
                                  keyframes=kf_indices or None).to(device)
         cos, sin = rope_cos_sin(pos, self.rope.inv_freq.to(device))
         cos, sin = cos.to(dtype), sin.to(dtype)
+        if _pack_only:
+            return {"h": h, "t_emb": t_emb, "mod_row": mod_row, "cos": cos, "sin": sin, "video_start": video_start,
+                    "video_t_index": video_t_index, "shape": (latent_t, lat_h, lat_w), "dtype": video_latent.dtype}
 
         # Gate on grad-enabled only, NOT self.training: the frozen base stays in eval() during
         # LoRA training (grads flow through it regardless), so a training-mode gate would
@@ -1065,13 +1084,49 @@ class MiniMaxH3DiT(nn.Module):
             return out, a
         return out
 
+    def forward_packed(self, items):
+        """Batch Size above 1 (training): items [(video_latent [1, C, T, H, W], t [1], text_embeds [1, L, D]), ...]
+        each packed as forward packs it, one after another in one sequence. Every block's attention runs over each
+        item's own rows and each row is modulated at its own item's timesteps, so an item's prediction is its own
+        forward's; the Linears run over every item at once. No TREAD routing (pictures; a clip trains on its own
+        step). Returns the predictions, one per item."""
+        packs = [self.forward(*it, _pack_only=True) for it in items]
+        segs = tuple(int(p["h"].shape[0]) for p in packs)
+        h = torch.cat([p["h"] for p in packs])
+        cos, sin = torch.cat([p["cos"] for p in packs]), torch.cat([p["sin"] for p in packs])
+        t_emb = torch.cat([p["t_emb"] for p in packs])
+        rows, m = [], 0
+        for p in packs:                  # each item's (timestep, modality) rows sit after the items before it
+            rows.append(p["mod_row"] + m * MODALITY_NUM)
+            m += p["t_emb"].shape[0]
+        mod_row = torch.cat(rows)
+        use_ckpt = self._gradient_checkpointing and torch.is_grad_enabled()
+        for i in range(len(self.blocks)):
+            if use_ckpt and i < len(self.blocks) - self.gc_off_blocks:
+                h = torch.utils.checkpoint.checkpoint(
+                    _run_block, self.blocks, i, self._swap_from, h, t_emb, mod_row, cos, sin, segs,
+                    use_reentrant=False)
+            else:
+                h = _run_block(self.blocks, i, self._swap_from, h, t_emb, mod_row, cos, sin, segs)
+            _off = getattr(self, "_h2d_offloader", None)
+            if _off is not None and i >= self._swap_from:
+                _off.submit_move_blocks_forward(i)
+        outs, a = [], 0
+        for p, n in zip(packs, segs):
+            latent_t, lat_h, lat_w = p["shape"]
+            v = self.final_layer(h[a + p["video_start"]:a + n], p["t_emb"], p["video_t_index"])
+            outs.append(unpatchify_video(v, latent_t, lat_h // self.patch_size[1], lat_w // self.patch_size[2],
+                                         self.latents_dim, self.patch_size).to(p["dtype"]))
+            a += n
+        return outs
+
     # (Entry class lives at module level: H3ActivationCacheEntry, below the DiT.)
     def forward_cached(self, video_latent: torch.Tensor, t: torch.Tensor,
                        text_embeds: torch.Tensor, audio_rows: torch.Tensor = None,
                        return_audio: bool = False, *,
                        resume_from=None, cached=None, new_cache=None,
                        cache_device: str = "cpu", keyframes=None):
-        """Inference forward with per-block activation caching (Repair Studio Turbo Preview).
+        """Inference forward with per-block activation caching (Studio's Reuse unchanged blocks).
 
         `resume_from` = the earliest changed main-block index (or None for a full pass). When
         resuming with a valid `cached`, the pre-block setup (token refiner, patchify, audio
@@ -1121,7 +1176,7 @@ class MiniMaxH3DiT(nn.Module):
                 text_states = self.token_refiner(self.condition_proj(text_states))
             video_rows = patchify_video(video_latent.to(torch.float32), self.patch_size)
             video_embed = self.video_patch_proj(
-                video_rows.to(self.video_patch_proj.weight.dtype)).to(dtype)
+                video_rows.to(_wdtype(self.video_patch_proj))).to(dtype)
 
             t_val = t.reshape(-1)[:1].to(torch.float32) if torch.is_tensor(t) else torch.tensor([float(t)], device=device)
             t_val = t_val.to(device)
@@ -1142,7 +1197,7 @@ class MiniMaxH3DiT(nn.Module):
                                                    self.config.audio_latents_dim,
                                                    device=device, dtype=torch.float32)
                 audio_embed = self.audio_patch_proj(
-                    _arows.to(self.audio_patch_proj.weight.dtype)).to(dtype)
+                    _arows.to(_wdtype(self.audio_patch_proj))).to(dtype)
 
             parts = ([text_states.to(dtype)]
                      + ([audio_embed] if audio_embed is not None else [])

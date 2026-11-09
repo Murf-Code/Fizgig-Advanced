@@ -23,7 +23,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from fizgig.families.driver import Block, BlockGroup, FamilyDriver, prior_base, weighted_loss, with_prior
+from fizgig.families.driver import Block, BlockGroup, FamilyDriver, picture_losses, prior_base, weighted_loss, with_prior
 from fizgig.moss_image import sampling as S
 
 logger = logging.getLogger(__name__)
@@ -148,9 +148,9 @@ class MOSSImageDriver(FamilyDriver):
         the free VRAM with room to run, else streamed layer-major from the CPU (embedder.MOSSTextEncoder) - still
         exact bf16, which OpenMOSS ask for (their text encoder is "much more unstable than DiT"), not 8-bit."""
         from fizgig.families.quant import free_vram_gb
-        from fizgig.moss_image.embedder import MOSSTextEncoder, TOKENIZER_REPO, from_file_wanted
+        from fizgig.moss_image.embedder import MOSSTextEncoder, TOKENIZER_REPO, ensure_chat_template, from_file_wanted
         from transformers import AutoTokenizer
-        tok = self.from_pretrained(AutoTokenizer, TOKENIZER_REPO, subfolder="tokenizer")
+        tok = ensure_chat_template(self.from_pretrained(AutoTokenizer, TOKENIZER_REPO, subfolder="tokenizer"))
         stream = free_vram_gb() < 18.0
         # streamed on a computer without the RAM to hold it (16 / 24 GB): read from the file, a layer at a time
         return MOSSTextEncoder(path, device=device, stream=stream, tokenizer=tok,
@@ -298,8 +298,6 @@ class MOSSImageDriver(FamilyDriver):
                       diff_weight=0.0, loss_mask=None, prior=None):
         if refs:
             raise RuntimeError("MOSS-Image has no edit (reference-image) conditioning")
-        if latents.shape[0] > 1:
-            return self._batched_loss(dit, latents, cond, generator, min_t, max_t, diff_ref, loss_mask, prior)
         x0 = latents.float()
         noise = torch.randn(x0.shape, generator=generator).to(x0.device)
         t = self._sample_t(generator, min_t, max_t, self._t_mu())
@@ -327,40 +325,32 @@ class MOSSImageDriver(FamilyDriver):
             loss = with_prior(loss, prior, base, (pred - base).pow(2).mean(dim=1), mw, wgt)
         return loss, {"t": t}
 
-    def _batched_loss(self, dit, latents, cond, generator, min_t, max_t, diff_ref, loss_mask=None, prior=None):
-        """Batch Size > 1: each image its own noise and timestep, drawn in the order B batch-1 steps draw them (noise,
-        then t, per image), so the loss is the mean of what those B steps would give. The DiT runs them together
-        (padded captions masked by `hidden_states__valid`)."""
-        if diff_ref is not None:
-            raise RuntimeError("MOSS-Image: image-pair sliders train at Batch Size 1")
+    def stack_conds(self, conds):
+        """Batch Size above 1: each picture keeps its own caption, unpadded - training_loss_batch runs the pictures
+        through the DiT one at a time at their own caption lengths, as OneTrainer's MOSS trainer does (#221): no
+        padding, no attention mask, each picture's pass exactly its batch-1 pass."""
+        return {"items": conds}
+
+    def training_loss_batch(self, dit, latents, cond, generator, *, min_t=0.0, max_t=1.0, loss_mask=None):
+        """Batch Size above 1: each picture's noise and t drawn as training_loss draws them, picture by picture, then
+        each picture through the DiT alone (its own caption length, no padding or mask) and ONE backward over the
+        pictures' mean MSE (a mask weighs each picture on its own). OneTrainer's MOSS forward loops the same way; with
+        a padded batch the masked attention fell back to PyTorch's slow kernel and every picture paid for the longest
+        caption (#221)."""
         x0 = latents.float()
-        b = x0.shape[0]
-        hidden = cond["hidden_states"]
-        if hidden.dim() != 3 or hidden.shape[0] != b:
-            raise RuntimeError(f"MOSS-Image: {b} images but {hidden.shape[0] if hidden.dim() == 3 else 1} captions "
-                               "in the batch")
-        noise, ts = [], []
-        for i in range(b):
-            noise.append(torch.randn(x0[i:i + 1].shape, generator=generator))
-            ts.append(self._sample_t(generator, min_t, max_t, self._t_mu()))
-        noise = torch.cat(noise).to(x0.device)
-        tv = torch.tensor(ts, dtype=torch.float32, device=x0.device)
-        xt = (1 - tv.view(-1, 1, 1, 1)) * x0 + tv.view(-1, 1, 1, 1) * noise
-        valid = cond.get("hidden_states__valid")
-        fwd = lambda: dit(xt, tv * S.TRAIN_STEPS, hidden.to(xt.device), None if valid is None else valid.to(xt.device))
-        base = prior_base(prior, loss_mask, fwd)
-        pred = fwd().float()
-        mw = None if loss_mask is None else loss_mask.float().to(x0.device)[:, 0]             # (B, h, w)
-        if mw is None:
-            per = (pred - (noise - x0)).pow(2).flatten(1).mean(1)                       # each image's MSE
-        else:   # masked training: each image's mask scaled to mean 1 on its own, as at Batch Size 1 (weighted_loss)
-            se = (pred - (noise - x0)).pow(2).mean(dim=1)
-            sb = None if base is None else (pred - base).pow(2).mean(dim=1)
-            per = torch.stack([with_prior(weighted_loss(se[i:i + 1], mw[i:i + 1]), prior,
-                                          None if sb is None else base[i:i + 1], None if sb is None else sb[i:i + 1],
-                                          mw[i:i + 1]) for i in range(b)])
-        # "per": each image's own loss (what its batch-1 step would give), for per-image LR and the loss watch
-        return per.mean(), {"t": sum(ts) / b, "ts": ts, "per": per}
+        mu = self._t_mu()
+        noises, ts = [], []
+        for i in range(x0.shape[0]):
+            noises.append(torch.randn(x0[i:i + 1].shape, generator=generator))
+            ts.append(self._sample_t(generator, min_t, max_t, mu))
+        noise = torch.cat(noises).to(x0.device)
+        t = torch.tensor(ts, device=x0.device, dtype=torch.float32).view(-1, 1, 1, 1)
+        xt = (1 - t) * x0 + t * noise
+        pred = torch.cat([self._forward(dit, xt[i:i + 1], ts[i], c) for i, c in enumerate(cond["items"])]).float()
+        target = noise - x0
+        mw = None if loss_mask is None else loss_mask.float().to(x0.device)[:, 0]
+        per = picture_losses((pred - target).pow(2).mean(dim=1), mw)
+        return per.mean(), {"t": sum(ts) / len(ts), "per": per, "ts": [float(v) for v in ts]}
 
     def noise_latents(self, latents, generator, *, min_t=0.0, max_t=1.0):
         x0 = latents.float()
