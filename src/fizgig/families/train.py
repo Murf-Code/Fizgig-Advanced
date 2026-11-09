@@ -1235,7 +1235,7 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
                  gradient_accumulation_steps=1, compile_blocks="auto", gradient_checkpointing="auto", blocks_to_swap=0, network_type="lora", lokr_factor=8,
                  log_per_image_loss=False, per_image_lr=False, auto_recaption=False, warmup_look_outliers=False,
                  validation_loss=False, validation_images=4, validation_timesteps=4, validation_seed=42,
-                 validation_every_steps=0, validation_picked=None,
+                 validation_every_steps=0, validation_picked=None, validation_holdout=False,
                  validation_early_stop=False, validation_patience=3, validation_min_delta=0.001,
                  auto_reclaim_vram=True, reclaim_slowdown=1.5, reclaim_slow_steps=20, reclaim_warmup_steps=50,
                  reclaim_min_free_gb=vram_reclaim.RECLAIM_FREE_GB, reclaim_cooldown=200, reclaim_max_tries=3,
@@ -1401,6 +1401,20 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
             logger.info(_line)
     if group.num_train_items == 0:
         raise RuntimeError("No training items - run the cache stages (families/cache.py) first.")
+    # Validation hold-out: the fixed validation pictures never train, so validation measures unseen pictures
+    val_keys, val_held = None, {}
+    if validation_loss and validation_holdout:
+        if slider or finetune:
+            logger.info("[validation] hold-out is off: sliders and fine-tunes have no fixed validation loss")
+        else:
+            from fizgig.training.val_loss import hold_out
+            val_keys, val_held = hold_out(group, validation_images, validation_picked)
+            if val_held:
+                logger.info(f"[validation] hold-out on: {len(val_held)} validation picture(s) never train, so the "
+                            f"validation loss measures pictures the LoRA hasn't seen ({group.num_train_items} items "
+                            "train)")
+            else:
+                logger.warning("[validation] hold-out skipped: it would leave no pictures to train")
     masked_images = 0
     if masked_training and slider_prompts:
         logger.info("[masks] a prompt-pair slider trains on pictures it makes itself: masked training is off")
@@ -1504,6 +1518,9 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
                                                               argparse.Namespace(), architecture=arch)
         low_group = generate_dataset_group_by_blueprint(_lbp.dataset_group, training=True, num_timestep_buckets=None,
                                                         shared_epoch=shared_epoch)
+        if val_held:                     # the held-out pictures stay out at the smaller size too
+            from fizgig.training.val_loss import hold_out
+            hold_out(low_group, wanted=set(val_held))
         if low_group.num_train_items == 0:
             logger.warning("[stages] the smaller size has no cache - this run trains at the full size throughout")
         else:
@@ -2871,9 +2888,9 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
                         "without a cached image dataset don't have it)")
         else:
             from fizgig.training.val_loss import FixedValidation
-            validator = FixedValidation(_share_keys, images=validation_images, timesteps=validation_timesteps,
-                                        seed=validation_seed, every_steps=validation_every_steps,
-                                        picked=validation_picked)
+            validator = FixedValidation(val_keys or _share_keys, images=validation_images,
+                                        timesteps=validation_timesteps, seed=validation_seed,
+                                        every_steps=validation_every_steps, picked=validation_picked)
             logger.info(f"[validation] fixed validation loss on: {len(validator.wanted)} "
                         + ("picked" if validator.picked else "auto-picked") + " image(s) x "
                         f"{len(validator.ts)} noise level(s), seed {validation_seed}, "
@@ -2893,6 +2910,8 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
                     os.remove(_vsnap)        # an earlier run of this name's: this run keeps its own
                 except OSError:
                     pass
+            if val_held and not validator.ready:   # held out: never drawn by training, so kept straight from the cache
+                validator.prefill([], val_held)
     best_path = os.path.join(output_dir, f"{output_name}-best.safetensors")
     if validation_early_stop and validator is None:
         logger.info("[early stop] off: it needs Image Validation, which this run doesn't have")
@@ -3530,6 +3549,8 @@ def setup_parser():
     p.add_argument("--validation_timesteps", type=int, default=4)
     p.add_argument("--validation_seed", type=int, default=42)
     p.add_argument("--validation_every_steps", type=int, default=0, help="0 = at the end of each epoch")
+    p.add_argument("--validation_holdout", action="store_true",
+                   help="hold the fixed validation pictures out of training: validation measures unseen pictures")
     p.add_argument("--validation_pick", action="append", default=None,
                    help="a training image to check (its file name; repeat for more). None: an even spread")
     p.add_argument("--validation_early_stop", action="store_true",
@@ -3738,6 +3759,7 @@ def main():
         validation_loss=a.validation_loss, validation_images=a.validation_images,
         validation_timesteps=a.validation_timesteps, validation_seed=a.validation_seed,
         validation_every_steps=a.validation_every_steps, validation_picked=a.validation_pick,
+        validation_holdout=a.validation_holdout,
         validation_early_stop=a.validation_early_stop, validation_patience=a.validation_patience,
         validation_min_delta=a.validation_min_delta,
         auto_reclaim_vram=a.auto_reclaim_vram, reclaim_slowdown=a.reclaim_slowdown, send_only_swap=a.send_only_swap,

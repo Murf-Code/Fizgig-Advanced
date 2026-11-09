@@ -83,7 +83,7 @@ DEFAULTS = {
     "SEED": "42", "BLOCKS_SWAP": "Auto (detect from GPU)", "RESUME_TRAINING": "", "OPTIMIZER_TYPE": "adamw8bit",
     "OPTIMIZER_ARGS": "", "GRADIENT_ACCUMULATION": "1", "BATCH_SIZE": "1", "MAX_GRAD_NORM": "1.0", "LR_SCHEDULER": "constant",
     "LR_WARMUP_STEPS": "", "VALIDATION_LOSS": False, "VALIDATION_IMAGES": "4", "VALIDATION_TIMESTEPS": "4",
-    "VALIDATION_SEED": "42", "VALIDATION_EVERY_STEPS": "0", "VALIDATION_PICKED": [],
+    "VALIDATION_SEED": "42", "VALIDATION_EVERY_STEPS": "0", "VALIDATION_PICKED": [], "VALIDATION_HOLDOUT": False,
     "VALIDATION_EARLY_STOP": False, "VALIDATION_PATIENCE": "3", "ADAPTIVE_LR": False, "ADAPTIVE_LR_ON_VAL": True, "ADAPTIVE_LR_MIN": "1e-5", "ADAPTIVE_LR_MAX": "4e-4",
     "CONTEXT_LORA_PATH": "", "CONTEXT_LORA_STRENGTH": "1.0", "FAMILY_DOP": False, "FAMILY_MULTI_PERSON": False, "FAMILY_DOP_TRIGGER": "",
     "FAMILY_DOP_CLASS": "", "FAMILY_DOP_TRIGGER2": "", "FAMILY_DOP_CLASS2": "",
@@ -842,10 +842,15 @@ def form(desc):
              "uses no extra memory and adds a few seconds a check. Off by default.", full=True),
         _row("VALIDATION_PICKED", "Your images to check (optional)", "valpick", "Pick the training images to "
              "check from your dataset, one at a time. None picked: Fizgig spreads its own pick evenly through the "
-             "folder (Images to check). They still train as normal.", default=[]),
+             "folder (Images to check). They still train as normal, unless you hold them out (below).", default=[]),
         _row("VALIDATION_IMAGES", "Images to check", hint="Used when you haven't picked any: picked evenly from your "
              "training images, the same ones every check (and every run of this dataset). They still train as "
-             "normal."),
+             "normal, unless you hold them out."),
+        _row("VALIDATION_HOLDOUT", "Hold the validation images out of training", "check",
+             "Off (default): they train like the rest, so validation shows how well the LoRA has learned pictures it "
+             "trains on. On: they never train, so validation measures pictures the LoRA hasn't seen - it turns up "
+             "when the LoRA starts to overcook instead of just memorising. Those few pictures don't train, so it "
+             "suits a dataset of about 20 or more.", full=True),
         _row("VALIDATION_TIMESTEPS", "Noise levels per image", hint="Evenly spaced from low to high noise "
              "(4 = 0.125, 0.375, 0.625, 0.875)."),
         _row("VALIDATION_SEED", "Validation seed", hint="The fixed noise. Keep it the same to compare runs."),
@@ -1153,7 +1158,8 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
         notes["VALIDATION_EVERY_STEPS"] = "Steps must be a whole number above 0 - checking every epoch until then."
     _on = lambda k: str(values.get(k, "")).lower() not in ("", "false", "0", "off", "none")
     if not _on("VALIDATION_LOSS"):                      # early stop goes by the validation loss
-        disabled |= {"VALIDATION_EARLY_STOP", "VALIDATION_PATIENCE"}
+        disabled |= {"VALIDATION_EARLY_STOP", "VALIDATION_PATIENCE", "VALIDATION_HOLDOUT"}
+        tips["VALIDATION_HOLDOUT"] = "Turn on Fixed validation loss first."
         tips["VALIDATION_EARLY_STOP"] = "Turn on Fixed validation loss first: early stop goes by it."
     elif not _on("VALIDATION_EARLY_STOP"):
         disabled.add("VALIDATION_PATIENCE")

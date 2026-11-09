@@ -1100,6 +1100,8 @@ def train_command(desc, inputs, plan):
                 "--validation_every_steps", str(validation_every_steps(st.get("VALIDATION_EVERY_STEPS")))]
         for name in picked_list(st.get("VALIDATION_PICKED")):     # your own images: the count is not used
             cmd += ["--validation_pick", name]
+        if st.get("VALIDATION_HOLDOUT") and str(st.get("VALIDATION_HOLDOUT")).lower() not in ("false", "0", "off"):
+            cmd.append("--validation_holdout")       # the validation pictures never train
         if st.get("VALIDATION_EARLY_STOP") and str(st.get("VALIDATION_EARLY_STOP")).lower() not in ("false", "0",
                                                                                                     "off"):
             cmd += ["--validation_early_stop", "--validation_patience",

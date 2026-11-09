@@ -543,6 +543,13 @@ class BucketBatchManager:
         self.variants = None          # tag_variants.VariantPicker: a cached caption variant per image per step
         self.epoch = 0
 
+        self.reindex()
+
+    def reindex(self):
+        """The batches again, after items were taken out of the buckets (an empty bucket goes)."""
+        for reso in [r for r, items in self.buckets.items() if not items]:
+            del self.buckets[reso]
+        self.bucket_resos = sorted(self.buckets.keys(), key=lambda k: tuple(str(x) for x in k))
         self.bucket_batch_indices: list[Tuple[Tuple[int, int], int]] = []
         for reso in self.bucket_resos:
             num_batches = math.ceil(len(self.buckets[reso]) / self.bucket_batch(reso))
