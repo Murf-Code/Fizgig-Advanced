@@ -18,3 +18,19 @@ def test_a_bad_position_already_saved_is_ignored_at_start():
     assert aw._sane_geom({"width": 1440, "height": 920, "x": -32000, "y": -32000}) == {}
     assert aw._sane_geom({"width": 1440, "height": 920, "x": -1800, "y": 40}) == {"width": 1440, "height": 920,
                                                                                   "x": -1800, "y": 40}   # a left monitor
+
+
+def test_downloads_open_in_the_folder_the_last_one_went_to(tmp_path, monkeypatch):
+    from fizgig.web import app_window as aw
+    monkeypatch.setattr(aw, "PREFS_FILE", str(tmp_path / "prefs.json"))
+    aw._remember({"width": 1440, "height": 920, "x": 100, "y": 80})
+    dl = tmp_path / "Downloads"
+    dl.mkdir()
+    assert aw.download_start_dir(str(dl)) == str(dl)                 # nothing saved yet: Windows' Downloads
+    keep = tmp_path / "loras" / "epochs"
+    keep.mkdir(parents=True)
+    aw._remember_download_dir(str(keep / "run-000004.safetensors"))
+    assert aw.download_start_dir(str(dl)) == str(keep)               # the next Save window opens there
+    assert aw._prefs()["app_window"]["width"] == 1440                # the rest of prefs.json is kept
+    keep.rmdir()
+    assert aw.download_start_dir(str(dl)) == str(dl)                 # that folder gone: Downloads again
