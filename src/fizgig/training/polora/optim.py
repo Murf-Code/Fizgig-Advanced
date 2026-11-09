@@ -252,7 +252,7 @@ class Polora(Optimizer):
             self._compiled = False
             self._polar_fn, self._invsqrt_fn, self._smax_fn = polar_express_gram_batched, ns_inv_sqrt, smax_groups
             msg = str(e).splitlines()[0][:200] if str(e) else type(e).__name__
-            logging.getLogger("fizgig.polora").info("[polora] compile failed (%s) - running uncompiled from here", msg)
+            logging.getLogger("fizgig.polora").warning("[polora] compile failed (%s) - running uncompiled from here", msg)
             return getattr(self, name)(*args, **kw)
 
     @torch.no_grad()

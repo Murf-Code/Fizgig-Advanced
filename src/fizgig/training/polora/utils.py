@@ -83,10 +83,12 @@ def power_iter_top(M, symmetric=False, v_init=None, n_iters=8):
 
     if symmetric:
         value = (v * (Mf @ v)).sum(dim=(-2, -1))      # Rayleigh quotient
+    # keepdim + index rather than norm(dim=(-2, -1)): torch 2.10's dynamic-shape tracing keeps a reduced size-1 dim
+    # here (a 1x1 factor, e.g. rank 1), so the compiled sigma_max saw a (B, 1, B) value and fell back to eager
     elif left:
-        value = (Mt @ v).norm(dim=(-2, -1))
+        value = (Mt @ v).norm(dim=(-2, -1), keepdim=True)[..., 0, 0]
     else:
-        value = (Mf @ v).norm(dim=(-2, -1))
+        value = (Mf @ v).norm(dim=(-2, -1), keepdim=True)[..., 0, 0]
     return torch.maximum(value, floor), v.squeeze(-1)
 
 
