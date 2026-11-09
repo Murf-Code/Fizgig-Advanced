@@ -37,7 +37,7 @@ const out = new Pre(); let picked = null; const listeners = {};
 const document = { createTextNode: (v) => new Text(v), addEventListener: (t, f) => { listeners[t] = f; } };
 const window = { getSelection: () => picked && { isCollapsed: false, rangeCount: 1,
   containsNode: (n) => n === out ? picked.parent === out : n === picked } };
-const $ = () => out; const S = { logSince: 0 }; const TOKEN = "";
+const $ = () => out; const S = { logSince: 0 }; const TOKEN = ""; const polFactorHidden = () => false;
 let src; class EventSource { constructor() { src = this; } close() {} }
 const send = (l) => src.onmessage({ data: JSON.stringify(l), lastEventId: "" });
 let timers = []; const setTimeout = (f) => { timers.push(f); }; const tick = () => { while (timers.length) timers.shift()(); };
