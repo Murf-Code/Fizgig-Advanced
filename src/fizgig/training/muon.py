@@ -65,8 +65,8 @@ def _zeropower_batched(x: Tensor, ns_coefficients: tuple[float, float, float], n
 
 class BatchedMuon(torch.optim.Optimizer):
     """torch.optim.Muon's update (same momentum, Newton-Schulz and adjust_lr rules) for all-2D parameter lists, with
-    the per-parameter work batched: momentum and weight decay as foreach ops, Newton-Schulz once per group of
-    same-shaped matrices."""
+    the per-parameter work batched: momentum, the Nesterov look-ahead and weight decay as foreach ops, Newton-Schulz
+    once per group of same-shaped matrices."""
 
     def __init__(self, params, lr: float = 1e-3, weight_decay: float = 0.1, momentum: float = 0.95,
                  nesterov: bool = True, ns_coefficients: tuple[float, float, float] = (DEFAULT_A, DEFAULT_B, DEFAULT_C),
@@ -100,7 +100,8 @@ class BatchedMuon(torch.optim.Optimizer):
                     st["momentum_buffer"] = torch.zeros_like(g, memory_format=torch.preserve_format)
                 bufs.append(st["momentum_buffer"])
             torch._foreach_lerp_(bufs, grads, 1.0 - mom)
-            ups = [g.lerp(b_, mom) for g, b_ in zip(grads, bufs)] if group["nesterov"] else bufs
+            # the Nesterov look-ahead (grad.lerp(buf, momentum) for each matrix) as one foreach op, not one per matrix
+            ups = torch._foreach_lerp(grads, bufs, mom) if group["nesterov"] else bufs
             if wd != 0.0:
                 torch._foreach_mul_(ps, 1.0 - lr * wd)
             by_shape = {}
