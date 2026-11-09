@@ -228,7 +228,8 @@ def small_card_figures(desc) -> bool:
     return _small_card_previews()
 
 
-def plan(desc, driver, precision="auto", blocks_to_swap=-1, free_gb=None, margin_gb=1.5, megapixels=1.0, pictures=1):
+def plan(desc, driver, precision="auto", blocks_to_swap=-1, free_gb=None, margin_gb=1.5, megapixels=1.0, pictures=1,
+         extra_gb=0.0):
     """Resolve 'auto' precision and/or block swap (-1) from free VRAM and the description's measured training
     memory (desc.train_memory: {precision: (peak GB at no swap, GB saved per swapped block)}).
 
@@ -237,13 +238,16 @@ def plan(desc, driver, precision="auto", blocks_to_swap=-1, free_gb=None, margin
     small one: swapping int8 instead cost 4.4x the step time and 4x the CPU on a 16 GB card (#216; measured July
     2026). Only if nothing fits does it swap (int8, the smaller swappable base). An explicit precision with auto swap
     gets the fewest blocks that fit. pictures: a batched step's (Batch size), each past the first adding
-    desc.batch_gb's figure at megapixels. Returns (precision, blocks_to_swap, reason)."""
+    desc.batch_gb's figure at megapixels. extra_gb: GB on top of every figure (a number, or {precision: GB}) - this
+    run's LoRA rank and optimizer state past the figures' recipe, and what past runs measured
+    (families/vram_plan.py). Returns (precision, blocks_to_swap, reason)."""
     if free_gb is None:
         free_gb = free_vram_gb()
     extra = batch_extra(desc, megapixels, pictures)
     small = small_card_figures(desc)
     table = desc.train_memory_small if small else desc.train_memory
-    mem = {p: (_peak(v, megapixels) + extra, v[1]) for p, v in (table or {}).items()}
+    add = (lambda p: float(extra_gb.get(p, 0.0))) if isinstance(extra_gb, dict) else (lambda p: float(extra_gb or 0))
+    mem = {p: (_peak(v, megapixels) + extra + add(p), v[1]) for p, v in (table or {}).items()}
     offered = [p for p in PRECISIONS if p in desc.precisions]
     order = (getattr(desc, "auto_precisions_small", ()) if small else ()) or getattr(desc, "auto_precisions", ())
     if precision == "auto" and order:
@@ -282,6 +286,16 @@ def plan(desc, driver, precision="auto", blocks_to_swap=-1, free_gb=None, margin
         n = swap_for(precision)
         return precision, n, (f"{n} swapped blocks to fit {free_gb:.1f} GB" if n else f"fits {free_gb:.1f} GB")
     return precision, blocks_to_swap, "as set"
+
+
+def predicted_gb(desc, precision, blocks_to_swap, megapixels=1.0, pictures=1):
+    """The peak plan() predicts for `precision` with `blocks_to_swap` swapped (the same figures it read), or None
+    with no figure for it - what families/vram_plan.record() weighs a run's measured peak against."""
+    table = desc.train_memory_small if small_card_figures(desc) else desc.train_memory
+    if precision not in (table or {}):
+        return None
+    v = table[precision]
+    return _peak(v, megapixels) + batch_extra(desc, megapixels, pictures) - max(0, blocks_to_swap) * v[1]
 
 
 def batch_extra(desc, megapixels=1.0, pictures=1):

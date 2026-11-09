@@ -976,7 +976,8 @@ def _state_flags(st):
 # (trainer flag, default, type). auto_reclaim_vram is "1"/"0" like the other Preferences ticks.
 RECLAIM_PREF_DEFAULTS = {"auto_reclaim_vram": "1", "reclaim_slowdown": "1.5", "reclaim_slow_steps": "20",
                          "reclaim_warmup_steps": "50", "reclaim_min_free_gb": "0.1", "reclaim_cooldown": "200",
-                         "reclaim_max_tries": "3", "send_only_block_swap": "1", "send_only_force": "0"}
+                         "reclaim_max_tries": "3", "send_only_block_swap": "1", "send_only_force": "0",
+                         "vram_margin_gb": "1.5"}
 RECLAIM_SETTINGS = (
     ("reclaim_slowdown", "--reclaim_slowdown", 1.5, float),
     ("reclaim_slow_steps", "--reclaim_slow_steps", 20, int),
@@ -998,6 +999,18 @@ def clean_reclaim_prefs(changes):
     for tick in ("auto_reclaim_vram", "send_only_block_swap", "send_only_force"):
         if tick in ch:
             ch[tick] = "1" if ch[tick] in (True, "1", 1, "true", "True") else "0"
+    if "vram_margin_gb" in ch:                 # the Auto plan's safety margin: 0 to 8 GB, blank = 1.5
+        raw = str(ch["vram_margin_gb"] if ch["vram_margin_gb"] is not None else "").strip()
+        if not raw:
+            ch["vram_margin_gb"] = "1.5"
+        else:
+            try:
+                n = float(raw)
+            except ValueError:
+                raise ValueError(f"{raw!r} isn't a number.")
+            if not 0 <= n <= 8:
+                raise ValueError("Please enter a number of GB from 0 to 8.")
+            ch["vram_margin_gb"] = f"{n:g}"
     for key, _flag, dflt, typ in RECLAIM_SETTINGS:
         if key not in ch:
             continue
@@ -1030,6 +1043,14 @@ def send_only_flags(prefs):
     if not tick("send_only_block_swap", "1"):
         return ["--no-send_only_swap"]
     return ["--send_only_force"] if tick("send_only_force", "0") else []
+
+
+def vram_margin_flags(prefs):
+    """Preferences > Training memory > "Safety margin": the GB the Auto plan leaves free (the trainer's default 1.5
+    is not passed)."""
+    from fizgig.families.vram_plan import DEFAULT_MARGIN_GB, margin
+    m = margin((prefs or {}).get("vram_margin_gb", DEFAULT_MARGIN_GB))
+    return [] if abs(m - DEFAULT_MARGIN_GB) < 1e-9 else ["--vram_margin_gb", f"{m:g}"]
 
 
 def reclaim_flags(prefs):
@@ -1117,6 +1138,7 @@ def train_command(desc, inputs, plan):
                     str(max(1, int(_vi("VALIDATION_PATIENCE", "3"))))]
     cmd += reclaim_flags(st.get("vram_reclaim"))
     cmd += send_only_flags(st.get("vram_reclaim"))
+    cmd += vram_margin_flags(st.get("vram_reclaim"))
     if st.get("ADAPTIVE_LR") and desc.adaptive_lr and not ft_on(desc, st):   # a fine-tune trains at its own rate
         cmd += ["--adaptive_lr",
                 "--adaptive_lr_min", (str(st.get("ADAPTIVE_LR_MIN", "1e-4")).split() or ["1e-4"])[0],

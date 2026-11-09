@@ -1270,7 +1270,7 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
                  ft_epochs_done=0, ft_fused_backward=False, ft_optimizer="adafactor", reg_lr_multiplier=0.2, preview_checkpoint=None,
                  preview_checkpoint_cache="auto", preview_int8=False, family_options=None,
                  dop=False, dop_trigger=None, dop_class="", dop_weight=1.0, dop_every=1, dop_ft_samples=8,
-                 lr_boost=None, share_worker=None, masked_training=False, mask_floor=0.1, mask_prior=0.0,
+                 lr_boost=None, vram_margin_gb=1.5, share_worker=None, masked_training=False, mask_floor=0.1, mask_prior=0.0,
                  caption_dropout=0.0, stage_dataset_config=None, stage_until=0.3, stage_blend=0.1,
                  batch_size_auto=False):
     desc = get_family(family)
@@ -1613,10 +1613,21 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
 
     # ---- Auto precision / swap: planned on an empty card (the description's figures include the preview VAE)
     auto_precision = precision == "auto"
+    from fizgig.families import vram_plan
+    _res = user_config.get("general", {}).get("resolution") or [1024, 1024]
+    _vram_mp = (_res[0] * _res[1] if isinstance(_res, (list, tuple)) else _res * _res) / 1e6
+    # this run's LoRA rank and optimizer past the figures' recipe, and what past runs measured (vram_plan); a
+    # fine-tune trains no LoRA and plans its windows itself
+    _vram_learn = not finetune and bool(getattr(desc, "train_memory", None))
+    _vram_adapter, _vram_why = (vram_plan.extra_gb(desc, dit_path, network_type, network_dim, optimizer_type)
+                                if _vram_learn else (0.0, ""))
+    vram_margin_gb = vram_plan.margin(vram_margin_gb)
+    if finetune:
+        from fizgig.families import ft as _ft_mod
+        _ft_mod.MARGIN_GB = vram_margin_gb
     if precision == "auto" or blocks_to_swap < 0:
         req = (precision, blocks_to_swap)
-        res = user_config.get("general", {}).get("resolution") or [1024, 1024]
-        mp = (res[0] * res[1] if isinstance(res, (list, tuple)) else res * res) / 1e6
+        mp = _vram_mp
         own = driver.plan_run(precision, blocks_to_swap, group=group, run=dict(
             dit_path=dit_path, network_type=network_type, network_dim=network_dim, lokr_factor=lokr_factor,
             optimizer_type=optimizer_type, training_adapter=training_adapter, context_lora_path=context_lora_path,
@@ -1624,8 +1635,15 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
         if own is not None:
             precision, blocks_to_swap, why = own
         else:
-            precision, blocks_to_swap, why = quant.plan(desc, driver, precision, blocks_to_swap, megapixels=mp,
-                                                         pictures=bsz)
+            _corr = {p: vram_plan.correction(vram_plan.key(desc.key, p, network_type, optimizer_type))
+                     for p in desc.precisions} if _vram_learn else {}
+            precision, blocks_to_swap, why = quant.plan(
+                desc, driver, precision, blocks_to_swap, megapixels=mp, pictures=bsz, margin_gb=vram_margin_gb,
+                extra_gb={p: _vram_adapter + c for p, (c, _w) in _corr.items()} or _vram_adapter)
+            for line in [_vram_why] + sorted({w for _c, w in _corr.values() if w}) + (
+                    [f"safety margin {vram_margin_gb:g} GB"] if abs(vram_margin_gb - 1.5) > 1e-9 else []):
+                if line:
+                    say(logger, f"[vram] plan: {line}")
             why += f" at {mp:.2f} MP" + (f" x {bsz} pictures a step" if bsz > 1 else "")
             if share_worker is not None:
                 # a helper's share trains at the lead's precision (the same base numbers): say so plainly, before the
@@ -3424,6 +3442,16 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
                     f"lr={learning_rate if optimizer is None else optimizer_lr(optimizer):.3e}  "
                     + (f"({group_rates(optimizer)})  " if optimizer is not None and group_rates(optimizer) else "") +
                     f"peak VRAM {torch.cuda.max_memory_reserved() / 1024 ** 3:.1f} GB")
+        if _vram_learn and not share_worker and torch.cuda.is_available():
+            try:                               # what the plan said against what this run held (vram_plan)
+                _pred = quant.predicted_gb(desc, precision, max(0, blocks_to_swap), _vram_mp, bsz)
+                if _pred is not None:
+                    vram_plan.record(vram_plan.key(desc.key, precision, network_type, optimizer_type), output_name,
+                                     _pred + _vram_adapter, torch.cuda.max_memory_reserved() / 1024 ** 3,
+                                     info={"rank": int(network_dim), "mp": round(_vram_mp, 3),
+                                           "swap": max(0, blocks_to_swap), "batch": bsz})
+            except Exception:
+                logger.debug("[vram] couldn't record this run's peak", exc_info=True)
         steplog.flush()
         if validator is not None and not share_worker and not validation_every_steps:
             _validate(epoch + 1)
@@ -3711,6 +3739,8 @@ def setup_parser():
                    help="most parts per fine-tune window (0 = as many as fit; 1 = one part per window, most headroom)")
     p.add_argument("--ft_start_window", type=int, default=0, help="continuing: the window to start at")
     p.add_argument("--ft_epochs_done", type=int, default=0, help="continuing: epochs already trained (numbering)")
+    p.add_argument("--vram_margin_gb", type=float, default=1.5,
+                   help="Auto plan: GB of VRAM left free beyond every estimate (Preferences > Training memory)")
     p.add_argument("--ft_optimizer", default="adafactor", choices=("adafactor", "cmuon"),
                    help="the fine-tune's optimizer: Adafactor (default), or CMuon - Muon with each fused weight "
                         "(QKV, gate+up, AdaLN) orthogonalised part by part (arXiv 2608.02502)")
@@ -3834,7 +3864,7 @@ def main():
         batch_size_auto=a.batch_size_auto,
         finetune=a.finetune, ft_rotations=a.ft_rotations, ft_save_every_rotations=a.ft_save_every_rotations,
         ft_rotate_every=a.ft_rotate_every, ft_max_parts=a.ft_max_parts, ft_start_window=a.ft_start_window, ft_epochs_done=a.ft_epochs_done,
-        ft_fused_backward=a.ft_fused_backward, ft_optimizer=a.ft_optimizer,
+        ft_fused_backward=a.ft_fused_backward, ft_optimizer=a.ft_optimizer, vram_margin_gb=a.vram_margin_gb,
         reg_lr_multiplier=a.reg_lr_multiplier,
         preview_checkpoint=a.preview_checkpoint, preview_checkpoint_cache=a.preview_checkpoint_cache,
         preview_int8=a.preview_int8,

@@ -89,6 +89,8 @@ class FTSpec:
 
 
 _PREFIX = "diffusion_model."
+# GB the window planner leaves free (Preferences > Training memory's safety margin; the trainer sets it per run)
+MARGIN_GB = 1.5
 
 
 def _lists(spec: FTSpec) -> tuple:
@@ -541,7 +543,7 @@ def plan_windows(dit, spec: FTSpec, rotator: Rotator, free_gb: float, allow_stre
         packed = sum(lin._nf4_packed.numel() for _k, lin, _b, _l in rotator.targets
                      if getattr(lin, "_nf4_packed", None) is not None)
         trunk = packed / 1e9 / max(1, n)
-    usable = free_gb + trunk * n - 1.5
+    usable = free_gb + trunk * n - MARGIN_GB
     windows, stream, why = _plan(comp_gb, n, trunk, spec, usable, allow_stream, mp, spans=spans, max_parts=max_parts)
     return windows, stream, why, usable
 
@@ -586,7 +588,7 @@ def plan_from_file(path: str, spec: FTSpec, free_gb: float, mp=None, max_parts=0
         return None
     n = len(blocks)
     trunk = float(spec.trunk_gb_per_block) if spec.trunk_gb_per_block is not None else block0_params * 0.53 / 1e9
-    usable = free_gb - nonblock - 1.05 - 1.5
+    usable = free_gb - nonblock - 1.05 - MARGIN_GB
     windows, stream, _why = _plan(comp_gb, n, trunk, spec, usable, mp=mp, max_parts=max_parts)
     return windows, stream, usable
 
@@ -634,7 +636,7 @@ def _plan_from_header_lists(hdr, spec: FTSpec, free_gb: float, mp=None, max_part
     spans = {p: {start[li] + b for li, b in held[p]} for p in spec.components}
     comp_gb = {p: v / len(spans[p]) for p, v in comp_gb.items()}
     trunk = float(spec.trunk_gb_per_block) if spec.trunk_gb_per_block is not None else params * 0.53 / 1e9 / n
-    usable = free_gb - nonblock - 1.05 - 1.5
+    usable = free_gb - nonblock - 1.05 - MARGIN_GB
     windows, stream, _why = _plan(comp_gb, n, trunk, spec, usable, mp=mp, spans=spans, max_parts=max_parts)
     return windows, stream, usable
 

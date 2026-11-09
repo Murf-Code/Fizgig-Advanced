@@ -1257,6 +1257,21 @@ const RECLAIM_ROWS = [
   ["reclaim_max_tries", "Most automatic reclaims a run:", "3", "Stops after this many. If one doesn't bring the " +
     "speed back, it stops trying for the run and suggests raising Blocks Swap."],
 ];
+// the Auto plan's safety margin (families/vram_plan.py): GB left free beyond every estimate, for every run here
+function marginRow() {
+  const hint = "How much VRAM Auto (precision and Blocks Swap) leaves free beyond its estimate - which already " +
+    "counts your LoRA rank, the optimizer and what past runs of the model actually used. Raise it if other apps " +
+    "share the card or a run spilled; lower it to swap fewer blocks. 1.5 GB by default.";
+  const input = el("input", {type: "text", class: "w-num", id: "pref_vram_margin_gb",
+    value: S.set.vram_margin_gb || "1.5", placeholder: "1.5", title: hint});
+  const msg = el("div", {class: "field-hint", text: hint});
+  input.addEventListener("change", () => api("/api/prefs", {changes: {vram_margin_gb: input.value.trim()}})
+    .then(() => api("/api/prefs")).then((pr) => {
+      S.set = pr.settings || S.set; input.value = S.set.vram_margin_gb || "1.5"; msg.textContent = hint; })
+    .catch((e) => { msg.textContent = e.message; }));
+  return el("div", {class: "pref-file"}, el("div", {class: "field-row"},
+    el("span", {class: "field-label", text: "Safety margin (GB):"}), input), msg);
+}
 function vramReclaimCard() {
   const on = el("input", {type: "checkbox", id: "prefReclaimOn"});
   on.checked = String(S.set.auto_reclaim_vram ?? "1") !== "0";
@@ -1308,7 +1323,8 @@ function vramReclaimCard() {
         "(low system RAM, only a few blocks swapped, or big pictures) and says why in the log."}),
       el("label", {class: "checkbox-label", style: "margin-left: 24px",
         title: "Use faster block swap on every run it can, even where Fizgig expects it not to help."},
-        sendForce, " Even when it won't help")),
+        sendForce, " Even when it won't help"),
+      marginRow()),
     el("div", {class: "card-title collapsible-header", onclick: () => adv.classList.toggle("collapsed")},
       el("span", {text: "Advanced: VRAM reclaim"})), adv);
 }
