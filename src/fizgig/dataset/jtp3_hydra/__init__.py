@@ -7,4 +7,6 @@ taken: cufork.py, glu.py, head.py, pool.py and siglip2.py. Their image loader (h
 model loader, calibration and GUI are not; jtp3_tagger.py loads the weights and prepares pictures itself with Pillow.
 
 Fizgig changes, marked "Fizgig change" in the files: they import and run on Python 3.10 (typing.Self and NotRequired
-fall back, and siglip2.py's three `x[*idxs]` subscripts are spelled `x[tuple(...)]`). Nothing else is altered."""
+fall back, and siglip2.py's three `x[*idxs]` subscripts are spelled `x[tuple(...)]`), and head.py's BatchLinear really
+initialises its weight (its loop indexed with a range, a copy, so the weight was left as uninitialised memory; a loaded
+checkpoint replaces it, so only an unloaded network saw it). Nothing else is altered."""

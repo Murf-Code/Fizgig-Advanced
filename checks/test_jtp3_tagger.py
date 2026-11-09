@@ -218,8 +218,16 @@ def test_small_network_runs():
     torch.manual_seed(0)
     pool = HydraPool(5, 64, 16, input_dim=32, mid_blocks=0, ff_dim=96)
     head = SwiGLUHead(5, 64, logit=False)
+    # its weight is really initialised (it used to stay torch.empty() memory, NaN at times): within kaiming's bound
+    # and the same for the same seed
+    w = head.proj.weight.detach()
+    assert torch.isfinite(w).all() and 0 < w.abs().max() <= 1 / 64 ** 0.5
+    torch.manual_seed(1)
+    w1 = SwiGLUHead(5, 64, logit=False).proj.weight.detach()
+    torch.manual_seed(1)
+    assert torch.equal(w1, SwiGLUHead(5, 64, logit=False).proj.weight.detach()) and not torch.equal(w1, w)
     y = head(pool(torch.randn(1, 12, 32), None))
-    assert y.shape == (1, 5) and torch.all((y >= 0) & (y <= 1))
+    assert y.shape == (1, 5) and torch.isfinite(y).all() and torch.all((y >= 0) & (y <= 1))
 
 
 def test_vendored_code_is_credited_and_python_310_safe():

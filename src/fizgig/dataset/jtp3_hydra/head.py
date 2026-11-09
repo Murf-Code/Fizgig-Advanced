@@ -41,7 +41,9 @@ class BatchLinear(Module):
             device=device, dtype=dtype
         ))
 
-        for idxs in product(range(size) for size in batch_shape):
+        # Fizgig change: product(*...), not product(...) - the original's indexed the weight with a range, which
+        # copies, so the weight stayed uninitialised memory (NaN at times). A loaded checkpoint overwrote it anyway.
+        for idxs in product(*(range(size) for size in batch_shape)):
             init.kaiming_uniform_(self.weight[idxs], a=sqrt(5))
 
         self.bias = Parameter(torch.zeros(
