@@ -3282,7 +3282,9 @@ const RESULT_LABEL = {running: "Running", finished: "Finished", failed: "Failed"
 
 async function loadRuns() {
   let r;
-  try { r = await api("/api/runs"); } catch (e) { return; }
+  try { r = await api("/api/runs"); } catch (e) { S.runsToCurrent = false; return; }
+  const toCurrent = S.runsToCurrent;      // read after the fetch: the tab's click sets it just after showTab
+  S.runsToCurrent = false;
   const host = $("runsList");
   host.innerHTML = "";
   const famName = (k) => ((S.schema.families.find((f) => f.key === k) || {}).display_name) || k;
@@ -3422,7 +3424,7 @@ async function loadRuns() {
         try { imageLossPanel(ilBox, await api("/api/runs/image_loss?id=" + encodeURIComponent(run.id)), run); }
         catch (e) { ilBox.replaceChildren(el("div", {class: "problems", text: e.message})); }
       }}) : null;
-    host.append(el("div", {class: "run-row"},
+    host.append(el("div", {class: "run-row", "data-result": run.result || ""},
       el("div", {class: "run-row-head"},
         el("span", {class: "run-badge", "data-state": RESULT_STATE[run.result] || "idle", text: RESULT_LABEL[run.result] || run.result}),
         el("b", {text: run.lora || "(unnamed)"}),
@@ -3437,6 +3439,13 @@ async function loadRuns() {
   }
   if (!r.runs.length) host.append(el("div", {class: "field-hint", text: "No runs yet. Every run you start is listed here " +
     "with its results."}));
+  if (toCurrent) runsScrollToCurrent(host);
+}
+// opened from its tab while a run trains: Runs & outputs goes to that run (the newest in Runs), not the queue above
+function runsScrollToCurrent(host) {
+  const row = host.querySelector('.run-row[data-result="running"]');
+  if (row) requestAnimationFrame(() => row.scrollIntoView({block: "start", behavior: "smooth"}));
+  return !!row;
 }
 
 // ---- per-image loss: each image's residual by epoch (its loss minus the dataset's mean at the same noise level, the
@@ -9832,6 +9841,7 @@ function tabsMenu(open) {
 // while a run trains, the Training tab opens at its Run card (the loss graph) and the Samples tab at Previews so far
 const TAB_RUN_SPOT = {training: "#tab-training .run-card", samples: "#galleryCard"};
 function tabRunScroll(name) {
+  if (name === "outputs") { S.runsToCurrent = true; return false; }   // loadRuns scrolls once the list is drawn
   const live = S.run && (S.run.running || S.run.state === "starting");
   const spot = live && TAB_RUN_SPOT[name] && document.querySelector(TAB_RUN_SPOT[name]);
   if (spot) requestAnimationFrame(() => spot.scrollIntoView({block: "start", behavior: "smooth"}));
