@@ -1315,6 +1315,11 @@ function vramReclaimCard() {
     .then(() => { S.set.send_only_block_swap = sendOnly.checked ? "1" : "0"; sendForce.disabled = !sendOnly.checked; }));
   sendForce.addEventListener("change", () => api("/api/prefs", {changes: {send_only_force: sendForce.checked}})
     .then(() => { S.set.send_only_force = sendForce.checked ? "1" : "0"; }));
+  // background loading (training/prefetch.py): the next batches read from the cache while the GPU trains
+  const bgLoad = el("input", {type: "checkbox", id: "prefBackgroundLoading"});
+  bgLoad.checked = String(S.set.background_loading ?? "1") !== "0";
+  bgLoad.addEventListener("change", () => api("/api/prefs", {changes: {background_loading: bgLoad.checked}})
+    .then(() => { S.set.background_loading = bgLoad.checked ? "1" : "0"; }));
   grey();
   const adv = el("div", {class: "card-content collapsed"}, ...rows);
   return el("div", {class: "section-card", id: "prefsReclaim"},
@@ -1338,6 +1343,13 @@ function vramReclaimCard() {
       el("label", {class: "checkbox-label", style: "margin-left: 24px",
         title: "Use faster block swap on every run it can, even where Fizgig expects it not to help."},
         sendForce, " Even when it won't help"),
+      el("label", {class: "checkbox-label", title: "While the graphics card trains on one step, Fizgig reads the " +
+        "next steps' cached pictures and captions from the drive, so the card doesn't sit waiting for a slow drive. " +
+        "The same pictures train in the same order with the same results; it only uses a little more system RAM " +
+        "(two steps' worth). Turn it off if a run misbehaves. FIZGIG_BACKGROUND_LOADING=0 or 1 overrides it."},
+        bgLoad, " Background loading"),
+      el("div", {class: "field-hint", text: "On by default. Reads the next pictures from the cache while the GPU " +
+        "trains, for every run on this machine. Takes effect at the next Start."}),
       marginRow()),
     el("div", {class: "card-title collapsible-header", onclick: () => adv.classList.toggle("collapsed")},
       el("span", {text: "Advanced: VRAM reclaim"})), adv);

@@ -10,6 +10,7 @@ from importlib.util import find_spec
 import math
 import os
 import random
+import threading
 import time
 from typing import Any, Optional, Sequence, Tuple, Union, TYPE_CHECKING
 
@@ -525,6 +526,16 @@ def original_text_batch(batch: dict) -> dict:
     return out
 
 
+_GLOBAL_RANDOM = threading.local()
+
+
+def global_random_sink(sink):
+    """Background loading (training/prefetch.py): on this thread, the global random state an epoch's shuffle leaves
+    is appended to ``sink`` (a list) instead of being set; None sets it again. Returns ``sink``."""
+    _GLOBAL_RANDOM.sink = sink
+    return sink
+
+
 class BucketBatchManager:
     """Manages batched iteration over bucketed items, loading cached tensors."""
 
@@ -567,10 +578,12 @@ class BucketBatchManager:
             logger.info(f"bucket: {reso}, count: {len(self.buckets[reso])}")
         logger.info(f"total batches: {len(self)}")
 
-    def shuffle(self):
+    def shuffle(self, rng=random):
+        """The epoch's order: each bucket, the batches, the timestep pool - drawn from ``rng`` (the global random by
+        default)."""
         for bucket in self.buckets.values():
-            random.shuffle(bucket)
-        random.shuffle(self.bucket_batch_indices)
+            rng.shuffle(bucket)
+        rng.shuffle(self.bucket_batch_indices)
 
         if self.num_timestep_buckets is not None and self.num_timestep_buckets > 1:
             num_batches = len(self.bucket_batch_indices)
@@ -580,8 +593,8 @@ class BucketBatchManager:
             for i in range(self.num_timestep_buckets):
                 lo = i / self.num_timestep_buckets
                 hi = (i + 1) / self.num_timestep_buckets
-                all_timesteps.extend(random.uniform(lo, hi) for _ in range(per_bucket))
-            random.shuffle(all_timesteps)
+                all_timesteps.extend(rng.uniform(lo, hi) for _ in range(per_bucket))
+            rng.shuffle(all_timesteps)
             all_timesteps = all_timesteps[:total_needed]
             self.timestep_pool = [
                 all_timesteps[i * self.batch_size: (i + 1) * self.batch_size]
@@ -1597,8 +1610,16 @@ class ImageDataset(torch.utils.data.Dataset):
         self.max_train_steps = max_train_steps
 
     def shuffle_buckets(self):
-        random.seed(self.seed + self.current_epoch)
-        self.batch_manager.shuffle()
+        # the epoch's shuffle from random.seed(seed + epoch), leaving the global random where that leaves it - as it
+        # always has (a trainer's own global draws follow on from it). Read on background loading's helper thread
+        # (training/prefetch.py), the global state is handed over with the batch instead, and set when it is taken.
+        rng = random.Random(self.seed + self.current_epoch)
+        self.batch_manager.shuffle(rng)
+        sink = getattr(_GLOBAL_RANDOM, "sink", None)
+        if sink is None:
+            random.setstate(rng.getstate())
+        else:
+            sink.append(rng.getstate())
 
     # -- Dataset protocol --------------------------------------------------
 

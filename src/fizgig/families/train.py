@@ -1289,7 +1289,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                  validation_early_stop=False, validation_patience=3, validation_min_delta=0.001,
                  auto_reclaim_vram=True, reclaim_slowdown=1.5, reclaim_slow_steps=20, reclaim_warmup_steps=50,
                  reclaim_min_free_gb=vram_reclaim.RECLAIM_FREE_GB, reclaim_cooldown=200, reclaim_max_tries=3,
-                 send_only_swap=True, send_only_force=False,
+                 send_only_swap=True, send_only_force=False, background_loading=True,
                  trigger_word=None, trigger_position="start", recaption_triggers=None, recaption_instruction=None,
                  recaption_instruction_detailed=None, recaption_task=None, recaption_task_detailed=None,
                  captioner=None, recaption_with=None, finetune=False, ft_rotations=10, ft_save_every_rotations=1, ft_rotate_every=1, ft_max_parts=0,
@@ -1577,6 +1577,18 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     "in shape runs each shape's pictures as their own group")
     loader = DataLoader(group, batch_size=1, shuffle=True, num_workers=0,
                         collate_fn=(lambda b: b[0]) if slider_prompts else _Collator(shared_epoch, group))
+    # Background loading (training/prefetch.py): the next batches are read from the cache while the GPU trains -
+    # the same batches in the same order. Its timing feeds the CPU / GPU / disk readout either way.
+    from fizgig.training import prefetch as _prefetch
+    _bg = _prefetch.wanted(background_loading) and not slider_prompts
+    if _bg and _prefetch.reads_draw_global_random(group):
+        logger.info("[data] background loading: off for this run - its reference distillation picks a reference "
+                    "as each picture is read, which has to happen in step with training")
+        _bg = False
+    elif not _prefetch.wanted(background_loading) and not slider_prompts:
+        logger.info("[data] background loading: off (Preferences > Training memory or FIZGIG_BACKGROUND_LOADING=0)"
+                    " - each step reads its pictures' cache as it starts")
+    loader = _prefetch.Prefetch(loader, enabled=_bg)
     # Start at a smaller size: the first stage_until of the epochs draw from this dataset (its own cache folder),
     # blending into the full size over stage_blend of the run
     low_loader = None
@@ -3672,6 +3684,10 @@ def setup_parser():
                    help="early stop: what counts as better - below the best by more than this fraction of it")
     p.add_argument("--send_only_force", action="store_true",
                    help="faster block swap even where it won't help (low system RAM, few blocks, big pictures)")
+    p.add_argument("--background_loading", action=argparse.BooleanOptionalAction, default=True,
+                   help="read the next batches from the cache while the GPU trains (the same batches, in the same "
+                        "order); --no-background_loading = read each step's as it starts. FIZGIG_BACKGROUND_LOADING=0/1 "
+                        "overrides")
     p.add_argument("--send_only_swap", action=argparse.BooleanOptionalAction, default=True,
                    help="block swap on a LoRA run streams the frozen base host -> device only, never copying a block "
                         "back (Krea 2, MOSS-Image); --no-send_only_swap = the classic swap")
@@ -3879,6 +3895,7 @@ def main():
         validation_early_stop=a.validation_early_stop, validation_patience=a.validation_patience,
         validation_min_delta=a.validation_min_delta,
         auto_reclaim_vram=a.auto_reclaim_vram, reclaim_slowdown=a.reclaim_slowdown, send_only_swap=a.send_only_swap,
+        background_loading=a.background_loading,
         send_only_force=a.send_only_force,
         reclaim_slow_steps=a.reclaim_slow_steps, reclaim_warmup_steps=a.reclaim_warmup_steps,
         reclaim_min_free_gb=a.reclaim_min_free_gb, reclaim_cooldown=a.reclaim_cooldown,
