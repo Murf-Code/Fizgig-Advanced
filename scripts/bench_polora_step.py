@@ -1,12 +1,16 @@
-"""Times PoLoRA's optimizer.step on realistic LoRA pair sets - timing only, PoLoRA itself is not changed.
+"""Times PoLoRA's (or Muon's) optimizer.step on realistic LoRA pair sets - timing only, the optimizer is not changed.
 
-Runs standalone with the Fizgig venv's Python (torch only, no other packages). It imports PoLoRA from the Fizgig
-install it sits in (scripts/../src), from --src, or from an installed fizgig package, so it times whichever PoLoRA
+Runs standalone with the Fizgig venv's Python (torch only, no other packages). It imports the optimizer from the
+Fizgig install it sits in (scripts/../src), from --src, or from an installed fizgig package, so it times whichever
 code that install has.
 
     python scripts\\bench_polora_step.py                      # the default sweep (GPU if there is one)
     python scripts\\bench_polora_step.py --quick              # a short sweep (the box CPU)
     python scripts\\bench_polora_step.py --sets krea2 --ranks 16 32 --compile both --its 0.8
+    python scripts\\bench_polora_step.py --optimizer muon     # Fizgig's Muon (BatchedMuon) on the same LoRA shapes
+
+--optimizer muon: each LoRA's down and up matrices are separate 2D params, as Fizgig's Muon trains them, with
+Fizgig's Muon defaults; it has no compile option (--compile is ignored) and its phases are Newton-Schulz and the rest.
 
 For each case: median step time and spread (CUDA events on a GPU, perf_counter on the CPU) after warm-up, the
 compile cold start separately, peak allocated / reserved VRAM during the step (GPU), and a breakdown by phase
@@ -40,13 +44,25 @@ SYNTH = {"same-16": {"3072x3072": 16}, "same-128": {"3072x3072": 128}, "same-512
          "mixed-64": {"3072x3072": 16, "3072x8192": 16, "8192x3072": 16, "1024x3072": 16}}
 
 
-def _import_polora(src):
+def _import_polora(src, optimizer="polora"):
     for p in [src, os.path.join(HERE, "..", "src")]:
         if p and os.path.isdir(os.path.join(p, "fizgig")) and p not in sys.path:
             sys.path.insert(0, os.path.abspath(p))
             break
+    if optimizer == "muon":
+        from fizgig.training import muon as mu
+        return mu
     from fizgig.training.polora import optim as po
     return po
+
+
+# Fizgig's Muon defaults (create_optimizer "muon") and the learning rate its presets use
+MUON_KW = dict(lr=1e-4, adjust_lr_fn="match_rms_adamw", weight_decay=0.01, momentum=0.95, nesterov=True, ns_steps=5)
+
+
+def _muon_cls(mu):
+    """BatchedMuon where the install has it (all-2D params, what Fizgig picks for a LoRA), else its per-matrix Muon."""
+    return getattr(mu, "BatchedMuon", None) or mu.Muon
 
 
 def _parse(shapes):
@@ -102,6 +118,8 @@ def fill(pairs, grads):
 
 
 def make_opt(po, pairs, compile_):
+    if not hasattr(po, "Polora"):                                 # --optimizer muon
+        return _muon_cls(po)([p for ab in pairs for p in ab], **MUON_KW)
     kw = dict(pairs=pairs, lr=2e-2)
     sig = inspect.signature(po.Polora.__init__).parameters
     for k, v in (("compile", compile_), ("magnitude_scale", 3.0), ("curvature_beta", 0.99)):
@@ -115,6 +133,8 @@ def phases(torch, po, opt, pairs, grads, clock, n):
     the curvature matmuls, the preconditioner update and the per-pair writeback)."""
     acc = {"inv_sqrt (C_A, C_B)": 0.0, "polar (zA, zB)": 0.0, "sigma_max (power iter)": 0.0}
     # PoLoRA's kernel hooks: _smax_fn is the batched sigma_max of the stacked-state PoLoRA; an older one has _smax_warm
+    if not hasattr(po, "Polora"):
+        return _muon_phases(po, opt, pairs, grads, clock, n)
     names = {"_invsqrt_fn": "inv_sqrt (C_A, C_B)", "_polar_fn": "polar (zA, zB)", "_smax_fn": "sigma_max (power iter)"}
 
     def wrap(fn, key):
@@ -149,6 +169,37 @@ def phases(torch, po, opt, pairs, grads, clock, n):
     out["rest (stack, curvature, precond, writeback)"] = max(0.0, total / n - sum(out.values()))
     out["_total_with_syncs"] = total / n
     return out
+
+
+def _muon_phases(mu, opt, pairs, grads, clock, n):
+    """Muon: ms per step in Newton-Schulz (the module's kernel, sync-timed) and the rest (momentum, stacking,
+    decay, writeback)."""
+    acc = [0.0]
+    name = "_zeropower_batched" if type(opt).__name__ == "BatchedMuon" else "_zeropower_via_newtonschulz"
+    fn = getattr(mu, name)
+
+    def w(*a, **k):
+        clock.sync()
+        t0 = time.perf_counter()
+        out = fn(*a, **k)
+        clock.sync()
+        acc[0] += (time.perf_counter() - t0) * 1000.0
+        return out
+    setattr(mu, name, w)
+    total = 0.0
+    try:
+        for _ in range(n):
+            fill(pairs, grads)
+            clock.sync()
+            t0 = time.perf_counter()
+            opt.step()
+            clock.sync()
+            total += (time.perf_counter() - t0) * 1000.0
+    finally:
+        setattr(mu, name, fn)
+    ns = acc[0] / n
+    return {"newton_schulz": ns, "rest (momentum, stack, decay, writeback)": max(0.0, total / n - ns),
+            "_total_with_syncs": total / n}
 
 
 def profile(torch, opt, pairs, grads, dev):
@@ -269,10 +320,13 @@ def main():
     ap.add_argument("--no-profile", action="store_true", help="skip the op-level profile")
     ap.add_argument("--its", type=float, default=0.0, help="your training speed in it/s: PoLoRA's share of a step")
     ap.add_argument("--quick", action="store_true", help="a short sweep: ranks 16/32, fewer sets and iterations")
-    ap.add_argument("--json", default="", help="where to write the JSON (default: polora_bench_<time>.json here)")
+    ap.add_argument("--json", default="", help="where to write the JSON (default: <optimizer>_bench_<time>.json here)")
+    ap.add_argument("--optimizer", default="polora", choices=("polora", "muon"),
+                    help="polora (default) or muon: Fizgig's Muon on the same LoRA matrices")
     a = ap.parse_args()
     import torch
-    po = _import_polora(a.src)
+    po = _import_polora(a.src, a.optimizer)
+    label = "PoLoRA" if a.optimizer == "polora" else _muon_cls(po).__name__
     dev = torch.device("cuda" if a.device == "auto" and torch.cuda.is_available() else
                        ("cpu" if a.device == "auto" else a.device))
     dtype = getattr(torch, a.dtype)
@@ -280,13 +334,14 @@ def main():
     names = a.sets or (["anima", "moss", "same-16", "same-128", "mixed-64"] if a.quick else list(sets))
     ranks = [16, 32] if a.quick and a.ranks == [8, 16, 32, 64] else a.ranks
     iters, warm = (8, 2) if a.quick else (a.iters, a.warmup)
-    comps = {"off": [False], "on": [True], "both": [False, True]}[a.compile]
+    comps = {"off": [False], "on": [True], "both": [False, True]}[a.compile] if a.optimizer == "polora" else [False]
     clock = Clock(dev)
     info = {"torch": torch.__version__, "device": torch.cuda.get_device_name(0) if dev.type == "cuda" else
             platform.processor() or platform.machine(), "python": platform.python_version(),
-            "polora_file": po.__file__, "threads": torch.get_num_threads(), "dtype": a.dtype}
-    print(f"PoLoRA step benchmark - {info['device']}, torch {info['torch']}, {a.dtype}")
-    print(f"PoLoRA from {info['polora_file']}")
+            "optimizer": label, "polora_file" if a.optimizer == "polora" else "muon_file": po.__file__,
+            "threads": torch.get_num_threads(), "dtype": a.dtype}
+    print(f"{label} step benchmark - {info['device']}, torch {info['torch']}, {a.dtype}")
+    print(f"{label} from {po.__file__}")
     rows = []
     hdr = (f"{'set':<10}{'rank':>5}{'pairs':>6}{'mode':>9}{'first ms':>10}{'median ms':>11}{'p10-p90':>17}"
            f"{'us/pair':>9}" + ("  peak MB" if dev.type == "cuda" else "") + (f"{'share':>8}" if a.its else ""))
@@ -332,8 +387,8 @@ def main():
         for ln in falls:
             print("  " + ln)
     if a.its:
-        print(f"\nshare = PoLoRA's median step over one training step at {a.its} it/s ({1000 / a.its:.0f} ms).")
-    out = a.json or os.path.join(os.getcwd(), f"polora_bench_{time.strftime('%Y%m%d_%H%M%S')}.json")
+        print(f"\nshare = {label}'s median step over one training step at {a.its} it/s ({1000 / a.its:.0f} ms).")
+    out = a.json or os.path.join(os.getcwd(), f"{a.optimizer}_bench_{time.strftime('%Y%m%d_%H%M%S')}.json")
     with open(out, "w", encoding="utf-8") as f:
         json.dump({"info": info, "args": vars(a), "results": rows}, f, indent=1)
     print(f"\nJSON: {out}")
