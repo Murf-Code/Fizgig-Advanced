@@ -320,7 +320,8 @@ class Watch:
                     try:
                         from fizgig.dataset.tag_variants import write_variants
                         write_variants(lambda caps: self.driver.encode_text(te, caps),
-                                       item.text_encoder_output_cache_path, cap, ts, arch=desc.arch_id)
+                                       item.text_encoder_output_cache_path, cap, ts, arch=desc.arch_id,
+                                       compact=getattr(desc, "text_cache_trim", False))
                     except Exception:
                         logger.warning(f"[caption-fix] could not remake the tag variants of {k} - it trains on its "
                                        "new caption as written", exc_info=True)

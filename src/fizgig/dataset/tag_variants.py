@@ -166,11 +166,11 @@ def te_caption(te_path) -> Optional[str]:
 
 
 def write_variants(encode: Callable[[list], list], te_path: str, caption: str, s: TagSettings, *, arch: str = "",
-                   seed: int = 0, clean: Callable = None) -> int:
+                   seed: int = 0, clean: Callable = None, compact: bool = False) -> int:
     """Write (or bring up to date) one item's variants file. encode(captions) -> conditioning dicts (CPU tensors).
     Reuses what the file and the item's own text cache already hold; returns how many captions it encoded. A caption
     with nothing to vary and no caption dropout gets no file (an old one is removed)."""
-    from safetensors.torch import load_file, save_file
+    from fizgig.dataset import compact_text
     path = variants_path(te_path)
     wanted = variant_captions(caption, s, seed)
     if not wanted and not s.caption_dropout:
@@ -180,7 +180,7 @@ def write_variants(encode: Callable[[list], list], te_path: str, caption: str, s
     have = {}                                   # caption text -> {key: tensor}
     md, keys = _header(path) if os.path.exists(path) else (None, [])
     if md is not None and md.get("fizgig_tags") == "1":
-        old = load_file(path)
+        old = compact_text.load(path)
         try:
             texts = json.loads(md.get("captions") or "[]")
         except ValueError:
@@ -193,7 +193,7 @@ def write_variants(encode: Callable[[list], list], te_path: str, caption: str, s
         if e:
             have.setdefault("", e)
     if caption in wanted and caption not in have and os.path.exists(te_path):
-        own = load_file(te_path)                # the original order came up: its own encoding
+        own = compact_text.load(te_path)        # the original order came up: its own encoding
         have[caption] = {k[len("cond__"):]: v for k, v in own.items() if k.startswith("cond__")}
     need = [t for t in dict.fromkeys(wanted + ([""] if s.caption_dropout else [])) if t not in have]
     if need:
@@ -216,13 +216,13 @@ def write_variants(encode: Callable[[list], list], te_path: str, caption: str, s
     meta = {"fizgig_tags": "1", "architecture": arch, "source": caption, "recipe": s.recipe(),
             "captions": json.dumps(wanted, ensure_ascii=False), "empty": "1" if s.caption_dropout else "0"}
     tmp = path + ".tmp"
-    save_file(sd, tmp, metadata=meta)
+    compact_text.save(sd, tmp, meta, compact)     # compact: only each variant's real tokens (Krea 2)
     os.replace(tmp, path)
     return len(need)
 
 
 def build_for_datasets(datasets, encode: Callable[[list], list], *, arch: str = "", num_workers: int = 1,
-                       batch: int = 8, clean: Callable = None) -> dict:
+                       batch: int = 8, clean: Callable = None, compact: bool = False) -> dict:
     """The cache pass: every item's variants for datasets with tag settings, the encoder already loaded. Encodes in
     groups of `batch` captions. -> {"items", "encoded", "prose"}; logs one line per dataset (and one for prose)."""
     out = {"items": 0, "encoded": 0, "prose": 0}
@@ -245,7 +245,7 @@ def build_for_datasets(datasets, encode: Callable[[list], list], *, arch: str = 
             for te, cap, _need in pending:
                 out["encoded"] += write_variants(
                     lambda ts: [got[t] if t in got else encode([t])[0] for t in ts], te, cap, s, arch=arch,
-                    clean=clean)
+                    clean=clean, compact=compact)
             pending.clear()
 
         prose = 0
@@ -366,14 +366,9 @@ class VariantPicker:
     @staticmethod
     def load(te_path, choice) -> dict:
         """The chosen variant's tensors under the text cache's own key names (cond__...)."""
-        from safetensors import safe_open
+        from fizgig.dataset import compact_text
         pre = "e__" if choice == EMPTY else f"v{int(choice)}__"
-        out = {}
-        with safe_open(variants_path(te_path), framework="pt") as f:
-            for k in f.keys():
-                if k.startswith(pre):
-                    out["cond__" + k[len(pre):]] = f.get_tensor(k)
-        return out
+        return {"cond__" + k[len(pre):]: v for k, v in compact_text.load(variants_path(te_path), [pre]).items()}
 
 
 def summary(datasets) -> list:

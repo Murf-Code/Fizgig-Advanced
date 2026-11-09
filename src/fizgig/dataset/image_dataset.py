@@ -24,6 +24,7 @@ from safetensors.torch import save_file, load_file
 from PIL import Image
 import cv2
 
+from fizgig.dataset import compact_text
 from fizgig.dataset.masks import folder_names, is_mask_file, load_mask, mask_for_stem, mask_problem
 from fizgig.utils.safetensors import mem_eff_save_file, MemoryEfficientSafeOpen
 from fizgig.training.metadata import (ARCHITECTURE_KLEIN_9B, ARCHITECTURE_KLEIN_9B_FULL,
@@ -515,7 +516,7 @@ def original_text_batch(batch: dict) -> dict:
         return batch
     per: dict[str, list] = {}
     for path in batch.get("item_te_paths") or []:
-        for k, v in load_file(path).items():
+        for k, v in compact_text.load(path).items():
             if k.startswith("cond__"):
                 per.setdefault(k, []).append(v)
     out = {k: v for k, v in batch.items() if not k.startswith("cond__")}
@@ -601,7 +602,7 @@ class BucketBatchManager:
 
         for pos, item_info in enumerate(bucket[start:end], start=start):
             sd_latent = load_file(item_info.latent_cache_path)
-            sd_te = load_file(item_info.text_encoder_output_cache_path)
+            sd_te = compact_text.load(item_info.text_encoder_output_cache_path)   # compact or full (Krea 2)
             if self.variants is not None:
                 # this image's caption this step: its own, a shuffled / tag-dropped variant, or the empty caption -
                 # by (seed, epoch, image, which repeat of it this is), so a resume picks the same

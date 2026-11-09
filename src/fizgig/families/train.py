@@ -709,8 +709,8 @@ def _dop_path(te_path):
 
 def _load_dop_cond(path):
     """A DOP text encoding from its file, batched as the loader batches the cache."""
-    from safetensors.torch import load_file
-    return {k[len("cond__"):]: v[None] for k, v in load_file(path).items() if k.startswith("cond__")}
+    from fizgig.dataset import compact_text
+    return {k[len("cond__"):]: v[None] for k, v in compact_text.load(path).items() if k.startswith("cond__")}
 
 
 POLORA_FACTOR_EVERY = 25           # PoLoRA: its factor sizes go to the graph and the log every this many steps
