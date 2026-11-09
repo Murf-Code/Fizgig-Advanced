@@ -2,8 +2,9 @@
 set's look as a whole - texture, palette, line and medium more than who is in the picture - for a style LoRA, where a
 face likeness says nothing. Each picture's vector is the mean and spread of DINOv2-base's patch tokens (the pinned model
 the anime / furry look match uses, downloaded once, on the CPU); a preview's score is the mean similarity of its 8
-closest training pictures (up to 256 of the set, spread evenly), shown 0-1. Switched on per samples folder in the
-gallery; scores and the on/off go to <samples>/style.json, the training pictures' vectors to .style_bank.npz beside it."""
+closest training pictures (up to 256 of the set, spread evenly), shown 0-1. On by default; switched off (or on again)
+per samples folder in the gallery; scores and the on/off go to <samples>/style.json, the training pictures' vectors to
+.style_bank.npz beside it."""
 
 import hashlib
 import json
@@ -110,14 +111,24 @@ def _bank(samples_dir, dataset_dir, say):
     return bank
 
 
+DEFAULT_ON = True       # a samples folder never switched on or off shows the Style score (switched off: stays off)
+
+
+def is_on(d):
+    """style.json's on/off, or the default for a folder where it was never chosen."""
+    return bool(d.get("on")) if "on" in d else DEFAULT_ON
+
+
 def state(samples_dir, dataset_dir):
-    """style.json for the page, resuming the scorer when it was switched on and nothing scores this folder yet."""
+    """style.json for the page, resuming the scorer when it is on (switched on, or never chosen) and nothing scores
+    this folder yet."""
     d = read(samples_dir)
+    on = is_on(d)
     with _lock:
         running = samples_dir in _runs
-    if d.get("on") and not running and dataset_dir and os.path.isdir(dataset_dir) and os.path.isdir(samples_dir):
+    if on and not running and dataset_dir and os.path.isdir(dataset_dir) and os.path.isdir(samples_dir):
         _start(samples_dir, dataset_dir)
-    return {"on": bool(d.get("on")), "status": d.get("status") or "", "scores": d.get("scores") or {}}
+    return {"on": on, "status": d.get("status") or "", "scores": d.get("scores") or {}}
 
 
 def switch(samples_dir, dataset_dir, on):
