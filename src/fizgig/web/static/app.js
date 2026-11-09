@@ -9837,6 +9837,12 @@ function tabRunScroll(name) {
   if (spot) requestAnimationFrame(() => spot.scrollIntoView({block: "start", behavior: "smooth"}));
   return !!spot;
 }
+// the tabs share one scrolling pane (the page itself on a phone): back to its top
+function paneTop() {
+  const pane = document.querySelector(".notebook-pane");
+  if (pane) pane.scrollTop = 0;
+  window.scrollTo(0, 0);
+}
 function showTab(name) {
   if (name !== "prep" && S.me && S.me.dirty) meSave();      // leaving Image Prep saves the mask being edited
   const tb = document.querySelector(`.tab-item[data-tab="${name}"] span`);
@@ -9847,6 +9853,7 @@ function showTab(name) {
     if (b.dataset.tab === name) b.scrollIntoView({block: "nearest", inline: "nearest"});
   });
   document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + name));
+  if (name === "prefs") paneTop();                          // Preferences opens at its top, not where the last tab was
   if (name === "captions") loadCaptions();
   if (name === "prep") loadPrep();
   if (name === "studio") studioOpen();
