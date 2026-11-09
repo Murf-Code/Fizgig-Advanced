@@ -1497,7 +1497,7 @@ TAG_CAP_CHOICES = ("4", "8", "16", "32")      # the most encodings cached per pi
 
 
 def tag_cap(inputs):
-    """Most cached per picture: the box's whole number, 2-33 (8 when empty). ValueError for anything else."""
+    """Max caption variants per picture: the box's whole number, 2-33 (8 when empty). ValueError for anything else."""
     raw = _s(inputs.get("TAG_VARIANT_CAP")).split(" ")[0]
     c = int(float(raw)) if raw else 8
     if not 2 <= c <= 33:

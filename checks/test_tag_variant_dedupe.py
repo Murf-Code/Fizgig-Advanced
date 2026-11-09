@@ -71,3 +71,16 @@ def test_form_and_launch_carry_the_cap():
     assert t["caption_variant_cap"] == 8 and "caption_variant_cap = 8" in launch._tag_lines(desc, v)
     assert "up to 8 variant(s)" in form.tag_cost_note(v, 10)
     assert launch.tag_problems(desc, {**v, "TAG_VARIANT_CAP": "1"})
+
+
+def test_max_variants_row_shows_only_while_captions_vary():
+    from fizgig.families import form
+    from fizgig.families.registry import get
+    desc = get("sdxl")
+    rows = {r["key"]: r for s in form.form(desc)["sections"] for r in s["rows"] if r}
+    assert rows["TAG_VARIANT_CAP"]["label"] == "Max caption variants per picture"
+    v = {**form.DEFAULTS, "TAG_VARIANT_CAP": "12"}
+    assert "TAG_VARIANT_CAP" in form.state(desc, v)["hidden"]                          # nothing varies: hidden
+    for on in ({"TAG_SHUFFLE": True}, {"TAG_DROPOUT": "5"}, {"CAPTION_DROPOUT": "0.05"}):
+        assert "TAG_VARIANT_CAP" not in form.state(desc, {**v, **on})["hidden"], on
+    assert v["TAG_VARIANT_CAP"] == "12"                                                # the saved value is kept

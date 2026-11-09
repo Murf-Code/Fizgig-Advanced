@@ -529,7 +529,7 @@ def form(desc):
                  "caption are cached; each step picks one at random (by the run's seed, so a resume picks the same). "
                  "More variants = more variety, a longer first cache and more disk. Variants that come out the same "
                  "are cached once, so a caption with only a few tags gets fewer.", launch.TAG_VARIANT_CHOICES),
-            _row("TAG_VARIANT_CAP", "Most cached per picture", "combo", "A ceiling on the caption encodings cached "
+            _row("TAG_VARIANT_CAP", "Max caption variants per picture", "combo", "A ceiling on the caption encodings cached "
                  "for each picture: its variants plus the empty caption (with caption dropout). Keeps the text cache "
                  "and the first caching time in check when Variants per caption is set high.", launch.TAG_CAP_CHOICES),
         ])
@@ -1660,7 +1660,11 @@ def _tag_state(desc, values, image_folder, kind, hidden, disabled, notes):
         varies = True
         notes["TAG_DROPOUT"] = "A percentage from 0 to 100."
     if not varies:
-        disabled.update({"TAG_KEEP_FIRST", "TAG_VARIANTS", "TAG_VARIANT_CAP"})
+        disabled.update({"TAG_KEEP_FIRST", "TAG_VARIANTS"})
+    # Max caption variants per picture: shown only while something makes variants (tag shuffle / tag dropout, or
+    # caption dropout's empty caption); hidden otherwise, its saved value kept
+    if not varies and launch._cd_share(values.get("CAPTION_DROPOUT")) <= 0:
+        hidden.add("TAG_VARIANT_CAP")
     cost = tag_cost_note(values, _picture_count(image_folder) if image_folder else 0)
     if cost:
         notes["TAG_VARIANTS"] = cost
