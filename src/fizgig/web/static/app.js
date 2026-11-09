@@ -5401,7 +5401,9 @@ async function maskRun() {
 const ME_MAX_PX = 4e6, ME_UNDO = 20;
 function meState() {
   if (!S.me) S.me = {list: [], at: -1, name: "", pic: null, mask: null, dirty: false, undo: [], redo: [],
-                     tool: "brush", view: "over", zoom: 1, ox: 0, oy: 0, folder: ""};
+                     tool: "brush", view: "over", zoom: 1, ox: 0, oy: 0, folder: "",
+                     rm: null, rmDirty: false, crop: null, cropDrag: null, ratio: "free", prevTool: "brush",
+                     before: null, showBefore: false, ver: 0, stepBusy: false};
   return S.me;
 }
 function meShown() {
@@ -5434,19 +5436,47 @@ async function meGo(i, force) {
   $("meName").textContent = m.name;
   $("meState").textContent = "Loading…";
   const q = `folder=${encodeURIComponent(S.imageFolder)}&name=${encodeURIComponent(m.name)}&t=${encodeURIComponent(TOKEN)}`;
-  const pic = await meImage("/api/masks/edit/picture?" + q).catch(() => null);
+  const pic = await meImage("/api/masks/edit/picture?" + q + "&v=" + m.ver).catch(() => null);
   if (!pic || m.name !== shown[i].name) { $("meState").textContent = pic ? "" : "Couldn't load the picture."; return; }
-  const k = Math.min(1, Math.sqrt(ME_MAX_PX / (pic.naturalWidth * pic.naturalHeight)));
-  const w = Math.max(1, Math.round(pic.naturalWidth * k)), h = Math.max(1, Math.round(pic.naturalHeight * k));
-  const mask = el("canvas", {width: w, height: h});
+  const mask = meWorkCanvas(pic);
   if (shown[i].mask) {
     const mimg = await meImage("/api/masks/edit/mask?" + q + "&v=" + Date.now()).catch(() => null);
     if (mimg) meFromGray(mask, mimg);
   }
   m.pic = pic; m.mask = mask; m.dirty = false; m.undo = []; m.redo = [];
+  m.before = null; meFresh();
   meStateLine();
   $("meState").textContent = shown[i].mask ? "" : "No mask yet: paint one with the Brush.";
   meFit();
+}
+function meWorkCanvas(pic) {
+  // the working canvas: the picture's shape, at most ME_MAX_PX
+  const k = Math.min(1, Math.sqrt(ME_MAX_PX / (pic.naturalWidth * pic.naturalHeight)));
+  return el("canvas", {width: Math.max(1, Math.round(pic.naturalWidth * k)), height: Math.max(1, Math.round(pic.naturalHeight * k))});
+}
+function meFresh() {
+  // a new or changed picture: no Remove stroke waiting, the crop box back round the whole picture
+  const m = meState();
+  m.rm = null; m.rmDirty = false; m.cropDrag = null; m.showBefore = false;
+  m.crop = m.tool === "crop" && m.mask ? {l: 0, t: 0, r: m.mask.width, b: m.mask.height} : null;
+  if (m.crop) meCropFit();
+  meImgBar();
+}
+async function meReload() {
+  // the same picture again after Crop, Remove or their undo: its new file and mask, the history kept
+  const m = meState(), name = m.name;
+  m.ver = Date.now();
+  const q = `folder=${encodeURIComponent(m.folder || S.imageFolder)}&name=${encodeURIComponent(name)}&t=${encodeURIComponent(TOKEN)}`;
+  const pic = await meImage("/api/masks/edit/picture?" + q + "&v=" + m.ver).catch(() => null);
+  if (!pic || m.name !== name) return false;
+  const mask = meWorkCanvas(pic), item = m.list.find((p) => p.name === name);
+  if (item && item.mask) {
+    const mimg = await meImage("/api/masks/edit/mask?" + q + "&v=" + m.ver).catch(() => null);
+    if (mimg) meFromGray(mask, mimg);
+  }
+  m.pic = pic; m.mask = mask; m.dirty = false;
+  meFresh(); meStateLine(); meFit();
+  return true;
 }
 function meImage(src) {
   return new Promise((ok, bad) => { const im = new Image(); im.onload = () => ok(im); im.onerror = bad; im.src = src; });
@@ -5497,14 +5527,23 @@ function meDraw() {
   if (m.view === "mask") {
     c.fillStyle = "#000"; c.fillRect(0, 0, w, h); c.drawImage(m.mask, 0, 0);
   } else {
-    c.drawImage(m.pic, 0, 0, w, h);
-    if (m.view === "over") {
+    c.drawImage(m.showBefore && m.before ? m.before : m.pic, 0, 0, w, h);
+    if (m.view === "over" && !m.showBefore) {
       const [tint, dim] = meLayers();
       c.globalAlpha = show * 0.8; c.drawImage(dim, 0, 0);       // what isn't learned dimmed...
       c.globalAlpha = show * 0.6; c.drawImage(tint, 0, 0);      // ...and what is, tinted blue
       c.globalAlpha = 1;
     }
   }
+  if (m.rm && m.rmDirty && !m.showBefore) {           // Remove: what will be taken out, red over the picture
+    if (!m.rmTint || m.rmTint.width !== w || m.rmTint.height !== h) m.rmTint = el("canvas", {width: w, height: h});
+    const t = m.rmTint.getContext("2d");
+    t.globalCompositeOperation = "copy"; t.drawImage(m.rm, 0, 0);
+    t.globalCompositeOperation = "source-in"; t.fillStyle = themeColor("--pic-remove"); t.fillRect(0, 0, w, h);
+    t.globalCompositeOperation = "source-over";
+    c.globalAlpha = 0.6; c.drawImage(m.rmTint, 0, 0); c.globalAlpha = 1;
+  }
+  if (m.tool === "crop" && m.crop) meDrawCrop(c, w, h);
   if (m.samAt) {                                       // SAM at work: a ring pulsing at the click
     const ph = (performance.now() % 1000) / 1000;
     c.setTransform(1, 0, 0, 1, 0, 0);
@@ -5512,7 +5551,7 @@ function meDraw() {
     c.beginPath(); c.arc(m.samAt[0], m.samAt[1], 6 + ph * 22, 0, Math.PI * 2); c.stroke();
     c.fillStyle = themeColor("--pic-mask"); c.beginPath(); c.arc(m.samAt[0], m.samAt[1], 4, 0, Math.PI * 2); c.fill();
   }
-  if (m.cursor && !m.panning && m.tool !== "sam") {    // the brush, its size on screen
+  if (m.cursor && !m.panning && m.tool !== "sam" && m.tool !== "crop") {    // the brush, its size on screen
     // drawn as the difference with what's under it (XOR-like), so it shows on white, black and any picture (#271)
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.globalCompositeOperation = "difference"; c.strokeStyle = "#fff"; c.lineWidth = 1.5;
@@ -5535,13 +5574,241 @@ function mePush() {
   m.undo.push(meSnapshot()); if (m.undo.length > ME_UNDO) m.undo.shift();
   m.redo = [];
 }
-function meRestore(from, to) {
+async function meRestore(from, to) {
   const m = meState();
+  if (m.stepBusy || !m.mask) return;
+  if (from === m.undo && meDropPending()) return;     // Ctrl+Z with a stroke not applied yet clears the stroke first
   if (!from.length) return;
+  const top = from[from.length - 1];
+  if (top.step) {                                     // a Crop or Remove: the server puts the files back
+    const undo = from === m.undo;
+    m.stepBusy = true; meBusy(undo ? "Undoing…" : "Redoing…");
+    try {
+      await api("/api/masks/edit/image_step", {step: top.step, redo: !undo});
+      from.pop(); to.push(top);
+      m.before = null;
+      await meReload();
+      $("meState").textContent = undo ? `Undid the ${top.what}.` : `Redid the ${top.what}.`;
+      maskInfo();
+    } catch (e) { $("meState").textContent = e.message; }
+    finally { m.stepBusy = false; meBusy(""); meImgBar(); meDraw(); }
+    return;
+  }
   to.push(meSnapshot());
+  const snap = from.pop();
+  if (snap.width !== m.mask.width || snap.height !== m.mask.height) { m.mask.width = snap.width; m.mask.height = snap.height; }
   const c = m.mask.getContext("2d");
-  c.globalCompositeOperation = "copy"; c.drawImage(from.pop(), 0, 0); c.globalCompositeOperation = "source-over";
+  c.globalCompositeOperation = "copy"; c.drawImage(snap, 0, 0); c.globalCompositeOperation = "source-over";
   m.dirty = true; meStateLine(); meDraw();
+}
+function meDropPending() {
+  const m = meState();
+  if (m.rm && m.rmDirty) { m.rm = null; m.rmDirty = false; meImgBar(); meDraw(); return true; }
+  if (m.tool === "crop" && m.crop && !meCropWhole()) {
+    m.crop = {l: 0, t: 0, r: m.mask.width, b: m.mask.height}; meCropFit(); meImgBar(); meDraw(); return true;
+  }
+  return false;
+}
+
+// ---- the picture tools: Remove (paint over a thing, Apply fills it from around it) and Crop (web/image_edit.py)
+function meRmLine(a, b) {
+  const m = meState();
+  if (!m.rm) m.rm = el("canvas", {width: m.mask.width, height: m.mask.height});
+  const c = m.rm.getContext("2d");
+  c.globalCompositeOperation = m.flip ? "destination-out" : "source-over";   // right-drag rubs the stroke out
+  c.strokeStyle = "#fff"; c.fillStyle = "#fff"; c.lineCap = "round"; c.lineJoin = "round";
+  c.lineWidth = Math.max(1, Number($("meSize").value) / m.zoom);
+  c.beginPath();
+  if (a.x === b.x && a.y === b.y) { c.arc(a.x, a.y, c.lineWidth / 2, 0, Math.PI * 2); c.fill(); }
+  else { c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); }
+  c.globalCompositeOperation = "source-over";
+  m.rmDirty = true;
+}
+function meRatio() {
+  const m = meState(), v = m.ratio;
+  if (v === "free" || !m.mask) return 0;
+  if (v === "orig") return m.mask.width / m.mask.height;
+  const [a, b] = v.split(":").map(Number);
+  return a / b;
+}
+function meCropWhole() {
+  const m = meState(), b = m.crop;
+  return !b || (b.l <= 0 && b.t <= 0 && b.r >= m.mask.width && b.b >= m.mask.height);
+}
+function meCropFit() {
+  // the biggest box of the chosen shape inside the current one, centred on it
+  const m = meState(), b = m.crop, r = meRatio();
+  if (!b || !r) return;
+  let w = b.r - b.l, h = b.b - b.t;
+  if (w / h > r) w = h * r; else h = w / r;
+  const cx = (b.l + b.r) / 2, cy = (b.t + b.b) / 2;
+  const l = Math.max(0, Math.min(m.mask.width - w, cx - w / 2)), t = Math.max(0, Math.min(m.mask.height - h, cy - h / 2));
+  m.crop = {l, t, r: l + w, b: t + h};
+}
+function meCropPx() {
+  // the crop box in the picture's own pixels
+  const m = meState(), b = m.crop, kx = m.pic.naturalWidth / m.mask.width, ky = m.pic.naturalHeight / m.mask.height;
+  const l = Math.round(b.l * kx), t = Math.round(b.t * ky);
+  return {left: l, top: t, right: Math.max(l + 1, Math.round(b.r * kx)), bottom: Math.max(t + 1, Math.round(b.b * ky))};
+}
+function meCropHit(p) {
+  // which part of the crop box is under the pointer (screen px): a corner, an edge, inside, or outside (a new box)
+  const m = meState(), b = m.crop, z = m.zoom;
+  const L = m.ox + b.l * z, T = m.oy + b.t * z, R = m.ox + b.r * z, B = m.oy + b.b * z, near = 10;
+  const nx = Math.abs(p.sx - L) <= near ? "w" : Math.abs(p.sx - R) <= near ? "e" : "";
+  const ny = Math.abs(p.sy - T) <= near ? "n" : Math.abs(p.sy - B) <= near ? "s" : "";
+  const inX = p.sx > L - near && p.sx < R + near, inY = p.sy > T - near && p.sy < B + near;
+  if (nx && ny) return ny + nx;
+  if (nx && inY) return nx;
+  if (ny && inX) return ny;
+  if (p.sx > L && p.sx < R && p.sy > T && p.sy < B) return "move";
+  return "new";
+}
+const ME_CROP_CURSOR = {nw: "nwse-resize", se: "nwse-resize", ne: "nesw-resize", sw: "nesw-resize", n: "ns-resize",
+  s: "ns-resize", e: "ew-resize", w: "ew-resize", move: "move", new: "crosshair"};
+function meCropMove(p) {
+  const m = meState(), d = m.cropDrag, b0 = d.box, W = m.mask.width, H = m.mask.height, r = meRatio();
+  const min = Math.max(2, 8 / m.zoom);
+  const x = Math.max(0, Math.min(W, p.x)), y = Math.max(0, Math.min(H, p.y));
+  if (d.mode === "move") {
+    const bw = b0.r - b0.l, bh = b0.b - b0.t;
+    const l = Math.max(0, Math.min(W - bw, b0.l + p.x - d.x)), t = Math.max(0, Math.min(H - bh, b0.t + p.y - d.y));
+    m.crop = {l, t, r: l + bw, b: t + bh};
+    return;
+  }
+  if (d.mode.length === 2 || d.mode === "new") {      // a corner (or a new box): the opposite corner stays put
+    let ax, ay, sx, sy;
+    if (d.mode === "new") { ax = d.ax; ay = d.ay; sx = x >= ax ? 1 : -1; sy = y >= ay ? 1 : -1; }
+    else {
+      sx = d.mode[1] === "e" ? 1 : -1; sy = d.mode[0] === "s" ? 1 : -1;
+      ax = sx > 0 ? b0.l : b0.r; ay = sy > 0 ? b0.t : b0.b;
+    }
+    const maxW = sx > 0 ? W - ax : ax, maxH = sy > 0 ? H - ay : ay;
+    let w = Math.max(min, (x - ax) * sx), h = Math.max(min, (y - ay) * sy);
+    if (r) {
+      w = Math.max(w, h * r); h = w / r;
+      if (w > maxW) { w = maxW; h = w / r; }
+      if (h > maxH) { h = maxH; w = h * r; }
+    } else { w = Math.min(w, maxW); h = Math.min(h, maxH); }
+    const l = sx > 0 ? ax : ax - w, t = sy > 0 ? ay : ay - h;
+    m.crop = {l, t, r: l + w, b: t + h};
+    return;
+  }
+  const b = {...b0};                                   // an edge: the opposite edge stays put
+  if (d.mode === "e" || d.mode === "w") {
+    const ax = d.mode === "e" ? b0.l : b0.r, sx = d.mode === "e" ? 1 : -1;
+    let w = Math.max(min, Math.min((x - ax) * sx, sx > 0 ? W - ax : ax));
+    if (r) {
+      const cy = (b0.t + b0.b) / 2; let h = w / r;
+      const maxH = 2 * Math.min(cy, H - cy);
+      if (h > maxH) { h = maxH; w = h * r; }
+      b.t = cy - h / 2; b.b = cy + h / 2;
+    }
+    if (sx > 0) { b.l = ax; b.r = ax + w; } else { b.r = ax; b.l = ax - w; }
+  } else {
+    const ay = d.mode === "s" ? b0.t : b0.b, sy = d.mode === "s" ? 1 : -1;
+    let h = Math.max(min, Math.min((y - ay) * sy, sy > 0 ? H - ay : ay));
+    if (r) {
+      const cx = (b0.l + b0.r) / 2; let w = h * r;
+      const maxW = 2 * Math.min(cx, W - cx);
+      if (w > maxW) { w = maxW; h = w / r; }
+      b.l = cx - w / 2; b.r = cx + w / 2;
+    }
+    if (sy > 0) { b.t = ay; b.b = ay + h; } else { b.b = ay; b.t = ay - h; }
+  }
+  m.crop = b;
+}
+function meDrawCrop(c, w, h) {
+  // Photoshop-style: outside the box darkened, the box's edge, eight handles, thirds while dragging, the size
+  const m = meState(), b = m.crop, z = m.zoom;
+  c.fillStyle = themeColor("--pic-shade", 0.62);
+  c.beginPath(); c.rect(0, 0, w, h); c.rect(b.l, b.t, b.r - b.l, b.b - b.t); c.fill("evenodd");
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  const L = m.ox + b.l * z, T = m.oy + b.t * z, R = m.ox + b.r * z, B = m.oy + b.b * z;
+  if (m.cropDrag) {
+    c.strokeStyle = themeColor("--pic-text", 0.6); c.lineWidth = 1;
+    c.beginPath();
+    for (const k of [1, 2]) {
+      c.moveTo(L + (R - L) * k / 3, T); c.lineTo(L + (R - L) * k / 3, B);
+      c.moveTo(L, T + (B - T) * k / 3); c.lineTo(R, T + (B - T) * k / 3);
+    }
+    c.stroke();
+  }
+  c.strokeStyle = themeColor("--pic-highlight"); c.lineWidth = 2; c.strokeRect(L, T, R - L, B - T);
+  const s = 10, mx = (L + R) / 2, my = (T + B) / 2;
+  c.fillStyle = themeColor("--pic-text"); c.strokeStyle = themeColor("--pic-shade"); c.lineWidth = 1;
+  for (const [x, y] of [[L, T], [mx, T], [R, T], [R, my], [R, B], [mx, B], [L, B], [L, my]]) {
+    c.fillRect(x - s / 2, y - s / 2, s, s); c.strokeRect(x - s / 2, y - s / 2, s, s);
+  }
+  const px = meCropPx(), text = `${px.right - px.left} × ${px.bottom - px.top}`;
+  c.font = "600 12px system-ui, sans-serif";
+  const tw = c.measureText(text).width + 14, cv = $("meCanvas");
+  const ty = B + 30 <= cv.height ? B + 8 : Math.max(4, B - 30), tx = Math.max(4, Math.min(cv.width - tw - 4, mx - tw / 2));
+  c.fillStyle = themeColor("--pic-shade", 0.75); c.fillRect(tx, ty, tw, 22);
+  c.fillStyle = themeColor("--pic-text"); c.textBaseline = "middle"; c.fillText(text, tx + 7, ty + 11);
+  c.textBaseline = "alphabetic";
+  $("meCropSize").textContent = text + " px";
+}
+function meImgBar() {
+  // the Remove / Crop bar under the tools: what Apply does, the crop's shape and size, Hold for before
+  const m = meState(), t = m.tool, on = t === "crop" || t === "remove";
+  $("meImgBar").style.display = on || m.before ? "" : "none";
+  $("meRatioWrap").style.display = t === "crop" ? "" : "none";
+  $("meCropSize").style.display = t === "crop" ? "" : "none";
+  $("meApply").style.display = $("meCancel").style.display = on ? "" : "none";
+  $("meApply").textContent = t === "crop" ? "Crop" : "Remove it";
+  $("meApply").disabled = m.stepBusy || (t === "remove" ? !m.rmDirty : t === "crop" ? meCropWhole() : true);
+  $("meBefore").style.display = m.before ? "" : "none";
+  $("meImgWhat").textContent = t === "crop" ? "Crop: drag the corners or edges, or drag inside to move the box." :
+    t === "remove" ? (m.rmDirty ? "Remove: press Enter (or Remove it) to take out what's red." :
+      "Remove: paint over what to take out. Right-click rubs the stroke out.") : "Last Remove:";
+}
+async function mePicStep(path, body, what, busy) {
+  // Crop or Remove: the mask is saved first (so a crop crops it as it is), then the picture changes on the server
+  const m = meState();
+  if (m.stepBusy || !m.pic) return null;
+  m.stepBusy = true; meImgBar(); meBusy(busy);
+  try {
+    if (m.dirty && !(await meSave())) return null;
+    const r = await api(path, {folder: m.folder || S.imageFolder, name: m.name, ...body});
+    m.undo.push({step: r.step, what}); if (m.undo.length > ME_UNDO * 2) m.undo.shift();
+    m.redo = [];
+    return r;
+  } catch (e) { $("meState").textContent = e.message; return null; }
+  finally { m.stepBusy = false; meBusy(""); }
+}
+async function meApply() {
+  const m = meState();
+  if (!m.pic || m.stepBusy) return;
+  if (m.tool === "crop") {
+    if (meCropWhole()) { $("meState").textContent = "Drag the crop box's edges in first."; return; }
+    const r = await mePicStep("/api/masks/edit/crop", meCropPx(), "crop", "Cropping…");
+    if (!r) { meImgBar(); return; }
+    m.before = null;
+    await meReload();
+    meTool(m.prevTool || "brush");                     // crop mode closes once it has cropped
+    $("meState").textContent = `Cropped to ${r.size[0]} × ${r.size[1]}${m.list.find((p) => p.name === m.name && p.mask) ?
+      ", the mask with it" : ""}. Ctrl+Z undoes it.`;
+    maskInfo();
+  } else if (m.tool === "remove") {
+    if (!m.rmDirty) { $("meState").textContent = "Paint over what to remove first."; return; }
+    const old = m.pic;
+    const r = await mePicStep("/api/masks/edit/remove", {png: m.rm.toDataURL("image/png")}, "remove", "Removing…");
+    if (!r) { meImgBar(); return; }
+    await meReload();
+    m.before = old; meImgBar();
+    $("meState").textContent = "Removed. Hold \u201cHold for before\u201d to compare; Ctrl+Z undoes it.";
+  }
+  meDraw();
+}
+function meCancel() {
+  const m = meState();
+  if (m.tool === "crop") meTool(m.prevTool || "brush");  // Esc leaves crop mode, the picture as it was
+  else if (m.tool === "remove") { m.rm = null; m.rmDirty = false; meImgBar(); meDraw(); }
+}
+function meSizeKey(k) {
+  const s = $("meSize"), v = Number(s.value);
+  s.value = Math.max(2, Math.min(400, Math.round(k === "[" ? v / 1.2 : v * 1.2 + 1))); meDraw();
 }
 function meDab(x, y) {
   // one stamp of the brush on the mask: white with the strength's opacity, or that much taken away
@@ -5602,6 +5869,13 @@ function meWire() {
   $("meNext").addEventListener("click", () => meGo(meState().at + 1));
   $("meFilter").addEventListener("change", () => meGo(0, true));
   $("meTool").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => meTool(b.dataset.tool)));
+  $("mePicTool").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => meTool(b.dataset.tool)));
+  $("meRatio").addEventListener("change", () => { m.ratio = $("meRatio").value; meCropFit(); meImgBar(); meDraw(); });
+  $("meApply").addEventListener("click", meApply);
+  $("meCancel").addEventListener("click", meCancel);
+  const before = (on) => () => { if (m.showBefore !== on) { m.showBefore = on; meDraw(); } };
+  $("meBefore").addEventListener("pointerdown", before(true));
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) $("meBefore").addEventListener(ev, before(false));
   $("meView").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
     m.view = b.dataset.view;
     $("meView").querySelectorAll("button").forEach((x) => x.classList.toggle("active", x === b));
@@ -5626,6 +5900,18 @@ function meWire() {
     cv.setPointerCapture(e.pointerId);
     const p = meAt(e);
     if (e.button === 1 || space) { pan = {sx: p.sx, sy: p.sy, ox: m.ox, oy: m.oy}; m.panning = true; e.preventDefault(); return; }
+    if (m.stepBusy) return;
+    if (m.tool === "crop") {                           // grab a handle, the box, or draw a new one
+      if (e.button !== 0 || !m.crop) return;
+      const mode = meCropHit(p);
+      m.cropDrag = {mode, x: p.x, y: p.y, box: {...m.crop},
+        ax: Math.max(0, Math.min(m.mask.width, p.x)), ay: Math.max(0, Math.min(m.mask.height, p.y))};
+      meDraw(); return;
+    }
+    if (m.tool === "remove") {                         // paint what to take out; right-drag rubs it out
+      if (e.button !== 0 && e.button !== 2) return;
+      m.flip = e.button === 2; meRmLine(p, p); last = p; meImgBar(); meDraw(); return;
+    }
     if (m.tool === "sam") {                            // a click adds; right-click or Alt+click takes away
       if (e.button === 0 || e.button === 2) meSamClick(p, e.button === 2 || e.altKey);
       return;
@@ -5638,16 +5924,20 @@ function meWire() {
     const p = meAt(e);
     m.cursor = [p.sx, p.sy];
     if (pan) { m.ox = pan.ox + p.sx - pan.sx; m.oy = pan.oy + p.sy - pan.sy; }
-    else if (last) { meStroke(last, p); last = p; }
+    else if (m.cropDrag) { meCropMove(p); meImgBar(); }
+    else if (last) { if (m.tool === "remove") meRmLine(last, p); else meStroke(last, p); last = p; }
+    else if (m.tool === "crop" && m.crop && !m.stepBusy) cv.style.cursor = ME_CROP_CURSOR[meCropHit(p)];
     meDraw();
   });
-  const up = () => { last = null; pan = null; m.panning = false; m.flip = false; meDraw(); };
+  const up = () => { last = null; pan = null; m.panning = false; m.flip = false; m.cropDrag = null; meImgBar(); meDraw(); };
   cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
   cv.addEventListener("pointerleave", () => { m.cursor = null; meDraw(); });
   cv.addEventListener("contextmenu", (e) => e.preventDefault());   // right-click: SAM's "take away", the brush's erase
   cv.addEventListener("wheel", (e) => {
     if (!m.mask) return;
     e.preventDefault();
+    // the mouse wheel sizes the Remove brush (Ctrl+scroll zooms there); Alt+scroll sizes the mask brushes
+    if (m.tool === "remove" ? !e.ctrlKey : e.altKey) { meSizeKey(e.deltaY < 0 ? "]" : "["); return; }
     // zooming out stops where the whole picture fits (smaller is never useful), and centres it there
     const cv = $("meCanvas"), fit = Math.min(cv.width / m.mask.width, cv.height / m.mask.height);
     const p = meAt(e), k = Math.exp(-e.deltaY * 0.0015), z = Math.min(40, Math.max(fit, m.zoom * k));
@@ -5665,10 +5955,12 @@ function meWire() {
     else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === "y") { e.preventDefault(); meRestore(m.redo, m.undo); }
     else if (k === "ArrowLeft") { e.preventDefault(); meGo(m.at - 1); }
     else if (k === "ArrowRight") { e.preventDefault(); meGo(m.at + 1); }
-    else if (k === "[" || k === "]") {
-      const s = $("meSize"), v = Number(s.value);
-      s.value = Math.max(2, Math.min(400, Math.round(k === "[" ? v / 1.2 : v * 1.2 + 1))); meDraw();
-    }
+    else if (k === "[" || k === "]") meSizeKey(k);
+    else if (k === "Enter" && (m.tool === "crop" || m.tool === "remove")) { e.preventDefault(); meApply(); }
+    else if (k === "Escape" && (m.tool === "crop" || m.tool === "remove")) { e.preventDefault(); meCancel(); }
+    else if (e.ctrlKey || e.metaKey || e.altKey) return;
+    else if (k === "c" || k === "C") meTool("crop");
+    else if (k === "j" || k === "J") meTool("remove");
     else if (k === "b" || k === "B") meTool("brush");
     else if (k === "e" || k === "E") meTool("erase");
     else if (k === "s" || k === "S") meTool("sam");
@@ -5707,7 +5999,7 @@ function meBusy(text, at) {
   const m = meState();
   $("meBusy").style.display = text ? "" : "none";
   $("meBusyText").textContent = text;
-  $("meCanvas").style.cursor = text ? "wait" : (m.tool === "sam" ? "crosshair" : "none");
+  $("meCanvas").style.cursor = text ? "wait" : (m.tool === "sam" || m.tool === "crop" ? "crosshair" : "none");
   m.samAt = text ? at : null;
   if (text) {
     const tick = () => { if (!meState().samAt) return; meDraw(); requestAnimationFrame(tick); };
@@ -5715,9 +6007,19 @@ function meBusy(text, at) {
   }
 }
 function meTool(t) {
-  meState().tool = t;
-  $("meCanvas").style.cursor = t === "sam" ? "crosshair" : "none";
-  $("meTool").querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.tool === t));
+  const m = meState(), was = m.tool;
+  if (t === was && t !== "crop") return meImgBar();
+  if (t === "crop" && was === "crop") t = m.prevTool || "brush";   // C again leaves crop mode
+  if (t === "crop") m.prevTool = was;
+  m.tool = t;
+  if (was === "remove" && t !== "remove") { m.rm = null; m.rmDirty = false; }   // a stroke not applied is dropped
+  m.cropDrag = null;
+  m.crop = t === "crop" && m.mask ? {l: 0, t: 0, r: m.mask.width, b: m.mask.height} : null;
+  if (m.crop) meCropFit();
+  $("meCanvas").style.cursor = t === "sam" || t === "crop" ? "crosshair" : "none";
+  for (const id of ["meTool", "mePicTool"])
+    $(id).querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.tool === t));
+  meImgBar(); meDraw();
 }
 
 // Crop to's choices: the faces, then Other…. The YOLO face model's other classes (Fdetailer's penis, paw pads, ...)

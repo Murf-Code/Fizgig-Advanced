@@ -4707,6 +4707,27 @@ class Handler(BaseHTTPRequestHandler):
                     pics.append({"name": name, "cover": round(cover, 3),
                                  "src": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()})
                 return self.json({"ok": True, "pictures": pics, "fresh": fresh, "of": len(sammask.pictures(folder))})
+            if path in ("/api/masks/edit/crop", "/api/masks/edit/remove", "/api/masks/edit/image_step"):
+                # the picture editor's Crop and Remove change the picture file (web/image_edit.py); each request runs
+                # in its own server thread, so a slow Remove doesn't hold up the page. Undo/redo: an image step's id
+                from fizgig.web import image_edit
+                folder, name = str(b.get("folder") or ""), str(b.get("name") or "")
+                if path != "/api/masks/edit/image_step" and (not folder or not os.path.isdir(folder)):
+                    return self.json({"error": "Choose the training folder on the Start tab first."}, 400)
+                try:
+                    if path == "/api/masks/edit/crop":
+                        if _gpu_training():       # the run has this picture's size and mask cached: crop after it
+                            return self.json({"error": "A run is training: crop when it finishes. Remove and the "
+                                                       "mask tools work now."}, 400)
+                        return self.json(image_edit.crop(folder, name, [b.get(k) for k in ("left", "top", "right", "bottom")]))
+                    if path == "/api/masks/edit/remove":
+                        return self.json(image_edit.remove(folder, name, str(b.get("png") or "")))
+                    return self.json(image_edit.step(b.get("step"), "redo" if b.get("redo") else "undo"))
+                except (ValueError, TypeError) as e:
+                    return self.json({"error": str(e)}, 400)
+                except Exception as e:
+                    logger.exception("picture editor")
+                    return self.json({"error": f"Couldn't change the picture: {type(e).__name__}: {e}"}, 400)
             if path == "/api/masks/edit/save":  # allowed while training: written atomically, a running run reads it
                 from fizgig.web import mask_edit  # the next time that picture comes up (masks.load_mask checks mtime)
                 try:

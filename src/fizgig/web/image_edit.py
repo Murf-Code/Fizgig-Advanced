@@ -1,0 +1,298 @@
+"""The picture editor's picture tools (Image Prep's Edit masks): Crop and Remove change the picture file itself.
+
+Everything happens on the picture as it is seen (upright, a phone photo's rotation flag applied), as the mask editor
+works, and the file is written back in its own format with its rotation flag reset. Crop crops the picture's masks
+the same way, so they stay lined up. Remove fills what was painted over from what is around it (OpenCV's Telea
+inpainting, part of opencv-python, already a Fizgig dependency).
+
+Each change is a step kept in memory (the file's bytes before and after, its masks' too, at most UNDO_STEPS of
+them), so the page can undo and redo it. Nothing is kept on disk and the steps go when Fizgig closes. Every write is
+atomic (a temporary file, then a replace), so a failed save never leaves a broken picture."""
+import io
+import itertools
+import os
+import threading
+from collections import OrderedDict
+
+import numpy as np
+from PIL import Image
+
+from fizgig.dataset.masks import MASK_SUFFIX, MASKS_DIR, _EXTS as MASK_EXTS
+from fizgig.utils.upright import ORIENTATION, upright
+
+UNDO_STEPS = 30          # image steps kept, across all pictures
+MAX_WINDOW = 2048        # a Remove window bigger than this is worked on scaled down
+FEATHER = 3              # px: the filled part fades into the picture over this much
+
+
+# ---- files -------------------------------------------------------------------------------------------------------
+
+def _picture(folder, name):
+    from fizgig.web.mask_edit import _picture as pic
+    return pic(folder, name)
+
+
+def mask_files(picture_path):
+    """Every mask file of a picture: beside it, and in the folder's masks/ sub-folder."""
+    folder, base = os.path.split(picture_path)
+    stem = os.path.splitext(base)[0] + MASK_SUFFIX
+    out = []
+    for where in (folder, os.path.join(folder, MASKS_DIR)):
+        if not os.path.isdir(where):
+            continue
+        low = {n.lower(): n for n in os.listdir(where)}
+        for ext in MASK_EXTS:
+            real = low.get((stem + ext).lower())
+            if real:
+                out.append(os.path.join(where, real))
+    return out
+
+
+def _read(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def write_atomic(path, data):
+    tmp = path + ".fzedit.part"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
+def _webp_lossless(data):
+    head = data[:4096]
+    return head[:4] == b"RIFF" and head[8:12] == b"WEBP" and b"VP8L" in head and b"VP8 " not in head
+
+
+def encode_like(img, original_bytes):
+    """`img` (upright) as bytes in the original file's format: JPEG at quality 95 with full colour detail, WEBP
+    lossless when the original was (else quality 95), PNG and others as they are. The ICC profile and the EXIF data are
+    kept, the rotation flag reset (the pixels are upright now)."""
+    with Image.open(io.BytesIO(original_bytes)) as src:
+        fmt = (src.format or "PNG").upper()
+        icc = src.info.get("icc_profile")
+        try:
+            exif = src.getexif()
+            if ORIENTATION in exif:
+                exif[ORIENTATION] = 1
+            exif = exif.tobytes() if len(exif) else None
+        except Exception:
+            exif = None
+    kw = {}
+    if icc:
+        kw["icc_profile"] = icc
+    if exif and fmt in ("JPEG", "WEBP", "PNG", "TIFF"):
+        kw["exif"] = exif
+    if fmt == "JPEG":
+        if img.mode not in ("RGB", "L", "CMYK"):
+            img = img.convert("RGB")
+        kw.update(quality=95, subsampling=0)
+    elif fmt == "WEBP":
+        kw.update(lossless=True) if _webp_lossless(original_bytes) else kw.update(quality=95)
+    elif fmt == "BMP" and img.mode not in ("RGB", "L", "P", "1"):
+        img = img.convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, fmt, **kw)
+    return buf.getvalue()
+
+
+def open_upright(data):
+    with Image.open(io.BytesIO(data)) as im:
+        im.load()
+        return upright(im).copy()
+
+
+# ---- undo / redo: each step's files before and after -------------------------------------------------------------
+
+_steps = OrderedDict()
+_ids = itertools.count(1)
+_lock = threading.Lock()
+
+
+def _remember(files_before, files_after):
+    """files_*: {path: bytes or None (no file)} -> the step's id."""
+    with _lock:
+        sid = next(_ids)
+        _steps[sid] = (files_before, files_after)
+        while len(_steps) > UNDO_STEPS:
+            _steps.popitem(last=False)
+        return sid
+
+
+def _put(files):
+    for path, data in files.items():
+        if data is None:
+            if os.path.exists(path):
+                os.remove(path)
+        else:
+            write_atomic(path, data)
+
+
+def step(sid, direction):
+    """Undo ("undo") or redo ("redo") the image step `sid`: its files go back to how they were before or after it."""
+    with _lock:
+        s = _steps.get(int(sid))
+    if s is None:
+        raise ValueError("That change is too far back to undo (only the last 30 picture changes are kept).")
+    _put(s[0] if direction == "undo" else s[1])
+    return {"ok": True}
+
+
+def forget():
+    with _lock:
+        _steps.clear()
+
+
+# ---- crop --------------------------------------------------------------------------------------------------------
+
+def clamp_box(box, size):
+    """(left, top, right, bottom) rounded and kept inside a (w, h) picture, at least 1 px each way."""
+    w, h = size
+    l, t, r, b = (int(round(float(v))) for v in box)
+    l, r = sorted((l, r))
+    t, b = sorted((t, b))
+    l, t = max(0, min(l, w - 1)), max(0, min(t, h - 1))
+    r, b = max(l + 1, min(r, w)), max(t + 1, min(b, h))
+    return l, t, r, b
+
+
+def crop_mask_bytes(data, pic_size, box):
+    """A mask file's bytes cropped to `box` of the upright picture (a mask of another size is stretched to the picture
+    first, as training reads it), in the mask file's own format."""
+    with Image.open(io.BytesIO(data)) as m:
+        m.load()
+        fmt = m.format or "PNG"
+        m = m.copy()
+    if m.size != pic_size:
+        m = m.resize(pic_size, Image.BILINEAR)
+    m = m.crop(box)
+    if fmt.upper() == "JPEG" and m.mode not in ("L", "RGB"):
+        m = m.convert("L")
+    buf = io.BytesIO()
+    m.save(buf, fmt)
+    return buf.getvalue()
+
+
+def crop(folder, name, box):
+    """Crop the picture to box (left, top, right, bottom on the upright picture), and its masks with it."""
+    pic = _picture(folder, name)
+    before = {pic: _read(pic)}
+    img = open_upright(before[pic])
+    box = clamp_box(box, img.size)
+    if box == (0, 0) + img.size:
+        raise ValueError("The crop box is the whole picture: nothing to crop.")
+    after = {pic: encode_like(img.crop(box), before[pic])}
+    for m in mask_files(pic):
+        before[m] = _read(m)
+        after[m] = crop_mask_bytes(before[m], img.size, box)
+    _put(after)
+    return {"ok": True, "step": _remember(before, after), "size": [box[2] - box[0], box[3] - box[1]]}
+
+
+# ---- remove ------------------------------------------------------------------------------------------------------
+
+def prepare_hole(mask):
+    """A painted stroke (bool HxW) -> what to fill: anything the stroke closes in is filled too (a loop drawn round a
+    thing removes all of it), then grown about 2 px so the thing's edge goes too."""
+    import cv2
+    m = np.asarray(mask).astype(bool)
+    h, w = m.shape
+    outside = np.ones((h + 2, w + 2), np.uint8)
+    outside[1:-1, 1:-1] = (~m).astype(np.uint8)          # flood from the border through what isn't painted
+    flood = outside.copy()
+    cv2.floodFill(flood, np.zeros((h + 4, w + 4), np.uint8), (0, 0), 2)
+    hole = m | (flood[1:-1, 1:-1] != 2)
+    hole = cv2.dilate(hole.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+    return hole.astype(bool)
+
+
+def window(hole, size):
+    """The part of the picture to work on: the hole's box with a margin of 3/4 its longer side (32 to 512 px)."""
+    ys, xs = np.nonzero(hole)
+    l, r, t, b = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
+    pad = int(max(32, min(512, 0.75 * max(r - l, b - t))))
+    w, h = size
+    return max(0, l - pad), max(0, t - pad), min(w, r + pad), min(h, b + pad)
+
+
+def telea(rgb, hole):
+    """OpenCV's Telea inpainting: fills the hole from its edges inward."""
+    import cv2
+    return cv2.inpaint(np.ascontiguousarray(rgb), hole.astype(np.uint8) * 255, 5, cv2.INPAINT_TELEA)
+
+
+def inpaint_rgb(rgb, stroke, fill=telea):
+    """rgb uint8 HxWx3 and the painted stroke (bool HxW) -> rgb with the stroke's things removed. Only a window round
+    the stroke is worked on (scaled down past MAX_WINDOW px, padded to a multiple of 8); the filled part is pasted
+    back fading into the picture over FEATHER px."""
+    import cv2
+    hole = prepare_hole(stroke)
+    if not hole.any():
+        return rgb.copy()
+    h, w = hole.shape
+    l, t, r, b = window(hole, (w, h))
+    # filled a little past the hole, so the fade-out at its edge blends filled pixels, not the thing being removed
+    grow = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * FEATHER + 1, 2 * FEATHER + 1))
+    wide = cv2.dilate(hole.astype(np.uint8), grow).astype(bool)
+    sub, sub_hole = rgb[t:b, l:r], wide[t:b, l:r]
+    ww, wh = r - l, b - t
+    k = min(1.0, MAX_WINDOW / max(ww, wh))
+    if k < 1:
+        sw, sh = max(8, int(ww * k)), max(8, int(wh * k))
+        small = np.asarray(Image.fromarray(sub).resize((sw, sh), Image.LANCZOS))
+        small_hole = np.asarray(Image.fromarray(sub_hole.astype(np.uint8) * 255).resize((sw, sh), Image.NEAREST)) > 0
+    else:
+        small, small_hole = sub, sub_hole
+    ph, pw = (-small.shape[0]) % 8, (-small.shape[1]) % 8
+    padded = np.pad(small, ((0, ph), (0, pw), (0, 0)), mode="reflect")
+    padded_hole = np.pad(small_hole, ((0, ph), (0, pw)), mode="reflect")
+    filled = fill(padded, padded_hole)[:small.shape[0], :small.shape[1]]
+    if k < 1:
+        filled = np.asarray(Image.fromarray(filled).resize((ww, wh), Image.LANCZOS))
+    # fade: 1 inside the hole, falling to 0 at the widened edge
+    a = cv2.GaussianBlur(hole[t:b, l:r].astype(np.float32), (0, 0), FEATHER / 2.0)
+    a = np.maximum(np.clip(a * 2.0, 0, 1), hole[t:b, l:r]) * sub_hole
+    out = rgb.copy()
+    blend = sub.astype(np.float32) * (1 - a[..., None]) + filled.astype(np.float32) * a[..., None]
+    out[t:b, l:r] = np.clip(np.round(blend), 0, 255).astype(np.uint8)
+    return out
+
+
+def remove_image(img, stroke):
+    """The upright PIL picture with the stroke's things removed; its mode and see-through parts kept."""
+    mode = img.mode
+    if mode == "P":
+        img = img.convert("RGBA" if "transparency" in img.info else "RGB")
+        mode = img.mode
+    alpha = img.getchannel("A") if mode in ("RGBA", "LA") else None
+    rgb = np.asarray(img.convert("RGB"))
+    out = Image.fromarray(inpaint_rgb(rgb, stroke), "RGB")
+    if mode in ("L", "LA"):
+        out = out.convert("L")
+    elif mode not in ("RGB", "RGBA"):
+        out = out.convert(mode) if mode in ("CMYK",) else out
+    if alpha is not None:
+        out.putalpha(alpha)
+    return out
+
+
+def remove(folder, name, stroke_png):
+    """Remove what the stroke (PNG bytes or a data URL; painted = remove, any size: stretched to the picture) covers."""
+    import base64
+    pic = _picture(folder, name)
+    if isinstance(stroke_png, str):
+        stroke_png = base64.b64decode(stroke_png.split(",", 1)[1] if "," in stroke_png else stroke_png)
+    before = {pic: _read(pic)}
+    img = open_upright(before[pic])
+    with Image.open(io.BytesIO(stroke_png)) as s:
+        s.load()
+        s = s.getchannel("A") if s.mode in ("RGBA", "LA") else s.convert("L")
+    if s.size != img.size:
+        s = s.resize(img.size, Image.NEAREST)
+    stroke = np.asarray(s) > 127
+    if not stroke.any():
+        raise ValueError("Paint over what to remove first.")
+    after = {pic: encode_like(remove_image(img, stroke), before[pic])}
+    _put(after)
+    return {"ok": True, "step": _remember(before, after)}

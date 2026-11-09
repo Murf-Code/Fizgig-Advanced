@@ -503,11 +503,13 @@
                 <pre class="console-terminal prep-log" id="maskLog" style="display:none"></pre>
                 <details class="mask-edit" id="maskEdit">
                   <summary><span class="me-sum-title">4. Edit masks</span><span class="me-sum-sub">Check and fix
-                    the masks by hand: paint, erase, or click with SAM</span></summary>
+                    the masks by hand (paint, erase, or click with SAM), remove things from a picture, or crop it</span></summary>
                   <div class="field-hint">Paint over a mask that's wrong, or make one by hand. White is what the LoRA
                     learns. Each picture's mask is saved beside it as photo-masklabel.png: when you press
                     <b>Save now</b>, and on its own when you move to another picture, change the filter, close Edit
-                    masks or leave this tab. A mask saved all black is deleted (the picture then trains as normal).</div>
+                    masks or leave this tab. A mask saved all black is deleted (the picture then trains as normal).
+                    <b>Remove</b> and <b>Crop</b> change the picture file itself (its mask is cropped with it, so they
+                    stay lined up); Ctrl+Z undoes them while Fizgig stays open.</div>
                   <div class="me-bar">
                     <button class="btn btn-sm" id="mePrev" title="Previous picture (←)">←</button>
                     <span class="me-count" id="meCount"></span>
@@ -521,9 +523,23 @@
                     <span class="seg" id="meTool"><button class="btn btn-sm active" data-tool="brush" title="Paint white: learned (B). Right-click paints black">Brush</button><button
                       class="btn btn-sm" data-tool="erase" title="Paint black: not learned (E). Right-click paints white">Eraser</button><button
                       class="btn btn-sm" data-tool="sam" title="Click a thing to add it to the mask, right-click or Alt+click to take it away (S). Needs SAM 3.1, downloaded on this card">SAM click</button></span>
+                    <span class="seg" id="mePicTool"><button class="btn btn-sm" data-tool="remove" title="Paint over a thing to take it out of the picture, then press Enter or Remove it (J). Right-click rubs the stroke out; the mouse wheel sizes the brush">Remove</button><button
+                      class="btn btn-sm" data-tool="crop" title="Crop the picture, and its mask with it (C). Drag the corners or edges, drag inside to move; Enter crops, Esc cancels">Crop</button></span>
                     <label class="me-slider" title="Brush size ([ and ])">Size <input type="range" id="meSize" min="2" max="400" value="40"></label>
                     <label class="me-slider" title="Soft edges: 0 is a hard edge">Softness <input type="range" id="meSoft" min="0" max="100" value="30"></label>
                     <label class="me-slider" title="How white each stroke paints: below 100 paints grey (learned partly)">Strength <input type="range" id="meStrength" min="5" max="100" value="100"></label>
+                  </div>
+                  <div class="me-bar me-imgbar" id="meImgBar" style="display:none">
+                    <span class="me-imgbar-what" id="meImgWhat"></span>
+                    <label class="me-slider" id="meRatioWrap" title="Keep the crop box to this shape">Shape
+                      <select id="meRatio" class="w-combo st-small-select">
+                        <option value="free">Free</option><option value="orig">Original</option><option value="1:1">1:1</option>
+                        <option value="4:3">4:3</option><option value="3:4">3:4</option><option value="16:9">16:9</option>
+                        <option value="9:16">9:16</option><option value="2:3">2:3</option><option value="3:2">3:2</option></select></label>
+                    <span class="me-cropsize" id="meCropSize"></span>
+                    <button class="btn btn-primary btn-sm" id="meApply" title="Enter">Apply</button>
+                    <button class="btn btn-sm" id="meCancel" title="Esc">Cancel</button>
+                    <button class="btn btn-sm" id="meBefore" style="display:none" title="Hold to see the picture as it was before the last Remove">Hold for before</button>
                   </div>
                   <div class="me-bar">
                     <span class="seg" id="meView"><button class="btn btn-sm active" data-view="over">Picture + mask</button><button
@@ -545,7 +561,9 @@
                     <span class="field-hint" id="meState"></span>
                   </div>
                   <div class="field-hint">Scroll to zoom, hold Space and drag (or drag with the middle button) to move
-                    around. Keys: B brush, E eraser, S SAM click, [ ] size, Ctrl+Z / Ctrl+Y, 0 fit, ← → pictures. Right-click with the Brush erases, with the Eraser paints. SAM click: click
+                    around. Keys: B brush, E eraser, S SAM click, J remove, C crop, [ ] size, Enter apply, Esc cancel, Ctrl+Z / Ctrl+Y,
+                    0 fit, ← → pictures. With Remove the mouse wheel sizes the brush (Ctrl+scroll zooms), and with
+                    the mask brushes Alt+scroll does. Right-click with the Brush erases, with the Eraser paints. SAM click: click
                     something to add it to the mask, right-click or Alt+click to take it away.</div>
                 </details>
               </div>

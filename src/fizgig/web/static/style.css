@@ -58,6 +58,7 @@
   --pic-shade: #000000;        /* Their backing, dimming, letterbox (used see-through) */
   --pic-mask: #5AAAFF;         /* Mask editor: what's learned */
   --pic-highlight: #3B9FD8;    /* Crop box, a picked region */
+  --pic-remove: #FF3B30;       /* Picture editor: a Remove stroke (Colour-blind safe: vermilion) */
 
   /* Fizgig Advanced, fixed: things over pictures - the paired likeness badge (its seven score bands are fixed
      colours in app.js's PAIR_BANDS, with their own dark or white text; Colour-blind safe swaps in PAIR_BANDS_SAFE) and
@@ -2580,6 +2581,10 @@ a.pick-pill-vast:hover { border-color: var(--success); }
 @keyframes boot-tip-in { from { opacity: 0; transform: translateY(6px); } }
 .me-stage canvas { display: block; width: 100%; touch-action: none; cursor: none; }
 
+.me-imgbar { padding: 6px 10px; border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm); background: var(--bg-raised); }
+.me-imgbar-what { color: var(--text-primary); font-size: 9.5pt; font-weight: 600; }
+.me-cropsize { min-width: 92px; color: var(--accent-text); font-size: 9.5pt; font-variant-numeric: tabular-nums; }
 .me-saved { font-size: 9.5pt; font-weight: 600; }
 .me-saved[data-state="unsaved"] { color: var(--warning); }
 .me-saved[data-state="saved"] { color: var(--success); }
@@ -2745,6 +2750,7 @@ a.pick-pill-vast:hover { border-color: var(--success); }
   --danger: #D55E00; --danger-strong: #B34E00; --danger-text: #F5A56B; --gold: #F0E442;
   --special-strong: #A8578A; --special: #CC79A7; --special-soft: #D89BBE; --special-text: #E5B5D0; --special-light: #F0D3E3;
   --data-blue: #0072B2; --data-teal: #56B4E9; --data-green: #009E73; --data-olive: #F0E442; --data-orange: #D55E00;
+  --pic-remove: #D55E00;
 }
 
 /* High contrast (low vision): black, white text, a bright yellow accent with black text on it, heavier lines */
