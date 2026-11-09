@@ -106,7 +106,8 @@ DEFAULTS = {
     "FAMILY_SLIDER_BASE": "", "FAMILY_SLIDER_POS": "", "FAMILY_SLIDER_NEG": "", "FAMILY_SLIDER_ANCHORS": "",
     "FAMILY_SLIDER_ANCHOR_WEIGHT": "1", "FAMILY_SLIDER_ULTRA": False,
     "FAMILY_FT_ROTATIONS": "10", "FAMILY_FT_SAVE_EVERY": "1", "FAMILY_FT_ROTATE_EVERY": "1",
-    "FAMILY_FT_FUSED": True, "FAMILY_FT_REG_DIR": "", "FAMILY_FT_REG_MULT": "0.2",
+    "FAMILY_FT_FUSED": True, "FAMILY_FT_OPTIMIZER": "Adafactor (recommended)", "FAMILY_FT_REG_DIR": "",
+    "FAMILY_FT_REG_MULT": "0.2",
     "DATASET_MEGAPIXELS": "0.25", "DATASET_CAPTION_EXT": ".txt", "ENABLE_BUCKET": True, "BUCKET_NO_UPSCALE": True,
     "ENABLE_CACHE": True, "MASKED_TRAINING": False, "MASK_FLOOR": "0.1 (recommended)", "MASK_PRIOR": "Off",
     "TAG_SHUFFLE": False, "TAG_KEEP_FIRST": "1", "TAG_DROPOUT": "0", "CAPTION_DROPOUT": "Off", "TAG_VARIANTS": "4",
@@ -646,6 +647,12 @@ def form(desc):
                  "windows and more memory to spare, if Auto runs too close to your card's limit.",
                  [lab for lab, _ in launch.FT_WINDOW_SIZES], default=launch.FT_WINDOW_SIZES[0][0]),
             _row("FAMILY_FT_FUSED", "Free each gradient as soon as it's used (less memory - recommended)", "check"),
+            _row("FAMILY_FT_OPTIMIZER", "Optimizer", "choice", "The fine-tune's own optimizer (the Optimizer "
+                 "section's choice is for LoRAs). Adafactor keeps almost no extra memory. CMuon is Muon with each "
+                 "fused weight (Q/K/V together, gate+up, the AdaLN rows) stepped part by part, so no part drowns the "
+                 "others out; it keeps a momentum copy of the window's weights, so windows hold fewer parts. "
+                 "An experiment - compare it with Adafactor on the same pictures.",
+                 [lab for lab, _ in launch.FT_OPTIMIZERS], default=launch.FT_OPTIMIZERS[0][0]),
             *by_section("training", mode="finetune"),
             *([_row("FAMILY_FT_REG_DIR", "Regularisation images (optional)", "folder", "A folder of ordinary photos "
                     "of the broader class (people for a person, cars for a car, plain photos of the same kinds of "
@@ -1012,6 +1019,10 @@ def apply_preset(desc, values, preset, whole=False):
             _oa = strip_muon_args(_oa)
         if _opt_p != "polora":
             _oa = strip_polora_args(_oa)
+        from fizgig.training.optimizers import LORA_TSD_ONLY_KEYS, SOAP_ONLY_KEYS, _strip_keys
+        for _own, _keys in (("soap", SOAP_ONLY_KEYS), ("lora_tsd", LORA_TSD_ONLY_KEYS)):
+            if _opt_p != _own:
+                _oa = _strip_keys(_oa, "", _keys)
         out["OPTIMIZER_ARGS"] = _oa
     return out
 
@@ -1237,6 +1248,9 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
     if str(values.get("OPTIMIZER_TYPE", "")).strip().lower() == "polora" and kind not in ("slider", "finetune"):
         notes["ADAPTIVE_LR"] = "With PoLoRA, Min and Max are its real learning rates (it trains around 1e-2 to " \
                                "4e-2), as with Muon; magnitude_scale stays as you set it."
+    if str(values.get("OPTIMIZER_TYPE", "")).strip().lower() == "lora_tsd" and kind not in ("slider", "finetune"):
+        notes["ADAPTIVE_LR"] = "With LoRA-TSD, Min and Max are its real learning rates (it trains around 2e-3 to " \
+                               "1e-2); each step's change stays capped by max_delta_norm."
     from fizgig.training.optimizers import (
         MUON_DEFAULT_ARGS, PRODIGY_DEFAULT_ARGS, strip_muon_args, strip_prodigy_args,
     )
@@ -1744,8 +1758,9 @@ def _lr_hint(desc, values, kind, image_folder):
     hint = getattr(desc, "lr_hint", (2e-4, 125))
     if not hint or kind != "standard" or not image_folder:
         return None
-    if str(values.get("OPTIMIZER_TYPE") or "").strip().lower() in ("prodigy", "automagic3", "automagic4", "polora"):
-        return None                              # their own rate scales (PoLoRA trains around 2e-2)
+    if str(values.get("OPTIMIZER_TYPE") or "").strip().lower() in ("prodigy", "automagic3", "automagic4", "polora",
+                                                                    "lora_tsd"):
+        return None                              # their own rate scales (PoLoRA ~2e-2, LoRA-TSD ~5e-3)
     adaptive = bool(values.get("ADAPTIVE_LR"))
     key = "ADAPTIVE_LR_MIN" if adaptive else "LEARNING_RATE"
     raw = str(values.get(key) or "").split(" ")[0].strip()

@@ -42,6 +42,13 @@ MUON_ONLY_KEYS = ("adjust_lr_fn", "momentum", "nesterov", "ns_steps", "ns_coeffi
 # the Polora class. ns_steps is shared with Muon, so it is not stripped when switching between the two.
 POLORA_ONLY_KEYS = ("magnitude_scale", "curvature_beta", "beta1", "delta", "higham_iters", "compile",
                     "decay_start", "decay_type", "log_norms_every")
+# SOAP's (fizgig/training/soap.py, MIT) and LoRA-TSD's (fizgig/training/lora_tsd.py, MIT) own Optimizer Args.
+# LoRA-TSD shares momentum and ns_steps with Muon: they're kept for it.
+SOAP_ONLY_KEYS = ("shampoo_beta", "precondition_frequency", "max_precond_dim", "merge_dims", "precondition_1d",
+                  "normalize_grads", "data_format", "correct_bias")
+LORA_TSD_ONLY_KEYS = ("ball_iters", "max_delta_norm", "ridge_eps", "balance", "zero_eps")
+# the Muon keys each pair-wise optimizer reads too (not stripped for it)
+_SHARED_MUON_KEYS = {"polora": ("ns_steps",), "lora_tsd": ("ns_steps", "momentum")}
 
 
 def _strip_keys(raw: str, default_str: str, only_keys: tuple[str, ...]) -> str:
@@ -77,7 +84,9 @@ def strip_polora_args(raw: str) -> str:
     another optimizer."""
     return _strip_keys(raw, "", POLORA_ONLY_KEYS)
 
-NEW_OPTIMIZERS = ("prodigy", "muon", "automagic4", "polora")    # they never fall back to AdamW (#292)
+# they never fall back to AdamW (#292)
+NEW_OPTIMIZERS = ("prodigy", "muon", "automagic4", "polora", "soap", "lora_tsd")
+PAIR_OPTIMIZERS = ("polora", "lora_tsd")     # trained as (down, up) pairs: polora_pairs(net), plain LoRA only
 
 # name -> (import to test, one-line description shown in the GUI/CLI help)
 # Removed by decision (2026-07-28): prodigy, came, adafactor — the "manage their own LR"
@@ -110,6 +119,16 @@ _CATALOG = {
                                             "locked to 1.0 (a multiplier)"),
     "muon":               (None,           "Muon — orthogonalized momentum, step size matched to AdamW's, so AdamW's "
                                             "learning rates apply"),
+    # SOAP, vendored (fizgig/training/soap.py, MIT): Adam in the eigenbasis of Shampoo's preconditioner. A test option
+    # for the smaller models' LoRAs (Anima, SDXL) - two preconditioner matrices per weight, refreshed every 10 steps.
+    "soap":               (None,           "SOAP - Adam run in Shampoo's eigenbasis; AdamW's learning rates apply. "
+                                            "Slower and heavier than AdamW - an experiment for smaller models (Anima, "
+                                            "SDXL)"),
+    # LoRA-TSD, adapted (fizgig/training/lora_tsd.py, MIT): spectral steepest descent on the rank-r tangent space of
+    # each down/up pair. An experiment next to PoLoRA; plain LoRA only.
+    "lora_tsd":           (None,           "LoRA-TSD - trains each down/up pair together by spectral descent on the "
+                                            "LoRA's own shape (an experiment next to PoLoRA). LR 5e-3 (pre-filled); "
+                                            "each step's change is capped (max_delta_norm=0.1)"),
     # Automagic v4 (fizgig/training/automagic4.py, MIT): v3 plus a per-weight brake on the most
     # sensitive weights and a rate controller that settles instead of annealing to zero.
     "automagic4":         (None,           "Automagic v4 (Ostris) — like v3, sets its own learning rate, and evens "
@@ -274,7 +293,7 @@ def _warn_lr(name: str, lr: float) -> None:
     elif (name == "prodigy" or "prodigy" in name) and lr < 0.5:
         logger.warning("[optimizer] Prodigy estimates the LR itself and expects lr=1.0 as a "
                        "multiplier. At %.2e it will barely train.", lr)
-    elif name == "polora":
+    elif name in ("polora", "lora_tsd"):
         pass                             # scales each step by the factors' size: 2e-2 is a normal LR for it
     elif name not in ("lion8bit", "prodigy") and "prodigy" not in name and lr > 1e-2:
         logger.warning("[optimizer] LR %.2e is very high for %s.", lr, name)
@@ -303,7 +322,7 @@ def polora_pairs(net) -> list:
                 pairs.append((name, down.weight, up.weight))
     pairs = [(a, b) for _, a, b in pairs if a.requires_grad and b.requires_grad]
     if not pairs:
-        raise ValueError("PoLoRA needs a plain LoRA (down/up pairs) and this network has none to train - "
+        raise ValueError("PoLoRA and LoRA-TSD need a plain LoRA (down/up pairs) and this network has none to train - "
                          "pick Network Type LoRA, or another optimizer")
     return pairs
 
@@ -340,11 +359,12 @@ def create_optimizer(name: str, params, lr: float, args_str: str = "",
             kwargs.pop(k, None)
     if not is_muon:
         for k in MUON_ONLY_KEYS:
-            if not (key == "polora" and k == "ns_steps"):     # PoLoRA has its own ns_steps
+            if k not in _SHARED_MUON_KEYS.get(key, ()):     # PoLoRA / LoRA-TSD read their own ns_steps (momentum)
                 kwargs.pop(k, None)
-    if key != "polora":
-        for k in POLORA_ONLY_KEYS:
-            kwargs.pop(k, None)
+    for own, keys in (("polora", POLORA_ONLY_KEYS), ("soap", SOAP_ONLY_KEYS), ("lora_tsd", LORA_TSD_ONLY_KEYS)):
+        if key != own:
+            for k in keys:
+                kwargs.pop(k, None)
 
     if eps_floor_8bit and "8bit" in key and "lion" not in key:
         kwargs.setdefault("eps", 1e-6)
@@ -394,6 +414,15 @@ def create_optimizer(name: str, params, lr: float, args_str: str = "",
                 raise ValueError("PoLoRA needs (down, up) pairs - build them with polora_pairs(net)")
             from fizgig.training.polora import Polora
             opt = Polora(pairs=pairs, lr=lr, **kwargs)
+        elif key == "lora_tsd":
+            pairs = [tuple(p) for p in params_list]
+            if not pairs or not all(len(p) == 2 and hasattr(p[0], "ndim") for p in pairs):
+                raise ValueError("LoRA-TSD needs (down, up) pairs - build them with polora_pairs(net)")
+            from fizgig.training.lora_tsd import LoRATSD
+            opt = LoRATSD(pairs, lr=lr, **kwargs)
+        elif key == "soap":
+            from fizgig.training.soap import SOAP          # the vendored copy only
+            opt = SOAP(params_list, lr=lr, **kwargs)
         elif key == "automagic3":
             from fizgig.training.automagic3 import Automagic3
             # NON-fused: the MiniMax H3 loop clips, masks and snapshots grads between backward

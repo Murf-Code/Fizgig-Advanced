@@ -482,6 +482,10 @@ class Rotator:
     def trainable_params(self) -> List[nn.Parameter]:
         return [lin.weight for _k, lin in self._window(self.active)] + [lin.weight for _k, lin in self.always]
 
+    def trainable_named(self) -> list:
+        """(model key, weight) for trainable_params, in the same order - CMuon reads the names."""
+        return [(k, lin.weight) for k, lin in self._window(self.active)] + [(k, lin.weight) for k, lin in self.always]
+
     def state_dict(self):
         """Every trained weight, produced as the save writes it: the master with the active window and the
         always-on Linears laid over it."""
@@ -635,9 +639,19 @@ def _plan_from_header_lists(hdr, spec: FTSpec, free_gb: float, mp=None, max_part
     return windows, stream, usable
 
 
-def make_optimizer(params, lr):
+OPTIMIZERS = ("adafactor", "cmuon")     # the fine-tune's choice (Fine-tune > Optimizer)
+# what each keeps per trained weight, in units of the weight's own bf16 size, for the window planner: Adafactor's
+# factored state is ~0 (the calibrated overhead absorbs it); CMuon holds one bf16 momentum buffer
+STATE_FACTOR = {"adafactor": 0.0, "cmuon": 1.0}
+
+
+def make_optimizer(params, lr, kind="adafactor", chunks=None):
     """Adafactor first (factored state ~10x smaller than Adam's - what keeps a full fine-tune on the card), then
-    AdamW8bit, then AdamW. Returns (optimizer, label)."""
+    AdamW8bit, then AdamW. kind="cmuon": CMuon (fizgig/training/cmuon.py), each fused weight in `chunks`
+    {param: parts} orthogonalised part by part. Returns (optimizer, label)."""
+    if kind == "cmuon":
+        from fizgig.training.cmuon import CMuon
+        return CMuon(params, lr=lr, chunks=chunks), "cmuon"
     try:
         from transformers.optimization import Adafactor
         return Adafactor(params, lr=lr, scale_parameter=False, relative_step=False, warmup_init=False), "adafactor"
@@ -655,16 +669,18 @@ class FusedSteps:
     so only one parameter's gradient is ever live (~5 GB saved on Krea 2). No clipping, no accumulation. `scale` is
     the step's LR multiplier (the driver's step_policy), set before each backward."""
 
-    def __init__(self, lr):
+    def __init__(self, lr, kind="adafactor"):
         self.lr = lr
+        self.kind = kind
         self.scale = 1.0
         self.opts = {}
         self.handles = []
 
-    def attach(self, params):
+    def attach(self, params, chunks=None):
         self.detach()
         for p in params:
-            self.opts[p] = make_optimizer([p], self.lr)[0]
+            self.opts[p] = make_optimizer([p], self.lr, self.kind,
+                                          {p: chunks[p]} if chunks and p in chunks else None)[0]
 
         def _hook(param):
             opt = self.opts.get(param)
@@ -751,14 +767,18 @@ class SharedBackend:
     def start_always(self):
         return self.rot.start_always()
 
-    def plan(self, free_gb, allow_stream=True, mp=None, max_parts=0, held_grads=False):
+    def plan(self, free_gb, allow_stream=True, mp=None, max_parts=0, held_grads=False, opt_state=0.0):
         """held_grads: every trained weight's gradient is held at once this run (DOP's pass joins the step's
         backward, so each weight waits for both passes' gradients before its free-each-gradient step: measured +8.3
-        GB on Krea 2's 4.04B-parameter attention window) - planned as the window factor's weights-plus-gradient."""
+        GB on Krea 2's 4.04B-parameter attention window) - planned as the window factor's weights-plus-gradient.
+        opt_state: the optimizer's state per weight beyond Adafactor's, in weight sizes (STATE_FACTOR)."""
         spec = self.spec
         if held_grads and spec.window_factor < 2.0:
             import dataclasses
             spec = dataclasses.replace(spec, window_factor=2.0)
+        if opt_state:
+            import dataclasses
+            spec = dataclasses.replace(spec, window_factor=spec.window_factor + float(opt_state))
         windows, stream, why, usable = plan_windows(self.dit, spec, self.rot, free_gb, allow_stream, mp,
                                                     max_parts)
         if windows is not None and stream and any(isinstance(w, tuple) for w in windows):
@@ -779,6 +799,9 @@ class SharedBackend:
 
     def trainable_params(self):
         return self.rot.trainable_params()
+
+    def trainable_named(self):
+        return self.rot.trainable_named()
 
     def park(self):
         self.rot.rotate_to([])
@@ -809,5 +832,6 @@ def schedule(windows, n_blocks, rotate_every=1, start_window=0) -> RotationSched
                             start_window=start_window)
 
 
-__all__ = ["FTSpec", "Rotator", "SharedBackend", "FusedSteps", "make_optimizer", "plan_windows", "save_checkpoint", "schedule",
+__all__ = ["FTSpec", "Rotator", "SharedBackend", "FusedSteps", "OPTIMIZERS", "STATE_FACTOR", "make_optimizer",
+           "plan_windows", "save_checkpoint", "schedule",
            "snap_ft_epochs", "source_unfit_reason", "component_gb_per_block"]

@@ -815,6 +815,11 @@ const POLORA_DEFAULT_ARGS = "magnitude_scale=3";
 const POLORA_ADAPTIVE = {ADAPTIVE_LR_MIN: "1e-2", ADAPTIVE_LR_MAX: "4e-2"};   // Adaptive LR's real range for PoLoRA
 const ADAPTIVE_USUAL = {ADAPTIVE_LR_MIN: "1e-5", ADAPTIVE_LR_MAX: "4e-4"};   // the form's defaults (form.py)
 function stripPoloraArgs(raw) { return _stripOptKeys(raw, "", POLORA_ONLY_KEYS); }
+// SOAP's and LoRA-TSD's own args (optimizers.py SOAP_ONLY_KEYS / LORA_TSD_ONLY_KEYS); LoRA-TSD starts at LR 5e-3
+const SOAP_ONLY_KEYS = new Set(["shampoo_beta", "precondition_frequency", "max_precond_dim", "merge_dims",
+  "precondition_1d", "normalize_grads", "data_format", "correct_bias"]);
+const TSD_ONLY_KEYS = new Set(["ball_iters", "max_delta_norm", "ridge_eps", "balance", "zero_eps"]);
+const TSD_ADAPTIVE = {ADAPTIVE_LR_MIN: "2e-3", ADAPTIVE_LR_MAX: "1e-2"};   // Adaptive LR's real range for LoRA-TSD
 
 function familyDefaultLr() {
   for (const p of (S.fam && S.fam.form && S.fam.form.presets) || []) {
@@ -840,6 +845,8 @@ function onValue(r, val) {
     if (opt !== "prodigy") curArgs = stripProdigyArgs(curArgs);
     if (opt !== "muon") curArgs = stripMuonArgs(curArgs);
     if (opt !== "polora") curArgs = stripPoloraArgs(curArgs);
+    if (opt !== "soap") curArgs = _stripOptKeys(curArgs, "", SOAP_ONLY_KEYS);
+    if (opt !== "lora_tsd") curArgs = _stripOptKeys(curArgs, "", TSD_ONLY_KEYS);
     if (opt === "prodigy") {
       S.values.LEARNING_RATE = "1.0";
       S.values.ADAPTIVE_LR = false;
@@ -859,20 +866,30 @@ function onValue(r, val) {
       // Muon: Min/Max start around it (1e-2 to 4e-2, midpoint 2e-2)
       const touched = ["OPTIMIZER_ARGS"];
       if (wasProdigy || prevOpt !== "polora") { S.values.LEARNING_RATE = "2e-2"; touched.push("LEARNING_RATE"); }
-      if (prevOpt !== "polora" && !(parseFloat(S.values.ADAPTIVE_LR_MAX) >= 1e-3)) {
+      if (prevOpt === "lora_tsd" || (prevOpt !== "polora" && !(parseFloat(S.values.ADAPTIVE_LR_MAX) >= 1e-3))) {
         Object.assign(S.values, POLORA_ADAPTIVE); touched.push(...Object.keys(POLORA_ADAPTIVE));
       }
       let a = (wasProdigy || wasMuon) ? "" : curArgs;
       if (!/(^|[\s,])magnitude_scale\s*=/.test(a)) a = (a ? a + " " : "") + POLORA_DEFAULT_ARGS;
       S.values.OPTIMIZER_ARGS = a;
       syncInputs(touched);
+    } else if (opt === "lora_tsd") {
+      // LoRA-TSD: starts at LR 5e-3 (its reference setting); Adaptive LR moves its real rate, 2e-3 to 1e-2
+      const touched = ["OPTIMIZER_ARGS"];
+      if (prevOpt !== "lora_tsd") { S.values.LEARNING_RATE = "5e-3"; touched.push("LEARNING_RATE"); }
+      if (prevOpt === "polora" || (prevOpt !== "lora_tsd" && !(parseFloat(S.values.ADAPTIVE_LR_MAX) >= 1e-3))) {
+        Object.assign(S.values, TSD_ADAPTIVE); touched.push(...Object.keys(TSD_ADAPTIVE));
+      }
+      S.values.OPTIMIZER_ARGS = (wasProdigy || wasMuon) ? "" : curArgs;
+      syncInputs(touched);
     } else {
       const touched = [];
-      if (wasProdigy || parseFloat(S.values.LEARNING_RATE) >= 0.1) {
+      if (wasProdigy || parseFloat(S.values.LEARNING_RATE) >= 0.1 ||
+          (prevOpt === "lora_tsd" && parseFloat(S.values.LEARNING_RATE) >= 1e-3)) {
         S.values.LEARNING_RATE = (opt === "automagic3" || opt === "automagic4") ? "1e-6" : familyDefaultLr();
         touched.push("LEARNING_RATE");
       }
-      if (prevOpt === "polora" && parseFloat(S.values.ADAPTIVE_LR_MAX) >= 1e-3) {   // PoLoRA's range: back to the usual
+      if ((prevOpt === "polora" || prevOpt === "lora_tsd") && parseFloat(S.values.ADAPTIVE_LR_MAX) >= 1e-3) {   // their range: back to the usual
         Object.assign(S.values, ADAPTIVE_USUAL); touched.push(...Object.keys(ADAPTIVE_USUAL));
       }
       const nextArgs = (wasProdigy || wasMuon) ? "" : curArgs;

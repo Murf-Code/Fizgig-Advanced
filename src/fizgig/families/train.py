@@ -1061,7 +1061,9 @@ class _FineTune:
 
     def __init__(self, driver, desc, dit, net, dit_path, device, *, max_train_epochs, rotations, save_every_rotations,
                  rotate_every, start_window, epochs_done, fused, lr, master_dir, mp=None, group=None, max_parts=0,
-                 held_grads=False, batch_gb=0.0):
+                 held_grads=False, batch_gb=0.0, optimizer="adafactor"):
+        import inspect
+
         from fizgig.families import ft
         from fizgig.utils.device import plannable_free_vram
         self.ft, self.driver, self.desc, self.dit, self.src, self.lr = ft, driver, desc, dit, dit_path, lr
@@ -1089,9 +1091,21 @@ class _FineTune:
                     f"{plannable_free_vram():.2f} GB free")
         if batch_gb:                   # Batch size: the pictures past the first, planned off the free memory
             logger.info(f"[finetune] {batch_gb:.1f} GB kept for the batch's pictures past the first")
+        self.opt_kind = str(optimizer or "adafactor").lower()
+        if self.opt_kind not in ft.OPTIMIZERS:
+            logger.warning(f"[finetune] unknown fine-tune optimizer {optimizer!r} - using Adafactor")
+            self.opt_kind = "adafactor"
+        plan_kw = {}
+        if ft.STATE_FACTOR[self.opt_kind]:
+            if "opt_state" in inspect.signature(self.be.plan).parameters and hasattr(self.be, "trainable_named"):
+                plan_kw["opt_state"] = ft.STATE_FACTOR[self.opt_kind]
+            else:                      # a backend whose planner can't make room for the momentum: no OOM gamble
+                logger.warning(f"[finetune] {self.opt_kind} isn't set up for this model's fine-tune yet - "
+                               f"using Adafactor")
+                self.opt_kind = "adafactor"
         windows, stream, why, usable = self.be.plan(
             plannable_free_vram() - batch_gb, allow_stream=os.environ.get("FIZGIG_NO_FT_STREAM") != "1", mp=mp,
-            max_parts=max_parts, held_grads=held_grads)
+            max_parts=max_parts, held_grads=held_grads, **plan_kw)
         for line in why:
             logger.info(f"[finetune] {line}")
         if windows is None:
@@ -1105,8 +1119,9 @@ class _FineTune:
         self.epochs_done = int(epochs_done)
         self.streamer = getattr(self.be, "streamer", None) or (True if stream else None)
         driver.ft_cycle(self.cycle, self.epochs_done, self.epochs)
-        self.fused = ft.FusedSteps(lr) if fused else None
-        self.opt_label = ("per-parameter " if fused else "") + ft.make_optimizer([torch.zeros(1)], lr)[1] + " (fine-tune)"
+        self.fused = ft.FusedSteps(lr, self.opt_kind) if fused else None
+        self.opt_label = ("per-parameter " if fused else "") + (
+            "cmuon" if self.opt_kind == "cmuon" else ft.make_optimizer([torch.zeros(1)], lr)[1]) + " (fine-tune)"
         logger.info(f"[finetune] FULL FINE-TUNE - {self.sched.describe()}")
         logger.info(f"[finetune] {rotations} rotation(s) of {self.cycle} epoch(s) = {self.epochs} epochs; checkpoint"
                     f" + preview every {save_every_rotations} rotation(s) = every {self.save_every} epochs "
@@ -1144,10 +1159,18 @@ class _FineTune:
                     f"{self.sched.n_windows} {want} - "
                     f"{n} Linears trainable, "
                     f"{sum(p.numel() for p in params) / 1e9:.2f}B parameters")
+        chunks = None
+        if self.opt_kind == "cmuon":       # the fused weights (QKV, gate+up, AdaLN) step part by part
+            from fizgig.training.cmuon import chunk_plan
+            named = self.be.trainable_named()
+            by_name = chunk_plan(named)
+            chunks = {w: by_name[k] for k, w in named if k in by_name}
+            logger.info(f"[finetune] CMuon: {len(chunks)} of {len(named)} weights fused - each part steps on its own"
+                        + (f" (e.g. {next(iter(by_name))} in {next(iter(by_name.values()))})" if by_name else ""))
         if self.fused is not None:
-            self.fused.attach(params)
+            self.fused.attach(params, chunks)
             return params, None
-        return params, self.ft.make_optimizer(params, self.lr)[0]
+        return params, self.ft.make_optimizer(params, self.lr, self.opt_kind, chunks)[0]
 
     def park(self):
         """Everything back to NF4 with the master complete - before a save, a preview, or the end."""
@@ -1244,7 +1267,7 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
                  recaption_instruction_detailed=None, recaption_task=None, recaption_task_detailed=None,
                  captioner=None, recaption_with=None, finetune=False, ft_rotations=10, ft_save_every_rotations=1, ft_rotate_every=1, ft_max_parts=0,
                  ft_start_window=0,
-                 ft_epochs_done=0, ft_fused_backward=False, reg_lr_multiplier=0.2, preview_checkpoint=None,
+                 ft_epochs_done=0, ft_fused_backward=False, ft_optimizer="adafactor", reg_lr_multiplier=0.2, preview_checkpoint=None,
                  preview_checkpoint_cache="auto", preview_int8=False, family_options=None,
                  dop=False, dop_trigger=None, dop_class="", dop_weight=1.0, dop_every=1, dop_ft_samples=8,
                  lr_boost=None, share_worker=None, masked_training=False, mask_floor=0.1, mask_prior=0.0,
@@ -1901,7 +1924,7 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
                         save_every_rotations=ft_save_every_rotations, rotate_every=ft_rotate_every,
                         start_window=ft_start_window, epochs_done=ft_epochs_done, fused=ft_fused_backward,
                         lr=learning_rate, master_dir=output_dir, mp=driver.ft_load_mp(group), group=group,
-                        max_parts=ft_max_parts, held_grads=bool(dop_cond),
+                        max_parts=ft_max_parts, held_grads=bool(dop_cond), optimizer=ft_optimizer,
                         batch_gb=quant.batch_extra(desc, _largest_bucket_mp(group) or 0.25, bsz))
         max_train_epochs, save_every_n_epochs = ftr.epochs, ftr.save_every
         if ftr.streamer is not None:
@@ -1980,10 +2003,11 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
             except (OSError, ValueError):
                 pass
         opt_params = params
-        if str(optimizer_type or "").lower() == "polora":   # trains each LoRA's down/up pair together
+        if str(optimizer_type or "").lower() in ("polora", "lora_tsd"):   # each LoRA's down/up pair together
             from fizgig.training.optimizers import polora_pairs
             opt_params = polora_pairs(net)
-            logger.info(f"[optimizer] PoLoRA: {len(opt_params)} down/up pairs")
+            logger.info(f"[optimizer] {'PoLoRA' if str(optimizer_type).lower() == 'polora' else 'LoRA-TSD'}: "
+                        f"{len(opt_params)} down/up pairs")
         if str(optimizer_type or "").lower() in ("automagic3", "automagic4"):
             groups = _optimizer_family_groups(desc, net, learning_rate)
             if groups:                   # one rate per group: each family of modules finds its own
@@ -3687,6 +3711,9 @@ def setup_parser():
                    help="most parts per fine-tune window (0 = as many as fit; 1 = one part per window, most headroom)")
     p.add_argument("--ft_start_window", type=int, default=0, help="continuing: the window to start at")
     p.add_argument("--ft_epochs_done", type=int, default=0, help="continuing: epochs already trained (numbering)")
+    p.add_argument("--ft_optimizer", default="adafactor", choices=("adafactor", "cmuon"),
+                   help="the fine-tune's optimizer: Adafactor (default), or CMuon - Muon with each fused weight "
+                        "(QKV, gate+up, AdaLN) orthogonalised part by part (arXiv 2608.02502)")
     p.add_argument("--ft_fused_backward", action="store_true",
                    help="step each weight as its gradient lands and free it (less VRAM; no clipping or accumulation)")
     p.add_argument("--reg_lr_multiplier", type=float, default=0.2,
@@ -3807,7 +3834,8 @@ def main():
         batch_size_auto=a.batch_size_auto,
         finetune=a.finetune, ft_rotations=a.ft_rotations, ft_save_every_rotations=a.ft_save_every_rotations,
         ft_rotate_every=a.ft_rotate_every, ft_max_parts=a.ft_max_parts, ft_start_window=a.ft_start_window, ft_epochs_done=a.ft_epochs_done,
-        ft_fused_backward=a.ft_fused_backward, reg_lr_multiplier=a.reg_lr_multiplier,
+        ft_fused_backward=a.ft_fused_backward, ft_optimizer=a.ft_optimizer,
+        reg_lr_multiplier=a.reg_lr_multiplier,
         preview_checkpoint=a.preview_checkpoint, preview_checkpoint_cache=a.preview_checkpoint_cache,
         preview_int8=a.preview_int8,
         family_options={**dict(o.split("=", 1) for o in a.family_option if "=" in o),

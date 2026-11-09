@@ -476,6 +476,15 @@ def ft_max_parts(inputs):
     return dict(FT_WINDOW_SIZES).get(_s(inputs.get("FAMILY_FT_MAX_PARTS")), 0)
 
 
+# Fine-tune > Optimizer: (label, --ft_optimizer). CMuon is fine-tune only (it splits a full model's fused weights)
+FT_OPTIMIZERS = (("Adafactor (recommended)", "adafactor"),
+                 ("CMuon - Muon per fused part (experiment, more memory)", "cmuon"))
+
+
+def ft_optimizer(inputs):
+    return dict(FT_OPTIMIZERS).get(_s(inputs.get("FAMILY_FT_OPTIMIZER")), "adafactor")
+
+
 # ---------------------------------------------------------------------------------------------------- problems
 def problems(desc, inputs):
     """What the family's own checks refuse: an edit's or a slider's pairs, a prompt slider's prompts, and every
@@ -1152,6 +1161,8 @@ def train_command(desc, inputs, plan):
             cmd += ["--ft_max_parts", str(ft_max_parts(st))]
         if st.get("FAMILY_FT_FUSED", True):
             cmd.append("--ft_fused_backward")
+        if ft_optimizer(st) != "adafactor":
+            cmd += ["--ft_optimizer", ft_optimizer(st)]
         if ft_reg_dir(desc, st):
             cmd += ["--reg_lr_multiplier", f"{_ft_reg_mult(st):g}"]
         cont = st.get("FAMILY_FT_CONTINUE") or {}

@@ -354,6 +354,79 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## SOAP (Nikhil Vyas) — MIT License
+
+Upstream: https://github.com/nikhilvyas/SOAP
+
+`src/fizgig/training/soap.py` is vendored from `soap.py` (commit a1e55353) under the MIT License (the upstream file
+notes that parts of it modify PyTorch's AdamW, BSD-3-Clause, below, and GaLore's projector, Apache-2.0):
+
+```
+MIT License
+
+Copyright (c) 2024 Nikhil Vyas
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## LoRA-TSD (Dmitrii Andriianov; brain-lab-research) — MIT License
+
+Upstream: https://github.com/brain-lab-research/LoRA-TSD (a fork of https://github.com/dimativator/LoRA-TSD)
+
+`src/fizgig/training/lora_tsd.py` is adapted from `src/optimizers/lora_tsd.py` (commit e6ef0e16) under the MIT
+License (trimmed to the update; one learning rate per pair; a zero-factor start added):
+
+```
+MIT License
+
+Copyright (c) 2026 Dmitrii Andriianov
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## CMuon (`src/fizgig/training/cmuon.py`)
+
+Fizgig's own code, written from the method described in arXiv 2608.02502; no third-party code. Its Newton-Schulz
+and momentum come from `src/fizgig/training/muon.py` (PyTorch, BSD 3-Clause, below).
+
+---
+
 ## taehv (Ollin Boer Bohan, madebyollin) — MIT License
 
 Upstream: https://github.com/madebyollin/taehv
