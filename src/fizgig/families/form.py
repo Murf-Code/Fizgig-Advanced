@@ -1229,12 +1229,8 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
     if kind == "finetune":       # a fine-tune trains at its own fixed rate: no Adaptive LR, on any model
         hidden.add("ADAPTIVE_LR")
     if str(values.get("OPTIMIZER_TYPE", "")).strip().lower() == "polora" and kind not in ("slider", "finetune"):
-        notes["ADAPTIVE_LR"] = "With PoLoRA this scales magnitude_scale instead of LR (Min/Max only set how far, " \
-                               "around 1x). Per-image LR does the same, image by image."
-        if values.get("ADAPTIVE_LR"):            # PoLoRA still steps at the Learning Rate box
-            disabled.discard("LEARNING_RATE")
-            for k in bad_lr:
-                notes.pop(k, None)
+        notes["ADAPTIVE_LR"] = "With PoLoRA, Min and Max are its real learning rates (it trains around 1e-2 to " \
+                               "4e-2), as with Muon; magnitude_scale stays as you set it."
     from fizgig.training.optimizers import (
         MUON_DEFAULT_ARGS, PRODIGY_DEFAULT_ARGS, strip_muon_args, strip_prodigy_args,
     )
@@ -1742,8 +1738,8 @@ def _lr_hint(desc, values, kind, image_folder):
     hint = getattr(desc, "lr_hint", (2e-4, 125))
     if not hint or kind != "standard" or not image_folder:
         return None
-    if str(values.get("OPTIMIZER_TYPE") or "").strip().lower() in ("prodigy", "automagic3", "automagic4"):
-        return None
+    if str(values.get("OPTIMIZER_TYPE") or "").strip().lower() in ("prodigy", "automagic3", "automagic4", "polora"):
+        return None                              # their own rate scales (PoLoRA trains around 2e-2)
     adaptive = bool(values.get("ADAPTIVE_LR"))
     key = "ADAPTIVE_LR_MIN" if adaptive else "LEARNING_RATE"
     raw = str(values.get(key) or "").split(" ")[0].strip()

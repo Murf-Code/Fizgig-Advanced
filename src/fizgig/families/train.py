@@ -713,6 +713,8 @@ def _load_dop_cond(path):
     return {k[len("cond__"):]: v[None] for k, v in load_file(path).items() if k.startswith("cond__")}
 
 
+POLORA_FACTOR_EVERY = 25           # PoLoRA: its factor sizes go to the graph and the log every this many steps
+
 # Faster block swap (send-only) switches itself off for a run where it won't help - easy to tune here:
 SEND_ONLY_LOW_RAM_GB = 33.0   # system RAM at or under this (a "32 GB" PC reports about 31.8): too little room to spare
 SEND_ONLY_MIN_BLOCKS = 6      # fewer blocks swapped than this: little copying to save
@@ -1984,18 +1986,21 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
                                                 eps_floor_8bit=desc.optimizer_eps_floor_8bit)
     _polora = optimizer.__class__.__name__ == "Polora"
     if _polora:
-        # PoLoRA: per-image LR and Adaptive LR scale its magnitude_scale (effective = magnitude_scale x image factor
-        # x adaptive factor), never the rate; the LR scheduler still stands down. The graph gets its factor sizes.
-        optimizer.record_every = optimizer.log_norms_every or 25
+        # PoLoRA: Adaptive LR and per-image LR move its learning rate, as with every other optimizer (Min/Max are real
+        # rates; magnitude_scale stays as set); the LR scheduler stands down. Its factor sizes go to the graph and,
+        # at the same steps, to the log (the graph's "PoLoRA factor size" switch shows or hides both).
+        optimizer.log_norms_every = optimizer.record_every = optimizer.log_norms_every or POLORA_FACTOR_EVERY
+        optimizer.set_magnitude_factors(image=1.0, adaptive=1.0)
         if per_image_lr:
-            logger.info("[per-image LR] on with PoLoRA: each image's factor multiplies magnitude_scale for its step")
+            logger.info("[per-image LR] on with PoLoRA: each image's factor scales the learning rate for its step")
         if adaptive_lr:
-            logger.info("[adaptive_lr] on with PoLoRA: it scales magnitude_scale (Min/Max set the range around 1x)")
+            logger.info("[adaptive_lr] on with PoLoRA: it moves the learning rate between Min and Max "
+                        "(magnitude_scale stays as set)")
         if warmup_look_outliers:
             logger.info("[per-image LR] the look warm-up is off - PoLoRA sets its own step size")
         warmup_look_outliers = False
-        logger.info(f"[optimizer] {opt_label} sets its own step size ({optimizer_lr(optimizer):.2e} is its LR); "
-                    f"the LR scheduler stands down")
+        logger.info(f"[optimizer] {opt_label} steps at {optimizer_lr(optimizer):.2e}"
+                    + (" (Adaptive LR moves it)" if adaptive_lr else "") + "; the LR scheduler stands down")
     elif owns_its_rate(optimizer):        # Automagic v3 / Prodigy sets its own rate: the watcher and schedulers stand down
         # Prodigy keeps per-image LR: it weights that image's loss (loss * mult), it never writes the group rate
         _keeps_pilr = str(optimizer_type or "").strip().lower() == "prodigy"
@@ -2013,12 +2018,7 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
         logger.info(f"[optimizer] {opt_label} owns the learning rate from here ({optimizer_lr(optimizer):.2e} is its start); "
                     f"the LR scheduler stands down")
     box_learning_rate = learning_rate   # the Learning Rate box, before adaptive LR's midpoint (saved for a resume)
-    if adaptive_lr and _polora:         # the watcher moves a stand-in rate around the box LR; its ratio is the factor
-        _mid = math.sqrt(adaptive_lr_min * adaptive_lr_max)
-        adaptive_lr_min, adaptive_lr_max = learning_rate * adaptive_lr_min / _mid, learning_rate * adaptive_lr_max / _mid
-        logger.info(f"[adaptive_lr] PoLoRA magnitude factor from {adaptive_lr_min / learning_rate:.2f}x to "
-                    f"{adaptive_lr_max / learning_rate:.2f}x of magnitude_scale, starting at 1x")
-    elif adaptive_lr:                   # the watcher owns the rate: start at the geometric midpoint of Min/Max
+    if adaptive_lr:                   # the watcher owns the rate: start at the geometric midpoint of Min/Max
         learning_rate = math.sqrt(adaptive_lr_min * adaptive_lr_max)
         for g in optimizer.param_groups:
             g["lr"] = learning_rate
@@ -2063,11 +2063,10 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
         resume_es = meta.get("early_stop")
         if adaptive:
             adaptive.load_state_dict(meta.get("adaptive_lr_state"))
-            if _polora:                  # PoLoRA's adaptive factor came back with its state: the stand-in rate follows
-                for g in optimizer.param_groups:
-                    g["lr"] = box_learning_rate * optimizer._adaptive_factor
+        if _polora:                      # an older state's magnitude factors: the rate carries Adaptive LR now
+            optimizer.set_magnitude_factors(image=1.0, adaptive=1.0)
         if (optimizer is not None and meta.get("own_state") and not meta.get("fresh_optimizer")
-                and not owns_its_rate(optimizer)):
+                and (not owns_its_rate(optimizer) or _polora)):
             resume_lr(optimizer, _fresh_lrs, meta, box_learning_rate, adaptive)
         if ema is not None and meta["own_state"] and os.path.exists(os.path.join(resume_state_dir, "ema.pt")):
             _esd = torch.load(os.path.join(resume_state_dir, "ema.pt"), map_location="cpu")
@@ -2729,34 +2728,21 @@ def train_family(family, dit_path, dataset_config, output_dir, output_name, *, n
             _later(_gn_done, gn=pre, clip=bool(adaptive is not None and adaptive.clip_signal))   # read next step
         m = sum(lr_acc) / len(lr_acc) if lr_acc else 1.0
         lr_acc.clear()
-        _stepped = False
-        if _polora:                        # PoLoRA: the factors multiply magnitude_scale, the rate stays the box LR
-            _af = optimizer.param_groups[0]["lr"] / box_learning_rate if adaptive is not None else 1.0
-            optimizer.set_magnitude_factors(image=m, adaptive=_af)
-            _held = [g["lr"] for g in optimizer.param_groups]
+        if owns_its_rate(optimizer) and not _polora:
+            m = 1.0                        # Automagic v3 / Prodigy owns the rate (PoLoRA's per-image LR scales it)
+        if m != 1.0:                       # the window's mean, composed into the LR for this step only (never the loss:
+            held = [g["lr"] for g in optimizer.param_groups]        # Adam is invariant to a constant on the gradient)
             for g in optimizer.param_groups:
-                g["lr"] = box_learning_rate
-            optimizer.step()
-            for g, lr in zip(optimizer.param_groups, _held):
+                g["lr"] = g["lr"] * m
+        optimizer.step()
+        if m != 1.0:
+            for g, lr in zip(optimizer.param_groups, held):
                 g["lr"] = lr
+        if _polora:                        # its factor sizes at its logging steps: the graph's green line
             _pn = optimizer.last_norms
             if _pn is not None and _pn["step"] != _pf_seen[0]:
                 _pf_seen[0] = _pn["step"]
                 steplog.add_polora(step_off + global_step, 0.5 * (_pn["sigma_A"] + _pn["sigma_B"]), _pn["magnitude"])
-            _stepped = True
-        elif owns_its_rate(optimizer):
-            m = 1.0                        # Automagic v3 / Prodigy owns the rate
-        if _stepped:
-            pass
-        elif m != 1.0:                       # the window's mean, composed into the LR for this step only (never the loss:
-            held = [g["lr"] for g in optimizer.param_groups]        # Adam is invariant to a constant on the gradient)
-            for g in optimizer.param_groups:
-                g["lr"] = g["lr"] * m
-        if not _stepped:
-            optimizer.step()
-        if not _stepped and m != 1.0:
-            for g, lr in zip(optimizer.param_groups, held):
-                g["lr"] = lr
         driver.after_optimizer_step()
         if scheduler is not None and not catching[0]:
             scheduler.step()

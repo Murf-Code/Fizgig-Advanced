@@ -812,6 +812,8 @@ function stripMuonArgs(raw) { return _stripOptKeys(raw, MUON_DEFAULT_ARGS, MUON_
 const POLORA_ONLY_KEYS = new Set(["magnitude_scale", "curvature_beta", "beta1", "delta", "higham_iters", "compile",
   "decay_start", "decay_type", "log_norms_every"]);
 const POLORA_DEFAULT_ARGS = "magnitude_scale=3";
+const POLORA_ADAPTIVE = {ADAPTIVE_LR_MIN: "1e-2", ADAPTIVE_LR_MAX: "4e-2"};   // Adaptive LR's real range for PoLoRA
+const ADAPTIVE_USUAL = {ADAPTIVE_LR_MIN: "1e-5", ADAPTIVE_LR_MAX: "4e-4"};   // the form's defaults (form.py)
 function stripPoloraArgs(raw) { return _stripOptKeys(raw, "", POLORA_ONLY_KEYS); }
 
 function familyDefaultLr() {
@@ -853,9 +855,13 @@ function onValue(r, val) {
       S.values.OPTIMIZER_ARGS = curArgs || MUON_DEFAULT_ARGS;
       syncInputs(touched);
     } else if (opt === "polora") {
-      // PoLoRA: magnitude_scale=3 pre-filled (2.5-3 works well at LR 2e-2); Adaptive LR / per-image LR scale it
+      // PoLoRA: magnitude_scale=3 pre-filled (2.5-3 works well at LR 2e-2). Adaptive LR moves its real rate, as with
+      // Muon: Min/Max start around it (1e-2 to 4e-2, midpoint 2e-2)
       const touched = ["OPTIMIZER_ARGS"];
       if (wasProdigy || prevOpt !== "polora") { S.values.LEARNING_RATE = "2e-2"; touched.push("LEARNING_RATE"); }
+      if (prevOpt !== "polora" && !(parseFloat(S.values.ADAPTIVE_LR_MAX) >= 1e-3)) {
+        Object.assign(S.values, POLORA_ADAPTIVE); touched.push(...Object.keys(POLORA_ADAPTIVE));
+      }
       let a = (wasProdigy || wasMuon) ? "" : curArgs;
       if (!/(^|[\s,])magnitude_scale\s*=/.test(a)) a = (a ? a + " " : "") + POLORA_DEFAULT_ARGS;
       S.values.OPTIMIZER_ARGS = a;
@@ -866,7 +872,9 @@ function onValue(r, val) {
         S.values.LEARNING_RATE = (opt === "automagic3" || opt === "automagic4") ? "1e-6" : familyDefaultLr();
         touched.push("LEARNING_RATE");
       }
-      // PoLoRA keeps Adaptive LR and per-image LR: they scale its magnitude_scale, not the rate
+      if (prevOpt === "polora" && parseFloat(S.values.ADAPTIVE_LR_MAX) >= 1e-3) {   // PoLoRA's range: back to the usual
+        Object.assign(S.values, ADAPTIVE_USUAL); touched.push(...Object.keys(ADAPTIVE_USUAL));
+      }
       const nextArgs = (wasProdigy || wasMuon) ? "" : curArgs;
       if (wasProdigy || wasMuon || nextArgs !== String(S.values.OPTIMIZER_ARGS || "").trim()) {
         S.values.OPTIMIZER_ARGS = nextArgs;
@@ -2313,7 +2321,9 @@ function followLog() {
   if (!S.logCatchUp) { S.logCatchUp = true; document.addEventListener("selectionchange", () => S.logQueue && S.logQueue()); }
   src.onmessage = (e) => {
     S.logSince = Number(e.lastEventId) || S.logSince;
-    held.push(JSON.parse(e.data));
+    const line = JSON.parse(e.data);
+    if (polFactorHidden(line)) return;    // the loss graph's "PoLoRA factor size" switch hides it in the log too
+    held.push(line);
     queue();
   };
   src.onerror = () => { src.close(); if (S.logSrc === src) setTimeout(followLog, 3000); };
@@ -4541,6 +4551,9 @@ function valSections(val) {
   return parts;
 }
 
+// PoLoRA's factor size lines in the log ("[polora] step N: avg sigma_A ..."): shown while the graph's switch is on
+const polFactorHidden = (line) => typeof line === "string" && line.includes("[polora] step ") && lgSet().pf === false;
+
 let lgClipN = 0;
 function lossGraph(data) {
   const box = el("div", {class: "loss-graph"});
@@ -4594,7 +4607,8 @@ function lossGraph(data) {
   const tip = (node, text) => { node.title = text; return node; };
   box.append(el("div", {class: "field-row loss-graph-ctl"},
     el("span", {class: "field-label", text: "Smoothing:"}), smooth, ctl("Log scale", log), ctl("Clip outliers", clip),
-    hasLr ? ctl("Learning rate", lrOn) : null, hasPf ? ctl("PoLoRA factor size", pfOn) : null),
+    hasLr ? ctl("Learning rate", lrOn) : null, hasPf ? tip(ctl("PoLoRA factor size", pfOn), "PoLoRA's factor size, on the graph and in the log (its " +
+      "\"[polora] step\" lines): one switch for both") : null),
   el("div", {class: "field-row loss-graph-ctl"}, el("span", {class: "field-label", text: "Trends:"}),
     tip(ctl("Epoch average", emOn), "One point an epoch: the mean loss of all its steps."),
     tip(ctl("Running avg (kohya-style)", raOn), "What kohya-based trainers (and Anima Standalone) show as avr_loss: " +
