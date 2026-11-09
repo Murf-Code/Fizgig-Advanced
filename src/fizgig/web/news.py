@@ -1,7 +1,7 @@
 """The Start tab's News card: newest first. Each item is a date, a title, a body (plain text, paragraphs split on a
 blank line) and optional links ({"text", "href"}). The card shows the newest few; the full articles are docs/NEWS.md."""
 
-_ARTICLE = "https://github.com/shootthesound/Fizgig/blob/master/docs/NEWS.md"
+_ARTICLE = "https://github.com/Murf-Code/Fizgig-Advanced/blob/fizgig-advanced/docs/NEWS.md"
 
 NEWS = [
     {
@@ -42,7 +42,7 @@ NEWS = [
             "video models for it."
         ),
         "links": [{"text": "Read more", "href": _ARTICLE + "#6-nov-2026-vimoo-10-lite"},
-                  {"text": "The guide", "href": "https://github.com/shootthesound/Fizgig/blob/master/docs/VIMOO.md"}],
+                  {"text": "The guide", "href": "https://github.com/Murf-Code/Fizgig-Advanced/blob/fizgig-advanced/docs/VIMOO.md"}],
     },
     {
         "date": "25 Oct 2026",
@@ -54,7 +54,7 @@ NEWS = [
             "Download it once from the card (1.75 GB), preview it on two random pictures, then make masks."
         ),
         "links": [{"text": "Read more", "href": _ARTICLE + "#25-oct-2026-masks-from-words-with-sam-31"},
-                  {"text": "The guide", "href": "https://github.com/shootthesound/Fizgig/blob/master/docs/MASKED_TRAINING.md"}],
+                  {"text": "The guide", "href": "https://github.com/Murf-Code/Fizgig-Advanced/blob/fizgig-advanced/docs/MASKED_TRAINING.md"}],
     },
     {
         "date": "25 Oct 2026",
@@ -68,7 +68,7 @@ NEWS = [
             "backgrounds and the model's look stay the model's own."
         ),
         "links": [{"text": "Read more", "href": _ARTICLE + "#25-oct-2026-masked-training"},
-                  {"text": "The guide", "href": "https://github.com/shootthesound/Fizgig/blob/master/docs/MASKED_TRAINING.md"}],
+                  {"text": "The guide", "href": "https://github.com/Murf-Code/Fizgig-Advanced/blob/fizgig-advanced/docs/MASKED_TRAINING.md"}],
     },
     {
         "date": "24 Oct 2026",

@@ -2369,18 +2369,20 @@ _RELEASE = []
 
 
 def _newest_release(git):
-    """(tag, commit) of the newest vX.Y.Z tag on origin, asked once per run; None when it can't be reached. A pod
-    clones one commit with no tags, so its About box would otherwise show only a branch and a commit."""
+    """(tag, commit) of the newest Fizgig Advanced release tag (advanced-X.Y[.Z]) on origin, asked once per run; None
+    when it can't be reached. A pod clones one commit with no tags, so its About box would otherwise show only a
+    branch and a commit. Upstream's vX.Y.Z tags aren't this fork's releases (update_check.release_key)."""
     if not _RELEASE:
+        from fizgig.web.update_check import release_key
         best = None
         for line in git("ls-remote", "--tags", "origin").splitlines():
             sha, _, ref = line.partition("\t")
-            m = re.fullmatch(r"refs/tags/v(\d+)\.(\d+)\.(\d+)(\^\{\})?", ref.strip())
-            if not m:
+            m = re.fullmatch(r"refs/tags/([^\^]+)(\^\{\})?", ref.strip())
+            key = release_key(m.group(1)) if m else None
+            if key is None:
                 continue
-            key = tuple(int(x) for x in m.group(1, 2, 3))
-            if best is None or key > best[0] or (key == best[0] and m.group(4)):   # ^{} = the tag's own commit
-                best = (key, f"v{key[0]}.{key[1]}.{key[2]}", sha)
+            if best is None or key > best[0] or (key == best[0] and m.group(2)):   # ^{} = the tag's own commit
+                best = (key, m.group(1), sha)
         _RELEASE.append(best[1:] if best else None)
     return _RELEASE[0]
 
@@ -2394,7 +2396,7 @@ def about_info() -> dict:
         except (OSError, subprocess.SubprocessError):
             return ""
     v = git("describe", "--tags", "--always")
-    if v and "v" not in v.split("-")[0]:              # a tagless checkout (a pod's shallow clone): say what it is
+    if v and "v" not in v.split("-")[0] and not v.startswith("advanced-"):   # a tagless checkout (a pod's clone)
         branch = git("rev-parse", "--abbrev-ref", "HEAD")
         if branch and branch != "HEAD":
             v = f"{branch} @ {v}"

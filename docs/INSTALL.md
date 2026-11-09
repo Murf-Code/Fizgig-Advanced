@@ -46,8 +46,8 @@ Full fine-tuning (experimental, Krea 2 & MiniMax H3) needs more than the above a
 Clone the repo:
 
 ```bash
-git clone https://github.com/shootthesound/Fizgig.git
-cd Fizgig
+git clone -b fizgig-advanced https://github.com/Murf-Code/Fizgig-Advanced.git
+cd Fizgig-Advanced
 ```
 
 **Clone it rather than downloading the ZIP:** `update_fizgig.bat` updates by pulling with git, which a ZIP install can't do.
@@ -59,11 +59,11 @@ Open a terminal in your Fizgig folder and run:
 
 ```bash
 git init
-git remote add origin https://github.com/shootthesound/Fizgig.git
-git fetch --depth 1 origin master
+git remote add origin https://github.com/Murf-Code/Fizgig-Advanced.git
+git fetch --depth 1 origin fizgig-advanced
 git reset --hard FETCH_HEAD
-git branch -M master
-git branch --set-upstream-to=origin/master master
+git branch -M fizgig-advanced
+git branch --set-upstream-to=origin/fizgig-advanced fizgig-advanced
 ```
 
 Your model paths, output LoRAs, caches, presets and the venv are left alone. `update_fizgig.bat` works normally from then on.

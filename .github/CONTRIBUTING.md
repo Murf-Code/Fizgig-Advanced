@@ -4,8 +4,8 @@ Pull requests are welcome: bug fixes, new models, features, docs, pod and RunPod
 
 ## Start with a conversation
 
-- **New model:** open a post in [New models & fine-tuning](https://github.com/shootthesound/Fizgig/discussions/new?category=new-models-fine-tuning) before writing code: which model, where its weights and reference code live, and what you plan to support. Then follow the [driver guide](../docs/drivers/README.md).
-- **New feature, or anything more than a small fix:** open an [issue](https://github.com/shootthesound/Fizgig/issues) first, so we can agree the scope and where it fits before you put the hours in. The last thing I want is to turn down work you've already spent days on.
+- **New model:** open a post in [New models & fine-tuning](https://github.com/Murf-Code/Fizgig-Advanced/discussions/new?category=new-models-fine-tuning) before writing code: which model, where its weights and reference code live, and what you plan to support. Then follow the [driver guide](../docs/drivers/README.md).
+- **New feature, or anything more than a small fix:** open an [issue](https://github.com/Murf-Code/Fizgig-Advanced/issues) first, so we can agree the scope and where it fits before you put the hours in. The last thing I want is to turn down work you've already spent days on.
 - **Small fixes and docs:** go straight to a pull request.
 
 ## What Fizgig is for

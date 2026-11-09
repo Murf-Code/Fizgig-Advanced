@@ -5,8 +5,9 @@ set -euo pipefail
 
 log() { echo "[fizgig] $*"; }
 
-REPO_URL="${FIZGIG_REPO:-https://github.com/shootthesound/Fizgig.git}"
-REPO_REF="${FIZGIG_REF:-master}"
+# Fizgig Advanced (the fork); FIZGIG_REPO / FIZGIG_REF still choose another repo or ref
+REPO_URL="${FIZGIG_REPO:-https://github.com/Murf-Code/Fizgig-Advanced.git}"
+REPO_REF="${FIZGIG_REF:-fizgig-advanced}"
 APP_DIR="/workspace/Fizgig"
 
 mkdir -p /workspace/.cache /workspace/.insightface

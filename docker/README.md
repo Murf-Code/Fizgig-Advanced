@@ -10,6 +10,8 @@ Fizgig in your browser: the pod runs the app and you open it as a web page, from
 
 *That link is a referral one — it supports Fizgig's development at no extra cost to you.*
 
+Fizgig Advanced: the templates here are upstream Fizgig's. Add `FIZGIG_REPO=https://github.com/Murf-Code/Fizgig-Advanced.git` and `FIZGIG_REF=fizgig-advanced` to the environment before you deploy (RunPod: **Edit Template → Environment Variables**), or the pod runs upstream Fizgig.
+
 Prefer Vast.ai? The same image runs there too: [Fizgig on Vast.ai](https://cloud.vast.ai/?ref_id=757773&creator_id=757773&name=Fizgig%20LoRa%20Training%20and%20Fine-tuning) (also a referral link) · [the Vast.ai guide](../docs/VAST.md).
 
 ## Quick start: nothing installed on your computer
@@ -44,11 +46,11 @@ When your own Fizgig opens a pod (in its app window, or a pod on its Pods tab), 
 
 For a pod you use only in a browser, or to stay on one release whatever your computer runs: set the environment variable `FIZGIG_REF` to a release's version, and the pod runs that version at every start until you change it. A pod set this way doesn't follow your computer: when you update your computer, Fizgig says the two run different builds until you change `FIZGIG_REF` too.
 
-- **On RunPod, before you deploy:** on the deploy screen expand **Edit Template → Environment Variables**, add `FIZGIG_REF` with a version, for example `v8.9.93`, then **Deploy Pod**.
+- **On RunPod, before you deploy:** on the deploy screen expand **Edit Template → Environment Variables**, add `FIZGIG_REF` with a version, for example `advanced-1.4`, then **Deploy Pod**.
 - **On a pod you already have:** in the pod's menu choose **Edit Pod**, add `FIZGIG_REF` under **Environment Variables**, and save. RunPod restarts the pod, which starts on that version. Your volume and everything on it stay.
 - **On Vast.ai:** add `FIZGIG_REF` with the version to the template's environment before you rent.
 
-The versions are on the [Releases page](https://github.com/shootthesound/Fizgig/releases): use the tag as it's written there, with its `v`. To go back to updating at every start, set `FIZGIG_REF` to `master`, or remove it.
+The versions are on the [Releases page](https://github.com/Murf-Code/Fizgig-Advanced/releases): use the tag as it's written there (`advanced-1.4`). To go back to updating at every start, set `FIZGIG_REF` to `fizgig-advanced`, or remove it.
 
 A run you paused or moved resumes fine on the same version. Your computer and the pod don't have to be on the same version, but Send to this pod, Move a run and Helpers can need features that a pinned older pod doesn't have yet.
 

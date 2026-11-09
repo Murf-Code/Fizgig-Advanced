@@ -193,8 +193,8 @@ Needs an NVIDIA RTX 30/40/50-series or an AMD Radeon with ROCm, Windows 10/11 or
 Clone the repo rather than downloading the ZIP (the updater pulls with git):
 
 ```bash
-git clone https://github.com/shootthesound/Fizgig.git
-cd Fizgig
+git clone -b fizgig-advanced https://github.com/Murf-Code/Fizgig-Advanced.git
+cd Fizgig-Advanced
 ```
 
 - **Windows (NVIDIA):** double-click `install_fizgig.bat`, then launch with `Launch Fizgig.bat` (its own window) or `Launch Fizgig in browser.bat` (in your web browser); update with `update_fizgig.bat`.
@@ -213,6 +213,8 @@ Model files download from the **Preferences** tab: one **Download models for me*
 4. **Preferences → Download models for me**, upload your training folder on the **Start** tab, and press **Start** on the **Training** tab.
 
 Prefer Vast.ai? The same image runs there: **[Fizgig on Vast.ai](https://cloud.vast.ai/?ref_id=757773&creator_id=757773&name=Fizgig%20LoRa%20Training%20and%20Fine-tuning)** ([guide](docs/VAST.md)).
+
+> **Fizgig Advanced on a pod:** the RunPod and Vast.ai templates above are upstream Fizgig's and run upstream Fizgig unless told otherwise. To run Fizgig Advanced, add two environment variables before you deploy (RunPod: **Edit Template → Environment Variables**; Vast.ai: the template's environment): `FIZGIG_REPO=https://github.com/Murf-Code/Fizgig-Advanced.git` and `FIZGIG_REF=fizgig-advanced`.
 
 Step by step: [Quick start](docker/README.md#quick-start-nothing-installed-on-your-computer). The pod also has a drag-and-drop file manager for big datasets and fine-tunes (the **File manager** button in the sidebar), one-click model downloads and an optional auto-stop when training finishes. Opened from your own Fizgig, a pod runs the same version as your computer ([which Fizgig a pod runs](docker/README.md#which-fizgig-a-pod-runs)). [The full pod guide](docker/README.md).
 

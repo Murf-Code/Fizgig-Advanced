@@ -24,6 +24,8 @@ _st = {"state": "idle", "commit": "", "error": "", "at": 0.0}     # idle / switc
 _lock = threading.Lock()
 
 
+DEFAULT_REF = "fizgig-advanced"            # the branch a pod follows (docker/entrypoint.sh FIZGIG_REF's default)
+
 def _git(*args, timeout=120):
     r = subprocess.run(["git", "-C", BASE, *args], capture_output=True, text=True, timeout=timeout)
     return r.returncode, (r.stdout or r.stderr).strip()
@@ -37,7 +39,8 @@ def head() -> str:
 def allowed() -> bool:
     """A pod following a branch (the template's master): one set to a release of its own (FIZGIG_REF v8.9.92) keeps
     it."""
-    return on_pod() and not re.fullmatch(r"v\d+(\.\d+)*", str(os.environ.get("FIZGIG_REF") or "master").strip())
+    return on_pod() and not re.fullmatch(r"(v|advanced-)\d+(\.\d+)*",
+                                         str(os.environ.get("FIZGIG_REF") or DEFAULT_REF).strip())
 
 
 def pinned() -> dict:
@@ -177,7 +180,7 @@ def newest() -> dict:
 
     def work():
         from fizgig.web import server as s
-        ref = str(os.environ.get("FIZGIG_REF") or "master").strip() or "master"
+        ref = str(os.environ.get("FIZGIG_REF") or DEFAULT_REF).strip() or DEFAULT_REF
         print(f"[fizgig] Back to the newest Fizgig ({ref})", flush=True)
         code, out = _git("fetch", "--depth", "1", "origin", ref, timeout=300)
         fetched = code == 0 and _git("rev-parse", "FETCH_HEAD", timeout=10)[1]

@@ -1,7 +1,10 @@
-"""Is there a newer Fizgig release? The desktop app's check (lora_trainer_gui._check_for_update), for the web UI's
-About box: the highest vX.Y.Z tag on origin (one read-only `git ls-remote`, no GitHub API), and whether this checkout
-already contains it. Silent when it can't tell (offline, no origin, a ZIP download): never a false nag."""
+"""Is there a newer Fizgig Advanced release? The desktop app's check (lora_trainer_gui._check_for_update), for the web
+UI's About box: the highest advanced-X.Y[.Z] tag on origin (one read-only `git ls-remote`, no GitHub API), and whether
+this checkout already contains it. Upstream Fizgig's vX.Y.Z tags are never offered: this is the fork, and its releases
+are its own (an install whose origin is upstream finds no advanced-* tag and stays silent). Silent when it can't tell
+(offline, no origin, a ZIP download): never a false nag."""
 import os
+import re
 import subprocess
 import threading
 
@@ -9,6 +12,14 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "
 _NO_WINDOW = {"creationflags": 0x08000000} if os.name == "nt" else {}
 _lock = threading.Lock()
 _state = {"status": "", "tag": "", "running": False}
+TAG_GLOB = "advanced-*"                       # Fizgig Advanced's release tags (advanced-1.4, advanced-1.3.1, ...)
+_TAG = re.compile(r"advanced-(\d+(?:\.\d+)*)")
+
+
+def release_key(tag):
+    """advanced-1.3.1 -> (1, 3, 1); None for any other tag (upstream's v9.2.5 included)."""
+    m = _TAG.fullmatch(str(tag or "").strip())
+    return tuple(int(p) for p in m.group(1).split(".")) if m else None
 
 
 def _git(*args, timeout=8):
@@ -21,17 +32,19 @@ def _git(*args, timeout=8):
 
 
 def _latest_release_tag():
-    code, out = _git("ls-remote", "--tags", "--refs", "origin", "v*", timeout=15)
+    code, out = _git("ls-remote", "--tags", "--refs", "origin", TAG_GLOB, timeout=15)
     if code or not out:
         return None
     best, best_key = None, None
     for line in out.splitlines():
         try:
             sha, ref = line.split(None, 1)
-            tag = ref.strip().rsplit("/", 1)[-1]
-            key = tuple(int(p) for p in tag.lstrip("v").split("."))
-        except (ValueError, IndexError):
-            continue                       # not a plain vX.Y.Z tag
+        except ValueError:
+            continue
+        tag = ref.strip().rsplit("/", 1)[-1]
+        key = release_key(tag)
+        if key is None:
+            continue                       # not a plain advanced-X.Y[.Z] tag
         if best_key is None or key > best_key:
             best, best_key = (tag, sha), key
     return best

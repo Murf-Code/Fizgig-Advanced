@@ -3,9 +3,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        This category is for a model you plan to add to Fizgig, or fine-tuning you plan to add to a model it already supports, and to send as a pull request. Bug reports, questions and feature requests go in [Issues](https://github.com/shootthesound/Fizgig/issues).
+        This category is for a model you plan to add to Fizgig, or fine-tuning you plan to add to a model it already supports, and to send as a pull request. Bug reports, questions and feature requests go in [Issues](https://github.com/Murf-Code/Fizgig-Advanced/issues).
 
-        Read the [driver guide](https://github.com/shootthesound/Fizgig/tree/master/docs/drivers) first.
+        Read the [driver guide](https://github.com/Murf-Code/Fizgig-Advanced/tree/fizgig-advanced/docs/drivers) first.
   - type: input
     id: model
     attributes:

@@ -9351,7 +9351,7 @@ function phoneCard() {
     }, 300);
   };
   const hidden = () => {                     // a blurred stand-in where the code goes
-    box.innerHTML = qrSvg("https://github.com/shootthesound/Fizgig");
+    box.innerHTML = qrSvg("https://github.com/Murf-Code/Fizgig-Advanced");
     box.classList.add("blurred");
   };
   const message = (text, label, action) => {
@@ -10095,7 +10095,7 @@ function showAbout(a) {
   $("aboutRelease").replaceChildren(...(newer ? [el("div", {class: "about-banner"},
     el("strong", {text: `⬆ Fizgig ${r.tag} is available`}),
     el("div", {class: "field-hint", text: `You're on ${a.version}. ${a.update}`}),
-    el("a", {href: "https://github.com/shootthesound/Fizgig/releases/latest", target: "_blank", rel: "noopener",
+    el("a", {href: "https://github.com/Murf-Code/Fizgig-Advanced/releases/latest", target: "_blank", rel: "noopener",
       text: "📖 Read the release notes"}))] : []));
   $("aboutBtn").classList.toggle("update", newer);
   $("aboutBtn").querySelector("span").textContent = newer ? "⬆ Update Available" : "About";

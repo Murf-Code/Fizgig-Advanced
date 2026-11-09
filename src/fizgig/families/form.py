@@ -261,8 +261,8 @@ PEOPLE_HINT = ("Off: your subject can leak into prompts that don't use its trigg
                "Training takes about 1.5x as long. Prompt with the word shown at the bottom of this card for "
                "each subject, e.g. zwxemwoman.")
 VIDEO = "https://youtu.be/8uW5NdL5b20"          # the Subjects card video: setting up Fizgig LoRA Isolation
-GUIDE = "https://github.com/shootthesound/Fizgig/blob/master/docs/MULTI_PERSON.md"     # the multi-person captioning guide (docs/MULTI_PERSON.md)
-GUIDE_MASKS = "https://github.com/shootthesound/Fizgig/blob/master/docs/MASKED_TRAINING.md"   # making and using masks
+GUIDE = "https://github.com/Murf-Code/Fizgig-Advanced/blob/fizgig-advanced/docs/MULTI_PERSON.md"     # the multi-person captioning guide (docs/MULTI_PERSON.md)
+GUIDE_MASKS = "https://github.com/Murf-Code/Fizgig-Advanced/blob/fizgig-advanced/docs/MASKED_TRAINING.md"   # making and using masks
 from fizgig.families.multi_person import KINDS as SUBJECT_KINDS  # noqa: E402
 KIND_HINT = ("What each subject is decides what Fizgig adds to its training.\n"
              "From its captions: Fizgig decides - a person if the captions say woman, man, girl or boy, otherwise an "
