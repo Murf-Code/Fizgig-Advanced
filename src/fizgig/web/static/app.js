@@ -10968,10 +10968,12 @@ function fxSync(root) {
 new MutationObserver((list) => { for (const m of list) for (const n of m.addedNodes) if (n.nodeType === 1) fxSync(n); })
   .observe(document.documentElement, {childList: true, subtree: true});
 fxSync(document.documentElement);
+const DEFAULT_THEME = "deep-space";     // a device with no theme picked yet (index.html's first-paint script)
 function applyTheme(key) {
   if (key) document.documentElement.dataset.theme = key;
   else delete document.documentElement.dataset.theme;
-  try { key ? localStorage.setItem("fizgig.theme", key) : localStorage.removeItem("fizgig.theme"); } catch (e) {}
+  // always kept, the classic one as "fizgig": an empty store means "never picked" and gets DEFAULT_THEME
+  try { localStorage.setItem("fizgig.theme", key || "fizgig"); } catch (e) {}
   // the phone's browser bar takes the page colour (the meta's own value covers the first paint)
   document.querySelector('meta[name="theme-color"]').content = themeColor("--bg-deep");
   window.dispatchEvent(new Event("resize"));      // the canvases draw again in the new colours

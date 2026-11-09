@@ -8,14 +8,19 @@
   <link rel="icon" href="/icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <meta name="theme-color" content="#12161D">
+  <meta name="theme-color" content="#07070D">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Fizgig">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <script>
-    // the theme this device picked, before the page paints (sidebar palette button; app.js THEMES)
-    try { var t = localStorage.getItem("fizgig.theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+    // the theme this device picked, before the page paints (sidebar palette button; app.js THEMES). Nothing picked yet:
+    // Deep Space, Fizgig Advanced's default; "fizgig" is the classic blue theme picked on purpose (app.js themeKey)
+    try {
+      var t = localStorage.getItem("fizgig.theme");
+      if (t === null) t = "deep-space";
+      if (t && t !== "fizgig") document.documentElement.dataset.theme = t;
+    } catch (e) { document.documentElement.dataset.theme = "deep-space"; }
   </script>
   <script>
     // a pod's proxy can fail one request just after the pod comes up: the page then arrived without its styles.
