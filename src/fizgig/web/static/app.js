@@ -5897,12 +5897,66 @@ async function meLoadWmStroke() {
   if (!img || m.name !== item.name) return;
   const cv = el("canvas", {width: m.mask.width, height: m.mask.height});
   meFromGray(cv, img);
-  m.rm = cv; m.rmDirty = true; m.rmFromWm = true; m.rmHandEdited = false;
+  m.rm = cv; m.rmBase = meCopy(cv); m.rmDirty = true; m.rmFromWm = true; m.rmHandEdited = false;
   meImgBar();
+}
+function meCopy(cv) {
+  const c = el("canvas", {width: cv.width, height: cv.height});
+  c.getContext("2d").drawImage(cv, 0, 0);
+  return c;
+}
+function meRmDiff(base, now) {
+  // what was painted on (add) and rubbed out (erase) in the red Remove area since it was loaded or last saved
+  const w = now.width, h = now.height;
+  const one = (a, b) => {
+    const c = el("canvas", {width: w, height: h}), x = c.getContext("2d");
+    x.drawImage(a, 0, 0);
+    if (b) { x.globalCompositeOperation = "destination-out"; x.drawImage(b, 0, 0); }
+    const d = x.getImageData(0, 0, w, h).data;
+    for (let p = 3; p < d.length; p += 4) if (d[p] > 127) return c;
+    return null;
+  };
+  const add = one(now, base), erase = base ? one(base, now) : null;
+  return add || erase ? {add, erase} : null;
+}
+async function meRmSave(onlyWm) {
+  // keep the red Remove edits: written to the picture's watermark mask (watermarks/<stem>.png), so going to another
+  // picture and back shows them, and Remove all watermarks uses them. A picture with no watermark mask yet gets one
+  // only when you leave it (onlyWm false), so a quick paint-and-Enter Remove stays as it was.
+  const m = meState();
+  const run = async () => {
+    const item = m.list.find((p) => p.name === m.name);
+    if (!meLoadWmOn() || !m.rm || !m.mask || !item || (onlyWm && !item.watermark)) return true;
+    const now = meCopy(m.rm), diff = meRmDiff(m.rmBase, now);
+    if (!diff) return true;
+    const name = m.name;
+    try {
+      const r = await api("/api/masks/edit/watermark_save", {folder: m.folder || S.imageFolder, name, pad: meWmPad(),
+        add: diff.add ? diff.add.toDataURL("image/png") : "", erase: diff.erase ? diff.erase.toDataURL("image/png") : ""});
+      item.watermark = !!r.watermark;
+      if (m.name === name) { m.rmBase = now; m.rmFromWm = !!r.watermark; m.rmHandEdited = false; meImgBar(); }
+      meWmBar();
+      return true;
+    } catch (e) { $("meState").textContent = "Couldn't keep the red area: " + e.message; return false; }
+  };
+  m.rmSaving = (m.rmSaving || Promise.resolve(true)).then(run, run);
+  return m.rmSaving;
+}
+async function meRefreshFlags(name) {
+  // after an undo or redo the files changed on the server: whether the picture has a mask and a watermark mask again
+  const m = meState();
+  try {
+    const r = await api("/api/masks/edit/list?folder=" + encodeURIComponent(m.folder || S.imageFolder));
+    const now = r.pictures.find((p) => p.name === name), item = m.list.find((p) => p.name === name);
+    if (now && item) { item.mask = now.mask; item.watermark = now.watermark; }
+  } catch (e) { /* keep what we had */ }
 }
 async function meOpen() {
   const m = meState();
   if (!S.imageFolder) { $("meState").textContent = "Choose the training folder on the Start tab first."; return; }
+  if (m.folder && m.folder !== S.imageFolder) {        // another folder: keep the red edits where they were made
+    await meRmSave(false); m.rm = null; m.rmBase = null; m.rmDirty = false;
+  }
   try {
     const r = await api("/api/masks/edit/list?folder=" + encodeURIComponent(S.imageFolder));
     m.list = r.pictures; m.folder = S.imageFolder; meWmBar();
@@ -5921,6 +5975,7 @@ async function meGo(i, force) {
   i = (i + shown.length) % shown.length;
   if (!force && shown[i].name === m.name) return;
   if (m.dirty && !(await meSave())) return;           // moving on saves the one you were on
+  if (!(await meRmSave(false))) return;               // and its red Remove edits
   m.at = i; m.name = shown[i].name;
   $("meCount").textContent = `${i + 1} of ${shown.length}`;
   $("meName").textContent = m.name;
@@ -5950,7 +6005,7 @@ function meWorkCanvas(pic) {
 function meFresh() {
   // a new or changed picture: no Remove stroke waiting, the crop box back round the whole picture
   const m = meState();
-  m.rm = null; m.rmDirty = false; m.cropDrag = null; m.showBefore = false;
+  m.rm = null; m.rmBase = null; m.rmDirty = false; m.cropDrag = null; m.showBefore = false;
   m.crop = m.tool === "crop" && m.mask ? {l: 0, t: 0, r: m.mask.width, b: m.mask.height} : null;
   if (m.crop) meCropFit();
   meImgBar();
@@ -6080,7 +6135,8 @@ async function meRestore(from, to) {
       await api("/api/masks/edit/image_step", {step: top.step, redo: !undo});
       from.pop(); to.push(top);
       m.before = null;
-      await meReload();
+      await meRefreshFlags(m.name);                   // the mask and watermark mask may be back (or gone again)
+      await meReload(); meWmBar();
       $("meState").textContent = undo ? `Undid the ${top.what}.` : `Redid the ${top.what}.`;
       maskInfo();
     } catch (e) { $("meState").textContent = e.message; }
@@ -6096,7 +6152,7 @@ async function meRestore(from, to) {
 }
 function meDropPending() {
   const m = meState();
-  if (m.rm && m.rmDirty) { m.rm = null; m.rmDirty = false; meImgBar(); meDraw(); return true; }
+  if (m.rm && m.rmDirty && !(m.rmFromWm && meLoadWmOn())) { m.rm = null; m.rmDirty = false; meImgBar(); meDraw(); return true; }
   if (m.tool === "crop" && m.crop && !meCropWhole()) {
     m.crop = {l: 0, t: 0, r: m.mask.width, b: m.mask.height}; meCropFit(); meImgBar(); meDraw(); return true;
   }
@@ -6288,6 +6344,7 @@ async function meApply() {
     maskInfo();
   } else if (m.tool === "remove" || (m.rmDirty && m.tool !== "crop")) {
     if (!m.rmDirty) { $("meState").textContent = "Paint over what to remove first."; return; }
+    await meRmSave(true);                              // the watermark mask as you edited it, before it's filled
     const old = m.pic, fromWm = m.rmFromWm;
     const r = await mePicStep("/api/masks/edit/remove", {png: m.rm.toDataURL("image/png"), backup: !!fromWm},
       "remove", "Removing…");
@@ -6367,6 +6424,7 @@ async function meRemoveAllWm() {
     $("meWmState").textContent = "A run is training: remove watermarks when it finishes.";
     return;
   }
+  if (!(await meRmSave(false))) return;               // the red edits on this picture count too
   const names = m.list.filter((p) => p.watermark).map((p) => p.name);
   if (!names.length) { meWmBar(); return; }
   const folder = m.folder || S.imageFolder;
@@ -6505,7 +6563,9 @@ function meWire() {
     else if (m.tool === "crop" && m.crop && !m.stepBusy) cv.style.cursor = ME_CROP_CURSOR[meCropHit(p)];
     meDraw();
   });
-  const up = () => { last = null; pan = null; m.panning = false; m.flip = false; m.cropDrag = null; meImgBar(); meDraw(); };
+  const up = () => {
+    if (last && m.tool === "remove") meRmSave(true);  // stroke end: kept at once
+    last = null; pan = null; m.panning = false; m.flip = false; m.cropDrag = null; meImgBar(); meDraw(); };
   cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
   cv.addEventListener("pointerleave", () => { m.cursor = null; meDraw(); });
   cv.addEventListener("contextmenu", (e) => e.preventDefault());   // right-click: SAM's "take away", the brush's erase
@@ -6588,7 +6648,7 @@ function meTool(t) {
   if (t === "crop" && was === "crop") t = m.prevTool || "brush";   // C again leaves crop mode
   if (t === "crop") m.prevTool = was;
   m.tool = t;
-  if (was === "remove" && t !== "remove" && !m.rmFromWm) { m.rm = null; m.rmDirty = false; }   // a hand stroke not applied is dropped; a preloaded watermark stays
+  if (was === "remove" && t !== "remove" && !m.rmFromWm && !meLoadWmOn()) { m.rm = null; m.rmDirty = false; }   // a hand stroke not applied is dropped; a preloaded watermark stays
   m.cropDrag = null;
   m.crop = t === "crop" && m.mask ? {l: 0, t: 0, r: m.mask.width, b: m.mask.height} : null;
   if (m.crop) meCropFit();

@@ -167,3 +167,27 @@ def test_restore_does_not_touch_user_edits_outside_the_watermark(tmp_path):
     out = np.asarray(Image.open(mask_for(str(tmp_path / "a.png"))))
     assert out[30, 30] == 255                            # watermark area restored
     assert (out[100:130, 140:180] == 0).all()            # the hand edit stays
+
+
+def test_red_edits_are_kept_without_the_pad_growing_and_erasing_all_drops_it(tmp_path):
+    p = str(tmp_path / "a.png")
+    _pic(p, (80, 60))
+    cover = np.zeros((60, 80), bool); cover[10:20, 10:30] = True
+    wm_regions.write_sidecar(p, cover, np.full((60, 80), 255, np.uint8))
+    as_loaded = lambda: np.asarray(Image.open(io.BytesIO(image_edit.watermark_stroke_png(str(tmp_path), "a.png", 3)))) > 127
+    first = as_loaded()
+    add = np.zeros((60, 80), np.uint8); add[40:50, 50:70] = 255          # a missed signature painted on
+    erase = np.zeros((60, 80), np.uint8); erase[5:25, 5:18] = 255        # the left end rubbed out
+    r = image_edit.save_watermark_edit(str(tmp_path), "a.png", _png(Image.fromarray(add)), _png(Image.fromarray(erase)), 3)
+    assert r["watermark"]
+    again = as_loaded()                                   # going back to the picture shows the edits
+    assert again[45, 60] and not again[15, 15] and again[15, 25] and not again[erase > 0].any()
+    # saving what was loaded, unchanged, changes nothing (the pad isn't baked in)
+    same = wm_regions.read(p)[0].copy()
+    image_edit.save_watermark_edit(str(tmp_path), "a.png", "", "", 3)
+    assert (wm_regions.read(p)[0] == same).all() and (as_loaded() == again).all()
+    full = _png(Image.fromarray(np.full((60, 80), 255, np.uint8)))
+    r = image_edit.save_watermark_edit(str(tmp_path), "a.png", "", full, 3)
+    assert not r["watermark"] and not wm_regions.has_active(p)
+    assert not mask_edit.listing(str(tmp_path))[0]["watermark"]
+    assert first.any()

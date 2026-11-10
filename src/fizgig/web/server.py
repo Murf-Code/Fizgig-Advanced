@@ -4797,6 +4797,16 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     logger.exception("picture editor")
                     return self.json({"error": f"Couldn't change the picture: {type(e).__name__}: {e}"}, 400)
+            if path == "/api/masks/edit/watermark_save":  # Remove's red edits kept as the watermark mask; allowed
+                from fizgig.web import image_edit     # while training (training never reads watermarks/)
+                folder, name = str(b.get("folder") or ""), str(b.get("name") or "")
+                if not folder or not os.path.isdir(folder):
+                    return self.json({"error": "Choose the training folder on the Start tab first."}, 400)
+                try:
+                    return self.json(image_edit.save_watermark_edit(folder, name, str(b.get("add") or ""),
+                                                                    str(b.get("erase") or ""), b.get("pad")))
+                except (ValueError, TypeError) as e:
+                    return self.json({"error": str(e)}, 400)
             if path == "/api/masks/edit/save":  # allowed while training: written atomically, a running run reads it
                 from fizgig.web import mask_edit  # the next time that picture comes up (masks.load_mask checks mtime)
                 try:

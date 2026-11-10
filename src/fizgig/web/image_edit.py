@@ -19,7 +19,7 @@ from PIL import Image
 
 from fizgig.dataset.masks import MASK_SUFFIX, MASKS_DIR, mask_for, read_mask, _EXTS as MASK_EXTS
 from fizgig.dataset import wm_regions
-from fizgig.utils.upright import ORIENTATION, upright
+from fizgig.utils.upright import ORIENTATION, upright, upright_size
 
 UNDO_STEPS = 30          # image steps kept, across all pictures
 MAX_WINDOW = 2048        # a Remove window bigger than this is worked on scaled down
@@ -418,3 +418,47 @@ def remove_watermark(folder, name, pad=wm_regions.DEFAULT_PAD, backup=True):
     cover, _prior = wm_regions.resize_pair(pair[0], pair[1], img.size)
     stroke = wm_regions.pad_cover(cover, pad)
     return _commit_remove(pic, img, stroke, backup=backup)
+
+
+def save_watermark_edit(folder, name, add_png="", erase_png="", pad=wm_regions.DEFAULT_PAD):
+    """Keep the user's red edits in Remove: `add_png` is what was painted on and `erase_png` what was rubbed out
+    since the red area was loaded (PNG bytes or data URLs, white or opaque = changed, any size: stretched to the
+    picture). The sidecar is kept unpadded: added pixels join the watermark, and everything within `pad` px of an
+    erased pixel leaves it, so the next load (padded again) doesn't grow back into what was erased and saving the same
+    area twice changes nothing. Erasing it all drops the sidecar. Not an undo step; allowed while training (training
+    never reads watermarks/). Returns {"watermark": the picture still has a watermark mask}."""
+    pic = _picture(folder, name)
+    with Image.open(pic) as im:
+        size = upright_size(im)
+    add = _stroke_from_png(add_png, size) if add_png else np.zeros((size[1], size[0]), bool)
+    erase = _stroke_from_png(erase_png, size) if erase_png else np.zeros((size[1], size[0]), bool)
+    pair = wm_regions.read(pic)
+    if pair is not None:
+        cover, prior = wm_regions.resize_pair(pair[0], pair[1], size)
+    else:
+        cover, prior = np.zeros((size[1], size[0]), bool), None
+    if not add.any() and not erase.any():
+        return {"ok": True, "watermark": pair is not None and bool(cover.any()), "changed": False}
+    new = cover | add
+    if erase.any():
+        new &= ~wm_regions.pad_cover(erase, pad)
+    # what the training mask was before the watermark was hidden: kept where it was known; on added pixels the
+    # training mask as it is now (nothing was hidden there for a watermark), so a later Remove leaves it alone
+    mask_path = mask_for(pic)
+    if mask_path:
+        now = np.asarray(read_mask(mask_path))
+        if now.shape[1] != size[0] or now.shape[0] != size[1]:
+            now = np.asarray(Image.fromarray(now, "L").resize(size, Image.BILINEAR))
+    else:
+        now = np.full((size[1], size[0]), 255, np.uint8)
+    out_prior = np.array(now, np.uint8, copy=True)
+    if prior is not None:
+        out_prior[cover] = np.asarray(prior, np.uint8)[cover]
+    if new.any():
+        wm_regions.write_sidecar(pic, new, out_prior)
+    else:
+        path = wm_regions.active_path(pic)
+        if os.path.isfile(path):
+            os.remove(path)
+            wm_regions._rmdir_empty(os.path.dirname(path))
+    return {"ok": True, "watermark": bool(new.any()), "changed": True}
