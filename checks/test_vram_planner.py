@@ -77,3 +77,25 @@ def test_the_margin_is_a_preference_passed_to_the_trainer(tiny, tmp_path):
             pass
     T, cfg = tiny                                                        # the trainer takes it (a real tiny run)
     assert _run(T, cfg, tmp_path / "m", vram_margin_gb=2.5, max_train_epochs=1, save_state=False) == "done"
+
+
+def test_ema_pair_optimizer_and_frozen_files_are_planned(tmp_path):
+    """The Nov 2026 66 s/step Krea 2 run: EMA, PoLoRA's per-step stacks and a context LoRA weren't in the plan, so
+    Auto swapped too few blocks on a 12 GB card and the step spilled into shared GPU memory."""
+    dit = _model(tmp_path)
+    ctx = str(tmp_path / "ctx.safetensors")
+    save_file({"a.lora_down.weight": torch.zeros(32, 512, dtype=torch.bfloat16),
+               "a.lora_up.weight": torch.zeros(1536, 32, dtype=torch.bfloat16)}, ctx)
+    assert abs(vram_plan.file_weights_gb(ctx) - (32 * 512 + 1536 * 32) * 2 / 1024 ** 3) < 1e-12
+    assert vram_plan.run_extras_gb(dit, "lora", 8, "adamw8bit") == (0.0, "")
+    ema = vram_plan.run_extras_gb(dit, "lora", 8, "adamw8bit", ema=True)[0]
+    assert abs(ema - vram_plan.adapter_gb(vram_plan.linear_shapes(dit), 8, "adamw8bit") * 4 / 10) < 1e-12
+    pol, why = vram_plan.run_extras_gb(dit, "lora", 8, "polora", ema=True, frozen_files=(ctx, None))
+    assert pol > ema + vram_plan.file_weights_gb(ctx) and "polora step" in why and "ctx.safetensors" in why
+    assert vram_plan.run_extras_gb(dit, "lokr", 8, "polora")[0] == 0           # no EMA/pair stacks for LoKr here
+    # and the plan swaps more for it
+    desc = SimpleNamespace(train_memory={"int8": (((0.25, 16.2), (1.0, 19.1)), 0.42)}, precisions=("int8",),
+                           auto_precisions=(), batch_gb=(0.0, 0.0), display_name="t", train_memory_small={})
+    drv = SimpleNamespace(max_blocks_to_swap=lambda: 26)
+    assert quant.plan(desc, drv, "int8", -1, free_gb=10.8, megapixels=0.25)[1] == 17
+    assert quant.plan(desc, drv, "int8", -1, free_gb=10.8, megapixels=0.25, extra_gb=0.6)[1] == 18   # 7.5 GB over at 0.42 a block

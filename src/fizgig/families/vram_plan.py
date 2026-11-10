@@ -89,6 +89,62 @@ def extra_gb(desc, dit_path, network_type, rank, optimizer) -> tuple:
     return gb, why
 
 
+# what a run holds beside its own LoRA and optimizer state, which the family's figures never had (fp32 / bf16 bytes)
+EMA_BYTES = 4                                # the EMA's fp32 shadow, per trained weight
+PAIR_STEP_COPIES = {"polora": 6, "lora_tsd": 4}   # fp32 copies a pair optimizer's step stacks per shape group
+
+
+def file_weights_gb(path, bytes_per=2) -> float:
+    """GB a frozen LoRA file takes on the GPU, loaded in bf16 (every tensor in its header); 0 when it can't be read."""
+    try:
+        from fizgig.utils.st_meta import _header
+        with open(path, "rb") as f:
+            _n, head = _header(f)
+    except Exception:
+        return 0.0
+    n = 0
+    for k, info in head.items():
+        shape = (info or {}).get("shape") if isinstance(info, dict) and k != "__metadata__" else None
+        if shape:
+            m = 1
+            for d in shape:
+                m *= int(d)
+            n += m
+    return n * bytes_per / 1024 ** 3
+
+
+def run_extras_gb(dit_path, network_type, rank, optimizer, ema=False, frozen_files=()) -> tuple:
+    """(GB, why) a run holds on the GPU that the family's figures don't count: the EMA's fp32 shadow of the LoRA, a pair
+    optimizer's per-step stacks (PoLoRA stacks each shape group's gradients, weights and updates in fp32 - the largest
+    group is the peak), and frozen LoRA files (a context LoRA, a training adapter) in bf16 on every Linear they patch.
+    On a 12 GB card these together are the half to one GB that tipped a swapped INT8 Krea 2 run into Windows' shared
+    GPU memory (Nov 2026: 66 s a step, where the same run with more blocks swapped takes about 5)."""
+    gb, parts = 0.0, []
+    plain = str(network_type or "lora").lower() == "lora"
+    shapes = linear_shapes(dit_path) if (dit_path and plain and (ema or str(optimizer or "").lower() in PAIR_STEP_COPIES)) else []
+    r = max(1, int(rank or 1))
+    if ema and shapes:
+        e = sum(r * (o + i) for o, i in shapes) * EMA_BYTES / 1024 ** 3
+        gb += e
+        parts.append(f"EMA {e:.2f}")
+    copies = PAIR_STEP_COPIES.get(str(optimizer or "").strip().lower(), 0)
+    if copies and shapes:
+        groups = {}
+        for o, i in shapes:
+            groups[(o, i)] = groups.get((o, i), 0) + r * (o + i)
+        s = max(groups.values()) * 4 * copies / 1024 ** 3
+        gb += s
+        parts.append(f"{optimizer} step {s:.2f}")
+    for f in frozen_files or ():
+        if f:
+            w = file_weights_gb(f)
+            if w:
+                gb += w
+                parts.append(f"{os.path.basename(str(f))} {w:.2f}")
+    why = (f"~{gb:.2f} GB beside the LoRA: " + ", ".join(parts)) if parts else ""
+    return gb, why
+
+
 # ---- learned corrections --------------------------------------------------------------------------------------
 def key(desc_key, precision, network_type, optimizer) -> str:
     return f"{desc_key}|{precision}|{str(network_type or 'lora').lower()}|{str(optimizer or '').lower()}"
@@ -147,5 +203,5 @@ def margin(value) -> float:
     return min(8.0, max(0.0, v))
 
 
-__all__ = ["DEFAULT_MARGIN_GB", "STATE_BYTES", "TRAIN_MEMORY_RECIPE", "adapter_gb", "correction", "extra_gb", "key",
+__all__ = ["DEFAULT_MARGIN_GB", "STATE_BYTES", "file_weights_gb", "run_extras_gb", "TRAIN_MEMORY_RECIPE", "adapter_gb", "correction", "extra_gb", "key",
            "linear_shapes", "margin", "record", "state_bytes"]

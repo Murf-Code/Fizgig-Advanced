@@ -1707,6 +1707,16 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     _vram_learn = not finetune and bool(getattr(desc, "train_memory", None))
     _vram_adapter, _vram_why = (vram_plan.extra_gb(desc, dit_path, network_type, network_dim, optimizer_type)
                                 if _vram_learn else (0.0, ""))
+    # ... and what it holds beside them: the EMA shadow, PoLoRA's per-step stacks, frozen LoRA files
+    try:
+        _ema_on = float(ema_decay or 0) > 0
+    except (TypeError, ValueError):
+        _ema_on = str(ema_decay).lower().startswith("short")
+    _vram_more, _vram_more_why = (vram_plan.run_extras_gb(dit_path, network_type, network_dim, optimizer_type,
+                                                          ema=_ema_on, frozen_files=(context_lora_path, training_adapter))
+                                  if _vram_learn else (0.0, ""))
+    _vram_adapter += _vram_more
+    _vram_why = "; ".join(w for w in (_vram_why, _vram_more_why) if w)
     vram_margin_gb = vram_plan.margin(vram_margin_gb)
     if finetune:
         from fizgig.families import ft as _ft_mod
