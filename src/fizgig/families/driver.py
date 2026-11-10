@@ -324,6 +324,44 @@ class FamilyDriver:
         """The model's prediction at a noise_latents() state for this conditioning (batched dict)."""
         raise NotImplementedError
 
+    def map_target(self, latents, state: dict):
+        """What predict() should return at this noise_latents() state - the training target, for the training maps'
+        per-pixel error. Default: flow matching (x_t = (1 - t) x0 + t noise, target noise - x0), recovered from the
+        state as (x_t - x0) / t. A family with another target overrides it."""
+        import torch
+        t = state["t"]
+        t = t.float().view(-1, *([1] * (latents.dim() - 1))).to(latents.device) if torch.is_tensor(t) else float(t)
+        return (state["xt"].float() - latents.float()) / t
+
+    def trigger_text(self, tokenizer, caption: str):
+        """For the trigger-word attention map (description.trigger_attention): (the prompt exactly as this family's
+        text encoder builds it around the caption, the leading part of it the encoder drops before the DiT sees the
+        text). The tokenizer is trigger_tokenizer()'s. None: no trigger map."""
+        return None
+
+    def trigger_tokenizer(self):
+        """The tokenizer whose pieces are the DiT's text keys, in its fast form (character offsets). Default: the
+        family's caption tokenizer (families/trigger_check)."""
+        from fizgig.families import trigger_check
+        return trigger_check.fast_tokenizer(self.description.key)
+
+    def trigger_key_positions(self, caption: str, word: str):
+        """The word's positions among the DiT's text keys (from where the text starts), [] when the caption doesn't
+        have it, None when the family has no trigger map. Default: trigger_text() through trigger_tokenizer(); a
+        family whose keys aren't its tokens one for one (SDXL's 77-token chunks) overrides it."""
+        tok = self.trigger_tokenizer()
+        built = self.trigger_text(tok, caption)
+        if built is None:
+            return None
+        from fizgig.training.attn_probe import trigger_positions
+        return trigger_positions(tok, built[0], built[1], caption, word)
+
+    def trigger_attention_hooks(self, dit):
+        """A context manager put around the trigger-word map's forward, for a model that needs hooks installed to
+        reach its attention (SDXL's diffusers UNet: its cross-attention processors). Default: nothing."""
+        import contextlib
+        return contextlib.nullcontext()
+
     # ---- sampling -------------------------------------------------------------------------------
     def initial_noise(self, seed: int, width: int, height: int):
         """The seed's starting noise (CPU float32), exactly what generate() draws for this seed. The workbench

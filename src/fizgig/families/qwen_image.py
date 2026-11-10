@@ -43,6 +43,7 @@ def _preset(rank, lr=1e-4, adaptive=None, epochs=30, edit=False, slider=False):
 
 QWEN_IMAGE_21 = FamilyDescription(
     key="qwen_image21",
+    trigger_attention=True,           # training maps' trigger-word map (an experiment)
     start_lr_bands=(("lora", 3e-5, 4.5e-4), ("slider", 7e-5, 6e-4)),
     masked_training=True,
     timestep_spread=timestep_spread.FLOW,     # Timestep focus presets (the shift's multiple / the curve's width)

@@ -1,6 +1,6 @@
 ## Fizgig Advanced 1.4
 
-Fizgig Advanced is Fizgig with extra features. It's kept up to date with upstream [shootthesound/Fizgig](https://github.com/shootthesound/Fizgig), so you get everything in Fizgig plus the extras below. This version matches **Fizgig v9.2.5**, plus the upstream fixes since.
+Fizgig Advanced is Fizgig with extra features. It's kept up to date with upstream [shootthesound/Fizgig](https://github.com/shootthesound/Fizgig), so you get everything in Fizgig plus the extras below. This version matches **Fizgig v9.5.0**, plus Fizgig Advanced's extras.
 
 **How it differs from upstream**
 - **More optimizers:** Prodigy, Muon, Automagic V4 and PoLoRA. Adaptive LR steps aside for optimizers that set their own rate.
@@ -69,6 +69,9 @@ Several of these features have been offered upstream: [#289](https://github.com/
 </p>
 
 > ### 📰 Latest news
+> - **Fizgig 9.5 — JoyCaption and booru tags.** Two new captioners on the Captions tab: JoyCaption Beta One for detailed training captions (good with people, mirrors and every style, with its own caption types and extra options), and the WD EVA02 tagger for booru tags, for anime and illustration models like Anima. Download them from Preferences' new Captioning models card, or they download themselves on first use. Auto-recaption and training are unchanged. Thanks @mart-hill (#313) and @axymeus (#315). [Release notes](https://github.com/shootthesound/Fizgig/releases/tag/v9.5.0)
+> - **Fizgig 9.4 — Maps in Studio.** Heatmaps over Studio's preview for any LoRA, one you didn't train included: where it acts, what your slider changes do, where the trigger word's attention goes, and where each group of its blocks acts. Plus two new themes, Cosmic Pigeon and Deep Space (thanks @Murf-Code). [Release notes](https://github.com/shootthesound/Fizgig/releases/tag/v9.4.0) · [Studio guide](docs/STUDIO.md#maps)
+> - **Fizgig 9.3 — Training maps.** See what training does to your pictures, epoch by epoch: heatmaps over three of your own pictures show what the LoRA has learned, what it hasn't yet, and where it's changing things it shouldn't, on every still-picture model, with a trigger-word attention map on every still-picture model except SDXL (9.3.2). Compiled runs warm up much faster, above all with Leave the rest of the model alone and Fizgig LoRA Isolation, and full fine-tunes train with the optimizer you pick (thanks @RitschRatsch666, #312). [Release notes](https://github.com/shootthesound/Fizgig/releases/tag/v9.3.0) · [Training maps guide](docs/TRAINING_MAPS.md)
 > - **Fizgig 9.2 — faster training on PyTorch 2.15, with less memory.** A MOSS-Image LoRA at batch 1 on an RTX 5090 takes 20 minutes instead of 49, batch training matches OneTrainer's speed with less memory, and likeness is unchanged. Muon is 12× faster, LoKR 4–6× faster, and telemetry is off. Needs an NVIDIA driver with CUDA 13 (580+). Thanks @tsk5cb-cmyk (#221) and @Nessa2026691 (#307). [Release notes](https://github.com/shootthesound/Fizgig/releases/tag/v9.2.1)
 > - **Fizgig 9.0.8 — Muon for every picture model.** Improved likeness and training performance across most of the models: every picture model's built-in presets now train on the Muon optimizer, at their existing learning rates (thanks @Murf-Code). Load a preset again to get it. [Release notes](https://github.com/shootthesound/Fizgig/releases/tag/v9.0.8)
 > - **Fizgig 9.0.7 — Vimoo 1.0 Lite.** Vimoo-AI's 9.5B Apache 2.0 video model trains in Fizgig from photos and clips: LoRAs, LoKR, sliders, full fine-tunes and masked training, with clip previews in 12 steps and image-to-video in Studio, on a 16 GB card. In our tests it sits closer to Wan 2.2 5B than to newer video models; we support Lite because it's light. Also Batch size Auto on 40 GB+ cards, and Studio waits for Update. [Release notes](https://github.com/shootthesound/Fizgig/releases/tag/v9.0.7)
@@ -99,6 +102,7 @@ A trainer and workbench for image, video and music models, in its own window on 
 - **Explore** variations: 🎲 I'm feeling lucky in Studio rolls new block strengths within your limits; keep the ones you like.
 - **Find** the best epoch by eye: LoRA Royale renders every epoch on one seed with a crossfade, and exports shareable loops.
 - **Profile** which blocks carry identity, style and detail before you touch anything.
+- **See** where training and a LoRA act: [training maps](docs/TRAINING_MAPS.md) draw heatmaps over your own pictures each epoch (what's learned, what isn't yet, where the LoRA acts, where the trigger word's attention goes), and Studio's Maps draw the same over any LoRA's render, block group by block group.
 - **Train beyond LoRAs:** LoKR, or the full base model itself: Anima on an 8 GB card, the larger models on 16 GB. A LoRA extracted from a fine-tune came out better than one trained directly at the same rank.
 
 Memory plans itself: precision, block swap and previews size to your free VRAM, and if a preview can't fit, training keeps going. Fizgig loads kohya, PEFT, OneTrainer, AI-Toolkit and LyCORIS LoRAs, and saves `.safetensors` that drop straight into ComfyUI. Free and open source.
@@ -152,7 +156,7 @@ Each tool works on your own runs **or any LoRA you've downloaded**, and they han
 - **The trainer curates your dataset while it trains** (every model except MiniMax H3). Every image starts as useful training data; the watch follows each one's loss, and only when an image stops teaching the model does it step in: throttle it, recaption it, and as a last resort set it aside. It also tells you when the whole run has plateaued. No other trainer does this.
 - **Fast previews** in a few steps on a turbo or distilled model where one exists: Klein's and Flux 3 Image Klein's distilled models, the Turbo LoRAs for Fibo 2.0, Krea 2, MiniMax H3, Qwen Image 2.1 and Anima, Vimoo's distilled LoRA, and Qwen Image 2.1's Turbo model.
 - **A sample gallery that scores likeness** live, and a run visualiser to scrub epochs.
-- **Dataset prep**: AI captions with Qwen3-VL or Florence-2, bilingual captions, face crops, and a Look Consistency Filter.
+- **Dataset prep**: AI captions with Qwen3-VL, JoyCaption or Florence-2, booru tags with the WD EVA02 tagger, bilingual captions, face crops, and a Look Consistency Filter.
 - **Face backends for every kind of character**: face crops, the Look Filter and likeness scores work on anime, furry and fursuit characters as well as people (see the section below).
 - **Gizmo** (MiniMax H3): cut clips with scene detection, crop to the subject, and record or segment a voice dataset with Whisper transcription.
 

@@ -80,15 +80,19 @@ def test_start_uses_the_captions_tab_model(tmp_path, monkeypatch):
     assert script.captioner_config(None, "") is None
     enc = tmp_path / "qwen.safetensors"
     enc.write_bytes(b"x")
-    assert script.captioner_config(None, str(enc)) == {"backend": "qwen", "text_encoder": str(enc)}
+    assert script.captioner_config(None, str(enc)) == {"captioner": "qwen3vl", "files": {"path": str(enc)}}
     f = _folder(tmp_path, captions=False)
     dc.switch(f, True)
     seen = {}
     fake = types.ModuleType("fizgig.scripts.batch_caption")
-    fake._load_state_from_config = lambda cfg, dev: seen.setdefault("cfg", cfg) and types.SimpleNamespace(
-        backend="florence", model=None)
-    fake._caption_fn = lambda st, job, trig, n: (lambda p: f"tags for {os.path.basename(os.path.dirname(p))}")
-    fake._write_caption = lambda p, cap, trig, ext: open(os.path.splitext(p)[0] + ext, "w").write(cap)
+    def _load(cfg, dev):
+        seen["cfg"] = cfg
+        return types.SimpleNamespace(desc=None)
+    fake._load_state_from_config = _load
+    fake.request_for = lambda desc, job: (object(), "")
+    fake.caption_file = lambda st, p, req, job: f"tags for {os.path.basename(os.path.dirname(p))}"
+    fake._write_caption = lambda p, cap, ext: open(os.path.splitext(p)[0] + ext, "w").write(cap)
+    fake.free = lambda st: None
     monkeypatch.setitem(sys.modules, "fizgig.scripts.batch_caption", fake)
     import fizgig.scripts as pkg
     monkeypatch.setattr(pkg, "batch_caption", fake, raising=False)

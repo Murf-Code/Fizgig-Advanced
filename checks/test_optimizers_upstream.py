@@ -43,7 +43,9 @@ def test_no_preset_picks_a_new_optimizer():
             if name == "PoLoRA":
                 continue
             opt = str(p.get("OPTIMIZER_TYPE") or "").lower()
-            if desc.key in CHOSEN:
+            if p.get("FAMILY_FT"):
+                assert opt == "adafactor", (desc.key, name)
+            elif desc.key in CHOSEN:
                 assert opt == CHOSEN[desc.key], (desc.key, name)
                 if opt == "muon":
                     assert p.get("OPTIMIZER_ARGS") == MUON_DEFAULT_ARGS, (desc.key, name)

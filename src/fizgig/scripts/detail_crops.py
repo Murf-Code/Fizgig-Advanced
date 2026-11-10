@@ -2,8 +2,8 @@
 (dataset/detail_crops.py), and each crop with no caption gets one at its own size - a smaller crop shows only part of
 what a bigger one does, so every size is captioned from its own crop. With Image Prep's "Copy the picture's caption to
 its crops" on, a crop gets its picture's caption; the rest are captioned with the Captions tab's model (--recaption_with:
-its worker config - Qwen3-VL, Florence-2 or a tagger such as JTP-3; none: Qwen3-VL with --captioner), Qwen3-VL with
-the Captions tab's Style instruction, trigger word first.
+its worker config - Qwen3-VL, Florence-2, JoyCaption or a tagger such as JTP-3; none: Qwen3-VL with --captioner),
+with the Captions tab's Style instruction, trigger word first.
 
     python -m fizgig.scripts.detail_crops --folder <training folder> --mp 1.0 [--mp 0.25] [--captioner <file>]
         [--recaption_with <json>] --instruction_file <file> [--trigger zwxem] [--ext .txt]"""
@@ -22,17 +22,26 @@ def captioner_config(recaption_with, captioner):
     """The caption worker config to load: the Captions tab's model, else Qwen3-VL from the captioner file; None when
     there is neither."""
     cfg = dict(recaption_with or {})
-    if cfg.get("backend") in ("tagger", "florence"):
+    if cfg.get("backend") == "tagger" or (cfg.get("captioner") and cfg.get("captioner") != "qwen3vl"):
         return cfg
-    path = cfg.get("text_encoder") or captioner or ""
-    return {"backend": "qwen", "text_encoder": path} if path and os.path.isfile(path) else None
+    if cfg.get("captioner") == "qwen3vl" and (cfg.get("files") or {}).get("path"):
+        return cfg
+    path = (cfg.get("files") or {}).get("path") or cfg.get("text_encoder") or captioner or ""
+    return {"captioner": "qwen3vl", "files": {"path": path}} if path and os.path.isfile(path) else None
 
 
 def model_name(cfg):
-    if cfg["backend"] == "tagger":
+    if cfg.get("backend") == "tagger":
         return cfg.get("model") or cfg.get("tagger") or "the tagger"
-    if cfg["backend"] == "florence":
-        return cfg.get("model") or cfg.get("florence_model") or "Florence-2"
+    if cfg.get("captioner"):
+        try:
+            from fizgig import captioners
+            d = captioners.get(cfg["captioner"])
+            if d:
+                return d.label
+        except Exception:
+            pass
+        return cfg["captioner"]
     return "Qwen3-VL"
 
 
@@ -63,26 +72,32 @@ def main():
     import torch
     from fizgig.scripts import batch_caption as bc
     trig = a.trigger if a.trigger and a.trigger.lower() != "trigger_word" else ""
+    instruction = ""
+    if a.instruction_file and os.path.isfile(a.instruction_file):
+        with open(a.instruction_file, encoding="utf-8") as f:
+            instruction = f.read().strip()
     say(f"[detail crops] captioning {len(todo)} crop(s) with {model_name(cfg)} (the Captions tab's model), each at "
         "its own size")
     state = bc._load_state_from_config(cfg, "cuda" if torch.cuda.is_available() else "cpu")
     try:
-        caption_one = bc._caption_fn(state, {"tags": cfg.get("tags"), "florence_task": cfg.get("florence_task"),
-                                             "instruction_file": a.instruction_file}, trig, a.max_new_tokens)
+        job = {"instruction": instruction, "max_new_tokens": a.max_new_tokens, "trigger": trig,
+               "tags": cfg.get("tags"), "threshold": cfg.get("threshold", 0.35),
+               "leave_out": cfg.get("leave_out") or (), "underscores": bool(cfg.get("underscores")),
+               "task": cfg.get("task")}
+        request, why = bc.request_for(state.desc, job)
+        if request is None:
+            say(f"[detail crops] no captions: {why}")
+            return 1
         for i, p in enumerate(todo, 1):
             try:
-                cap = caption_one(p)
+                cap = bc.caption_file(state, p, request, job)
                 if cap:
-                    bc._write_caption(p, cap, trig, a.ext)
+                    bc._write_caption(p, cap, a.ext)
                 say(f"[cache] captions {i}/{len(todo)}")       # the run card's count
             except Exception as e:
                 say(f"[detail crops] {os.path.basename(p)}: no caption ({e})")
     finally:
-        if state.backend == "tagger":
-            state.model[1].close()
-        del state.model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        bc.free(state)
     return 0
 
 

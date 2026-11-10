@@ -93,21 +93,15 @@ class Watch:
         self.instr, self.instr_detailed = recaption_instruction, recaption_instruction_detailed
         self.recaptioned = {}
         self.captioner_path = captioner_path
-        # the Captions tab's model: Florence-2 or a tagger (its worker config), else Qwen3-VL (--captioner)
+        # auto-recaption always uses Qwen3-VL (--captioner); the Captions tab's other models never load in a run
         self.recap = dict(recaption_with or {})
-        backend = self.recap.get("backend", "qwen")
         self.watch = None
         if not resume:
             _cleanup(output_dir)
-        if auto_recaption and backend == "qwen" and not (captioner_path and os.path.isfile(captioner_path)):
+        if auto_recaption and not (captioner_path and os.path.isfile(captioner_path)):
             logger.warning("[auto-recaption] needs the captioner (--captioner: the Krea 2 Qwen3-VL-4B text encoder "
                            "file) - off")
             auto_recaption = False
-        if auto_recaption and backend == "tagger":
-            from fizgig.dataset import taggers
-            if not taggers.get(self.recap.get("tagger")).find_model(self.recap.get("models_dir") or ""):
-                logger.warning(f"[auto-recaption] the {self.recap.get('model')} isn't downloaded (Captions tab) - off")
-                auto_recaption = False
         if not (log or per_image_lr or auto_recaption or warmup_look or env_on()):
             self.auto_recaption = False
             return
@@ -126,20 +120,12 @@ class Watch:
             logger.info(f"[auto-recaption] ON - stuck images re-captioned in their own folders "
                         f"({len(self.folders)}: {', '.join(self.folders.values())})"
                         + (f" (trigger: '{trigger_word}')" if trigger_word else ""))
-            if backend == "florence":
-                logger.info(f"[auto-recaption] captioner: {self.recap.get('model')} (Captions tab); first try: "
-                            f"{self.recap.get('florence_task') or '<DETAILED_CAPTION>'}; second try: "
-                            "<MORE_DETAILED_CAPTION>")
-            elif backend == "tagger":
-                logger.info(f"[auto-recaption] captioner: {self.recap.get('model')} (Captions tab tag settings); "
-                            "second try: a lower min score (25% lower, at most 0.1), so more tags")
-            else:
-                first = recaption_task or ("an instruction given on the command line" if recaption_instruction
-                                           else '"Training caption" (as shipped)')
-                second = recaption_task_detailed or ("an instruction given on the command line"
-                                                     if recaption_instruction_detailed
-                                                     else '"Exhaustive detail" (as shipped)')
-                logger.info(f"[auto-recaption] first try: {first}; second try: {second} (Captions tab instructions)")
+            first = recaption_task or ("an instruction given on the command line" if recaption_instruction
+                                       else '"Training caption" (as shipped)')
+            second = recaption_task_detailed or ("an instruction given on the command line"
+                                                 if recaption_instruction_detailed
+                                                 else '"Exhaustive detail" (as shipped)')
+            logger.info(f"[auto-recaption] first try: {first}; second try: {second} (Qwen3-VL, Captions tab instructions)")
         self.watch = PerImageLossWatch(output_dir, apply_lr=per_image_lr, write_jsonl=True,
                                        dataset_dir=self.image_dir, caption_ext=self.caption_ext,
                                        family=self.driver.description.key, folders=self.folders)
@@ -350,50 +336,22 @@ class Watch:
         logger.info(f"[caption-fix] {len(todo)} caption(s) re-encoded - next epoch trains on the fixed text. "
                     f"Loss-watch history reset for: " + ", ".join(k for k, _, _, _ in todo))
 
-    def _captioner(self, device):
-        """The Captions tab's model, loaded: (caption(img path, attempt) -> text, the model to free)."""
-        rw = getattr(self, "recap", None) or {}
-        backend = rw.get("backend", "qwen")
-        if backend == "florence":         # the Captions tab's Florence-2 code; the second try is its most detailed
-            from fizgig.scripts.batch_caption import _caption_florence, _load_florence
-            dev = "cuda" if str(device).startswith("cuda") else "cpu"
-            model, proc = _load_florence(rw.get("florence_model") or "", rw.get("florence_revision"),
-                                         rw.get("florence_code_revision"), dev)
-            first = rw.get("florence_task") or "<DETAILED_CAPTION>"
-            return (lambda img, attempt: _caption_florence(
-                model, proc, dev, img, "<MORE_DETAILED_CAPTION>" if attempt >= 2 else first, 160)), model
-        if backend == "tagger":           # the Captions tab's tagger and tag settings; the second try lowers the floor
-            from fizgig.dataset import tag_captions
-            from fizgig.scripts.batch_caption import _open_training_frame
-            tid = rw.get("tagger")
-            tagger = tag_captions.load(tid, rw.get("models_dir") or "", log=logger.info)
-            cfg = tag_captions.settings(rw.get("tags"), tid)
-            low = {**cfg, "min_score": second_try_min(cfg["min_score"])}
-
-            def tag(img, attempt):
-                text = tag_captions.caption(tag_captions.scored_tags(tagger, _open_training_frame(img)), tid,
-                                            low if attempt >= 2 else cfg)
-                if not text:
-                    raise RuntimeError("no tag scored at least the min score")
-                return text
-            return tag, tagger
-        from fizgig.krea2.embedder import generate_caption
-        from fizgig.krea2.utils import load_krea2_text_encoder
-        enc = load_krea2_text_encoder(self.captioner_path, dtype=torch.bfloat16, device=device)
-
-        def qwen(img, attempt):
-            instr = (self.instr_detailed if attempt >= 2 else self.instr) or None
-            # 160 tokens on the first try: room for the Detailed and Style tasks (a caption ends where it ends)
-            return generate_caption(enc, img, detailed=attempt >= 2, instruction=instr, max_new_tokens=160)
-        return qwen, enc
-
     def _recaption(self, auto, items, device):
-        """Caption the stuck images with the Captions tab's model (Qwen3-VL - Krea 2's text encoder -, Florence-2 or
-        a tagger; loaded for the call and freed before the family's encoder loads). Writes each .txt and returns
-        (key, item, caption, attempt) rows to re-encode. A captioner that does not fit the card turns auto-recaption
-        off for the run."""
+        """Caption the stuck images with the shared captioner (Krea 2's Qwen3-VL-4B, loaded for the call and freed
+        before the family's encoder loads). Writes each .txt and returns (key, item, caption, attempt) rows to
+        re-encode. A captioner that does not fit the card turns auto-recaption off for the run.
+
+        Only this model, loaded directly: the Captions tab's other captioners (fizgig/captioners/) never load in a run,
+        so the training memory plans only ever fit around Qwen3-VL (the rule in fizgig/captioners/__init__.py)."""
         try:
-            caption, enc = Watch._captioner(self, device)
+            from fizgig.krea2.embedder import generate_caption
+            from fizgig.krea2.utils import load_krea2_text_encoder
+            enc = load_krea2_text_encoder(self.captioner_path, dtype=torch.bfloat16, device=device)
+
+            def caption(img, attempt):
+                instr = (self.instr_detailed if attempt >= 2 else self.instr) or None
+                # 160 tokens on the first try: room for the Detailed and Style tasks (a caption ends where it ends)
+                return generate_caption(enc, img, detailed=attempt >= 2, instruction=instr, max_new_tokens=160)
         except torch.OutOfMemoryError:
             logger.warning("[auto-recaption] off for the rest of this run: the captioner does not fit this card's "
                            "VRAM. Training continues; manual caption edits still apply.")
@@ -402,7 +360,7 @@ class Watch:
             torch.cuda.empty_cache()
             return []
         except Exception:
-            logger.warning("[auto-recaption] off for the rest of this run: the Captions tab's model could not load. "
+            logger.warning("[auto-recaption] off for the rest of this run: the captioner could not load. "
                            "Training continues; manual caption edits still apply.", exc_info=True)
             self.auto_recaption = False
             return []

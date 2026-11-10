@@ -130,7 +130,7 @@ def test_cmuon_fine_tune_wiring(monkeypatch):
     assert seen["wf"] == pytest.approx(1.0)
     # Fine-tune > Optimizer: a fine-tune row (the section is hidden for a LoRA); the launch flag
     desc = FAMILIES["zimage"]
-    lab = launch.FT_OPTIMIZERS[1][0]
+    lab = next(l for l, k in launch.FT_OPTIMIZERS if k == "cmuon")
     assert launch.ft_optimizer({"FAMILY_FT_OPTIMIZER": lab}) == "cmuon"
     assert launch.ft_optimizer({}) == "adafactor"
     st = form.state(desc, {**form.DEFAULTS}, "")

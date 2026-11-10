@@ -27,6 +27,12 @@ from fizgig.training.optimizers import (  # noqa: E402
     strip_prodigy_args,
 )
 from fizgig.training.prodigy import Prodigy as VendoredProdigy  # noqa: E402
+
+
+NEW = ("prodigy", "muon", "automagic4")
+# presets that pick a new optimizer by decision (Peter, 6 Nov 2026 - Muon's source-matching detail)
+CHOSEN = {k: "muon" for k in ("qwen_image21", "krea2", "moss_image", "vimoo", "zimage", "zimage_base",
+                                    "klein", "sdxl", "flux3", "anima", "fibo2")}
 from fizgig.training.step_log import StepLog, read as read_steplog  # noqa: E402
 
 
@@ -66,6 +72,23 @@ def test_strip_prodigy_and_muon_args():
     assert strip_muon_args("momentum=0.9 betas=0.9,0.99") == "betas=0.9,0.99"
     assert strip_muon_args("weight_decay=0.01") == "weight_decay=0.01"
     assert strip_muon_args("") == ""
+
+def test_no_preset_picks_a_new_optimizer():
+    """No preset picks a new optimizer, except the families in CHOSEN, whose presets all use their chosen one with
+    its default arguments. A Fine-tune preset trains with Adafactor (#312)."""
+    for desc in registry.training_families():
+        for name, p in desc.presets or ():
+            if name == "PoLoRA":
+                continue
+            opt = str(p.get("OPTIMIZER_TYPE") or "").lower()
+            if p.get("FAMILY_FT"):
+                assert opt == "adafactor", (desc.key, name)
+            elif desc.key in CHOSEN:
+                assert opt == CHOSEN[desc.key], (desc.key, name)
+                if opt == "muon":
+                    assert p.get("OPTIMIZER_ARGS") == MUON_DEFAULT_ARGS, (desc.key, name)
+            else:
+                assert opt not in NEW, (desc.key, name)
 
 
 def test_prodigy_creation_defaults_and_overrides(caplog):

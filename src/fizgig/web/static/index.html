@@ -637,6 +637,18 @@
               <div class="field-row"><span class="field-label">Task:</span>
                 <select id="capTask" class="w-combo-lg"></select>
                 <button class="btn" id="capEditInstr">Edit instructions…</button></div>
+              <div class="field-row" id="capLengthRow" style="display:none"><span class="field-label">Length:</span>
+                <select id="capLength" class="w-combo"></select>
+                <span class="field-hint">A length word, or at most this many words.</span></div>
+              <div id="capExtrasBox" style="display:none">
+                <div class="field-hint">Also tell it to (added after the main instruction and your own):</div>
+                <div class="cap-extras" id="capExtras"></div>
+                <div class="field-hint">Your own, added straight after the main instruction (before the ticked ones):
+                  write each as a plain sentence telling it what to do, one or more, in the order you want them.</div>
+                <textarea id="capExtraOwn" rows="2"
+                  placeholder="e.g. Mention the colour of her eyes. Describe the jewellery in detail. Do not describe the background."></textarea>
+                <div class="field-hint cap-sent" id="capSent"></div>
+              </div>
               <div class="field-row" id="capConceptRow" style="display:none"><span class="field-label">The concept is:</span>
                 <input type="text" id="capConcept" class="w-path" placeholder='a few plain words, e.g. "a backflip" or "a double exposure"'></div>
               <div class="field-hint" id="capConceptHint" style="display:none;margin-bottom:12px">Every caption names it in exactly these
@@ -676,6 +688,16 @@
                 <label class="checkbox-label"><input type="checkbox" id="capTagRatings">
                   Include a rating tag (like general or explicit)</label>
                 <div class="field-hint" id="capTagState"></div>
+              </div>
+              <div id="capTagRows" style="display:none">
+                <div class="field-row"><span class="field-label">Keep tags scoring:</span>
+                  <input type="number" id="capThreshold" class="w-num" min="0.05" max="0.95" step="0.05" value="0.35">
+                  <span class="field-hint">or more (0 to 1). Higher keeps only the tags it's sure of; lower adds more tags,
+                    and more mistakes.</span></div>
+                <div class="field-row"><span class="field-label">Leave out:</span>
+                  <input type="text" id="capLeaveOut" class="w-path" placeholder="tags never to write, e.g. watermark, signature, blurry"></div>
+                <label class="checkbox-label"><input type="checkbox" id="capUnderscores">
+                  Keep underscores in tags (long_hair rather than long hair)</label>
               </div>
               <label class="checkbox-label"><input type="checkbox" id="capOverwrite" checked>
                 Overwrite existing captions (untick to caption only the files without one)</label>
@@ -849,6 +871,7 @@
                 itself mid-run loses what it trained since its last save: press Pause first.</div>
               <div id="runLoss"></div>
               <div class="il-box" id="runImageLoss" style="display:none"></div>
+              <div class="tm-box" id="runTrainMaps" style="display:none"></div>
               <div class="field-row">
                 <button class="btn" id="btnCheck" title="Runs Start's checks without starting: lists anything missing or wrong, else the stages a run would go through">Check settings</button>
                 <button class="btn btn-primary" id="btnStart">Start Training</button>
@@ -856,6 +879,7 @@
                 <button class="btn btn-warning" id="btnPause">Pause</button>
                 <button class="btn" id="btnSampleNow" style="display:none" title="Make the previews now, after the current training step, without waiting for the epoch to end">Sample now</button>
                 <button class="btn btn-lilac is-off" id="btnImageLoss" style="display:none" title="Each training image's loss by epoch, against the rest of the dataset: which images are still being learned, which are done, and what the loss watch decided about each">Per-image loss</button>
+                <button class="btn btn-lilac" id="btnTrainMaps" style="display:none" title="A few of your pictures, checked before training and after every epoch: where the model is still wrong, what it has learned, and where the LoRA is acting">Training maps</button>
                 <button class="btn" id="btnSaveNow" style="display:none" title="Save the LoRA as it is now, after the current training step (as name-stepNNNNNNN.safetensors)">Save now</button>
                 <button class="btn" id="btnReclaimNow" style="display:none" title="Training slowed down after another app used the graphics card? Close that app, then click: after the current step the run's memory moves back from system RAM into VRAM. Training results don't change.">Reclaim VRAM</button>
                 <button class="btn btn-primary" id="btnResume">Resume</button>
@@ -1057,7 +1081,7 @@
                 <figure class="gallery-item st-pane"><img id="stBase" alt=""><video id="stBaseVid" controls loop muted playsinline preload="auto"
                   style="display:none"></video><audio id="stBaseAud" controls style="display:none"></audio>
                   <figcaption id="stBaseCap">Baseline (LoRA at default 1.0)</figcaption></figure>
-                <figure class="gallery-item st-pane"><div class="st-region" id="stRegion"></div><img id="stTweak" alt=""><video id="stTweakVid" controls loop muted playsinline preload="auto"
+                <figure class="gallery-item st-pane st-tweak-pane"><div class="st-region" id="stRegion"></div><img id="stTweak" alt=""><canvas id="stMapCanvas" class="st-map-canvas" style="display:none"></canvas><div class="st-map-badge" id="stMapBadge" style="display:none"><span class="st-map-spin"></span>Making the map…</div><video id="stTweakVid" controls loop muted playsinline preload="auto"
                   style="display:none"></video><audio id="stTweakAud" controls style="display:none"></audio>
                   <figcaption id="stTweakCap">Tweaked (current sliders)</figcaption></figure>
               </div>
@@ -1067,6 +1091,22 @@
                 <button class="btn btn-sm" id="stMetRefClear" title="No reference photo">✕</button>
                 <span class="st-chip" id="stMetLike"></span><span class="st-chip" id="stMetGrid"></span>
                 <span class="st-chip" id="stMetTex"></span><span class="st-chip" id="stMetClip"></span><span class="st-chip" id="stMetSat"></span>
+              </div>
+              <div class="st-maps" id="stMaps" style="display:none">
+                <div class="st-maps-head"><span class="st-maps-title"
+                  title="Heatmaps over the Tweaked picture, as Training maps draws them: the picture is noised at three levels and the model's prediction compared with and without the LoRA">Maps</span>
+                  <span class="st-map-pill" id="stMapPill" style="display:none"><span class="st-map-spin"></span>Making the map…</span></div>
+                <div class="tm-row" id="stMapKinds"></div>
+                <div class="st-map-explain" id="stMapKindSay"></div>
+                <div id="stMapOpts" style="display:none">
+                  <div class="tm-row" id="stMapLevels"></div>
+                  <div class="tm-row" id="stMapTrigRow" style="display:none"><label class="tm-auto">Trigger word
+                    <input type="text" id="stMapTrig" class="st-map-trig" placeholder="from the LoRA" spellcheck="false"></label>
+                    <button class="btn btn-sm" id="stMapGo" title="Make the trigger word's map for the word in the box (or press Enter)">Show</button></div>
+                  <div class="tm-row"><label class="tm-auto">Opacity <input type="range" id="stMapOp" class="tm-opacity" min="0" max="150" step="5" value="100"></label>
+                    <span class="st-map-key">Colour key:</span><span class="tm-legend-end">less</span><span class="tm-legend" id="stMapLegend"></span><span class="tm-legend-end">more</span></div>
+                </div>
+                <div class="st-map-note" id="stMapSay" style="display:none"></div>
               </div>
               <div class="field-row" id="stPlayBoth" style="display:none"><button class="btn btn-sm" id="stPlayBothBtn">▶ Play together</button></div>
               <div class="field-row" id="stDownloads" style="display:none">

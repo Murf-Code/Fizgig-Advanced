@@ -1,17 +1,14 @@
 """The web UI's Captions tab: the desktop Captions tab's tools, run on the machine training.
 
-AI captions use the desktop's own worker (fizgig.scripts.batch_caption --serve): one process that keeps its model
+AI captions use the captioners in fizgig/captioners/ (each a description + a small class, in Fizgig's language), run
+by the worker (fizgig.scripts.batch_caption --serve): one process that keeps its model
 loaded between batches, so a single re-caption is quick, until Unload, a model change, or a run needs the GPU (it
 quits before any run starts, on either side). Static captions, song captions and Find & Replace are file operations
 here. Bilingual translation runs fizgig.scripts.translate_captions. One job at a time; status() is what the page
 polls.
 
-Model names, Florence pins and the Qwen3-VL task menu match the desktop app (lora_trainer_gui.py FLORENCE_*,
-fizgig.krea2.caption_text.CAPTION_TASKS); the edited Qwen instructions are the same Preferences entry
-(caption_qwen_instructions), so an edit in either app is used by both.
-
-The two taggers (fizgig.dataset.tag_captions: WD EVA02 Large v3 and JTP-3 Hydra, the same downloads as Image Prep's
-Trim tags) write tag captions through the same worker; it frees a tagger as soon as its job ends.
+The instruction task menu is fizgig.krea2.caption_text.CAPTION_TASKS, for any captioner that follows an instruction;
+edits are kept in Preferences (caption_qwen_instructions), which auto-recaption reads too.
 """
 import glob
 import json
@@ -20,6 +17,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 
 from fizgig.user_data import user_file  # noqa: E402  (Fizgig's own files: user_data/)
 from fizgig.dataset.masks import is_mask_file  # noqa: E402
@@ -40,21 +38,94 @@ def read_text(path) -> str:
         return raw.decode("cp1252", errors="replace")
 
 
-FLORENCE_DEFAULT_MODEL = "MiaoshouAI/Florence-2-base-PromptGen"
-FLORENCE_MODELS = [FLORENCE_DEFAULT_MODEL, "microsoft/Florence-2-base", "microsoft/Florence-2-large"]
-FLORENCE_REVISIONS = {
-    "MiaoshouAI/Florence-2-base-PromptGen": "da7ac9f3deac56a928e2fd4d94d8bb985d231299",
-    "microsoft/Florence-2-base": "5ca5edf5bd017b9919c05d08aebef5e4c7ac3bac",
-    "microsoft/Florence-2-large": "21a599d414c4d928c9032694c424fb94458e3594",
-}
-FLORENCE_CODE_REVISIONS = {"MiaoshouAI/Florence-2-base-PromptGen": "f6c1a25888ffc1d945ee8a1a77ac833c7303d46e"}
-FLORENCE_TASKS = ["<CAPTION>", "<DETAILED_CAPTION>", "<MORE_DETAILED_CAPTION>"]
-QWEN_MODEL = "Qwen3-VL (Krea 2 text encoder, or the secondary captioning model)"
+from fizgig import captioners as _captioners  # noqa: E402  (descriptions only: no torch, no model code)
+
+QWEN_KEY = "qwen3vl"          # the captioner whose file is Preferences' "captioner" (captioner_for)
+QWEN_MODEL = _captioners.get(QWEN_KEY).label
+
 # the secondary captioning model (#270): Preferences' optional row. Set, it captions everything (the Captions tab and
 # auto-recaption); empty, the Krea 2 text encoder (Qwen3-VL-4B) does. Comfy-Org's Qwen3-VL-8B builds the loader reads
 SECONDARY_PREF = "captioner_secondary"
 SECONDARY_LINKS = (("fp8 (10.6 GB, about 10.5 GB of VRAM)", "Comfy-Org/Qwen3-VL", "text_encoders/qwen3vl_8b_fp8_scaled.safetensors"),
                    ("bf16 (17.5 GB, about 17 GB of VRAM)", "Comfy-Org/Qwen3-VL", "text_encoders/qwen3vl_8b_bf16.safetensors"))
+
+
+# ---- Preferences' Other captioning models: each one's download, from the registry ---------------------------
+_dl = {}                      # key -> {"state": "downloading" / "failed", "error"}
+_dl_lock = threading.Lock()
+
+
+def _repo_dir(repo):
+    from huggingface_hub.constants import HF_HUB_CACHE
+    return os.path.join(HF_HUB_CACHE, "models--" + repo.replace("/", "--"))
+
+
+def _downloaded(desc) -> bool:
+    """Its pinned snapshot is in the Hugging Face cache with its weights (a first use's download counts too)."""
+    try:
+        from huggingface_hub import snapshot_download
+        snap = snapshot_download(desc.files.repo, revision=desc.files.revision, local_files_only=True)
+    except Exception:
+        return False
+    return any(n.endswith((".safetensors", ".bin")) for n in os.listdir(snap)) if os.path.isdir(snap) else False
+
+
+def _cached_gb(repo) -> float:
+    """What of the repo is on disk so far (finished and partial files), for a download's progress."""
+    total = 0
+    for root, _dirs, names in os.walk(os.path.join(_repo_dir(repo), "blobs")):
+        for n in names:
+            try:
+                total += os.path.getsize(os.path.join(root, n))
+            except OSError:
+                pass
+    return total / 2 ** 30
+
+
+def other_captioners():
+    """[{key, label, blurb, size_gb, downloaded, state, done_gb, error}] for every captioner that downloads itself."""
+    out = []
+    for d in _captioners.CAPTIONERS:
+        if not isinstance(d.files, _captioners.HFRepo):
+            continue
+        with _dl_lock:
+            job = dict(_dl.get(d.key) or {})
+        busy = job.get("state") == "downloading"
+        out.append({"key": d.key, "label": d.label, "blurb": d.blurb, "size_gb": d.size_gb,
+                    "downloaded": False if busy else _downloaded(d), "state": job.get("state", ""),
+                    "done_gb": round(_cached_gb(d.files.repo), 2) if busy else 0.0, "error": job.get("error", "")})
+    return out
+
+
+def download_captioner(key, prefs=None):
+    """Fetch one captioner now (its first use would otherwise), in the background: the worker's --fetch, which runs
+    the captioner's own fetch() - its pinned files, and whatever else its first use caches - in its own process."""
+    d = _captioners.get(key)
+    if d is None or not isinstance(d.files, _captioners.HFRepo):
+        raise ValueError("Unknown captioning model.")
+    with _dl_lock:
+        if (_dl.get(key) or {}).get("state") == "downloading":
+            return {"ok": True}
+        _dl[key] = {"state": "downloading"}
+
+    def run():
+        try:
+            proc = _popen([sys.executable, "-m", "fizgig.scripts.batch_caption", "--fetch", d.key], prefs or {})
+            last = ""
+            for line in proc.stdout:
+                if line.strip():
+                    last = line.strip()
+            proc.wait()
+            if proc.returncode or last != "DONE":
+                raise RuntimeError(last[len("FAIL: "):] if last.startswith("FAIL: ") else last or "it stopped")
+            with _dl_lock:
+                _dl.pop(key, None)
+            _log(f"Downloaded {d.label}")
+        except Exception as e:
+            with _dl_lock:
+                _dl[key] = {"state": "failed", "error": str(e)[:300]}
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True}
 
 
 def captioner_problem(path) -> str:
@@ -128,10 +199,16 @@ def _overrides(prefs):
     return out
 
 
+def _offered(captioner):
+    """The registry's captioners the Captions tab can use now: one whose file Preferences holds needs it set."""
+    return [d for d in _captioners.CAPTIONERS
+            if not (isinstance(d.files, _captioners.PrefFile) and d.files.pref == "captioner" and not captioner)]
+
+
 def options(prefs, captioner, secondary="", models_dir=None):
-    """Models (Qwen3-VL first when its file is set), each model's tasks, and each Qwen task's instruction (the edited
-    one if there is one), its shipped text and its suggested length. secondary: the secondary captioning model's file
-    when it is the one captioning."""
+    """The captioners (label, kind, tasks, whether each follows an instruction), the default (Qwen3-VL when its file is
+    set), and each instruction task's text (the edited one if there is one), its shipped text and its suggested
+    length. secondary: the secondary captioning model's file when it is the one captioning."""
     tasks, default = _tasks()
     ovr = _overrides(prefs)
     qwen = []
@@ -141,15 +218,23 @@ def options(prefs, captioner, secondary="", models_dir=None):
     custom_builtin = tasks[default][1]
     qwen.append({"key": "custom", "label": CUSTOM_TASK, "tokens": tasks[default][2], "builtin": custom_builtin,
                  "instruction": str(ovr.get("custom") or "").strip() or custom_builtin, "edited": bool(ovr.get("custom"))})
+    offered = _offered(captioner)
+    qwen_label = _captioners.get(QWEN_KEY).label
     from fizgig.dataset import tag_captions
     from fizgig.user_data import MODELS_DIR
-    models = FLORENCE_MODELS + ([QWEN_MODEL] if captioner else [])          # the desktop's order
-    models += list(tag_captions.MODELS)                                     # then the taggers
-    return {"models": models, "taggers": tag_captions.info(models_dir or MODELS_DIR),
-            "tag_max": tag_captions.MAX_TAGS, "default_model": QWEN_MODEL if captioner else models[0], "qwen_model": QWEN_MODEL,
-            "qwen_tasks": qwen,
-            "default_qwen_task": tasks[default][0], "florence_tasks": FLORENCE_TASKS,
-            "qwen_available": bool(captioner), "secondary": os.path.basename(secondary) if secondary else ""}
+    jtp = tag_captions.info(models_dir or MODELS_DIR).get(tag_captions.JTP3_MODEL) or {}
+    return {"models": [d.label for d in offered] + [tag_captions.JTP3_MODEL],
+            "captioners": [{"label": d.label, "key": d.key, "kind": d.kind, "instruction": d.instruction,
+                            "tasks": list(d.tasks), "default_task": d.default_task, "hint": d.hint,
+                            "size_gb": d.size_gb, "licence": d.licence,
+                            "prompt_types": [list(t) for t in d.prompt_types], "prompt_lengths": list(d.prompt_lengths),
+                            "default_length": d.default_length,
+                            "prompt_extras": [{"label": l, "text": t, "on": on} for l, t, on in d.prompt_extras]}
+                           for d in offered],
+            "default_model": qwen_label if captioner else offered[0].label,
+            "instruction_tasks": qwen, "default_instruction_task": tasks[default][0],
+            "qwen_available": bool(captioner), "secondary": os.path.basename(secondary) if secondary else "",
+            "taggers": {tag_captions.JTP3_MODEL: jtp} if jtp else {}, "tag_max": tag_captions.MAX_TAGS}
 
 
 def instruction_override(prefs, key, text):
@@ -302,22 +387,22 @@ def add_text(folder, start, end, trigger, apply, ext=".txt"):
 
 
 # ---- the AI worker -------------------------------------------------------------------------------------------
-def _worker_config(model, captioner, clips, models_dir=None):
+def need_gb(model) -> float:
+    """What a captioner needs on the card (its description), for the check beside a running run."""
     from fizgig.dataset import tag_captions
-    tid = tag_captions.tagger_id(model)
-    if tid:
-        from fizgig.user_data import MODELS_DIR
-        return {"backend": "tagger", "tagger": tid, "models_dir": models_dir or MODELS_DIR, "include_video": bool(clips)}
-    cfg = {"backend": "qwen" if model == QWEN_MODEL else "florence", "include_video": bool(clips)}
-    if cfg["backend"] == "qwen":
-        cfg["text_encoder"] = captioner
-    else:
-        cfg["florence_model"] = model
-        if FLORENCE_REVISIONS.get(model):
-            cfg["florence_revision"] = FLORENCE_REVISIONS[model]
-        if FLORENCE_CODE_REVISIONS.get(model):
-            cfg["florence_code_revision"] = FLORENCE_CODE_REVISIONS[model]
-    return cfg
+    if tag_captions.tagger_id(model) == "jtp3":
+        return 2.5
+    d = _captioners.get(model)
+    return d.vram_gb if d else 8.0
+
+
+def _files(desc, captioner):
+    """The worker's files for a captioner whose file Preferences holds; one that downloads itself needs none here."""
+    return {"path": captioner} if isinstance(desc.files, _captioners.PrefFile) else {}
+
+
+def _worker_config(desc, captioner, clips):
+    return {"captioner": desc.key, "files": _files(desc, captioner), "include_video": bool(clips)}
 
 
 def _crop_images(images, overwrite, ext):
@@ -399,24 +484,31 @@ def _popen(cmd, prefs, stdin=False):
 
 
 def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_tokens, trigger, overwrite, clips,
-                only=None, photos=True, ext=".txt", tags=None, models_dir=None):
-    """Caption the folder's pictures (and clips) with Florence-2, Qwen3-VL or a tagger (`tags`: its settings,
-    tag_captions.settings), or just `only` (a re-caption). Florence-2 and Qwen3-VL load once and stay loaded for the
-    next batch; a tagger is freed when its job ends."""
-    from fizgig.dataset import tag_captions
+                only=None, photos=True, ext=".txt", threshold=0.35, leave_out="", underscores=False,
+                tags=None, models_dir=None):
+    """Caption the folder's pictures (and clips) with a captioner from the registry (`model` is its label or key), or
+    just `only` (a re-caption). The worker loads once and stays loaded for the next batch. A registry tagger keeps the
+    tags scoring `threshold` or more, minus `leave_out` (comma-separated), underscores as spaces unless `underscores`.
+    JTP-3 Hydra (Fizgig Advanced) uses `tags` (tag_captions.settings) and is freed when its job ends."""
     if _busy():
         raise ValueError("A captioning job is already running. Stop it first.")
-    if model == QWEN_MODEL and not captioner:
-        raise ValueError("Qwen3-VL needs the Krea 2 text encoder set in Preferences.")
+    from fizgig.dataset import tag_captions
     tid = tag_captions.tagger_id(model)
+    desc = None if tid else _captioners.get(model)
+    if desc is None and not tid:
+        raise ValueError(f"Unknown caption model: {model}")
+    if desc is not None and isinstance(desc.files, _captioners.PrefFile) and not captioner:
+        raise ValueError("Qwen3-VL needs the Krea 2 text encoder set in Preferences.")
     if tid:
         from fizgig.dataset import taggers
         from fizgig.user_data import MODELS_DIR
         models_dir = models_dir or MODELS_DIR
         tags = tag_captions.settings(tags, tid)
-        mod = taggers.get(tid)
-        if not mod.find_model(models_dir):
-            raise ValueError(f"The {mod.LABEL} isn't downloaded yet: press Download under the Model box first.")
+        if not taggers.get(tid).find_model(models_dir):
+            raise ValueError(f"The {taggers.get(tid).LABEL} isn't downloaded yet: press Download under the Model box first.")
+        model = tag_captions.JTP3_MODEL if tid == "jtp3" else model
+    else:
+        model = desc.label
     images = [p for p in (only or [p for f in with_crops(folder) for p in media_files(f, clips, photos)])
               if os.path.isfile(p)]
     if not images and not only:
@@ -430,18 +522,19 @@ def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_to
         raise ValueError("Every file already has a caption. Tick Overwrite to caption them again."
                          if not only else "That file isn't there any more.")
     os.makedirs(JOB_DIR, exist_ok=True)
-    key = (model, captioner if model == QWEN_MODEL else "", bool(clips))
+    key = (("tagger", tid, models_dir) if tid else (desc.key, json.dumps(_files(desc, captioner)), bool(clips)))
     with _lock:
         alive = _st["proc"] is not None and _st["proc"].poll() is None
         same = alive and _st["key"] == key
-    if alive and (not same or tid):        # a tagger worker quits after each job: always a fresh one
+    if alive and not same:
         unload()
     with _lock:
         alive = _st["proc"] is not None and _st["proc"].poll() is None
     if not alive:
         cfg_path = os.path.join(JOB_DIR, "worker_config.json")
         with open(cfg_path, "w", encoding="utf-8") as f:
-            json.dump(_worker_config(model, captioner, clips, models_dir), f)
+            json.dump({"backend": "tagger", "tagger": tid, "models_dir": models_dir,
+                               "include_video": bool(clips)} if tid else _worker_config(desc, captioner, clips), f)
         proc = _popen([sys.executable, "-m", "fizgig.scripts.batch_caption", "--serve", "--config", cfg_path], prefs,
                       stdin=True)
         with _lock:
@@ -459,13 +552,16 @@ def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_to
            "stop_file": stop_file, "caption_ext": ext}
     if tid:
         job["tags"] = tags
-    elif model == QWEN_MODEL:
+    elif desc.instruction:
         instr = os.path.join(JOB_DIR, "instruction.txt")
         with open(instr, "w", encoding="utf-8") as f:
             f.write(instruction.strip())
         job["instruction_file"] = instr
-    else:
-        job["florence_task"] = task_label if task_label in FLORENCE_TASKS else "<DETAILED_CAPTION>"
+    if desc is not None and desc.tasks:
+        job["task"] = task_label if task_label in desc.tasks else desc.default_task
+    if desc is not None and desc.kind == "tags":
+        job.update(threshold=min(max(float(threshold or 0.35), 0.01), 0.99), underscores=bool(underscores),
+                   leave_out=[t.strip() for t in str(leave_out or "").split(",") if t.strip()])
     job_path = os.path.join(JOB_DIR, "job.json")
     with open(job_path, "w", encoding="utf-8") as f:
         json.dump(job, f)

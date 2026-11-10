@@ -208,8 +208,8 @@ def kind_sets(desc, kind):
     """What picking a kind of training also sets (the desktop's _family_kind_chosen): Fine-tune takes the family's
     fine-tune learning rate with Adaptive LR off; a family's kind_values come too."""
     out = dict(dict(getattr(desc, "kind_values", ()) or ()).get(kind, ()))
-    if kind == "finetune":
-        out.update(LEARNING_RATE=f"{desc.ft_learning_rate:g}", ADAPTIVE_LR=False)
+    if kind == "finetune":                   # Adafactor: what every fine-tune is tested on (#312)
+        out.update(LEARNING_RATE=f"{desc.ft_learning_rate:g}", ADAPTIVE_LR=False, OPTIMIZER_TYPE="adafactor")
     return out
 
 
@@ -396,11 +396,12 @@ def form(desc):
                  "profiles - real but unusual) start at x0.4 and ramp to x1.0 over the first ~4 epochs, so they refine "
                  "the identity instead of fighting it while it forms. Run the Look Filter (with 3 baselines) on this "
                  "folder first: it saves the scores with the dataset. Without them this does nothing."),
-            _row("KREA2_AUTO_RECAPTION", "Auto-recaption stuck images (the Captions tab's model rewrites the "
-                 "caption between epochs)", "check", "A stuck image gets a new caption written from what is in it, and "
-                 "a fresh start; a second try goes into more detail. Still stuck after that, it is left out of "
-                 "training - edit its caption to bring it back. Uses the model picked on the Captions tab: Qwen3-VL "
-                 "(needs the Krea 2 text encoder set in Preferences), Florence-2, or a tagger."),
+            _row("KREA2_AUTO_RECAPTION", "Auto-recaption stuck images (Qwen3-VL rewrites the caption between "
+                 "epochs)", "check", "A stuck image gets a new caption written from what is in it, and a fresh start; "
+                 "a second try goes into more detail. Still stuck after that, it is left out of training - edit its "
+                 "caption to bring it back. The new captions are written by Qwen3-VL: the Krea 2 text encoder, or "
+                 "Qwen3-VL 8B if you've set it as the secondary captioning model in Preferences. The other models on "
+                 "the Captions tab (Florence-2, JoyCaption, the WD tagger) aren't used for auto-recaption."),
             _row("RECAPTION_FIRST", "First try uses", "choice",
                  "The Captions tab's instruction for that task, as you've edited it there. The defaults are the "
                  "person or character versions: for an object or product, pick the (object or product) Training "
@@ -414,6 +415,12 @@ def form(desc):
             _row("CAPTION_TRIGGER_WORD", "Trigger word", hint="Used by Auto-recaption (below): it adds this word at the "
                  "end of a new caption. The training folder's word, the same as the Captions tab's."),
         ]
+    if desc.training_maps:
+        params.append(_row("TRAINING_MAPS", "Training maps (watch what your LoRA is learning)",
+                           "check", "Heatmaps over three of your own pictures, updated every epoch: which parts the "
+                           "LoRA has learned, which it hasn't yet, and where it's changing things it shouldn't, like "
+                           "the background or clothes. Open them with the Training maps button on the run card. Adds "
+                           "a few seconds an epoch."))
     params += by_section("training", "", "lora")
     if desc.identity_blocks:
         a, b = desc.identity_blocks[0], desc.identity_blocks[-1]
@@ -653,8 +660,9 @@ def form(desc):
                  "windows and more memory to spare, if Auto runs too close to your card's limit.",
                  [lab for lab, _ in launch.FT_WINDOW_SIZES], default=launch.FT_WINDOW_SIZES[0][0]),
             _row("FAMILY_FT_FUSED", "Free each gradient as soon as it's used (less memory - recommended)", "check"),
-            _row("FAMILY_FT_OPTIMIZER", "Optimizer", "choice", "The fine-tune's own optimizer (the Optimizer "
-                 "section's choice is for LoRAs). Adafactor keeps almost no extra memory. CMuon is Muon with each "
+            _row("FAMILY_FT_OPTIMIZER", "Optimizer", "choice", "The optimizer this fine-tune trains with (the "
+                 "Optimizer section's LoRA choice is hidden). Adafactor is the default and keeps almost no extra "
+                 "memory. AdamW8bit, AdamW, AdEMAMix8bit and Lion8bit are also offered. CMuon is Muon with each "
                  "fused weight (Q/K/V together, gate+up, the AdaLN rows) stepped part by part, so no part drowns the "
                  "others out; it keeps a momentum copy of the window's weights, so windows hold fewer parts. "
                  "An experiment - compare it with Adafactor on the same pictures.",
@@ -1301,22 +1309,27 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
     if kind == "finetune":       # a fine-tune trains at its own fixed rate: no Adaptive LR, on any model
         hidden.add("ADAPTIVE_LR")
     _polora_boxes(values, hidden, force)
-    if str(values.get("OPTIMIZER_TYPE", "")).strip().lower() == "polora" and kind not in ("slider", "finetune"):
-        notes["ADAPTIVE_LR"] = "With PoLoRA, Min and Max are its real learning rates (it trains around 1e-2 to " \
-                               "4e-2), as with Muon; magnitude_scale stays as you set it."
-    if str(values.get("OPTIMIZER_TYPE", "")).strip().lower() == "lora_tsd" and kind not in ("slider", "finetune"):
-        notes["ADAPTIVE_LR"] = "With LoRA-TSD, Min and Max are its real learning rates (it trains around 2e-3 to " \
-                               "1e-2); each step's change stays capped by max_delta_norm."
-    from fizgig.training.optimizers import (
-        MUON_DEFAULT_ARGS, PRODIGY_DEFAULT_ARGS, strip_muon_args, strip_prodigy_args,
-    )
-    opt = str(values.get("OPTIMIZER_TYPE", "")).strip().lower()
-    raw_args = str(values.get("OPTIMIZER_ARGS") or "").strip()
-    cleaned_args = raw_args
-    if opt != "prodigy":
-        cleaned_args = strip_prodigy_args(cleaned_args)
-    if opt != "muon":
-        cleaned_args = strip_muon_args(cleaned_args)
+    if kind == "finetune":       # Fine-tune > Optimizer is what trains; hide the LoRA optimizer (incl. PoLoRA)
+        hidden |= {"OPTIMIZER_TYPE", "OPTIMIZER_ARGS", "POLORA_MAGNITUDE", "POLORA_CURVATURE", "POLORA_COMPILE"}
+        opt = ""
+        raw_args = cleaned_args = ""
+    else:
+        if str(values.get("OPTIMIZER_TYPE", "")).strip().lower() == "polora" and kind not in ("slider", "finetune"):
+            notes["ADAPTIVE_LR"] = "With PoLoRA, Min and Max are its real learning rates (it trains around 1e-2 to " \
+                                   "4e-2), as with Muon; magnitude_scale stays as you set it."
+        if str(values.get("OPTIMIZER_TYPE", "")).strip().lower() == "lora_tsd" and kind not in ("slider", "finetune"):
+            notes["ADAPTIVE_LR"] = "With LoRA-TSD, Min and Max are its real learning rates (it trains around 2e-3 to " \
+                                   "1e-2); each step's change stays capped by max_delta_norm."
+        from fizgig.training.optimizers import (
+            MUON_DEFAULT_ARGS, PRODIGY_DEFAULT_ARGS, strip_muon_args, strip_prodigy_args,
+        )
+        opt = str(values.get("OPTIMIZER_TYPE", "")).strip().lower()
+        raw_args = str(values.get("OPTIMIZER_ARGS") or "").strip()
+        cleaned_args = raw_args
+        if opt != "prodigy":
+            cleaned_args = strip_prodigy_args(cleaned_args)
+        if opt != "muon":
+            cleaned_args = strip_muon_args(cleaned_args)
     if opt in ("automagic3", "automagic4"):
         disabled |= {"ADAPTIVE_LR", "KREA2_PER_IMAGE_LR", "KREA2_WARMUP_LOOK"}
         force.update({k: False for k in ("ADAPTIVE_LR", "KREA2_PER_IMAGE_LR", "KREA2_WARMUP_LOOK") if values.get(k)})
@@ -1510,6 +1523,9 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
                    "RECAPTION_FIRST", "RECAPTION_SECOND"}
     if kind == "finetune":       # the model itself trains: no LoRA (rank, alpha), every noise level, its own continue
         hidden |= {"MIN_TIMESTEP", "MAX_TIMESTEP", "NETWORK_DIM", "NETWORK_ALPHA", "RESUME_TRAINING"}
+        if desc.key == "minimax":
+            notes["FAMILY_FT_OPTIMIZER"] = ("MiniMax H3's memory plan is measured for Adafactor. A different "
+                                            "Fine-tune optimizer is replaced with Adafactor, with a note in the log.")
     if str(values.get("TARGET_LAYERS") or "") != "Custom":   # the block picker is Model Area's Custom
         hidden.add("TRAINING_BLOCKS")
     if desc.timestep_spread:                 # Timestep focus: the chosen preset's one line
@@ -1877,6 +1893,7 @@ def inputs(desc, values, *, models, python, repo_dir, image_folder, cache_root, 
         FAMILY_SLIDER_SOURCE=(("prompts" if s("FAMILY_SLIDER_SOURCE") == "Prompts" else "pairs")
                               if len(slider_sources(desc)) > 1 else slider_sources(desc)[0]),
         ADAPTIVE_LR=b("ADAPTIVE_LR") and desc.adaptive_lr, SAVE_STATE=b("SAVE_STATE"),
+        TRAINING_MAPS=b("TRAINING_MAPS") and desc.training_maps,
         SAVE_STATE_ON_TRAIN_END=b("SAVE_STATE_ON_TRAIN_END"), FAMILY_FT_FUSED=b("FAMILY_FT_FUSED"),
         FAMILY_SLIDER_ULTRA=b("FAMILY_SLIDER_ULTRA"),
         FAMILY_FAST_ID=b("FAMILY_FAST_ID") and kind == "standard" and bool(desc.identity_blocks),

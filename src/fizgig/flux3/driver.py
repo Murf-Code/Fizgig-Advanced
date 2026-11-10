@@ -255,6 +255,15 @@ class Flux3Driver(FamilyDriver):
         t = self._sample_t(generator, min_t, max_t, self.timestep_spread)
         return {"xt": (1 - t) * x0 + t * noise, "t": t, "hw": (h, w)}
 
+    def map_target(self, latents, state):
+        """The target in predict()'s layout (training maps): noise - x0 on Flux 3's tokens."""
+        return (state["xt"].float() - S.to_tokens(latents.float()).to(state["xt"].device)) / float(state["t"])
+
+    def trigger_text(self, tokenizer, caption):
+        """The encoder's chat template around the caption (training maps' trigger-word map); nothing dropped."""
+        return tokenizer.apply_chat_template([{"role": "user", "content": caption}], tokenize=False,
+                                             add_generation_prompt=True), ""
+
     def predict(self, dit, state, cond):
         h, w = state["hw"]
         return self._forward(dit, state["xt"], state["t"], cond, h, w)

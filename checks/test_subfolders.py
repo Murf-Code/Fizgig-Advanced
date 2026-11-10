@@ -144,25 +144,33 @@ def test_auto_recaption_writes_the_subfolders_caption(tree, monkeypatch):
     assert open(tree / "a.txt", encoding="utf-8").read() == "a photo"           # the same-named one is untouched
 
 
-def test_auto_recaption_uses_the_captions_tabs_florence_model(tree, monkeypatch):
+def test_auto_recaption_uses_qwen_not_the_captions_tab_florence(tree, monkeypatch):
+    """Auto-recaption always uses Qwen3-VL: the Captions tab's other models never load in a training run."""
     pytest.importorskip("torch")
+    import sys
     from fizgig.families import loss_watch
-    from fizgig.scripts import batch_caption
-    tasks = []
-    monkeypatch.setattr(batch_caption, "_load_florence", lambda *a, **k: ("florence", "proc"))
-    monkeypatch.setattr(batch_caption, "_caption_florence",
-                        lambda m, p, d, path, task, n: tasks.append(task) or f"florence {len(tasks)}")
+    calls = []
+    def _gen(*a, **k):
+        calls.append(k.get("detailed"))
+        return f"qwen {len(calls)}"
+    emb = sys.modules.get("fizgig.krea2.embedder") or types.ModuleType("fizgig.krea2.embedder")
+    emb.generate_caption = _gen
+    monkeypatch.setitem(sys.modules, "fizgig.krea2.embedder", emb)
+    ut = sys.modules.get("fizgig.krea2.utils") or types.ModuleType("fizgig.krea2.utils")
+    ut.load_krea2_text_encoder = lambda *a, **k: types.SimpleNamespace(to=lambda d: None)
+    monkeypatch.setitem(sys.modules, "fizgig.krea2.utils", ut)
     folders = {"": str(tree), "outfits/red/": str(tree / "outfits" / "red")}
-    obj = types.SimpleNamespace(captioner_path=None, instr=None, instr_detailed=None, trigger_word="zmain",
-                                triggers={}, trigger_position="end", caption_ext=".txt", auto_recaption=True,
+    obj = types.SimpleNamespace(captioner_path="encoder.safetensors", instr=None, instr_detailed=None,
+                                trigger_word="zmain", triggers={}, trigger_position="end", caption_ext=".txt",
+                                auto_recaption=True,
                                 recap={"backend": "florence", "florence_model": "microsoft/Florence-2-base",
                                        "florence_task": "<CAPTION>"},
                                 watch=types.SimpleNamespace(where=lambda k: where(k, folders)))
     rows = loss_watch.Watch._recaption(obj, [("a", str(tree / "a.png"), 1), ("a", str(tree / "a.png"), 2)],
                                        {"a": "item"}, "cpu")
-    assert tasks == ["<CAPTION>", "<MORE_DETAILED_CAPTION>"]      # the tab's task, then its most detailed
-    assert [r[2] for r in rows] == ["florence 1, zmain", "florence 2, zmain"]
-    assert open(tree / "a.txt", encoding="utf-8").read() == "florence 2, zmain"
+    assert calls == [False, True]                                 # first try, then the detailed second try
+    assert [r[2] for r in rows] == ["qwen 1, zmain", "qwen 2, zmain"]
+    assert open(tree / "a.txt", encoding="utf-8").read() == "qwen 2, zmain"
 
 
 def test_tagger_second_try_drops_the_min_score_at_most_0_1():

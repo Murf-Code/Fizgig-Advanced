@@ -5,6 +5,49 @@ _ARTICLE = "https://github.com/Murf-Code/Fizgig-Advanced/blob/fizgig-advanced/do
 
 NEWS = [
     {
+        "date": "10 Nov 2026",
+        "title": "JoyCaption and booru tags on the Captions tab",
+        "body": (
+            "Two new captioners. JoyCaption Beta One writes detailed training captions, is good with people, mirrors "
+            "and every style, and follows the same instructions as Qwen3-VL, plus its own caption types and extra "
+            "options to tick. The WD EVA02 tagger writes booru tags for anime and illustration, as Anima and anime "
+            "SDXL models were trained on.\n\n"
+            "Each downloads itself the first time you use it, or ahead from Preferences' new Captioning models card. "
+            "Auto-recaption still uses Qwen3-VL, and training is unchanged."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#10-nov-2026-joycaption-and-booru-tags-on-the-captions-tab"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.5.0"}],
+    },
+    {
+        "date": "9 Nov 2026",
+        "title": "Maps in Studio, for any LoRA",
+        "body": (
+            "Studio can now draw heatmaps over its preview for any LoRA, one you didn't train included: where the LoRA "
+            "acts, what your slider changes do, where the trigger word's attention goes, and where each group of its "
+            "blocks acts. Pick a map under the preview.\n\n"
+            "Also two new themes from @Murf-Code, Cosmic Pigeon and Deep Space, under Preferences."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#9-nov-2026-maps-in-studio-for-any-lora"},
+                  {"text": "Studio guide", "href": "https://github.com/Murf-Code/Fizgig-Advanced/blob/fizgig-advanced/docs/STUDIO.md#maps"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.4.0"}],
+    },
+    {
+        "date": "9 Nov 2026",
+        "title": "Training maps, and a much faster compile warm-up",
+        "body": (
+            "See what training does to your pictures, epoch by epoch. Tick Training maps under Training Parameters, "
+            "and the Training maps button on the run card shows three of your pictures with a heatmap over each: "
+            "what the LoRA has learned, what it hasn't yet, and where it's changing things it shouldn't, like the "
+            "background or clothes. On every still-picture model except SDXL, a fourth map shows where your trigger "
+            "word's attention goes.\n\n"
+            "Compiled runs reach full speed much sooner, most of all with Leave the rest of the model alone or Fizgig "
+            "LoRA Isolation. Full fine-tunes now train with the optimizer you pick, Adafactor by default."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#9-nov-2026-training-maps-and-a-much-faster-compile-warm-up"},
+                  {"text": "Training maps guide", "href": "https://github.com/Murf-Code/Fizgig-Advanced/blob/fizgig-advanced/docs/TRAINING_MAPS.md"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.3.0"}],
+    },
+    {
         "date": "8 Nov 2026",
         "title": "Faster MOSS-Image training and previews, faster training on every model, and a faster Studio",
         "body": (

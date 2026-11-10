@@ -610,25 +610,34 @@ def load_state() -> dict:
 
 
 def recaption_with(captioner=""):
-    """Auto-recaption's captioner: the model picked on the Captions tab (Qwen3-VL when none is saved or it is gone),
-    as the caption worker's config plus that tab's Florence-2 task or tag settings. None when Qwen3-VL is picked and
-    its file (the Krea 2 text encoder) is not set."""
+    """The Captions tab's model, as the caption worker's config (for detail-crop captions). Auto-recaption itself
+    always uses Qwen3-VL. None when no captioner can be resolved (Qwen3-VL picked and its file is not set)."""
     saved = load_state().get("captions") or {}
     model = str(saved.get("model") or "")
     from fizgig.dataset import tag_captions
+    from fizgig import captioners as _cap
     tid = tag_captions.tagger_id(model)
-    if not (tid or model in captions.FLORENCE_MODELS):
-        model = captions.QWEN_MODEL
-    if model == captions.QWEN_MODEL and not captioner:
-        return None
-    cfg = {**captions._worker_config(model, captioner, False), "model": model}
     if tid:
+        from fizgig.user_data import MODELS_DIR
         pick = lambda k: (saved.get(k) or {}).get(tid) if isinstance(saved.get(k), dict) else None
-        cfg["tags"] = {"min_score": pick("tagMin"), "max_tags": saved.get("tagMax"), "style": saved.get("tagStyle"),
-                       "ratings": saved.get("tagRatings"), "char_score": pick("tagChar")}
-    elif model != captions.QWEN_MODEL:
-        task = str(saved.get("task") or "")
-        cfg["florence_task"] = task if task in captions.FLORENCE_TASKS else "<DETAILED_CAPTION>"
+        return {"backend": "tagger", "tagger": tid, "models_dir": MODELS_DIR, "model": model,
+                "tags": {"min_score": pick("tagMin"), "max_tags": saved.get("tagMax"), "style": saved.get("tagStyle"),
+                         "ratings": saved.get("tagRatings"), "char_score": pick("tagChar")}}
+    desc = _cap.get(model)
+    if desc is None:
+        desc = _cap.get("qwen3vl")
+    if desc is None:
+        return None
+    if isinstance(desc.files, _cap.PrefFile) and not captioner:
+        return None
+    cfg = {**captions._worker_config(desc, captioner, False), "model": desc.label}
+    if desc.kind == "tags":
+        cfg["threshold"] = float(saved.get("threshold") or 0.35)
+        cfg["leave_out"] = [t.strip() for t in str(saved.get("leaveOut") or "").split(",") if t.strip()]
+        cfg["underscores"] = bool(saved.get("underscores"))
+    task = str(saved.get("task") or "")
+    if task:
+        cfg["task"] = task
     return cfg
 
 
@@ -824,6 +833,8 @@ def _studio_post(what, b):
         return {"ok": True}
     if what == "keep":
         return {"path": studio.keep_tweaked()}
+    if what == "map":                        # maps over the Tweaked render (where the LoRA acts, the tweaks, the trigger)
+        return studio.map_request(b.get("state") or {}, b.get("trigger") or "", bool(b.get("blocks")))
     if what == "render":
         return studio.render(b.get("state") or {}, extra={k: b.get(k) for k in ("video", "audio", "keyframes", "ref_mode", "mix")
                                                           if b.get(k) is not None})
@@ -3135,6 +3146,10 @@ class Handler(BaseHTTPRequestHandler):
                                          for k in form.model_keys(d)},
                               "cache_dir": str(p.get("cache_dir") or ""),
                               "settings": {k: str(p.get(k) or "") for k in SETTING_PREFS},
+                              "captioning": {"main": pref_path(p, "krea2_text_encoder"),
+                                             "main_ok": bool(pref_path(p, "krea2_text_encoder")
+                                                             and os.path.isfile(pref_path(p, "krea2_text_encoder"))),
+                                             "others": captions.other_captioners()},
                               "captioner": {"path": str(p.get(captions.SECONDARY_PREF) or ""),
                                             "note": secondary_captioner_note(p),
                                             "links": [{"label": lab, "href": f"https://huggingface.co/{r}/blob/main/{f}"}
@@ -3209,6 +3224,8 @@ class Handler(BaseHTTPRequestHandler):
                                       "application/octet-stream")
             except (ValueError, OSError) as e:
                 return self.json({"error": str(e)}, 400)
+        if path == "/api/captioners/status":          # Preferences' Other captioning models, while one downloads
+            return self.json({"others": captions.other_captioners()})
         if path == "/api/captions/options":
             p = load_prefs()
             cap = captioner_for(p)
@@ -3371,6 +3388,8 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(d, dict) or not d.get("fizgig_repair_setup"):
                 return self.json({"error": "That file isn't a Studio setup."}, 404)
             return self.json(d)
+        if path == "/api/studio/map":                # the maps over the Tweaked render, once made
+            return self.json(studio.map_status())
         if path == "/api/studio/metrics":            # the pair on screen, measured (and likeness to a reference)
             return self.json(studio.metrics((qs.get("ref") or [""])[0]))
         if path == "/api/studio/epochs":             # the run a LoRA belongs to (the mix's Up to dial)
@@ -3476,6 +3495,7 @@ class Handler(BaseHTTPRequestHandler):
                 key = (os.path.normcase(os.path.abspath(r.get("output_dir") or ".")), (r.get("lora") or "").lower())
                 d = get_family(r.get("family") or "")
                 r["image_loss"] = bool(owners.get(r.get("id")) and d is not None and getattr(d, "loss_watch", False))
+                r["train_maps"] = key not in newest and _maps_has(r.get("output_dir"), r.get("lora"))
                 r["loss_graph"] = key not in newest and os.path.isfile(
                     step_log.loss_path(r.get("output_dir") or "", r.get("lora") or ""))
                 # Continue: the newest run with its name and folder owns its saves (an older one's are overwritten)
@@ -3512,6 +3532,21 @@ class Handler(BaseHTTPRequestHandler):
                               "images": [{**im, "path": pics.get(im["key"], ""), "queued": im["key"] in queued,
                                           "applied": (applied.get(im["key"]) or [{}])[-1].get("epoch")}
                                          for im in res["images"]]})
+        if path == "/api/runs/train_maps":           # one run's training maps (training/train_maps.py), by epoch
+            from fizgig.training import train_maps
+            from fizgig.web import image_loss
+            run = history.get((qs.get("id") or [""])[0])
+            k, t = (qs.get("key") or [None])[0], (qs.get("t") or [None])[0]
+            try:
+                res = train_maps.read(run.get("output_dir"), run.get("lora"), k, t) if run else None
+            except ValueError:
+                return self.json({"error": "bad noise level"}, 400)
+            if res is None:
+                return self.json({"error": "This run has no training maps."}, 404)
+            if k is None:                            # the first ask: the pictures and epochs, no maps yet
+                res["epochs"] = [{"epoch": e["epoch"], "maps": {}} for e in res["epochs"]]
+            return self.json({**res, "live": run.get("result") in ("running", "paused"),
+                              "images": image_loss.image_paths(run, res["keys"])})
         if path == "/api/runs/caption":              # one training image's caption, for the per-image editor
             from fizgig.web import image_loss
             run = history.get((qs.get("id") or [""])[0]) or {}
@@ -4516,11 +4551,13 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/trigger":
                 set_folder_trigger(str(b.get("folder") or ""), str(b.get("word") or ""))
                 return self.json({"ok": True})
+            if path == "/api/captioners/download":    # one captioner's files now, rather than on first use
+                return self.json(captions.download_captioner(str(b.get("key") or ""), load_prefs()))
             if path == "/api/captions/ai":
                 prefs, folder, clips, photos, _ = _caption_args(b)
                 cap = captioner_for(prefs)
                 model = str(b.get("model") or "")
-                _caption_gpu_check(8.0 if model == captions.QWEN_MODEL else 2.5)
+                _caption_gpu_check(captions.need_gb(model))
                 from fizgig.dataset import detail_crops     # the folder's files, or its largest detail crops
                 inside = {os.path.abspath(f) for f in captions.with_crops(folder)}
                 only = [p for p in (b.get("only") or []) if os.path.dirname(os.path.abspath(p)) in inside]
@@ -4528,7 +4565,9 @@ class Handler(BaseHTTPRequestHandler):
                     prefs, cap if cap and os.path.isfile(cap) else "", folder, model, str(b.get("task") or ""),
                     str(b.get("instruction") or ""), int(b.get("max_tokens") or 120), str(b.get("trigger") or ""),
                     bool(b.get("overwrite")), clips, only=only or None, photos=photos,
-                    ext=captions.caption_ext(b.get("ext")), tags=b.get("tags")))
+                    ext=captions.caption_ext(b.get("ext")), tags=b.get("tags"),
+                    threshold=float(b.get("threshold") or 0.35),
+                    leave_out=str(b.get("leave_out") or ""), underscores=bool(b.get("underscores"))))
             if path.startswith("/api/studio/"):
                 try:
                     return self.json(_studio_post(path[len("/api/studio/"):], b))
@@ -4695,6 +4734,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not where:
                     return self.json({"error": "SAM 3.1 isn't here yet: choose SAM 3.1 on this card and press "
                                                "Download first."}, 400)
+                captions.unload()                   # anything on the GPU frees the caption model first
                 try:
                     png = mask_edit.sam_click(str(b.get("folder") or ""), str(b.get("name") or ""),
                                               float(b.get("x") or 0), float(b.get("y") or 0), where)
@@ -4712,6 +4752,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not where:
                     return self.json({"error": "SAM 3.1 isn't here yet: press Download first."}, 400)
                 include, exclude = sammask.split_words(b.get("include")), sammask.split_words(b.get("exclude"))
+                captions.unload()
                 if not include:
                     return self.json({"error": "Type what the masks should show in Mask these (e.g. person)."}, 400)
                 try:
@@ -4781,8 +4822,10 @@ class Handler(BaseHTTPRequestHandler):
                                                          b.get("fitAll") is not False,    # on unless turned off
                                                          bool(b.get("separate")), bool(b.get("crops_only"))))
                     if path == "/api/look/scan":
+                        captions.unload()
                         return self.json(prep_jobs.look_scan(folder, b.get("baselines") or []))
                     if path == "/api/masks/make":
+                        captions.unload()
                         sam = None
                         if b.get("sam") and not b.get("wm_only"):
                             from fizgig.dataset import sammask
@@ -5116,6 +5159,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not name.lower().endswith(".safetensors"):
                     name += ".safetensors"
                 folder = str(b.get("out_dir") or "").strip() or default_output_dir()
+                captions.unload()                   # LoKR / LoHa sources SVD on the GPU
                 out = tools.run(desc, str(b.get("source") or "").strip(), os.path.join(folder, os.path.basename(name)),
                                 int(b.get("rank") or 4), str(b.get("preset") or ""), [str(x) for x in (b.get("blocks") or [])],
                                 identity=bool(b.get("identity")))
@@ -5307,6 +5351,11 @@ def run_server(host, port=None, password=None, password_arg=False, open_browser=
             logging.shutdown()
             os._exit(0)
 
+
+
+def _maps_has(output_dir, lora):
+    from fizgig.training import train_maps
+    return train_maps.has_maps(output_dir, lora)
 
 _RESTART = [False]
 _SWITCH = [False]

@@ -228,27 +228,24 @@ def test_caption_job_overwrite_skip_and_config(tmp_path, jobdir):
 
 
 def test_florence_and_qwen_unchanged(tmp_path):
-    assert C._worker_config(C.FLORENCE_DEFAULT_MODEL, "", False) == {
-        "backend": "florence", "include_video": False, "florence_model": C.FLORENCE_DEFAULT_MODEL,
-        "florence_revision": C.FLORENCE_REVISIONS[C.FLORENCE_DEFAULT_MODEL],
-        "florence_code_revision": C.FLORENCE_CODE_REVISIONS[C.FLORENCE_DEFAULT_MODEL]}
-    assert C._worker_config(C.QWEN_MODEL, "/te.safetensors", True) == {
-        "backend": "qwen", "include_video": True, "text_encoder": "/te.safetensors"}
+    from fizgig import captioners as cap
+    qwen, flo = cap.get("qwen3vl"), cap.get("florence2_base")
+    assert C._worker_config(flo, "", False) == {"captioner": "florence2_base", "files": {}, "include_video": False}
+    assert C._worker_config(qwen, "/te.safetensors", True) == {
+        "captioner": "qwen3vl", "files": {"path": "/te.safetensors"}, "include_video": True}
     o = C.options({}, "/te.safetensors", models_dir=str(tmp_path))
-    assert o["models"] == C.FLORENCE_MODELS + [C.QWEN_MODEL, T.WD_MODEL, T.JTP3_MODEL]
-    assert o["default_model"] == C.QWEN_MODEL and o["tag_max"] == 255
-    assert C.options({}, "", models_dir=str(tmp_path))["models"] == C.FLORENCE_MODELS + [T.WD_MODEL, T.JTP3_MODEL]
+    assert qwen.label in o["models"] and flo.label in o["models"]
+    assert cap.get("wd_eva02_large_v3").label in o["models"] and T.JTP3_MODEL in o["models"]
+    assert o["default_model"] == qwen.label and o["tag_max"] == 255
+    assert qwen.label not in C.options({}, "", models_dir=str(tmp_path))["models"]
     tg = o["taggers"]
-    assert tg[T.WD_MODEL]["id"] == "wd-eva02" and tg[T.WD_MODEL]["min_score"] == 0.60 and tg[T.WD_MODEL]["path"] == ""
     assert tg[T.JTP3_MODEL]["id"] == "jtp3" and tg[T.JTP3_MODEL]["min_score"] == 0.30 and tg[T.JTP3_MODEL]["gb"] == 1.0
-    _wd_folder(tmp_path)          # the folder Trim tags downloads into is the one captions use
-    assert C.options({}, "", models_dir=str(tmp_path))["taggers"][T.WD_MODEL]["path"] == os.path.join(str(tmp_path), W.FOLDER)
 
 
 def test_server_passes_the_tag_settings():
     from fizgig.web import server
     src = open(server.__file__, encoding="utf-8").read()
-    assert 'ext=captions.caption_ext(b.get("ext")), tags=b.get("tags")))' in src
+    assert 'tags=b.get("tags")' in src
 
 
 JS = r"""

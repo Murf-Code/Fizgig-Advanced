@@ -439,6 +439,11 @@ class Fibo2Driver(FamilyDriver):
             out.append(self._encode(te, edit_prompt(text, len(pics)), pics))
         return out
 
+    def trigger_text(self, tokenizer, caption):
+        """The pipeline's prompt template; its injection blocks' keys are these tokens, nothing dropped."""
+        from fizgig.fibo2.model import PROMPT_TEMPLATE
+        return PROMPT_TEMPLATE.replace("{}", caption, 1), ""
+
     def predict(self, dit, state, cond):
         """The velocity as a tensor (the trainer's loss paths take it apart as one). The cached latents and the text
         bundles are fp32 on the CPU; they go to the model's device and compute dtype (the first parameter that is
@@ -545,6 +550,10 @@ class Fibo2Driver(FamilyDriver):
             logger.info(f"Fibo 2.0: {pct}% of training steps at the clean end (sigma < 0.5) from epoch {self.epoch}, "
                         f"Z mean {cached[1]:.2f} (the model's own centre is 0.5 to 1.15 by token count)")
         return cached[1]
+
+    def map_target(self, latents, state):
+        """The target at this state (training maps): noise - x0 (state keeps its noise)."""
+        return (state["noise"].float() - self._as4(latents).float().to(state["noise"].device))
 
     def noise_latents(self, latents, generator, *, min_t=0.0, max_t=1.0):
         latents = self._as4(latents)

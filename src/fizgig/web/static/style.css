@@ -67,6 +67,11 @@
   --pair-badge-text: #10202A;
   --pick-glow: #19E3CF;        /* Likeness picker: a picked picture, its check and the count */
   --pick-glow-text: #06302C;
+  --pic-heat-1: #2F6BFF;       /* Training maps: a heatmap over a picture, low (blue) ... */
+  --pic-heat-2: #FFE600;       /* ... middle (yellow) ... */
+  --pic-heat-3: #FF2A2A;       /* ... high (red): three hues far apart, readable see-through over a greyed photo */
+  --pic-better: #00E676;       /* Training maps: where the error fell since the start (green) */
+  --pic-worse: #FF2BD6;        /* ... and where it rose (magenta: apart from green for colour-blind eyes too) */
 
   /* ---- Fixed: other people's colours ---- */
   --coffee: #FFDD00;
@@ -2935,3 +2940,141 @@ a.google-pill:visited { color: var(--text-primary); }
 .google-pill .g-b { fill: var(--google-blue); }
 .google-pill .g-y { fill: var(--google-yellow); }
 .google-pill .g-g { fill: var(--google-green); }
+
+/* Training maps (run card and Runs & outputs): a picture with a heatmap over it, epoch by epoch */
+.tm-box { margin-top: 10px; }
+.tm-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
+.tm-probes img { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; border: 2px solid transparent; cursor: pointer; }
+.tm-probes img.on { border-color: var(--accent); }
+.tm-stage { position: relative; display: inline-block; max-width: 100%; background: var(--pic-shade); border-radius: 8px; overflow: hidden; }
+.tm-stage canvas { display: block; max-width: 100%; height: auto; cursor: zoom-in; }
+.tm-kind-say { color: var(--text-secondary); font-size: 9pt; margin: 2px 0 8px; max-width: 640px; }
+.tm-big-hint { display: none; }
+/* the big view: the picture over the page, as large as the window allows */
+.tm-stage.tm-big { position: fixed; inset: 0; z-index: 1000; max-width: none; border-radius: 0; display: flex;
+  align-items: center; justify-content: center; background: color-mix(in srgb, var(--pic-shade) 92%, transparent); }
+.tm-stage.tm-big canvas { max-width: 96vw; max-height: 90vh; width: auto; height: auto; cursor: zoom-out; }
+.tm-stage.tm-big .tm-epoch { left: 50%; bottom: auto; top: 14px; transform: translateX(-50%); }
+.tm-stage.tm-big .tm-big-hint { display: block; position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+  color: var(--pic-text); font-size: 9pt; opacity: 0.8; pointer-events: none; }
+.tm-epoch { position: absolute; left: 10px; bottom: 10px; padding: 3px 10px; border-radius: 6px; font-weight: 700;
+  background: color-mix(in srgb, var(--pic-shade) 65%, transparent); color: var(--pic-text); pointer-events: none; }
+.tm-scrub { width: min(520px, 100%); }
+.tm-legend { display: inline-block; width: 120px; height: 10px; border-radius: 5px; vertical-align: middle;
+  outline: 1px solid var(--border); }
+.tm-legend-end { color: var(--text-secondary); font-size: 8.5pt; }
+.tm-opacity { width: 110px; }
+.tm-auto { color: var(--text-secondary); font-size: 9pt; display: inline-flex; align-items: center; gap: 4px; }
+
+/* Include sub-folders under the Start tab's training folder: a plain tick, its explanation on hover */
+#folderOptions .form-row { margin-top: 8px; }
+#folderOptions .form-row .field-hint { padding-left: 24px; }
+.tip-mark { cursor: help; color: var(--text-secondary); font-weight: 400; }
+label[title]:has(.tip-mark) { cursor: help; }
+/* Body-part and watermark detectors: one compact row per model (no new colours: theme text colours only) */
+.det-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+.det-table td { padding: 4px 6px; vertical-align: middle; border-top: 1px solid var(--border, rgba(127,127,127,.25)); }
+.det-table .det-name { font-weight: 600; white-space: nowrap; }
+.det-table .det-state { white-space: nowrap; }
+.det-table .det-acts { white-space: nowrap; text-align: right; }
+.det-table .det-acts .btn { margin-left: 4px; }
+.det-box > summary { cursor: pointer; }
+.det-table tr.det-off td:not(:first-child) { opacity: .55; }
+.det-table .det-remove.det-confirm { color: var(--danger-text); border-color: var(--danger); }
+.det-add { flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
+/* Cosmic Pigeon and Deep Space only: buttons glow and lift, progress and meter bars shimmer.
+   Cheap to draw (transform, opacity, background-position) and off under reduced motion. */
+:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"] {
+  --fx-glow: color-mix(in srgb, var(--accent) 45%, transparent);
+  --fx-bar: linear-gradient(90deg, #7C4DEA, #A855F7 45%, #E879C6 80%, #7C4DEA);
+}
+:root[data-theme="deep-space"] { --fx-glow: color-mix(in srgb, var(--accent) 35%, transparent);
+  --fx-bar: linear-gradient(90deg, #6D4FD6, #7A5AE0 40%, #4CC6DB 80%, #6D4FD6); }
+:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.btn, .runpod-btn, .theme-pick button) {
+  transition: background .15s, border-color .15s, box-shadow .2s ease, transform .15s ease; }
+:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.btn, .runpod-btn, .theme-pick button):not(:disabled):hover {
+  transform: translateY(-1px); box-shadow: 0 2px 12px var(--fx-glow); }
+:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.btn, .runpod-btn, .theme-pick button):not(:disabled):active {
+  transform: translateY(0) scale(.98); box-shadow: 0 0 4px var(--fx-glow); transition-duration: .05s; }
+/* the bars: the theme's gradient sliding along, plus a soft light sweeping across (paused, done and failed bars stay plain) */
+:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.run-bar:not([data-state="paused"]):not([data-state="pausing"]):not([data-state="completed"]):not([data-state="failed"]):not([data-state="stopped"]) > span, .meter:not(.warn) .meter-bar > span, .fetch-bar > div) {
+  position: relative; overflow: hidden; background: var(--fx-bar) 0 0 / 240px 100% repeat-x;
+  animation: fx-drift 6s linear infinite; box-shadow: 0 0 6px var(--fx-glow); }
+:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.run-bar:not([data-state="paused"]):not([data-state="pausing"]):not([data-state="completed"]):not([data-state="failed"]):not([data-state="stopped"]) > span, .meter:not(.warn) .meter-bar > span, .fetch-bar > div)::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none; will-change: background-position, opacity;
+  background: linear-gradient(90deg, transparent 0, rgba(255,255,255,.35) 70px, transparent 140px, transparent 100%) -140px 0 / 2000px 100% repeat-x;
+  animation: fx-sweep 6s linear infinite; }
+/* Cosmic Pigeon's faint twinkle: the sweep fades in and out */
+:root[data-theme="cosmic-pigeon"] :is(.run-bar:not([data-state="paused"]):not([data-state="pausing"]):not([data-state="completed"]):not([data-state="failed"]):not([data-state="stopped"]) > span, .meter:not(.warn) .meter-bar > span, .fetch-bar > div)::after { animation: fx-sweep 6s linear infinite, fx-twinkle 1.5s ease-in-out infinite alternate; }
+/* tiny star specks drifting along the active bars, each twinkling */
+:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.run-bar:not([data-state="paused"]):not([data-state="pausing"]):not([data-state="completed"]):not([data-state="failed"]):not([data-state="stopped"]) > span, .meter:not(.warn) .meter-bar > span, .fetch-bar > div)::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; will-change: background-position, opacity;
+  background-image: radial-gradient(circle at 12% 30%, #fff 0 0.6px, transparent 1px),
+    radial-gradient(circle at 37% 70%, #fff 0 0.5px, transparent 1px),
+    radial-gradient(circle at 63% 40%, #fff 0 0.6px, transparent 1px),
+    radial-gradient(circle at 86% 65%, #fff 0 0.5px, transparent 1px);
+  background-size: 46px 100%, 61px 100%, 53px 100%, 71px 100%; background-repeat: repeat-x;
+  animation: fx-stars 9s linear infinite, fx-twinkle 1.6s ease-in-out infinite alternate; }
+:root[data-theme="deep-space"] :is(.run-bar:not([data-state="paused"]):not([data-state="pausing"]):not([data-state="completed"]):not([data-state="failed"]):not([data-state="stopped"]) > span, .meter:not(.warn) .meter-bar > span, .fetch-bar > div)::before { opacity: .8; animation-duration: 12s, 2.1s; }
+@keyframes fx-stars { from { background-position: 0 0, 0 0, 0 0, 0 0; } to { background-position: 46px 0, 122px 0, 53px 0, 142px 0; } }
+/* every layer is a fixed px tile moved by exactly whole tiles, so it loops without a jump and a bar's width changing never shifts it */
+@keyframes fx-drift { from { background-position: 0 0; } to { background-position: -240px 0; } }
+/* the sweep: one 140px band per 2000px tile, so it crosses even a full-width bar in one go at a steady ~330px/s */
+@keyframes fx-sweep { from { background-position: -140px 0; } to { background-position: 1860px 0; } }
+@keyframes fx-twinkle { from { opacity: .45; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  :is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.run-bar > span, .meter-bar > span, .fetch-bar > div) { animation: none; }
+  :is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.run-bar > span, .meter-bar > span, .fetch-bar > div)::after, :is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.run-bar > span, .meter-bar > span, .fetch-bar > div)::before { display: none; }
+  :is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.btn, .runpod-btn, .theme-pick button) { transition: none; transform: none !important; }
+}
+/* the bars are rebuilt on every status poll; app.js gives each new one --fx-d = minus the page clock, so its
+   animations carry on from the same phase instead of starting over (a skip every poll) */
+/* (pseudo-elements can't go inside :is(), so the star and sweep layers are listed on their own) */
+:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) :is(.run-bar > span, .meter-bar > span, .fetch-bar > div),
+:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) .run-bar > span::before,
+:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) .meter-bar > span::before,
+:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) .fetch-bar > div::before,
+:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) .run-bar > span::after,
+:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) .meter-bar > span::after,
+:is(:root[data-theme="cosmic-pigeon"], :root[data-theme="deep-space"]) .fetch-bar > div::after {
+  animation-delay: var(--fx-d, 0s) !important; }
+
+/* Studio maps: a heatmap over the Tweaked picture (the training maps' bands), the Maps row under the preview */
+.st-tweak-pane { position: relative; }
+.st-map-canvas { position: absolute; pointer-events: none; }
+.st-maps { margin: 12px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-surface); }
+.st-maps-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.st-maps-title { font-weight: 700; color: var(--text-primary); }
+.st-map-explain { color: var(--text-explain); font-size: 9.5pt; margin: 4px 0 8px; max-width: 720px; }
+.st-map-explain:empty { display: none; }
+.st-map-key { color: var(--text-secondary); font-size: 9pt; margin-left: 10px; }
+/* a map on its way: a pill by the title and a badge on the Tweaked picture, each with a spinner */
+.st-map-pill, .st-map-badge { display: inline-flex; align-items: center; gap: 7px; padding: 4px 12px; border-radius: 999px;
+  font-weight: 700; font-size: 10pt; background: var(--accent); color: var(--text-on-color); }
+.st-map-badge { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 2; pointer-events: none;
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--pic-shade) 50%, transparent); }
+.st-map-spin { width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
+  animation: me-spin .8s linear infinite; }
+/* why there's no map, or what went wrong: a notice, not small print */
+.st-map-note { margin-top: 8px; padding: 6px 10px; border-left: 3px solid var(--warning); border-radius: 4px;
+  background: color-mix(in srgb, var(--warning) 12%, transparent); color: var(--text-primary); font-size: 9.5pt; }
+.st-map-trig { width: 140px; }
+
+/* a captioner's extra-option ticks (Captions tab) */
+.cap-extras { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 2px 14px; margin: 4px 0 8px; }
+.cap-extras .checkbox-label { margin: 0; }
+#capExtraOwn { width: 100%; max-width: 720px; margin: 2px 0 6px; }
+.cap-sent { margin-top: 4px; padding: 6px 10px; border-left: 3px solid var(--accent); border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent); max-width: 720px; }
+
+/* Preferences' Captioning models card */
+.cap-pref-title { font-weight: 700; color: var(--text-primary); margin-bottom: 2px; }
+.cap-pref-state { margin-top: 4px; }
+.cap-pref-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.cap-pref-row { display: grid; grid-template-columns: minmax(180px, 260px) 1fr auto; gap: 4px 12px; align-items: center; }
+.cap-pref-name { font-weight: 600; }
+.cap-pref-done { color: var(--success); font-weight: 600; white-space: nowrap; }
+.cap-pref-err { grid-column: 1 / -1; color: var(--warning); }
+@media (max-width: 640px) { .cap-pref-row { grid-template-columns: 1fr auto; } .cap-pref-row > .field-hint:not(.cap-pref-err) { grid-column: 1 / -1; } }

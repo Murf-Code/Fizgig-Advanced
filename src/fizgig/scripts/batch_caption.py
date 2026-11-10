@@ -1,9 +1,9 @@
-"""Batch AI-caption images/clips in an isolated process (Florence-2, Qwen3-VL, or a tagger: WD EVA02 / JTP-3 Hydra,
-fizgig.dataset.tag_captions, which writes tag captions and quits after its job so its memory is freed).
+"""Batch AI-caption images/clips in an isolated process, with any captioner in fizgig/captioners/,
+or Fizgig Advanced's JTP-3 Hydra tagger (fizgig.dataset.tag_captions).
 
-The Captions tab runs this so GPU memory stays out of the GUI process.  In --serve
-mode the model stays loaded between jobs until the worker receives QUIT (e.g. when
-training starts).
+The Captions tab runs this so GPU memory stays out of the GUI process - and out of every training run: a captioner
+loads nowhere else (the memory rule in fizgig/captioners/__init__.py). In --serve mode the model stays loaded between
+jobs until the worker receives QUIT (e.g. when training starts).
 
 Stdout protocol (flushed):
   READY
@@ -76,6 +76,12 @@ def _open_training_frame(path: str):
         return Image.fromarray(frames[len(frames) // 2])
 
 
+def picture(path: str):
+    """What every captioner is handed: the file upright (a clip: its middle frame), see-through laid on white, RGB."""
+    from fizgig.utils.image import flatten
+    return flatten(_open_training_frame(path))
+
+
 def _load_image_list(list_file: str) -> list[str]:
     out: list[str] = []
     with open(list_file, encoding="utf-8") as f:
@@ -86,162 +92,97 @@ def _load_image_list(list_file: str) -> list[str]:
     return out
 
 
-def _write_caption(path: str, caption: str, trigger: str, ext: str = ".txt") -> None:
-    cap_path = os.path.splitext(path)[0] + (ext or ".txt")
-    text = f"{trigger}, {caption}" if trigger else caption
-    with open(cap_path, "w", encoding="utf-8") as f:
-        f.write(text)
-
-
-def _load_florence(model_name: str, revision: str | None, code_revision: str | None, device: str):
-    from transformers import AutoModelForCausalLM, AutoProcessor
-
-    from fizgig.utils.hf_cache import from_pretrained_cache_first
-
-    kwargs = {"trust_remote_code": True}
-    if revision:
-        kwargs["revision"] = revision
-    if code_revision:
-        kwargs["code_revision"] = code_revision
-    processor = from_pretrained_cache_first(AutoProcessor, model_name, **kwargs)
-    dtype = torch.float16 if device == "cuda" else torch.float32
-    # torch_dtype, not dtype: the pinned transformers reads torch_dtype; an unknown kwarg
-    # falls through silently and Florence loads fp32 (double VRAM), which nothing reports.
-    model = from_pretrained_cache_first(
-        AutoModelForCausalLM,
-        model_name,
-        torch_dtype=dtype,
-        attn_implementation="eager",
-        **kwargs,
-    ).to(device)
-    return model.eval(), processor
-
-
-def _caption_florence(model, processor, device, path: str, task: str, max_new_tokens: int) -> str:
-    from fizgig.utils.image import flatten
-    image = flatten(_open_training_frame(path))
-    inputs = processor(text=task, images=image, return_tensors="pt").to(device)
-    inputs["pixel_values"] = inputs["pixel_values"].to(model.dtype)
-    generated_ids = model.generate(
-        input_ids=inputs["input_ids"],
-        pixel_values=inputs["pixel_values"],
-        max_new_tokens=max_new_tokens,
-        do_sample=False,
-        num_beams=3,
-        use_cache=False,
-    )
-    caption = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-    parsed = processor.post_process_generation(caption, task=task, image_size=(image.width, image.height))
-    return parsed.get(task, caption)
-
-
-def _caption_qwen(encoder, path: str, instruction: str, max_new_tokens: int) -> str:
-    from fizgig.krea2.embedder import generate_caption
-
-    frame = _open_training_frame(path)
-    return generate_caption(
-        encoder,
-        frame,
-        max_new_tokens=max_new_tokens,
-        instruction=instruction,
-    )
+def _write_caption(path: str, caption: str, ext: str = ".txt") -> None:
+    with open(os.path.splitext(path)[0] + (ext or ".txt"), "w", encoding="utf-8") as f:
+        f.write(caption)
 
 
 class CaptionState:
-    backend: str
-    device: str
-    model: object
-    include_video: bool
-
-    def __init__(self, backend: str, device: str, model: object, include_video: bool):
-        self.backend = backend
-        self.device = device
-        self.model = model
-        self.include_video = include_video
+    def __init__(self, desc, captioner, include_video: bool = False, backend="registry", tid=""):
+        # old tests: CaptionState("tagger", "cpu", (tid, tagger), include_video)
+        if desc == "tagger" and isinstance(include_video, (tuple, list)):
+            tid, cap = include_video
+            inc = bool(backend) if not isinstance(backend, str) else False
+            self.desc, self.captioner, self.include_video = None, cap, inc
+            self.backend, self.tid = "tagger", tid
+            return
+        self.desc, self.captioner, self.include_video = desc, captioner, include_video
+        self.backend, self.tid = backend, tid
 
 
 def _load_state_from_config(config: dict, device: str) -> CaptionState:
-    backend = config["backend"]
-    include_video = bool(config.get("include_video"))
-
-    if backend == "tagger":
+    """config: {"captioner": a registry key, "files": {"path"} for one whose file Preferences holds, "include_video"}
+    or {"backend": "tagger", "tagger": "jtp3", "models_dir": ...} for JTP-3 Hydra."""
+    if config.get("backend") == "tagger":
         from fizgig.dataset import tag_captions
         tid = config.get("tagger") or ""
         print(f"INFO: Loading the {tid} tagger...", flush=True)
         tagger = tag_captions.load(tid, config.get("models_dir") or "",
                                    log=lambda s: print("INFO: " + str(s).strip(), flush=True))
         print("INFO: Tagger ready.", flush=True)
-        return CaptionState(backend, device, (tid, tagger), include_video)
-
-    if backend == "florence":
-        model_name = config.get("florence_model") or ""
-        if not model_name:
-            raise ValueError("florence_model required")
-        rev = config.get("florence_revision") or None
-        code_rev = config.get("florence_code_revision") or None
-        print(f"INFO: Loading {model_name}...", flush=True)
-        model, processor = _load_florence(model_name, rev, code_rev, device)
-        print("INFO: Model ready.", flush=True)
-        return CaptionState(backend, device, (model, processor), include_video)
-
-    text_encoder = config.get("text_encoder") or ""
-    if not text_encoder:
-        raise ValueError("text_encoder required")
-    from fizgig.krea2.utils import load_krea2_text_encoder
-
-    te_name = os.path.basename(text_encoder)
-    print(f"INFO: Loading Qwen3-VL from {te_name}...", flush=True)
-    model = load_krea2_text_encoder(text_encoder, dtype=torch.bfloat16, device=device)
-    print("INFO: Qwen3-VL ready.", flush=True)
-    return CaptionState(backend, device, model, include_video)
+        return CaptionState(None, tagger, bool(config.get("include_video")), backend="tagger", tid=tid)
+    from fizgig import captioners
+    desc = captioners.get(config.get("captioner") or "")
+    if desc is None:
+        raise ValueError(f"unknown captioner {config.get('captioner')!r}")
+    if isinstance(desc.files, captioners.HFRepo):
+        files = {"repo": desc.files.repo, "revision": desc.files.revision, "code_revision": desc.files.code_revision}
+    else:
+        files = {"path": (config.get("files") or {}).get("path") or ""}
+        if not files["path"]:
+            raise ValueError(f"{desc.label} needs its model file")
+    free = None
+    if device == "cuda" and desc.precisions:
+        free = torch.cuda.mem_get_info()[0] / 2 ** 30
+    precision = captioners.pick_precision(desc, free)
+    print(f"INFO: Loading {desc.label}" + (f" ({precision}, {free:.0f} GB free)" if precision and free is not None
+                                            else f" ({precision})" if precision else "") + "...", flush=True)
+    cap = captioners.make(desc, device, files, precision)
+    cap.load()
+    print("INFO: Model ready.", flush=True)
+    return CaptionState(desc, cap, bool(config.get("include_video")))
 
 
-def _caption_fn(state, job: dict, trigger: str = "", max_new_tokens: int = 120):
-    """caption_one(path) -> text for the loaded model (state) and a job's settings (tags, florence_task,
-    instruction_file). ValueError when the job lacks what the model needs. Also the Detail crops stage's captioner."""
+def request_for(desc, job: dict):
+    """The job's CaptionRequest, or (None, why) when the job doesn't give the captioner what it needs."""
+    if desc is None or not hasattr(desc, "instruction"):
+        return object(), ""          # a tagger: no instruction or task
+    from fizgig.captioners import CaptionRequest
+    instruction = ""
+    if desc.instruction:
+        instruction = str(job.get("instruction") or "").strip()
+        if not instruction and job.get("instruction_file"):
+            with open(job["instruction_file"], encoding="utf-8") as f:
+                instruction = f.read().strip()
+        if not instruction:
+            return None, "no instruction"
+    return CaptionRequest(task=job.get("task") or desc.default_task, instruction=instruction,
+                          max_new_tokens=int(job.get("max_new_tokens") or 120)), ""
+
+
+def caption_file(state: CaptionState, path: str, request, job: dict) -> str:
+    """One file's caption as Fizgig writes it (the captioner's result finished, the trigger word first), or ""."""
     if state.backend == "tagger":
         from fizgig.dataset import tag_captions
-        tid, tagger = state.model
-        cfg = tag_captions.settings(job.get("tags"), tid)
-
-        def caption_one(path: str) -> str:
-            img = _open_training_frame(path)
-            text = tag_captions.caption(tag_captions.scored_tags(tagger, img), tid, cfg, trigger)
-            if not text:
-                raise RuntimeError("no tag scored at least the min score")
-            return text
-    elif state.backend == "florence":
-        model, processor = state.model
-        task = job.get("florence_task") or "<DETAILED_CAPTION>"
-
-        def caption_one(path: str) -> str:
-            return _caption_florence(model, processor, state.device, path, task, max_new_tokens)
-    else:
-        instruction_file = job.get("instruction_file") or ""
-        if not instruction_file:
-            raise ValueError("instruction_file required")
-        with open(instruction_file, encoding="utf-8") as f:
-            instruction = f.read().strip()
-        if not instruction:
-            raise ValueError("empty instruction")
-        encoder = state.model
-
-        def caption_one(path: str) -> str:
-            return _caption_qwen(encoder, path, instruction, max_new_tokens)
-
-    return caption_one
+        from fizgig import captioners
+        cfg = tag_captions.settings(job.get("tags"), state.tid)
+        text = tag_captions.caption(tag_captions.scored_tags(state.captioner, picture(path)),
+                                    state.tid, cfg, job.get("trigger") or "")
+        if not text:
+            raise RuntimeError("no tag scored at least the min score")
+        return captioners.with_trigger(text, job.get("trigger") or "")
+    from fizgig import captioners
+    text = captioners.finish(state.captioner.caption(picture(path), request),
+                             threshold=float(job.get("threshold") or 0.35), leave_out=job.get("leave_out") or (),
+                             underscores=bool(job.get("underscores")))
+    return captioners.with_trigger(text, job.get("trigger") or "")
 
 
 def _run_job(state: CaptionState, job: dict) -> bool:
     """Caption images listed in job. Returns True if stopped early."""
-    list_file = job["list_file"]
-    trigger = (job.get("trigger") or "").strip()
-    max_new_tokens = int(job.get("max_new_tokens") or 120)
     stop_file = (job.get("stop_file") or "").strip()
-    include_video = state.include_video
-
-    images = _load_image_list(list_file)
-    allowed = IMAGE_EXTENSIONS | (VIDEO_EXTENSIONS if include_video else set())
+    images = _load_image_list(job["list_file"])
+    allowed = IMAGE_EXTENSIONS | (VIDEO_EXTENSIONS if state.include_video else set())
     from fizgig.dataset.masks import is_mask_file
     images = [p for p in images if os.path.isfile(p) and os.path.splitext(p)[1].lower() in allowed
               and not is_mask_file(p)]
@@ -249,11 +190,9 @@ def _run_job(state: CaptionState, job: dict) -> bool:
     if not total:
         print("FAIL: no images in list", flush=True)
         return False
-
-    try:
-        caption_one = _caption_fn(state, job, trigger, max_new_tokens)
-    except ValueError as exc:
-        print(f"FAIL: {exc}", flush=True)
+    request, why = request_for(state.desc, job)
+    if request is None:
+        print(f"FAIL: {why}", flush=True)
         return False
 
     stopped = False
@@ -264,20 +203,29 @@ def _run_job(state: CaptionState, job: dict) -> bool:
         print(f"PROGRESS: {i} {total}", flush=True)
         base = os.path.basename(path)
         try:
-            caption = caption_one(path)
+            caption = caption_file(state, path, request, job)
             if not caption:
                 print(f"FAIL: {base} (empty caption)", flush=True)
                 continue
-            _write_caption(path, caption, trigger, job.get("caption_ext") or ".txt")
+            _write_caption(path, caption, job.get("caption_ext") or ".txt")
             print(f"OK: {base}", flush=True)
         except Exception as exc:
             print(f"FAIL: {base} ({exc})", flush=True)
 
-    if stopped:
-        print("STOPPED", flush=True)
-    else:
-        print("DONE", flush=True)
+    print("STOPPED" if stopped else "DONE", flush=True)
     return stopped
+
+
+def free(state: CaptionState) -> None:
+    cap = state.captioner
+    if cap is not None and hasattr(cap, "unload"):
+        cap.unload()
+    elif cap is not None and hasattr(cap, "close"):
+        cap.close()
+    state.captioner = None
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
 
 
 def _serve(config_path: str) -> int:
@@ -306,20 +254,20 @@ def _serve(config_path: str) -> int:
                 with open(job_path, encoding="utf-8") as f:
                     job = json.load(f)
                 _run_job(state, job)
+                if state.backend == "tagger":
+                    # a tagger is heavy: free it and quit after this job (the Captions tab starts a fresh worker)
+                    free(state)
+                    return 0
             except Exception as exc:
                 print(f"FAIL: job ({exc})", flush=True)
                 print("DONE", flush=True)
-            if state.backend == "tagger":
-                break                  # a tagger is quick to load: freed after its job, not kept for the next
+                if state.backend == "tagger":
+                    free(state)
+                    return 0
             continue
         print(f"FAIL: unknown command {line!r}", flush=True)
 
-    if state.backend == "tagger":
-        state.model[1].close()
-    del state.model
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-        torch.cuda.empty_cache()
+    free(state)
     return 0
 
 
@@ -327,24 +275,38 @@ def setup_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Batch AI-caption (isolated process)")
     p.add_argument("--serve", action="store_true", help="Keep model loaded; read RUN/QUIT on stdin")
     p.add_argument("--config", default="", help="Worker config JSON (--serve)")
-    p.add_argument("--backend", choices=("florence", "qwen"))
+    p.add_argument("--captioner", default="", help="A captioner's key (fizgig/captioners/registry.py), e.g. qwen3vl")
+    p.add_argument("--model_file", default="", help="Its model file, for one that doesn't download itself (qwen3vl)")
     p.add_argument("--list_file")
     p.add_argument("--trigger", default="")
     p.add_argument("--max_new_tokens", type=int, default=120)
     p.add_argument("--stop_file", default="")
     p.add_argument("--include_video", action="store_true")
     p.add_argument("--device", default=None)
-    p.add_argument("--florence_model", default="")
-    p.add_argument("--florence_task", default="<DETAILED_CAPTION>")
-    p.add_argument("--florence_revision", default="")
-    p.add_argument("--florence_code_revision", default="")
-    p.add_argument("--text_encoder", default="")
-    p.add_argument("--instruction_file", default="")
+    p.add_argument("--task", default="", help="One of the captioner's tasks (Florence: <DETAILED_CAPTION>...)")
+    p.add_argument("--instruction_file", default="", help="The instruction, for a captioner that follows one")
+    p.add_argument("--caption_ext", default=".txt")
+    p.add_argument("--fetch", default="", help="Download a captioner's files now (its key), so it works offline")
     return p
 
 
 def main() -> int:
     args = setup_parser().parse_args()
+
+    if args.fetch:                               # Preferences' Download: the captioner's own fetch(), in this process
+        from fizgig import captioners
+        desc = captioners.get(args.fetch)
+        if desc is None or not isinstance(desc.files, captioners.HFRepo):
+            print(f"FAIL: {args.fetch} doesn't download itself", flush=True)
+            return 1
+        try:
+            captioners.captioner_class(desc).fetch(desc, {"repo": desc.files.repo, "revision": desc.files.revision,
+                                                          "code_revision": desc.files.code_revision})
+        except Exception as exc:
+            print(f"FAIL: {type(exc).__name__}: {exc}", flush=True)
+            return 1
+        print("DONE", flush=True)
+        return 0
 
     if args.serve:
         if not args.config:
@@ -352,42 +314,22 @@ def main() -> int:
             return 1
         return _serve(args.config)
 
-    if not args.backend or not args.list_file:
-        print("FAIL: --backend and --list_file required", flush=True)
+    if not args.captioner or not args.list_file:
+        print("FAIL: --captioner and --list_file required", flush=True)
         return 1
 
     _quiet_worker_logs()
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    config = {
-        "backend": args.backend,
-        "include_video": args.include_video,
-        "device": device,
-        "florence_model": args.florence_model,
-        "florence_task": args.florence_task,
-        "florence_revision": args.florence_revision,
-        "florence_code_revision": args.florence_code_revision,
-        "text_encoder": args.text_encoder,
-    }
     try:
-        state = _load_state_from_config(config, device)
+        state = _load_state_from_config({"captioner": args.captioner, "include_video": args.include_video,
+                                         "files": {"path": args.model_file}}, device)
     except Exception as exc:
         print(f"FAIL: {exc}", flush=True)
         return 1
-
-    job = {
-        "list_file": args.list_file,
-        "trigger": args.trigger,
-        "max_new_tokens": args.max_new_tokens,
-        "stop_file": args.stop_file,
-        "florence_task": args.florence_task,
-        "instruction_file": args.instruction_file,
-    }
-    _run_job(state, job)
-
-    del state.model
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-        torch.cuda.empty_cache()
+    _run_job(state, {"list_file": args.list_file, "trigger": args.trigger, "max_new_tokens": args.max_new_tokens,
+                     "stop_file": args.stop_file, "task": args.task, "instruction_file": args.instruction_file,
+                     "caption_ext": args.caption_ext})
+    free(state)
     return 0
 
 

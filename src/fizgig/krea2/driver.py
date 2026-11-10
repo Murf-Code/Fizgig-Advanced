@@ -50,6 +50,17 @@ class Krea2Driver(FamilyDriver):
     def compile_targets(self, dit):
         return dit.blocks
 
+    def compile_blocks(self, dit, boundary="inside", blocks_to_swap=0):
+        """The shared compile, then the attention stops trimming to each sequence's own length (it would recompile
+        every block for every new length; krea2/attention.py COMPILED_BLOCKS)."""
+        super().compile_blocks(dit, boundary=boundary, blocks_to_swap=blocks_to_swap)
+        import torch
+        from fizgig.krea2 import attention as _attn
+        if any(isinstance(b, torch._dynamo.eval_frame.OptimizedModule)
+               or isinstance(getattr(b, "block", None), torch._dynamo.eval_frame.OptimizedModule)
+               for b in self.compile_targets(dit)):
+            _attn.COMPILED_BLOCKS = True
+
     def compile_plan(self, mode, total_steps, precision, blocks_to_swap, mp=0.25):
         """Krea 2's own measured rule (utils/capabilities: should_compile / compile_boundary) - its compiled-memory
         figures place the checkpoint inside the graph where it fits and outside where it does not."""
@@ -260,8 +271,21 @@ class Krea2Driver(FamilyDriver):
         t_ = t.view(-1, 1, 1, 1).to(DTYPE)
         return {"xt": (1.0 - t_) * latents.to(DTYPE) + t_ * noise, "t": t}
 
+    def map_target(self, latents, state):
+        """The target in predict()'s layout (training maps): noise - x0, patchified as loss_at does."""
+        from fizgig.krea2.sampling import patchify_block
+        t = state["t"].float().view(-1, 1, 1, 1).to(latents.device)
+        return patchify_block((state["xt"].float() - latents.float()) / t, 2)[0]
+
     def predict(self, dit, state, cond):
         return self._forward(dit, state["xt"], state["t"], cond)
+
+    def trigger_text(self, tokenizer, caption):
+        """The encoder's system + user prefix (dropped: its 34 tokens never reach the DiT), the caption, the suffix
+        (krea2/embedder.py: prompt_template_encode_prefix / _suffix)."""
+        from fizgig.krea2.caption_text import ENCODE_SYSTEM_DESCRIPTOR
+        prefix = "<|im_start|>system\n" + ENCODE_SYSTEM_DESCRIPTOR + "<|im_end|>\n<|im_start|>user\n"
+        return prefix + caption + "<|im_end|>\n<|im_start|>assistant\n", prefix
 
     # ---- sampling (sampling.sample, split at the decode) ----------------------------------------
     @staticmethod

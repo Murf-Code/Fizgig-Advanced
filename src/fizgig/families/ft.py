@@ -641,19 +641,34 @@ def _plan_from_header_lists(hdr, spec: FTSpec, free_gb: float, mp=None, max_part
     return windows, stream, usable
 
 
-OPTIMIZERS = ("adafactor", "cmuon")     # the fine-tune's choice (Fine-tune > Optimizer)
+OPTIMIZERS = ("adafactor", "cmuon")     # Fine-tune > Optimizer; other FT_OPTIMIZERS are also accepted
 # what each keeps per trained weight, in units of the weight's own bf16 size, for the window planner: Adafactor's
 # factored state is ~0 (the calibrated overhead absorbs it); CMuon holds one bf16 momentum buffer
 STATE_FACTOR = {"adafactor": 0.0, "cmuon": 1.0}
 
 
-def make_optimizer(params, lr, kind="adafactor", chunks=None):
-    """Adafactor first (factored state ~10x smaller than Adam's - what keeps a full fine-tune on the card), then
-    AdamW8bit, then AdamW. kind="cmuon": CMuon (fizgig/training/cmuon.py), each fused weight in `chunks`
+def make_optimizer(params, lr, name="adafactor", chunks=None, kind=None):
+    """The fine-tune's optimizer (training/optimizers.FT_OPTIMIZERS, plus CMuon). Adafactor is the
+    default (factored state ~10x smaller than Adam's - what keeps a full fine-tune on the card), falling back to
+    AdamW8bit, then AdamW. name="cmuon": CMuon (fizgig/training/cmuon.py), each fused weight in `chunks`
     {param: parts} orthogonalised part by part. Returns (optimizer, label)."""
-    if kind == "cmuon":
+    if kind is not None:
+        name = kind
+    if str(name or "").strip().lower() == "cmuon":
         from fizgig.training.cmuon import CMuon
         return CMuon(params, lr=lr, chunks=chunks), "cmuon"
+    from fizgig.training.optimizers import _bnb, ft_optimizer
+    name = ft_optimizer(name)
+    if name == "cmuon":
+        from fizgig.training.cmuon import CMuon
+        return CMuon(params, lr=lr, chunks=chunks), "cmuon"
+    if name != "adafactor":
+        params = list(params)
+        if name == "adamw":
+            return torch.optim.AdamW(params, lr=lr, fused=all(p.is_cuda for p in params) or None), name
+        cls = {"adamw8bit": "AdamW8bit", "pagedadamw8bit": "PagedAdamW8bit", "ademamix8bit": "AdEMAMix8bit",
+               "pagedademamix8bit": "PagedAdEMAMix8bit", "lion8bit": "Lion8bit"}[name]
+        return _bnb(cls)(params, lr=lr), name
     try:
         from transformers.optimization import Adafactor
         return Adafactor(params, lr=lr, scale_parameter=False, relative_step=False, warmup_init=False), "adafactor"
@@ -671,9 +686,9 @@ class FusedSteps:
     so only one parameter's gradient is ever live (~5 GB saved on Krea 2). No clipping, no accumulation. `scale` is
     the step's LR multiplier (the driver's step_policy), set before each backward."""
 
-    def __init__(self, lr, kind="adafactor"):
+    def __init__(self, lr, name="adafactor"):
         self.lr = lr
-        self.kind = kind
+        self.name = name
         self.scale = 1.0
         self.opts = {}
         self.handles = []
@@ -681,7 +696,7 @@ class FusedSteps:
     def attach(self, params, chunks=None):
         self.detach()
         for p in params:
-            self.opts[p] = make_optimizer([p], self.lr, self.kind,
+            self.opts[p] = make_optimizer([p], self.lr, self.name,
                                           {p: chunks[p]} if chunks and p in chunks else None)[0]
 
         def _hook(param):
@@ -752,6 +767,8 @@ class SharedBackend:
     whose base differs (H3's int8 ConvRot file, its own 4-bit trunk and ring) brings its own backend with the same
     surface (driver.ft_backend)."""
 
+    plans_optimizer_state = True    # plan() takes the optimizer's state_factor
+
     always_label = None
 
     def __init__(self, driver, dit, device, src, group=None):
@@ -769,18 +786,19 @@ class SharedBackend:
     def start_always(self):
         return self.rot.start_always()
 
-    def plan(self, free_gb, allow_stream=True, mp=None, max_parts=0, held_grads=False, opt_state=0.0):
+    def plan(self, free_gb, allow_stream=True, mp=None, max_parts=0, held_grads=False, state_factor=0.0, opt_state=0.0):
         """held_grads: every trained weight's gradient is held at once this run (DOP's pass joins the step's
         backward, so each weight waits for both passes' gradients before its free-each-gradient step: measured +8.3
         GB on Krea 2's 4.04B-parameter attention window) - planned as the window factor's weights-plus-gradient.
-        opt_state: the optimizer's state per weight beyond Adafactor's, in weight sizes (STATE_FACTOR)."""
+        state_factor (or opt_state): the optimizer's state per GB of window weights beyond Adafactor's
+        (optimizers.FT_OPTIMIZERS)."""
+        import dataclasses
         spec = self.spec
         if held_grads and spec.window_factor < 2.0:
-            import dataclasses
             spec = dataclasses.replace(spec, window_factor=2.0)
-        if opt_state:
-            import dataclasses
-            spec = dataclasses.replace(spec, window_factor=spec.window_factor + float(opt_state))
+        factor = state_factor or opt_state
+        if factor:
+            spec = dataclasses.replace(spec, window_factor=spec.window_factor + float(factor))
         windows, stream, why, usable = plan_windows(self.dit, spec, self.rot, free_gb, allow_stream, mp,
                                                     max_parts)
         if windows is not None and stream and any(isinstance(w, tuple) for w in windows):

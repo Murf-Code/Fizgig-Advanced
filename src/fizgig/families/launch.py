@@ -488,6 +488,10 @@ def ft_max_parts(inputs):
 
 # Fine-tune > Optimizer: (label, --ft_optimizer). CMuon is fine-tune only (it splits a full model's fused weights)
 FT_OPTIMIZERS = (("Adafactor (recommended)", "adafactor"),
+                 ("AdamW8bit", "adamw8bit"),
+                 ("AdamW", "adamw"),
+                 ("AdEMAMix8bit", "ademamix8bit"),
+                 ("Lion8bit", "lion8bit"),
                  ("CMuon - Muon per fused part (experiment, more memory)", "cmuon"))
 
 
@@ -739,12 +743,15 @@ def detail_crop_sizes(desc, inputs):
 
 def detail_crops_captioner(inputs):
     """The Captions tab's model for detail crop captions, as the caption worker's config, or None: its pick
-    (recaption_with: Florence-2, a tagger such as JTP-3, or Qwen3-VL), else Qwen3-VL from the captioner file."""
+    (recaption_with: a registry captioner, or JTP-3), else Qwen3-VL from the captioner file."""
     rw = inputs.get("recaption_with") or {}
-    if isinstance(rw, dict) and rw.get("backend") in ("tagger", "florence"):
+    if isinstance(rw, dict) and (rw.get("backend") == "tagger" or (rw.get("captioner") and rw.get("captioner") != "qwen3vl")):
         return rw
-    cap = _s(rw.get("text_encoder") if isinstance(rw, dict) else "") or _s(inputs.get("captioner"))
-    return {"backend": "qwen", "text_encoder": cap} if cap and os.path.isfile(cap) else None
+    if isinstance(rw, dict) and rw.get("captioner") == "qwen3vl" and (rw.get("files") or {}).get("path"):
+        return rw
+    cap = _s((rw.get("files") or {}).get("path") if isinstance(rw, dict) else "") or _s(
+        rw.get("text_encoder") if isinstance(rw, dict) else "") or _s(inputs.get("captioner"))
+    return {"captioner": "qwen3vl", "files": {"path": cap}} if cap and os.path.isfile(cap) else None
 
 
 def detail_crops_problem(desc, inputs):
@@ -1215,26 +1222,23 @@ def train_command(desc, inputs, plan):
         if cont.get("checkpoint"):
             cmd += ["--ft_start_window", str(int(cont.get("start_window", 0))),
                     "--ft_epochs_done", str(int(cont.get("epochs_done", 0)))]
+    if st.get("TRAINING_MAPS") and desc.training_maps:     # training/train_maps.py: the Samples tab's Training maps
+        cmd += ["--training_maps"]
     # per-image loss watch (families/loss_watch.py): at any Batch Size, each image of a batch keeps its own loss
     lw = (st.get("loss_watch") or {}) if desc.loss_watch else {}
     if multi_person_on(desc, st):    # the side-by-sides are hard on purpose: no verdicts, per-image LR or look warm-up
         lw = {**lw, "detect": False, "per_image_lr": False, "warmup": False}
     watch = [("detect", "--log_per_image_loss"), ("per_image_lr", "--per_image_lr"), ("warmup", "--warmup_look_outliers")]
-    # every family captions with the Captions tab's model (recaption_with); none saved: Qwen3-VL, the shared captioner
-    rw = st.get("recaption_with") or {}
-    qwen = rw.get("backend", "qwen") == "qwen"
-    can_recaption = bool(st.get("captioner")) if qwen else bool(rw)
+    # auto-recaption uses only Qwen3-VL (the Krea 2 text encoder / secondary captioning model). The Captions tab's
+    # other models never load in a training run, so the memory plans only ever fit around it (fizgig/captioners/).
+    can_recaption = bool(st.get("captioner"))
     # multi-person mode reads triggers fused as captions load; a new AI caption is encoded as written, unfused
     can_recaption = can_recaption and not multi_person_on(desc, st)
     if can_recaption:
         watch.append(("recaption", "--auto_recaption"))
     cmd += [flag for key, flag in watch if lw.get(key)]
     if can_recaption and lw.get("recaption"):
-        if qwen:
-            cmd += ["--captioner", st.get("captioner", "")]
-        else:
-            import json as _json
-            cmd += ["--recaption_with", _json.dumps(rw)]
+        cmd += ["--captioner", st.get("captioner", "")]
         trig = _s(st.get("caption_trigger"))
         if trig and trig.lower() != "trigger_word":
             cmd += ["--trigger_word", trig]      # leads each AI caption, as the Captions tab writes it
@@ -1243,7 +1247,7 @@ def train_command(desc, inputs, plan):
             cmd += ["--recaption_triggers", _json.dumps(st["recaption_triggers"])]
         from fizgig.krea2.caption_text import RECAPTION_DEFAULTS, recaption_instruction
         ovr = st.get("caption_overrides") or {}
-        tasks = tuple(st.get("recaption_tasks") or RECAPTION_DEFAULTS) if qwen else ()   # Qwen3-VL's instructions
+        tasks = tuple(st.get("recaption_tasks") or RECAPTION_DEFAULTS)   # Qwen3-VL's instructions
         for key, (flag, task_flag) in zip(tasks, (("--recaption_instruction", "--recaption_task"),
                                                   ("--recaption_instruction_detailed", "--recaption_task_detailed"))):
             label, instr, edited = recaption_instruction(key, ovr, st.get("caption_concept") or "")
@@ -1260,9 +1264,16 @@ def train_command(desc, inputs, plan):
         ema = str(st.get("FAMILY_EMA", "") or desc.ema_default).split(" ")[0]
         if ema != "Off":
             cmd += ["--ema_decay", ema]
-    if str(st.get("OPTIMIZER_TYPE", "") or "").strip():
+    if ft_on(desc, st):
+        # Fine-tune > Optimizer is sent as --ft_optimizer above. Do not send the hidden LoRA
+        # Optimizer Type (PoLoRA / Muon / …): the engine would ignore it, and the Run card / CLI
+        # would still show a LoRA optimizer that is not what trains (#312).
+        pass
+    elif str(st.get("OPTIMIZER_TYPE", "") or "").strip():
         cmd += ["--optimizer_type", str(st["OPTIMIZER_TYPE"]).strip()]
-    if str(st.get("OPTIMIZER_ARGS", "") or "").strip():
+    if ft_on(desc, st):                    # its optimizers take no args here
+        pass
+    elif str(st.get("OPTIMIZER_ARGS", "") or "").strip():
         cmd += ["--optimizer_args", str(st["OPTIMIZER_ARGS"]).strip()]
     for key, flag in (("METADATA_TITLE", "--metadata_title"), ("METADATA_AUTHOR", "--metadata_author"),
                       ("METADATA_DESCRIPTION", "--metadata_description"),
@@ -1798,10 +1809,14 @@ def dataset_toml(desc, inputs, cache_suffix=""):
         lines += trig(inputs.get(f"DOP_FOLDER_TRIGGER{n}"))
         if root:
             lines.append(f'cache_directory = "{(cache_dir_for(root, f) + cache_suffix).replace(chr(92), "/")}"')
+    _subj = [_s(inputs.get("image_folder"))] + extra
     for f, (_s_, w) in mp.items():        # multi-person mode: each person's composites, already captioned fused
         if _s_["kind"] != "person":
             continue
-        lines += ["", "[[datasets]]", f'image_directory = "{w.replace(chr(92), "/")}"']
+        # keyed mp<n>: by subject - every subject's composites share file names (fizgig_mp_00..), so without it two
+        # subjects' pictures were one key, and nothing could find them (they live in the cache, not a training folder)
+        n = next((i + 1 for i, g in enumerate(_subj) if g == f), 1)
+        lines += ["", "[[datasets]]", f'image_directory = "{w.replace(chr(92), "/")}"', f'item_prefix = "mp{n}:"']
         if root:
             lines.append(f'cache_directory = "{(cache_dir_for(root, w) + cache_suffix).replace(chr(92), "/")}"')
     reg = ft_reg_dir(desc, inputs)
@@ -2249,7 +2264,7 @@ def plan(desc, inputs):
                "--folder", _s(inputs.get("image_folder")), "--captioner", _s(inputs.get("captioner")),
                "--instruction_file", instr, "--ext", _s(inputs.get("caption_ext")) or ".txt"]
         rw = detail_crops_captioner(inputs)
-        if rw and rw.get("backend") != "qwen":   # the Captions tab's pick (JTP-3, Florence-2, ...): not Qwen3-VL
+        if rw:
             import json as _json
             cmd += ["--recaption_with", _json.dumps(rw)]
         for mp in crop_sizes:
