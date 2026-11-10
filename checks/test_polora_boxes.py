@@ -1,5 +1,5 @@
 """PoLoRA's Magnitude / Curl / Compile boxes (each one its Optimizer Args word, shown with PoLoRA only, kept in step
-both ways) and every family's built-in "PoLoRA" preset."""
+both ways) and every family's built-in "PoLoRA (experimental)" preset."""
 import json
 import os
 import re
@@ -9,6 +9,8 @@ import subprocess
 import pytest
 
 from fizgig.families import form
+from fizgig.families.description import (POLORA_CHOICE_LABEL, POLORA_EXPERIMENTAL_NOTE, POLORA_PRESET,
+                                         POLORA_PRESET_ALIASES)
 from fizgig.families.registry import FAMILIES
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -19,11 +21,17 @@ def test_boxes_show_with_polora_only_and_read_the_args():
     rows = {r["key"]: r for s in form.form(desc)["sections"] for r in s["rows"] if r}
     assert [rows[k]["label"] for k in form.POLORA_BOXES] == ["Magnitude", "Curl", "Compile"]
     assert all(rows[k]["hint"] for k in form.POLORA_BOXES) and rows["POLORA_COMPILE"]["kind"] == "check"
+    opt = rows["OPTIMIZER_TYPE"]
+    assert "polora" in opt["choices"]
+    assert opt["choice_labels"]["polora"] == POLORA_CHOICE_LABEL == "PoLoRA (experimental)"
+    assert opt["choice_tips"]["polora"] == POLORA_EXPERIMENTAL_NOTE
     st = form.state(desc, {**form.DEFAULTS})
+    assert "OPTIMIZER_TYPE" not in st.get("notes", {})          # the note only shows when PoLoRA is picked
     assert set(form.POLORA_BOXES) <= set(st["hidden"])
     v = {**form.DEFAULTS, "OPTIMIZER_TYPE": "polora", "OPTIMIZER_ARGS": "magnitude_scale=2.5 compile=True ns_steps=6"}
     st = form.state(desc, v)
     assert not set(form.POLORA_BOXES) & set(st["hidden"])
+    assert st["notes"]["OPTIMIZER_TYPE"] == POLORA_EXPERIMENTAL_NOTE
     assert st["force"]["POLORA_MAGNITUDE"] == "2.5" and "POLORA_COMPILE" not in st["force"]   # ticked already
     assert "POLORA_CURVATURE" not in st["force"]                     # not in the args: empty (PoLoRA's 0.99)
     assert not set(form.POLORA_BOXES) & set(form.state(desc, {**v, **st["force"]})["force"])   # in step: nothing
@@ -65,12 +73,14 @@ def test_a_box_writes_its_word_into_the_args():
                    "curvature_beta=0.95"]
     assert 'POLORA_BOXES = {POLORA_MAGNITUDE: "magnitude_scale", POLORA_CURVATURE: "curvature_beta", ' \
            'POLORA_COMPILE: "compile"}' in src
+    assert "function choiceText(r, c)" in src and "function choiceTip(r, c)" in src
+    assert "text: choiceText(r, c)" in src
 
 
-def _previous_standard(desc):
-    """The family's earlier standard LoRA preset (the one a first visit applied before PoLoRA became first)."""
+def _standard_lora(desc):
+    """The family's standard LoRA preset: the first one a first visit applies (not PoLoRA, an edit, slider or fine-tune)."""
     return next((n, dict(v)) for n, v in desc.presets
-                if n != "PoLoRA" and str(v.get("OPTIMIZER_TYPE") or "").lower() != "polora"
+                if n not in POLORA_PRESET_ALIASES and str(v.get("OPTIMIZER_TYPE") or "").lower() != "polora"
                 and not (v.get("FAMILY_EDIT") or v.get("FAMILY_SLIDER") or v.get("FAMILY_FT")))
 
 
@@ -78,28 +88,32 @@ def _previous_standard(desc):
 def test_every_family_has_the_polora_preset(key):
     desc = FAMILIES[key]
     names = [n for n, _v in desc.presets]
-    assert names[0] == "PoLoRA" and names.count("PoLoRA") == 1            # first: a first visit applies it
-    p = dict(desc.presets)["PoLoRA"]
+    assert names[-1] == POLORA_PRESET and names.count(POLORA_PRESET) == 1 and names[0] != POLORA_PRESET
+    assert "PoLoRA" not in names                                      # the old default name is not kept beside it
+    p = dict(desc.presets)[POLORA_PRESET]
     assert (p["OPTIMIZER_TYPE"], p["ADAPTIVE_LR"], p["ADAPTIVE_LR_MIN"], p["ADAPTIVE_LR_MAX"]) == \
         ("polora", True, "1e-2", "4e-2")
     assert p["LEARNING_RATE"] == "2e-2"
     assert form._arg_words(p["OPTIMIZER_ARGS"]) == {"magnitude_scale": "3", "curvature_beta": "0.99",
                                                     "compile": "True"}
     assert not (p.get("FAMILY_SLIDER") or p.get("FAMILY_FT") or p.get("FAMILY_EDIT"))
-    std_name, std = _previous_standard(desc)
-    assert std_name and str(std.get("OPTIMIZER_TYPE") or "").lower() != "polora"
+    std_name, std = _standard_lora(desc)
+    assert names[0] == std_name and str(std.get("OPTIMIZER_TYPE") or "").lower() != "polora"
     assert p.get("NETWORK_DIM") == std.get("NETWORK_DIM")                # the rest: the family's own
     assert float(desc.lr) < 1e-2                                         # the family's usual rate isn't PoLoRA's
     out = form.apply_preset(desc, dict(form.DEFAULTS), p)
     assert out["OPTIMIZER_TYPE"] == "polora" and out["LEARNING_RATE"] == "2e-2"
     assert "compile=True" in out["OPTIMIZER_ARGS"] and out["ADAPTIVE_LR"] is True
-    # the previous named preset is still there and still the old optimizer
+    # a first visit applies the standard preset, not PoLoRA
+    first = form.apply_preset(desc, dict(form.DEFAULTS), desc.presets[0][1])
+    assert str(first.get("OPTIMIZER_TYPE") or form.DEFAULTS["OPTIMIZER_TYPE"]).lower() != "polora"
     old = form.apply_preset(desc, dict(form.DEFAULTS), std)
     assert str(old.get("OPTIMIZER_TYPE") or form.DEFAULTS["OPTIMIZER_TYPE"]).lower() != "polora"
 
 
-def test_a_saved_run_keeps_its_optimizer_and_the_new_default_is_quiet():
-    """Last Train / a saved form keeps its optimizer; Start and the form don't flag PoLoRA's usual 2e-2."""
+def test_a_saved_run_keeps_its_optimizer_and_a_first_visit_is_the_standard_preset():
+    """Last Train / a saved form keeps its optimizer; a first visit uses the standard preset, not PoLoRA.
+    Start and the form don't flag PoLoRA's usual 2e-2 when you do pick it."""
     from fizgig.families.launch import start_checks
     desc = FAMILIES["krea2"]
     saved = {**form.DEFAULTS, "OPTIMIZER_TYPE": "muon", "LEARNING_RATE": "1e-4", "ADAPTIVE_LR": True,
@@ -107,12 +121,15 @@ def test_a_saved_run_keeps_its_optimizer_and_the_new_default_is_quiet():
     st = form.state(desc, saved)
     assert st["force"].get("OPTIMIZER_TYPE", saved["OPTIMIZER_TYPE"]) == "muon"
     assert st["force"].get("LEARNING_RATE", saved["LEARNING_RATE"]) == "1e-4"
-    assert desc.presets[0][0] == "PoLoRA"
-    fresh = form.apply_preset(desc, dict(form.DEFAULTS), desc.presets[0][1])
-    assert fresh["OPTIMIZER_TYPE"] == "polora" and fresh["LEARNING_RATE"] == "2e-2"
-    st = form.state(desc, fresh)
-    assert st["force"].get("LEARNING_RATE", fresh["LEARNING_RATE"]) == "2e-2"
-    assert start_checks(desc, fresh, "") == []
+    assert desc.presets[0][0] != POLORA_PRESET
+    first = form.apply_preset(desc, dict(form.DEFAULTS), desc.presets[0][1])
+    assert str(first.get("OPTIMIZER_TYPE") or form.DEFAULTS["OPTIMIZER_TYPE"]).lower() != "polora"
+    picked = form.apply_preset(desc, dict(form.DEFAULTS), dict(desc.presets)[POLORA_PRESET])
+    assert picked["OPTIMIZER_TYPE"] == "polora" and picked["LEARNING_RATE"] == "2e-2"
+    st = form.state(desc, picked)
+    assert st["force"].get("LEARNING_RATE", picked["LEARNING_RATE"]) == "2e-2"
+    assert st["notes"]["OPTIMIZER_TYPE"] == POLORA_EXPERIMENTAL_NOTE
+    assert start_checks(desc, picked, "") == []
     # a slider / edit / fine-tune preset keeps its own optimizer (not switched to PoLoRA)
     other = next((v for _n, v in desc.presets if v.get("FAMILY_FT") or v.get("FAMILY_SLIDER") or v.get("FAMILY_EDIT")), None)
     assert other is not None

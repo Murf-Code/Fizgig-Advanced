@@ -379,7 +379,12 @@ function renderRow(r) {
       const val = same || v;
       if (same && same !== v) S.values[r.key] = same;
       const opts = r.choices.includes(String(val)) || !val ? r.choices : [String(val), ...r.choices];
-      for (const c of opts) input.append(el("option", {value: c, text: c}));
+      for (const c of opts) {
+        const o = el("option", {value: c, text: choiceText(r, c)});
+        const tip = choiceTip(r, c);
+        if (tip) o.title = tip;
+        input.append(o);
+      }
       input.value = String(val ?? "");
     } else if (r.kind === "text") {
       input = el("textarea", {id: "f_" + r.key, rows: 4, spellcheck: "false", oninput: (e) => { set(e.target.value); if (input._pairs) pairRows(input._pairs, e.target.value); }});
@@ -945,6 +950,16 @@ function onValue(r, val) {
 // a choice row's older name for a value (r.aliases: lower case -> the choice), else undefined
 function choiceAlias(r, v) {
   return r && r.aliases && v != null ? r.aliases[String(v).trim().toLowerCase()] : undefined;
+}
+
+// a choice's shown name and hover (OPTIMIZER_TYPE: "polora" reads "PoLoRA (experimental)")
+function choiceText(r, c) {
+  const labels = r && r.choice_labels;
+  return (labels && labels[c] != null) ? labels[c] : c;
+}
+function choiceTip(r, c) {
+  const tips = r && r.choice_tips;
+  return (tips && tips[c]) || "";
 }
 
 // a combo row's dropdown: the usual values, a value of your own kept as an option, and Other…
