@@ -5881,7 +5881,7 @@ function meWmPad() {
   return 3;
 }
 function meWmCount() { return meState().list.filter((p) => p.watermark).length; }
-const ME_WM_HINT = 'Fills in every red watermark area (plus the pad) with the colours around it, changing the picture files. Originals are copied to removed_watermarks first. Training masks stop blacking out those spots. Pictures without a watermark mask are skipped.';
+const ME_WM_HINT = 'Fills in every red watermark area (plus the pad) with LaMa, changing the picture files. Originals are copied to removed_watermarks first. Training masks stop blacking out those spots. Pictures without a watermark mask are skipped.';
 const ME_WM_NONE = 'No watermark masks in this folder. Run Make masks with Mask watermarks too or Just hide the watermarks first.';
 // Remove-all asks twice, like training Stop and Make masks' Stop: first click is a confirm for 30 s
 const ME_WM_ALL = {timer: null};
@@ -6332,11 +6332,11 @@ function meImgBar() {
   $("meApply").textContent = t === "crop" ? "Crop" : "Remove it";
   $("meApply").disabled = m.stepBusy || (t === "crop" ? meCropWhole() : !m.rmDirty);
   $("meBefore").style.display = m.before ? "" : "none";
-  $("meImgWhat").textContent = t === "crop" ? "Crop: drag the corners or edges, or drag inside to move the box." :
+  $("meImgWhat").textContent = t === "crop" ? "Crop Image: drag the corners or edges, or drag inside to move the box." :
     showRm ? (m.rmFromWm && !m.rmHandEdited ?
-      "Remove: press Enter (or Remove it) to fill in the red area in this picture's file. The original is saved first. Add or erase with the mouse if you want." :
-      (m.rmDirty ? "Remove: press Enter (or Remove it) to take out what's red." :
-        "Remove: paint over what to take out. Right-click rubs the stroke out.")) : "Last Remove:";
+      "Remove Tool: press Enter (or Remove it) to fill in the red area in this picture's file. The original is saved first. Add or erase with the mouse if you want." :
+      (m.rmDirty ? "Remove Tool: press Enter (or Remove it) to take out what's red." :
+        "Remove Tool: paint over what to take out. Right-click rubs the stroke out.")) : "Last Remove Tool:";
 }
 async function mePicStep(path, body, what, busy) {
   // Crop or Remove: the mask is saved first (so a crop crops it as it is), then the picture changes on the server

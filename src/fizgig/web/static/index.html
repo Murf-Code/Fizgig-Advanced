@@ -502,15 +502,14 @@
                   deleted (the picture then trains as normal).</div>
                 <pre class="console-terminal prep-log" id="maskLog" style="display:none"></pre>
                 <details class="mask-edit" id="maskEdit">
-                  <summary><span class="me-sum-title">4. Edit masks</span><span class="me-sum-sub">Check and fix
-                    the masks by hand (paint, erase, or click with SAM), remove things from a picture, or crop it</span></summary>
+                  <summary><span class="me-sum-title">4. Image Editor</span><span class="me-sum-sub">Fix masks by hand (paint, erase, or click with SAM), remove things from a picture, or crop it</span></summary>
                   <div class="field-hint">Paint over a mask that's wrong, or make one by hand. White is what the LoRA
                     learns. Each picture's mask is saved beside it as photo-masklabel.png: when you press
-                    <b>Save now</b>, and on its own when you move to another picture, change the filter, close Edit
-                    masks or leave this tab. A mask saved all black is deleted (the picture then trains as normal).
-                    <b>Remove</b> and <b>Crop</b> change the picture file itself (its mask is cropped with it, so they
+                    <b>Save now</b>, and on its own when you move to another picture, change the filter, close Image
+                    Editor or leave this tab. A mask saved all black is deleted (the picture then trains as normal).
+                    <b>Remove Tool</b> and <b>Crop Image</b> change the picture file itself (its mask is cropped with it, so they
                     stay lined up); Ctrl+Z undoes them while Fizgig stays open. If you used <b>Mask watermarks too</b>
-                    or <b>Just hide the watermarks</b>, each picture's watermark area can be loaded into Remove as a
+                    or <b>Just hide the watermarks</b>, each picture's watermark area can be loaded into Remove Tool as a
                     red stroke, edited, and filled, one picture or all of them.</div>
                   <div class="me-bar">
                     <button class="btn btn-sm" id="mePrev" title="Previous picture (←)">←</button>
@@ -523,9 +522,9 @@
                     <span class="me-name" id="meName"></span>
                   </div>
                   <div class="me-bar me-wmbar" id="meWmBar">
-                    <label class="checkbox-label me-wmload" title="When you open a picture that has a watermark mask, paint that area in red in Remove, ready to edit or fill"><input type="checkbox" id="meLoadWm" checked> Load watermark masks into Remove</label>
-                    <label class="me-slider" id="meWmPadWrap" title="Extra pixels around the watermark when it's loaded into Remove">Pad <input type="range" id="meWmPad" min="2" max="5" value="3"><span id="meWmPadVal">3</span> px</label>
-                    <button class="btn btn-sm" id="meWmAll" title="Fills in every red watermark area (plus the pad) with the colours around it, changing the picture files. Originals are copied to removed_watermarks first. Training masks stop blacking out those spots. Pictures without a watermark mask are skipped.">Remove all watermarks</button>
+                    <label class="checkbox-label me-wmload" title="When you open a picture that has a watermark mask, paint that area in red in Remove Tool, ready to edit or fill"><input type="checkbox" id="meLoadWm" checked> Load watermark masks into Remove Tool</label>
+                    <label class="me-slider" id="meWmPadWrap" title="Extra pixels around the watermark when it's loaded into Remove Tool">Pad <input type="range" id="meWmPad" min="2" max="5" value="3"><span id="meWmPadVal">3</span> px</label>
+                    <button class="btn btn-sm" id="meWmAll" title="Fills in every red watermark area (plus the pad) with LaMa, changing the picture files. Originals are copied to removed_watermarks first. Training masks stop blacking out those spots. Pictures without a watermark mask are skipped.">Remove all watermarks</button>
                     <button class="btn btn-sm" id="meWmStop" style="display:none">Stop</button>
                     <span class="field-hint" id="meWmState"></span>
                   </div>
@@ -533,8 +532,8 @@
                     <span class="seg" id="meTool"><button class="btn btn-sm active" data-tool="brush" title="Paint white: learned (B). Right-click paints black">Brush</button><button
                       class="btn btn-sm" data-tool="erase" title="Paint black: not learned (E). Right-click paints white">Eraser</button><button
                       class="btn btn-sm" data-tool="sam" title="Click a thing to add it to the mask, right-click or Alt+click to take it away (S). Needs SAM 3.1, downloaded on this card">SAM click</button></span>
-                    <span class="seg" id="mePicTool"><button class="btn btn-sm" data-tool="remove" title="Paint over a thing to take it out of the picture, then press Enter or Remove it (J). Right-click rubs the stroke out; the mouse wheel sizes the brush">Remove</button><button
-                      class="btn btn-sm" data-tool="crop" title="Crop the picture, and its mask with it (C). Drag the corners or edges, drag inside to move; Enter crops, Esc cancels">Crop</button></span>
+                    <span class="seg" id="mePicTool"><button class="btn btn-sm" data-tool="remove" title="Paint over a thing to take it out of the picture, then press Enter or Remove it (J). Right-click rubs the stroke out; the mouse wheel sizes the brush">Remove Tool</button><button
+                      class="btn btn-sm" data-tool="crop" title="Crop the picture, and its mask with it (C). Drag the corners or edges, drag inside to move; Enter crops, Esc cancels">Crop Image</button></span>
                     <label class="me-slider" title="Brush size ([ and ])">Size <input type="range" id="meSize" min="2" max="400" value="40"></label>
                     <label class="me-slider" title="Soft edges: 0 is a hard edge">Softness <input type="range" id="meSoft" min="0" max="100" value="30"></label>
                     <label class="me-slider" title="How white each stroke paints: below 100 paints grey (learned partly)">Strength <input type="range" id="meStrength" min="5" max="100" value="100"></label>
@@ -549,7 +548,7 @@
                     <span class="me-cropsize" id="meCropSize"></span>
                     <button class="btn btn-primary btn-sm" id="meApply" title="Enter">Apply</button>
                     <button class="btn btn-sm" id="meCancel" title="Esc">Cancel</button>
-                    <button class="btn btn-sm" id="meBefore" style="display:none" title="Hold to see the picture as it was before the last Remove">Hold for before</button>
+                    <button class="btn btn-sm" id="meBefore" style="display:none" title="Hold to see the picture as it was before the last Remove Tool">Hold for before</button>
                   </div>
                   <div class="me-bar">
                     <span class="seg" id="meView"><button class="btn btn-sm active" data-view="over">Picture + mask</button><button
@@ -572,7 +571,7 @@
                   </div>
                   <div class="field-hint">Scroll to zoom, hold Space and drag (or drag with the middle button) to move
                     around. Keys: B brush, E eraser, S SAM click, J remove, C crop, [ ] size, Enter apply, Esc cancel, Ctrl+Z / Ctrl+Y,
-                    0 fit, ← → pictures. With Remove the mouse wheel sizes the brush (Ctrl+scroll zooms), and with
+                    0 fit, ← → pictures. With Remove Tool the mouse wheel sizes the brush (Ctrl+scroll zooms), and with
                     the mask brushes Alt+scroll does. Right-click with the Brush erases, with the Eraser paints. SAM click: click
                     something to add it to the mask, right-click or Alt+click to take it away.</div>
                 </details>

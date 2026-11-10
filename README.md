@@ -27,7 +27,7 @@ git fetch advanced
 git checkout -b fizgig-advanced advanced/fizgig-advanced
 ```
 
-**What's new in 1.5:** up to date with Fizgig v9.5.0 (Training maps, Studio maps, new captioners), a faster PoLoRA step with Compile on by default and a 🪄 PoLoRA preset, a CPU/GPU/disk readout on the Run card, Edit masks as a picture editor with Remove and Crop, watermark edits that stay put, small signatures found, and validation pictures held out of training. See the [1.5 release notes](docs/RELEASE_NOTES_advanced-1.5.md) ([1.4](docs/RELEASE_NOTES_advanced-1.4.md)).
+**What's new in 1.5:** up to date with Fizgig v9.5.0 (Training maps, Studio maps, new captioners), a faster PoLoRA step with Compile on by default and a 🪄 PoLoRA preset, a CPU/GPU/disk readout on the Run card, Image Editor with Remove Tool and Crop Image, watermark edits that stay put, small signatures found, and validation pictures held out of training. See the [1.5 release notes](docs/RELEASE_NOTES_advanced-1.5.md) ([1.4](docs/RELEASE_NOTES_advanced-1.4.md)).
 
 Several of these features have been offered upstream: [#289](https://github.com/shootthesound/Fizgig/pull/289), [#290](https://github.com/shootthesound/Fizgig/pull/290), [#291](https://github.com/shootthesound/Fizgig/pull/291), [#292](https://github.com/shootthesound/Fizgig/pull/292), [#293](https://github.com/shootthesound/Fizgig/pull/293), [#294](https://github.com/shootthesound/Fizgig/pull/294).
 
