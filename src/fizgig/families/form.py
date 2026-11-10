@@ -21,7 +21,7 @@ self.settings defaults, and a family's first preset is applied over them on a fi
 import os
 
 from fizgig.families import launch
-from fizgig.families.description import POLORA_CHOICE_LABEL, POLORA_EXPERIMENTAL_NOTE
+from fizgig.families.description import POLORA_CHOICE_LABEL
 from fizgig.training import timestep_spread as TS
 
 ADAPTIVE_MIN = ("1e-5", "5e-5", "1e-4", "2e-4", "3e-4")
@@ -709,8 +709,7 @@ def form(desc):
     ])
     add("optimizer", "Optimizer", "training", [
         _row("OPTIMIZER_TYPE", "Optimizer Type", "choice", choices=_optimizers(),
-             choice_labels={"polora": POLORA_CHOICE_LABEL},
-             choice_tips={"polora": POLORA_EXPERIMENTAL_NOTE}),
+             choice_labels={"polora": POLORA_CHOICE_LABEL}),
         _row("OPTIMIZER_ARGS", "Optimizer Args"),
         # PoLoRA's own settings as boxes (shown with PoLoRA only): each one IS its Optimizer Args word, kept in step
         # both ways (app.js POLORA_BOXES; state() reads the args back), so the args stay the one record
@@ -1318,7 +1317,6 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
         raw_args = cleaned_args = ""
     else:
         if str(values.get("OPTIMIZER_TYPE", "")).strip().lower() == "polora" and kind not in ("slider", "finetune"):
-            notes["OPTIMIZER_TYPE"] = POLORA_EXPERIMENTAL_NOTE
             notes["ADAPTIVE_LR"] = "With PoLoRA, Min and Max are its real learning rates (it trains around 1e-2 to " \
                                    "4e-2), as with Muon; magnitude_scale stays as you set it."
         if str(values.get("OPTIMIZER_TYPE", "")).strip().lower() == "lora_tsd" and kind not in ("slider", "finetune"):

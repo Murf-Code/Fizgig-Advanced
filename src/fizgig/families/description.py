@@ -323,7 +323,6 @@ class FamilyOption:
 POLORA_PRESET = "🪄 PoLoRA (experimental)"
 POLORA_PRESET_ALIASES = ("PoLoRA", "PoLoRA (experimental)", POLORA_PRESET)   # the old built-in name still counts as this preset
 POLORA_CHOICE_LABEL = "PoLoRA (experimental)"       # Optimizer Type dropdown (value stays "polora")
-POLORA_EXPERIMENTAL_NOTE = "Experimental: new and less tested than the other optimizers."
 
 
 def _is_polora_preset(name, values=None):

@@ -9,7 +9,7 @@ import subprocess
 import pytest
 
 from fizgig.families import form
-from fizgig.families.description import (POLORA_CHOICE_LABEL, POLORA_EXPERIMENTAL_NOTE, POLORA_PRESET,
+from fizgig.families.description import (POLORA_CHOICE_LABEL, POLORA_PRESET,
                                          POLORA_PRESET_ALIASES)
 from fizgig.families.registry import FAMILIES
 
@@ -24,14 +24,14 @@ def test_boxes_show_with_polora_only_and_read_the_args():
     opt = rows["OPTIMIZER_TYPE"]
     assert "polora" in opt["choices"]
     assert opt["choice_labels"]["polora"] == POLORA_CHOICE_LABEL == "PoLoRA (experimental)"
-    assert opt["choice_tips"]["polora"] == POLORA_EXPERIMENTAL_NOTE
+    assert "polora" not in (opt.get("choice_tips") or {})
     st = form.state(desc, {**form.DEFAULTS})
     assert "OPTIMIZER_TYPE" not in st.get("notes", {})          # the note only shows when PoLoRA is picked
     assert set(form.POLORA_BOXES) <= set(st["hidden"])
     v = {**form.DEFAULTS, "OPTIMIZER_TYPE": "polora", "OPTIMIZER_ARGS": "magnitude_scale=2.5 compile=True ns_steps=6"}
     st = form.state(desc, v)
     assert not set(form.POLORA_BOXES) & set(st["hidden"])
-    assert st["notes"]["OPTIMIZER_TYPE"] == POLORA_EXPERIMENTAL_NOTE
+    assert "OPTIMIZER_TYPE" not in st["notes"]
     assert st["force"]["POLORA_MAGNITUDE"] == "2.5" and "POLORA_COMPILE" not in st["force"]   # ticked already
     assert "POLORA_CURVATURE" not in st["force"]                     # not in the args: empty (PoLoRA's 0.99)
     assert not set(form.POLORA_BOXES) & set(form.state(desc, {**v, **st["force"]})["force"])   # in step: nothing
@@ -128,7 +128,7 @@ def test_a_saved_run_keeps_its_optimizer_and_a_first_visit_is_the_standard_prese
     assert picked["OPTIMIZER_TYPE"] == "polora" and picked["LEARNING_RATE"] == "2e-2"
     st = form.state(desc, picked)
     assert st["force"].get("LEARNING_RATE", picked["LEARNING_RATE"]) == "2e-2"
-    assert st["notes"]["OPTIMIZER_TYPE"] == POLORA_EXPERIMENTAL_NOTE
+    assert "OPTIMIZER_TYPE" not in st["notes"]
     assert start_checks(desc, picked, "") == []
     # a slider / edit / fine-tune preset keeps its own optimizer (not switched to PoLoRA)
     other = next((v for _n, v in desc.presets if v.get("FAMILY_FT") or v.get("FAMILY_SLIDER") or v.get("FAMILY_EDIT")), None)
