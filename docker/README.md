@@ -46,11 +46,11 @@ When your own Fizgig opens a pod (in its app window, or a pod on its Pods tab), 
 
 For a pod you use only in a browser, or to stay on one release whatever your computer runs: set the environment variable `FIZGIG_REF` to a release's version, and the pod runs that version at every start until you change it. A pod set this way doesn't follow your computer: when you update your computer, Fizgig says the two run different builds until you change `FIZGIG_REF` too.
 
-- **On RunPod, before you deploy:** on the deploy screen expand **Edit Template → Environment Variables**, add `FIZGIG_REF` with a version, for example `advanced-1.5`, then **Deploy Pod**.
+- **On RunPod, before you deploy:** on the deploy screen expand **Edit Template → Environment Variables**, add `FIZGIG_REF` with a version, for example `advanced-1.5.1`, then **Deploy Pod**.
 - **On a pod you already have:** in the pod's menu choose **Edit Pod**, add `FIZGIG_REF` under **Environment Variables**, and save. RunPod restarts the pod, which starts on that version. Your volume and everything on it stay.
 - **On Vast.ai:** add `FIZGIG_REF` with the version to the template's environment before you rent.
 
-The versions are on the [Releases page](https://github.com/Murf-Code/Fizgig-Advanced/releases): use the tag as it's written there (`advanced-1.5`). To go back to updating at every start, set `FIZGIG_REF` to `fizgig-advanced`, or remove it.
+The versions are on the [Releases page](https://github.com/Murf-Code/Fizgig-Advanced/releases): use the tag as it's written there (`advanced-1.5.1`). To go back to updating at every start, set `FIZGIG_REF` to `fizgig-advanced`, or remove it.
 
 A run you paused or moved resumes fine on the same version. Your computer and the pod don't have to be on the same version, but Send to this pod, Move a run and Helpers can need features that a pinned older pod doesn't have yet.
 
