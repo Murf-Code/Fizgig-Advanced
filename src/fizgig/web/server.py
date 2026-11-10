@@ -4771,7 +4771,7 @@ class Handler(BaseHTTPRequestHandler):
                                  "src": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()})
                 return self.json({"ok": True, "pictures": pics, "fresh": fresh, "of": len(sammask.pictures(folder))})
             if path in ("/api/masks/edit/crop", "/api/masks/edit/remove", "/api/masks/edit/image_step",
-                        "/api/masks/edit/remove_watermark"):
+                        "/api/masks/edit/remove_watermark", "/api/masks/edit/restore_original"):
                 # the picture editor's Crop and Remove change the picture file (web/image_edit.py); each request runs
                 # in its own server thread, so a slow Remove doesn't hold up the page. Undo/redo: an image step's id
                 from fizgig.web import image_edit
@@ -4792,6 +4792,10 @@ class Handler(BaseHTTPRequestHandler):
                         if _gpu_training():
                             return self.json({"error": "A run is training: remove watermarks when it finishes."}, 400)
                         return self.json(image_edit.remove_watermark(folder, name, b.get("pad")))
+                    if path == "/api/masks/edit/restore_original":
+                        if _gpu_training():
+                            return self.json({"error": "A run is training: restore when it finishes."}, 400)
+                        return self.json(image_edit.restore_original(folder, name))
                     return self.json(image_edit.step(b.get("step"), "redo" if b.get("redo") else "undo"))
                 except image_edit.LamaUnavailable as e:   # nothing was changed; the page shows it, the log keeps it
                     logger.error("Remove: %s", e)

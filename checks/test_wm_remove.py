@@ -2,6 +2,7 @@
 watermarks are found, Remove can fill that area, the training mask is restored only there (other
 edits stay), originals are copied to removed_watermarks/, and a finished sidecar is not applied again."""
 import io
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -75,7 +76,7 @@ def test_just_hide_writes_a_sidecar_and_remove_restores_then_drops_the_mask(tmp_
     m = np.asarray(Image.open(mask_for(str(tmp_path / "a.png"))))
     assert m[15, 70] == 0 and m[40, 40] == 255
     listed = mask_edit.listing(str(tmp_path))
-    assert listed == [{"name": "a.png", "mask": True, "watermark": True}]
+    assert listed == [{"name": "a.png", "mask": True, "watermark": True, "backup": False}]
 
     stroke = image_edit.watermark_stroke_png(str(tmp_path), "a.png", pad=3)
     assert stroke is not None
@@ -204,3 +205,69 @@ def test_red_edits_are_kept_without_the_pad_growing_and_erasing_all_drops_it(tmp
     assert not r["watermark"] and not wm_regions.has_active(p)
     assert not mask_edit.listing(str(tmp_path))[0]["watermark"]
     assert first.any()
+
+
+def test_restore_original_puts_back_the_picture_and_mask(tmp_path):
+    _pic(tmp_path / "a.png", (100, 80), (90, 90, 90))
+    im = np.array(Image.open(tmp_path / "a.png"))
+    im[10:25, 60:90] = (20, 20, 20)
+    Image.fromarray(im).save(tmp_path / "a.png")
+    orig = (tmp_path / "a.png").read_bytes()
+    D.watermarks_only_folder(str(tmp_path), [Stub([(60, 10, 90, 25, 0.9, 0)])], log=lambda m: None)
+    mask_path = mask_for(str(tmp_path / "a.png"))
+    orig_mask = Path(mask_path).read_bytes()
+    assert mask_edit.listing(str(tmp_path))[0]["backup"] is False
+    try:
+        image_edit.restore_original(str(tmp_path), "a.png")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "no original" in str(e)
+
+    r = image_edit.remove_watermark(str(tmp_path), "a.png", pad=3)
+    edited = (tmp_path / "a.png").read_bytes()
+    assert edited != orig
+    assert mask_edit.listing(str(tmp_path))[0]["backup"] is True
+    assert not mask_for(str(tmp_path / "a.png"))
+    assert not wm_regions.has_active(str(tmp_path / "a.png"))
+
+    out = image_edit.restore_original(str(tmp_path), "a.png")
+    assert out["ok"] and out["changed"] and out["mask"] and out["watermark"] and out["step"]
+    assert (tmp_path / "a.png").read_bytes() == orig
+    assert mask_for(str(tmp_path / "a.png"))
+    assert Path(mask_for(str(tmp_path / "a.png"))).read_bytes() == orig_mask
+    assert wm_regions.has_active(str(tmp_path / "a.png"))
+    # the first original is kept, so Restore can be used again after a later change
+    assert (tmp_path / "removed_watermarks" / "a.png").read_bytes() == orig
+    already = image_edit.restore_original(str(tmp_path), "a.png")
+    assert already["ok"] and already["changed"] is False and "step" not in already
+
+    image_edit.step(out["step"], "undo")
+    assert (tmp_path / "a.png").read_bytes() == edited
+    assert not mask_for(str(tmp_path / "a.png"))
+    assert not wm_regions.has_active(str(tmp_path / "a.png"))
+    image_edit.step(out["step"], "redo")
+    assert (tmp_path / "a.png").read_bytes() == orig
+    assert mask_for(str(tmp_path / "a.png")) and wm_regions.has_active(str(tmp_path / "a.png"))
+
+
+def test_restore_after_crop_brings_back_the_first_original(tmp_path):
+    # Remove copies the first original; a later Crop does not overwrite that copy
+    _pic(tmp_path / "a.png", (200, 150), (70, 70, 70))
+    im = np.array(Image.open(tmp_path / "a.png"))
+    im[40:80, 80:140] = (20, 20, 20)
+    Image.fromarray(im).save(tmp_path / "a.png")
+    orig = (tmp_path / "a.png").read_bytes()
+    D.watermarks_only_folder(str(tmp_path), [Stub([(80, 40, 140, 80, 0.9, 0)])], log=lambda m: None)
+    orig_mask = Path(mask_for(str(tmp_path / "a.png"))).read_bytes()
+    image_edit.remove_watermark(str(tmp_path), "a.png", pad=2)
+    image_edit.crop(str(tmp_path), "a.png", (40, 20, 200, 150))
+    with Image.open(tmp_path / "a.png") as im2:
+        assert im2.size == (160, 130)
+    out = image_edit.restore_original(str(tmp_path), "a.png")
+    assert out["changed"] and out["mask"] and out["watermark"]
+    assert (tmp_path / "a.png").read_bytes() == orig
+    assert Path(mask_for(str(tmp_path / "a.png"))).read_bytes() == orig_mask
+    with Image.open(tmp_path / "a.png") as im2:
+        assert im2.size == (200, 150)
+    cover, _ = wm_regions.read(str(tmp_path / "a.png"))
+    assert cover is not None and cover.shape == (150, 200)

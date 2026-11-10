@@ -17,7 +17,7 @@ import os
 import numpy as np
 from PIL import Image
 
-from fizgig.dataset.masks import MASK_SUFFIX, MIN_COVER, mask_for
+from fizgig.dataset.masks import MASK_SUFFIX, MIN_COVER, mask_for, _EXTS as MASK_EXTS
 
 WM_DIR = "watermarks"                 # <folder>/watermarks/<stem>.png
 WM_DONE_DIR = "done"                  # after a successful Remove: watermarks/done/<stem>.png
@@ -170,9 +170,9 @@ def unique_dest(folder, name):
 
 
 def backup_originals(image_path):
-    """Copy the picture (and its training mask, if any) into <folder>/removed_watermarks/, never over a file
-    already there. Returns the paths written. A second Remove of the same picture leaves the first copy (the
-    true original) as it is."""
+    """Copy the picture (and its training mask and watermark sidecar, if any) into <folder>/removed_watermarks/,
+    never over a file already there. Returns the paths written. A second Remove of the same picture leaves the
+    first copy (the true original) as it is."""
     import shutil
     folder = os.path.join(_folder(image_path), BACKUP_DIR)
     written = []
@@ -190,7 +190,41 @@ def backup_originals(image_path):
             os.makedirs(folder, exist_ok=True)
             shutil.copy2(mask, mdest)
             written.append(mdest)
+    sidecar = active_path(image_path)
+    if os.path.isfile(sidecar):
+        sdest = backup_sidecar_path(image_path)
+        if not os.path.isfile(sdest):
+            os.makedirs(os.path.dirname(sdest), exist_ok=True)
+            shutil.copy2(sidecar, sdest)
+            written.append(sdest)
     return written
+
+
+def backup_path(image_path):
+    return os.path.join(_folder(image_path), BACKUP_DIR, os.path.basename(str(image_path)))
+
+
+def has_backup(image_path):
+    return os.path.isfile(backup_path(image_path))
+
+
+def backup_sidecar_path(image_path):
+    """Where the watermark sidecar is kept inside removed_watermarks/ (watermarks/<stem>.png)."""
+    return os.path.join(_folder(image_path), BACKUP_DIR, WM_DIR, _stem(image_path) + ".png")
+
+
+def backup_mask_path(image_path):
+    """The training mask copied into removed_watermarks/, if one is there."""
+    folder = os.path.join(_folder(image_path), BACKUP_DIR)
+    if not os.path.isdir(folder):
+        return None
+    stem = _stem(image_path) + MASK_SUFFIX
+    low = {n.lower(): n for n in os.listdir(folder)}
+    for ext in MASK_EXTS:
+        real = low.get((stem + ext).lower())
+        if real:
+            return os.path.join(folder, real)
+    return None
 
 
 def resize_pair(cover, prior, size):

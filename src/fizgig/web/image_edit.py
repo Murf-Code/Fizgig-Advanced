@@ -7,8 +7,9 @@ the same way, so they stay lined up. Remove rebuilds what was painted over from 
 and the picture is left as it was.
 
 Each change is a step kept in memory (the file's bytes before and after, its masks' too, at most UNDO_STEPS of
-them), so the page can undo and redo it. Nothing is kept on disk and the steps go when Fizgig closes. Every write is
-atomic (a temporary file, then a replace), so a failed save never leaves a broken picture."""
+them), so the page can undo and redo it. Nothing is kept on disk and the steps go when Fizgig closes. Restore Original
+Image puts back the first copy from removed_watermarks/ (made before Remove), as one of those steps; the copy itself
+stays. Every write is atomic (a temporary file, then a replace), so a failed save never leaves a broken picture."""
 import io
 import itertools
 import os
@@ -422,6 +423,79 @@ def remove_watermark(folder, name, pad=wm_regions.DEFAULT_PAD, backup=True, gpu=
     cover, _prior = wm_regions.resize_pair(pair[0], pair[1], img.size)
     stroke = wm_regions.pad_cover(cover, pad)
     return _commit_remove(pic, img, stroke, backup=backup, gpu=gpu)
+
+
+
+def restore_original(folder, name):
+    """Put the picture (and its training mask and watermark sidecar, if they were copied) back from
+    <folder>/removed_watermarks/. The backup itself is kept, so a later Restore can use it again.
+    If no sidecar was backed up, a finished one is moved back to active when it still matches the
+    picture's size. Records an undo step. Raises ValueError when there is no backup."""
+    pic = _picture(folder, name)
+    src = wm_regions.backup_path(pic)
+    if not os.path.isfile(src):
+        raise ValueError("This picture has no original to restore (there's no copy in removed_watermarks).")
+    bak_pic = _read(src)
+    before, after = {pic: _read(pic)}, {pic: bak_pic}
+    size = open_upright(bak_pic).size
+
+    bak_mask = wm_regions.backup_mask_path(pic)
+    current_masks = mask_files(pic)
+    if bak_mask:
+        bak_name = os.path.basename(bak_mask)
+        dest = next((m for m in current_masks if os.path.basename(m).lower() == bak_name.lower()),
+                    os.path.join(os.path.dirname(pic), bak_name))
+        before[dest] = _read(dest) if os.path.isfile(dest) else None
+        after[dest] = _read(bak_mask)
+        for m in current_masks:
+            if os.path.normcase(m) != os.path.normcase(dest):
+                before.setdefault(m, _read(m))
+                after[m] = None
+    else:
+        for m in current_masks:
+            data = _read(m)
+            with Image.open(io.BytesIO(data)) as im:
+                msize = im.size
+            if msize != size:
+                before[m] = data
+                after[m] = None
+
+    active, done = wm_regions.active_path(pic), wm_regions.done_path(pic)
+    for s in (active, done):
+        if os.path.isfile(s):
+            before[s] = _read(s)
+
+    def sidecar_size(data):
+        with Image.open(io.BytesIO(data)) as im:
+            return im.size
+
+    bak_side = wm_regions.backup_sidecar_path(pic)
+    if os.path.isfile(bak_side):
+        after[active] = _read(bak_side)
+        before.setdefault(active, before.get(active))
+        if os.path.isfile(done) or done in before:
+            before.setdefault(done, _read(done) if os.path.isfile(done) else None)
+            after[done] = None
+    else:
+        done_ok = done in before and sidecar_size(before[done]) == size
+        active_ok = active in before and sidecar_size(before[active]) == size
+        if done_ok:
+            after[done] = None
+            after[active] = before[done]
+            before.setdefault(active, None)
+        else:
+            if done in before:
+                after[done] = None
+            if active in before and not active_ok:
+                after[active] = None
+
+    changed = any(before.get(p) != after.get(p, before.get(p)) for p in set(before) | set(after))
+    if not changed:
+        return {"ok": True, "changed": False, "mask": bool(mask_for(pic)),
+                "watermark": wm_regions.has_active(pic)}
+    _put(after)
+    return {"ok": True, "changed": True, "step": _remember(before, after),
+            "mask": bool(mask_for(pic)), "watermark": wm_regions.has_active(pic)}
 
 
 def save_watermark_edit(folder, name, add_png="", erase_png="", pad=wm_regions.DEFAULT_PAD):

@@ -5910,6 +5910,77 @@ function meWmBar() {
   $("meWmStop").style.display = m.wmBusy ? "" : "none";
   if (!m.wmBusy && !$("meWmState").dataset.keep)
     $("meWmState").textContent = meWmCountNote(n);
+  meRestoreBtn();
+}
+
+const ME_RESTORE_HINT = "Puts this picture back the way it was before Remove, from the copy in removed_watermarks. The training mask is put back too, if one was saved. Click again to confirm.";
+const ME_RESTORE = {timer: null};
+function meHasBackup() {
+  const m = meState(), item = m.list && m.list.find((p) => p.name === m.name);
+  return !!(item && item.backup);
+}
+function meRestoreBtn() {
+  const b = $("meRestoreOrig");
+  if (!b) return;
+  const has = meHasBackup();
+  b.style.display = has ? "" : "none";
+  b.disabled = !has || !!meState().stepBusy;
+  if (!ME_RESTORE.timer) { b.textContent = "Restore Original Image"; b.title = ME_RESTORE_HINT; }
+}
+function meRestoreOrigReset() {
+  clearTimeout(ME_RESTORE.timer); ME_RESTORE.timer = null;
+  document.removeEventListener("click", meRestoreOrigOutside);
+  const b = $("meRestoreOrig");
+  if (b) { b.textContent = "Restore Original Image"; b.title = ME_RESTORE_HINT; }
+}
+function meRestoreOrigOutside(e) {
+  if ($("meRestoreOrig") && $("meRestoreOrig").contains(e.target)) return;
+  meRestoreOrigReset();
+}
+function meRestoreOrigClick() {
+  const m = meState();
+  if (m.stepBusy || !meHasBackup()) return;
+  if (S.run && (S.run.running || S.run.state === "starting")) {
+    $("meState").textContent = "A run is training: restore when it finishes.";
+    return;
+  }
+  if (!ME_RESTORE.timer) {
+    const b = $("meRestoreOrig");
+    b.textContent = "Confirm";
+    b.title = "Click again within 30 s to put the original picture back.";
+    ME_RESTORE.timer = setTimeout(meRestoreOrigReset, 30000);
+    setTimeout(() => document.addEventListener("click", meRestoreOrigOutside), 0);
+    return;
+  }
+  meRestoreOrigReset();
+  meDoRestoreOrig();
+}
+async function meDoRestoreOrig() {
+  const m = meState();
+  if (m.stepBusy || !m.pic || !meHasBackup()) return;
+  if (S.run && (S.run.running || S.run.state === "starting")) {
+    $("meState").textContent = "A run is training: restore when it finishes.";
+    return;
+  }
+  m.stepBusy = true; meBusy("Restoring…"); meRestoreBtn();
+  try {
+    if (m.dirty && !(await meSave())) return;
+    const r = await api("/api/masks/edit/restore_original", {folder: m.folder || S.imageFolder, name: m.name});
+    const item = m.list.find((p) => p.name === m.name);
+    if (item) { item.mask = !!r.mask; item.watermark = !!r.watermark; item.backup = true; }
+    if (r.changed === false) {
+      await meReload();
+      $("meState").textContent = "This picture is already the original.";
+      return;
+    }
+    m.undo.push({step: r.step, what: "restore"}); if (m.undo.length > ME_UNDO * 2) m.undo.shift();
+    m.redo = [];
+    m.before = null;
+    await meReload();
+    $("meState").textContent = "Original picture restored from removed_watermarks. Ctrl+Z undoes it.";
+    maskInfo();
+  } catch (e) { $("meState").textContent = e.message; }
+  finally { m.stepBusy = false; meBusy(""); meRestoreBtn(); meImgBar(); meWmBar(); }
 }
 async function meLoadWmStroke() {
   // paint the picture's watermark sidecar onto the Remove stroke (padded), unless the user already edited it
@@ -5971,7 +6042,7 @@ async function meRefreshFlags(name) {
   try {
     const r = await api("/api/masks/edit/list?folder=" + encodeURIComponent(m.folder || S.imageFolder));
     const now = r.pictures.find((p) => p.name === name), item = m.list.find((p) => p.name === name);
-    if (now && item) { item.mask = now.mask; item.watermark = now.watermark; }
+    if (now && item) { item.mask = now.mask; item.watermark = now.watermark; item.backup = now.backup; }
   } catch (e) { /* keep what we had */ }
 }
 async function meOpen() {
@@ -6377,6 +6448,7 @@ async function meApply() {
       if (r.watermark.finished) item.watermark = false;
       if (r.watermark.mask_removed) item.mask = false;
     }
+    if (item && fromWm) item.backup = true;
     await meReload();
     m.before = old; meImgBar(); meWmBar();
     $("meState").textContent = fromWm ?
@@ -6460,7 +6532,7 @@ async function meRemoveAllWm() {
       try {
         await api("/api/masks/edit/remove_watermark", {folder, name: names[i], pad: meWmPad()});
         const item = m.list.find((p) => p.name === names[i]);
-        if (item) item.watermark = false;
+        if (item) { item.watermark = false; item.backup = true; }
         done++;
         if (m.name === names[i]) await meReload();
       } catch (e) {
@@ -6543,6 +6615,7 @@ function meWire() {
   $("meFit").addEventListener("click", meFit);
   $("meUndo").addEventListener("click", () => meRestore(m.undo, m.redo));
   $("meRedo").addEventListener("click", () => meRestore(m.redo, m.undo));
+  $("meRestoreOrig").addEventListener("click", meRestoreOrigClick);
   const whole = (fn) => () => { if (!m.mask) return; mePush(); fn(m.mask.getContext("2d")); m.dirty = true; meStateLine(); meDraw(); };
   $("meFill").addEventListener("click", whole((c) => { c.fillStyle = "#fff"; c.fillRect(0, 0, m.mask.width, m.mask.height); }));
   $("meClear").addEventListener("click", whole((c) => c.clearRect(0, 0, m.mask.width, m.mask.height)));
