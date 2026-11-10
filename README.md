@@ -1,4 +1,4 @@
-## Fizgig Advanced 1.4
+## Fizgig Advanced 1.5
 
 Fizgig Advanced is Fizgig with extra features. It's kept up to date with upstream [shootthesound/Fizgig](https://github.com/shootthesound/Fizgig), so you get everything in Fizgig plus the extras below. This version matches **Fizgig v9.5.0**, plus Fizgig Advanced's extras.
 
@@ -27,7 +27,7 @@ git fetch advanced
 git checkout -b fizgig-advanced advanced/fizgig-advanced
 ```
 
-**What's new in 1.4:** Fizgig v9.0.2, PoLoRA and Automagic V4, a trusted detector chain, OR finds and a crop per word, YOLO watermark masks on the Masks card, a YOLO detectors section with on/off ticks and your own models, two-click Stop, upstream's Style score and Caption dropout, and Image Prep that never changes your training folder. See the [1.4 release notes](docs/RELEASE_NOTES_advanced-1.4.md).
+**What's new in 1.5:** up to date with Fizgig v9.5.0 (Training maps, Studio maps, new captioners), a faster PoLoRA step with Compile on by default and a 🪄 PoLoRA preset, a CPU/GPU/disk readout on the Run card, Edit masks as a picture editor with Remove and Crop, watermark edits that stay put, small signatures found, and validation pictures held out of training. See the [1.5 release notes](docs/RELEASE_NOTES_advanced-1.5.md) ([1.4](docs/RELEASE_NOTES_advanced-1.4.md)).
 
 Several of these features have been offered upstream: [#289](https://github.com/shootthesound/Fizgig/pull/289), [#290](https://github.com/shootthesound/Fizgig/pull/290), [#291](https://github.com/shootthesound/Fizgig/pull/291), [#292](https://github.com/shootthesound/Fizgig/pull/292), [#293](https://github.com/shootthesound/Fizgig/pull/293), [#294](https://github.com/shootthesound/Fizgig/pull/294).
 
