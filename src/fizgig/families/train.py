@@ -3494,8 +3494,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
 
             def _rec(lv, per=None, _e=epoch, _i=i, _g=global_step, _keys=batch.get("item_keys"), _ts=_info.get("ts"),
                      _t=_info.get("t", 0.5), _c=_cur, _kept=(_kept if not slider and _many and _wb is not None else None),
-                     _rate=(None if global_step % 20 else      # the rate now and then (Automagic's averages it)
-                            _step_rate())):
+                     _rate=_step_rate()):
                 recorder.add(epoch=_e, step=_i, loss=lv)
                 if _c is not None:             # this epoch's restore-point record (Save & stop)
                     _c[1] = round(float(lv), 6)
