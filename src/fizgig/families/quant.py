@@ -277,7 +277,10 @@ def plan(desc, driver, precision="auto", blocks_to_swap=-1, free_gb=None, margin
             p = swappable[0]
             n = swap_for(p)
             if mem[p][0] - n * mem[p][1] <= budget:
-                return p, n if blocks_to_swap < 0 else blocks_to_swap, f"{p} + {n} swapped blocks fit {free_gb:.1f} GB"
+                if blocks_to_swap >= 0:       # the user's own Blocks Swap: say what runs, and what Auto would pick
+                    return p, blocks_to_swap, (f"{p} with your Blocks Swap {blocks_to_swap}; Auto would swap {n} to "
+                                               f"fit {free_gb:.1f} GB")
+                return p, n, f"{p} + {n} swapped blocks fit {free_gb:.1f} GB"
         p = "nf4" if "nf4" in offered else offered[-1]
         return p, 0, f"nothing fits {free_gb:.1f} GB comfortably: {p}, the smallest base"
     if precision not in offered:

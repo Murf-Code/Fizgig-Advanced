@@ -28,8 +28,9 @@ def test_rank_and_optimizer_size_the_lora(tmp_path):
         assert opt in vram_plan.STATE_BYTES
     desc = SimpleNamespace(train_memory_recipe=None)
     gb, why = vram_plan.extra_gb(desc, _model(tmp_path), "lora", 128, "adamw")
-    assert gb > 0 and "rank 128 with adamw" in why
-    assert vram_plan.extra_gb(desc, _model(tmp_path), "lora", 8, "adamw8bit")[0] == 0    # never less than the figures
+    assert gb > 0 and "rank 128 adamw vs" in why
+    small = vram_plan.extra_gb(desc, _model(tmp_path), "lora", 8, "adamw8bit")[0]
+    assert vram_plan.ADAPTER_FLOOR_GB <= small < 0                    # a smaller LoRA plans less, down to the floor
     assert vram_plan.extra_gb(desc, _model(tmp_path), "lokr", 128, "adamw")[0] == 0
 
 
@@ -79,23 +80,58 @@ def test_the_margin_is_a_preference_passed_to_the_trainer(tiny, tmp_path):
     assert _run(T, cfg, tmp_path / "m", vram_margin_gb=2.5, max_train_epochs=1, save_state=False) == "done"
 
 
-def test_ema_pair_optimizer_and_frozen_files_are_planned(tmp_path):
-    """The Nov 2026 66 s/step Krea 2 run: EMA, PoLoRA's per-step stacks and a context LoRA weren't in the plan, so
-    Auto swapped too few blocks on a 12 GB card and the step spilled into shared GPU memory."""
-    dit = _model(tmp_path)
-    ctx = str(tmp_path / "ctx.safetensors")
-    save_file({"a.lora_down.weight": torch.zeros(32, 512, dtype=torch.bfloat16),
-               "a.lora_up.weight": torch.zeros(1536, 32, dtype=torch.bfloat16)}, ctx)
-    assert abs(vram_plan.file_weights_gb(ctx) - (32 * 512 + 1536 * 32) * 2 / 1024 ** 3) < 1e-12
-    assert vram_plan.run_extras_gb(dit, "lora", 8, "adamw8bit") == (0.0, "")
-    ema = vram_plan.run_extras_gb(dit, "lora", 8, "adamw8bit", ema=True)[0]
-    assert abs(ema - vram_plan.adapter_gb(vram_plan.linear_shapes(dit), 8, "adamw8bit") * 4 / 10) < 1e-12
-    pol, why = vram_plan.run_extras_gb(dit, "lora", 8, "polora", ema=True, frozen_files=(ctx, None))
-    assert pol > ema + vram_plan.file_weights_gb(ctx) and "polora step" in why and "ctx.safetensors" in why
-    assert vram_plan.run_extras_gb(dit, "lokr", 8, "polora")[0] == 0           # no EMA/pair stacks for LoKr here
-    # and the plan swaps more for it
-    desc = SimpleNamespace(train_memory={"int8": (((0.25, 16.2), (1.0, 19.1)), 0.42)}, precisions=("int8",),
-                           auto_precisions=(), batch_gb=(0.0, 0.0), display_name="t", train_memory_small={})
+def test_chris_4070ti_krea2_config_swaps_at_least_20(tmp_path):
+    """Chris's 12 GB 4070 Ti, Nov 2026: Krea 2 at 0.25 MP, int8, rank 8 PoLoRA, EMA, a context LoRA. Auto swapped 17
+    and spilled (22 s a step uncompiled, 66 s compiled); 20 ran clean at 3.9 s. The plan now counts the EMA, the
+    optimizer's step and compile, the context LoRA and a small card's reserve."""
+    import json
+    import struct
+    from fizgig.families.krea2 import KREA2
+
+    def header(path, shapes):               # a header-only .safetensors: the planner reads shapes, never data
+        head, off = {}, 0
+        for k, (o, i) in enumerate(shapes):
+            head[f"m.{k}.weight"] = {"dtype": "BF16", "shape": [o, i], "data_offsets": [off, off + o * i * 2]}
+            off += o * i * 2
+        b = json.dumps(head).encode()
+        with open(path, "wb") as f:
+            f.write(struct.pack("<Q", len(b)) + b)
+        return path
+    blk = [(6144, 6144), (1536, 6144), (1536, 6144), (6144, 6144), (6144, 6144), (16384, 6144), (16384, 6144),
+           (6144, 16384)]
+    fus = [(2560, 2560)] * 5 + [(6912, 2560), (6912, 2560), (2560, 6912)]
+    io = [(6144, 64), (6144, 256), (6144, 6144), (6144, 2560), (6144, 6144), (36864, 6144), (64, 6144), (6144, 2560)]
+    shapes = blk * 28 + fus * 4 + io                                   # Krea 2's 264 LoRA Linears (29.4 M at rank 8)
+    dit = header(str(tmp_path / "krea2.safetensors"), shapes)
+    ctx = header(str(tmp_path / "ctx.safetensors"), [s for o, i in shapes for s in ((16, i), (o, 16))])
     drv = SimpleNamespace(max_blocks_to_swap=lambda: 26)
-    assert quant.plan(desc, drv, "int8", -1, free_gb=10.8, megapixels=0.25)[1] == 17
-    assert quant.plan(desc, drv, "int8", -1, free_gb=10.8, megapixels=0.25, extra_gb=0.6)[1] == 18   # 7.5 GB over at 0.42 a block
+    picks = {}
+    for args in ("magnitude_scale=3", "magnitude_scale=3 compile=False"):
+        gb, why = vram_plan.extra_gb(KREA2, dit, "lora", 8, "polora", optimizer_args=args, ema=True,
+                                     frozen_files=(ctx, None), card_gb=12.0)
+        assert "EMA" in why and "ctx.safetensors" in why and "12 GB card reserve" in why
+        assert ("polora compile" in why) == ("compile=False" not in args)
+        picks[args] = quant.plan(KREA2, drv, "auto", -1, free_gb=10.8, megapixels=0.25, extra_gb=gb)[:2]
+    assert picks["magnitude_scale=3"] in (("int8", 20), ("int8", 21))
+    assert picks["magnitude_scale=3 compile=False"] == ("int8", 20)
+    assert quant.plan(KREA2, drv, "auto", -1, free_gb=10.8, megapixels=0.25)[1] == 17      # before: too few
+    # any optimizer, by its own state and step: AdamW's fp32 moments and Prodigy plan more than AdamW8bit
+    g = {o: vram_plan.extra_gb(KREA2, dit, "lora", 16, o)[0] for o in ("adamw8bit", "adamw", "prodigy", "muon")}
+    assert g["adamw8bit"] == 0 and g["prodigy"] > g["adamw"] > g["muon"] > 0
+    # the user's own Blocks Swap is what the reason says
+    why = quant.plan(KREA2, drv, "auto", 20, free_gb=10.8, megapixels=0.25)[2]
+    assert why == "int8 with your Blocks Swap 20; Auto would swap 17 to fit 10.8 GB"
+
+
+def test_slow_steps_warn_once_and_the_warmup_line_tells_the_truth():
+    from fizgig.training.slow_step import SlowStepWatch, warmup_line
+    w = SlowStepWatch(17, 26)
+    w.set_pass(64.1, 60)                                               # his baseline: 15 images x 4 levels
+    assert all(w.observe(3.9) is None for _ in range(20))              # swap 20: fine
+    w = SlowStepWatch(17, 26)
+    w.set_pass(64.1, 60)
+    msgs = [w.observe(66.0) for _ in range(20)]
+    said = [m for m in msgs if m]
+    assert len(said) == 1 and "Shared GPU memory" in said[0] and "try 20" in said[0]
+    assert warmup_line(66.02, 66.0) == "[warm-up] Not faster yet: 66.02 s/step now, 66.0 s at the start."
+    assert warmup_line(4.0, 9.0).startswith("[warm-up] Still speeding up: 4.00 s/step now")

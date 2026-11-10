@@ -1705,18 +1705,16 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     # this run's LoRA rank and optimizer past the figures' recipe, and what past runs measured (vram_plan); a
     # fine-tune trains no LoRA and plans its windows itself
     _vram_learn = not finetune and bool(getattr(desc, "train_memory", None))
-    _vram_adapter, _vram_why = (vram_plan.extra_gb(desc, dit_path, network_type, network_dim, optimizer_type)
-                                if _vram_learn else (0.0, ""))
-    # ... and what it holds beside them: the EMA shadow, PoLoRA's per-step stacks, frozen LoRA files
     try:
         _ema_on = float(ema_decay or 0) > 0
     except (TypeError, ValueError):
         _ema_on = str(ema_decay).lower().startswith("short")
-    _vram_more, _vram_more_why = (vram_plan.run_extras_gb(dit_path, network_type, network_dim, optimizer_type,
-                                                          ema=_ema_on, frozen_files=(context_lora_path, training_adapter))
-                                  if _vram_learn else (0.0, ""))
-    _vram_adapter += _vram_more
-    _vram_why = "; ".join(w for w in (_vram_why, _vram_more_why) if w)
+    # ... and beside them: the EMA shadow, the optimizer's step and compile, frozen LoRA files, a small card's reserve
+    _vram_adapter, _vram_why = (vram_plan.extra_gb(desc, dit_path, network_type, network_dim, optimizer_type,
+                                                   optimizer_args=optimizer_args, ema=_ema_on,
+                                                   frozen_files=(context_lora_path, training_adapter),
+                                                   card_gb=quant.card_gb())
+                                if _vram_learn else (0.0, ""))
     vram_margin_gb = vram_plan.margin(vram_margin_gb)
     if finetune:
         from fizgig.families import ft as _ft_mod
@@ -3037,8 +3035,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                         + (" within the first epoch or two" if steps_per_epoch > 1 else "")
                         + ". Nothing is stuck.")
         elif len(dts) >= 6:
-            logger.info(f"[warm-up] Still speeding up: {med(dts[-5:]):.2f} s/step now, from {med(dts[:3]):.1f} s "
-                        "at the start.")
+            logger.info(_slow_step.warmup_line(med(dts[-5:]), med(dts[:3])))
     share_now = [None]       # this epoch's training share: {frac, epoch, ...} or None (this GPU trains every image)
     _share_keys = sorted({str(it.item_key) for ds in getattr(group, "datasets", [])
                           for b in getattr(getattr(ds, "batch_manager", None), "buckets", {}).values() for it in b})
@@ -3088,6 +3085,18 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     stop_mid = [False]                # ... inside an epoch (a check every N steps): that epoch isn't whole
 
     last_val = [None]                 # the latest validation loss, not yet seen by adaptive LR
+    from fizgig.training import slow_step as _slow_step
+    slow_watch = _slow_step.SlowStepWatch(max(0, blocks_to_swap) if swapped else 0,
+                                          driver.max_blocks_to_swap() if swapped else 0)
+
+    def _val_run():
+        """A validation check; its time per forward pass sets what a training step should take (slow_step)."""
+        from fizgig.training.val_loss import run_or_skip
+        out = run_or_skip(validator, driver, dit, device, net, swapped=bool(swapped))
+        if out[0] is not None:
+            slow_watch.set_pass(out[0][2], len(validator.batches) * len(validator.ts))
+        return out
+
     def _validate(epoch_no):
         nonlocal validator
         if validator is None or not validator.batches:
@@ -3096,6 +3105,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         from fizgig.training.val_loss import run_or_skip
         try:      # a failed check is never fatal: one console line, the details in the log, no more checks this run
             r, failed = run_or_skip(validator, driver, dit, device, net, swapped=bool(swapped))
+            if r is not None:       # its time per forward pass: what a training step should take (slow_step)
+                slow_watch.set_pass(r[2], len(validator.batches) * len(validator.ts))
         finally:
             progress.start_t += time.time() - _tv       # the bar's s/it is training speed
         if failed:
@@ -3238,7 +3249,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     if validator is not None and not share_worker and (not resume_state_dir or (adaptive and adaptive.best_val is None)):
         from fizgig.training.val_loss import run_or_skip
         _baseline(validator, adaptive if adaptive_lr_on_val else None, getattr(group, "datasets", []), steplog, step_off + global_step, start_epoch,
-                  lambda: run_or_skip(validator, driver, dit, device, net, swapped=bool(swapped)))
+                  _val_run)
     prior = _MaskPrior(driver, dit, net, mask_prior, swapped) if mask_prior else None
     # the CPU / GPU / disk readout (training/perf_watch.py): sampled on its own thread from here; train_family ends it
     from fizgig.training import perf_watch as _perf_watch
@@ -3522,6 +3533,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     _validate(epoch + 1)
                     step_clock["dirty"] = True
             if pending == 0 and ftr is None:   # the web UI's Sample now / Save now / Reclaim VRAM, between steps
+                if not step_clock["dirty"]:
+                    _slow_msg = slow_watch.observe(step_clock["t"])
+                    if _slow_msg:
+                        say(logger, _slow_msg, logging.WARNING)
                 if vram_watch is not None:
                     if not step_clock["dirty"]:
                         _ev = vram_watch.observe(step_clock["t"])

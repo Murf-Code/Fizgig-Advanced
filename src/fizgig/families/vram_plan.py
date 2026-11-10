@@ -29,7 +29,7 @@ KEEP_RUNS = 5                                # recent runs remembered per key
 # optimizer state per trained weight, bytes, beyond its own value and gradient (fp32 LoRA weights: 4 + 4)
 STATE_BYTES = {"adamw": 8, "adamw8bit": 2, "pagedadamw8bit": 2, "ademamix8bit": 3, "pagedademamix8bit": 3,
                "lion8bit": 1, "prodigy": 16, "muon": 4, "polora": 8, "automagic3": 6, "automagic4": 8, "soap": 8,
-               "lora_tsd": 4, "cmuon": 4}
+               "lora_tsd": 4, "cmuon": 4, "adafactor": 1}
 UNKNOWN_STATE_BYTES = 8                      # a module.path.ClassName optimizer: planned like AdamW
 SOAP_MAX_PRECOND = 10000                     # SOAP's max_precond_dim: wider sides get no matrix
 
@@ -72,26 +72,56 @@ def adapter_gb(shapes, rank, optimizer) -> float:
     return total / 1024 ** 3
 
 
-def extra_gb(desc, dit_path, network_type, rank, optimizer) -> tuple:
-    """(GB, why) this run's LoRA and optimizer hold beyond the recipe the family's figures were measured with. 0 for
-    a network that isn't a plain LoRA (LoKr's factors are far smaller) or a model file whose header can't be read."""
-    if str(network_type or "lora").lower() != "lora":
-        return 0.0, ""
-    shapes = linear_shapes(dit_path) if dit_path else []
-    if not shapes:
-        return 0.0, ""
-    ref_rank, ref_opt = getattr(desc, "train_memory_recipe", None) or TRAIN_MEMORY_RECIPE
-    have = adapter_gb(shapes, rank, optimizer)
-    ref = adapter_gb(shapes, ref_rank, ref_opt)
-    gb = max(0.0, have - ref)
-    why = (f"rank {int(rank)} with {optimizer}: ~{have:.2f} GB of LoRA and optimizer state, {gb:.2f} GB over the "
-           f"figures' rank {ref_rank} {ref_opt}") if gb >= 0.01 else ""
-    return gb, why
-
-
-# what a run holds beside its own LoRA and optimizer state, which the family's figures never had (fp32 / bf16 bytes)
+# What a step holds for a moment on top of that (bytes per trained weight) and over which weights at once: "group" for
+# the optimizers that stack each shape group of same-sized weights and step it as one (PoLoRA and LoRA-TSD in fp32,
+# Muon in bf16) - the largest group is the peak; "tensor" for the per-weight ones (fused AdamW, the 8-bit ones,
+# Prodigy, Automagic, SOAP) - the largest single weight is.
+STEP_BYTES = {"polora": (24, "group"), "lora_tsd": (16, "group"), "muon": (6, "group"), "cmuon": (6, "group"),
+              "adamw": (8, "tensor"), "adamw8bit": (8, "tensor"), "pagedadamw8bit": (8, "tensor"),
+              "ademamix8bit": (8, "tensor"), "pagedademamix8bit": (8, "tensor"), "lion8bit": (4, "tensor"),
+              "prodigy": (12, "tensor"), "automagic3": (8, "tensor"), "automagic4": (8, "tensor"),
+              "soap": (16, "tensor"), "adafactor": (8, "tensor")}
+UNKNOWN_STEP_BYTES = (8, "tensor")
+# An optimizer with a Compile option (PoLoRA): its compiled kernels keep two more fp32 copies of the largest group
+# alive between calls, plus the compiler's own buffers on the card. Chris's 4070 Ti, Nov 2026: the same PoLoRA run
+# took ~22 s a step uncompiled and ~66 s compiled at swap 17 (both spilled), so compile=True holds measurably more.
+COMPILE_BYTES = {"polora": 8}
+COMPILE_FIXED_GB = 0.25
 EMA_BYTES = 4                                # the EMA's fp32 shadow, per trained weight
-PAIR_STEP_COPIES = {"polora": 6, "lora_tsd": 4}   # fp32 copies a pair optimizer's step stacks per shape group
+ADAPTER_FLOOR_GB = -0.25                     # a LoRA smaller than the figures' plans at most this much less
+# The families' figures are peaks measured on big cards (a 5090 for Krea 2). On a card under 20 GB the allocator's
+# reserve on top of the allocated peak and Windows' own share are a bigger part of the card: Chris's 4070 Ti (Krea 2,
+# 0.25 MP, int8, Nov 2026) spilled at swap 17, planned ~0.45 GB under the figure's budget once the EMA, PoLoRA and the
+# context LoRA were counted, and ran clean at swap 20. Applied only with the big-card table (not train_memory_small).
+SMALL_CARD_GB = 20.0
+SMALL_CARD_RESERVE_GB = 0.8
+
+
+def optimizer_compiles(optimizer, optimizer_args="") -> bool:
+    """Whether this optimizer runs compiled kernels: PoLoRA's Compile (on unless compile=False / 0 / off)."""
+    if str(optimizer or "").strip().lower() not in COMPILE_BYTES:
+        return False
+    import re
+    m = re.search(r"(?:^|\s)compile\s*=\s*(\S+)", str(optimizer_args or ""))
+    return not (m and m.group(1).strip().lower() in ("false", "0", "off", "no"))
+
+
+def step_gb(shapes, rank, optimizer) -> float:
+    """GB one optimizer step holds for a moment beyond the resident state (STEP_BYTES)."""
+    per, scope = STEP_BYTES.get(str(optimizer or "").strip().lower(), UNKNOWN_STEP_BYTES)
+    return _peak_weights(shapes, rank, scope) * per / 1024 ** 3
+
+
+def _peak_weights(shapes, rank, scope) -> int:
+    r = max(1, int(rank))
+    if not shapes:
+        return 0
+    if scope == "group":
+        groups = {}
+        for o, i in shapes:
+            groups[(o, i)] = groups.get((o, i), 0) + r * (o + i)
+        return max(groups.values())
+    return max(r * max(o, i) for o, i in shapes)      # the larger of a pair's two factors
 
 
 def file_weights_gb(path, bytes_per=2) -> float:
@@ -113,36 +143,50 @@ def file_weights_gb(path, bytes_per=2) -> float:
     return n * bytes_per / 1024 ** 3
 
 
-def run_extras_gb(dit_path, network_type, rank, optimizer, ema=False, frozen_files=()) -> tuple:
-    """(GB, why) a run holds on the GPU that the family's figures don't count: the EMA's fp32 shadow of the LoRA, a pair
-    optimizer's per-step stacks (PoLoRA stacks each shape group's gradients, weights and updates in fp32 - the largest
-    group is the peak), and frozen LoRA files (a context LoRA, a training adapter) in bf16 on every Linear they patch.
-    On a 12 GB card these together are the half to one GB that tipped a swapped INT8 Krea 2 run into Windows' shared
-    GPU memory (Nov 2026: 66 s a step, where the same run with more blocks swapped takes about 5)."""
-    gb, parts = 0.0, []
+def extra_gb(desc, dit_path, network_type, rank, optimizer, *, optimizer_args="", ema=False, frozen_files=(),
+             card_gb=None) -> tuple:
+    """(GB, why) this run holds beyond what the family's figures were measured with (their recipe:
+    TRAIN_MEMORY_RECIPE, rank 16 on AdamW8bit unless the family says otherwise), every term from this run's own
+    choices:
+      * the LoRA and its optimizer: weights + gradients + state against the recipe's - a proper difference, so a
+        smaller LoRA or a lighter optimizer plans less (never below ADAPTER_FLOOR_GB) - plus the difference in what
+        one optimizer step holds for a moment (STEP_BYTES), and compiled kernels' extra (COMPILE_BYTES);
+      * the EMA's fp32 shadow; frozen LoRA files (a context LoRA, a training adapter) in bf16;
+      * on a card under SMALL_CARD_GB planned from big-card figures, SMALL_CARD_RESERVE_GB.
+    The adapter terms need a plain LoRA and a readable model file (LoKr's factors are far smaller: 0 for them)."""
+    terms = []
     plain = str(network_type or "lora").lower() == "lora"
-    shapes = linear_shapes(dit_path) if (dit_path and plain and (ema or str(optimizer or "").lower() in PAIR_STEP_COPIES)) else []
-    r = max(1, int(rank or 1))
-    if ema and shapes:
-        e = sum(r * (o + i) for o, i in shapes) * EMA_BYTES / 1024 ** 3
-        gb += e
-        parts.append(f"EMA {e:.2f}")
-    copies = PAIR_STEP_COPIES.get(str(optimizer or "").strip().lower(), 0)
-    if copies and shapes:
-        groups = {}
-        for o, i in shapes:
-            groups[(o, i)] = groups.get((o, i), 0) + r * (o + i)
-        s = max(groups.values()) * 4 * copies / 1024 ** 3
-        gb += s
-        parts.append(f"{optimizer} step {s:.2f}")
+    shapes = linear_shapes(dit_path) if (dit_path and plain) else []
+    opt = str(optimizer or "").strip().lower()
+    if shapes:
+        ref_rank, ref_opt = getattr(desc, "train_memory_recipe", None) or TRAIN_MEMORY_RECIPE
+        d = (adapter_gb(shapes, rank, opt) + step_gb(shapes, rank, opt)
+             - adapter_gb(shapes, ref_rank, ref_opt) - step_gb(shapes, ref_rank, ref_opt))
+        terms.append((f"rank {int(rank)} {opt} vs the figures' rank {ref_rank} {ref_opt}", max(ADAPTER_FLOOR_GB, d)))
+        if optimizer_compiles(opt, optimizer_args):
+            c = _peak_weights(shapes, rank, "group") * COMPILE_BYTES[opt] / 1024 ** 3 + COMPILE_FIXED_GB
+            terms.append((f"{opt} compile", c))
+        if ema:
+            terms.append(("EMA", sum(max(1, int(rank)) * (o + i) for o, i in shapes) * EMA_BYTES / 1024 ** 3))
     for f in frozen_files or ():
         if f:
             w = file_weights_gb(f)
             if w:
-                gb += w
-                parts.append(f"{os.path.basename(str(f))} {w:.2f}")
-    why = (f"~{gb:.2f} GB beside the LoRA: " + ", ".join(parts)) if parts else ""
+                terms.append((os.path.basename(str(f)), w))
+    small = bool(getattr(desc, "train_memory_small", None)) and _uses_small_table(desc)
+    if card_gb and 0 < float(card_gb) < SMALL_CARD_GB and not small:
+        terms.append((f"{float(card_gb):.0f} GB card reserve", SMALL_CARD_RESERVE_GB))
+    gb = sum(v for _n, v in terms)
+    why = (" + ".join(f"{n} {v:+.2f}" for n, v in terms) + f" = {gb:+.2f} GB on the figures") if terms else ""
     return gb, why
+
+
+def _uses_small_table(desc) -> bool:
+    try:
+        from fizgig.families import quant
+        return quant.small_card_figures(desc)
+    except Exception:
+        return False
 
 
 # ---- learned corrections --------------------------------------------------------------------------------------
@@ -203,5 +247,5 @@ def margin(value) -> float:
     return min(8.0, max(0.0, v))
 
 
-__all__ = ["DEFAULT_MARGIN_GB", "STATE_BYTES", "file_weights_gb", "run_extras_gb", "TRAIN_MEMORY_RECIPE", "adapter_gb", "correction", "extra_gb", "key",
+__all__ = ["DEFAULT_MARGIN_GB", "STATE_BYTES", "file_weights_gb", "optimizer_compiles", "step_gb", "TRAIN_MEMORY_RECIPE", "adapter_gb", "correction", "extra_gb", "key",
            "linear_shapes", "margin", "record", "state_bytes"]
