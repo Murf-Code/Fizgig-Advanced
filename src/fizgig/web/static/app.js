@@ -5468,6 +5468,24 @@ function meWmPad() {
   return 3;
 }
 function meWmCount() { return meState().list.filter((p) => p.watermark).length; }
+const ME_WM_HINT = 'Fills in every red watermark area (plus the pad) with the colours around it, changing the picture files. Originals are copied to removed_watermarks first. Training masks stop blacking out those spots. Pictures without a watermark mask are skipped.';
+const ME_WM_NONE = 'No watermark masks in this folder. Run Make masks with Mask watermarks too or Just hide the watermarks first.';
+// Remove-all asks twice, like training Stop and Make masks' Stop: first click is a confirm for 30 s
+const ME_WM_ALL = {timer: null};
+function meWmAllLabel() { return "Remove all watermarks"; }
+function meWmCountNote(n) {
+  return n ? (n + " picture" + (n === 1 ? " has" : "s have") + " a watermark mask. " + ME_WM_HINT) : ME_WM_NONE;
+}
+function meWmAllReset() {
+  clearTimeout(ME_WM_ALL.timer); ME_WM_ALL.timer = null;
+  document.removeEventListener("click", meWmAllOutside);
+  const b = $("meWmAll");
+  if (b) { b.textContent = meWmAllLabel(); b.title = ME_WM_HINT; }
+}
+function meWmAllOutside(e) {
+  if ($("meWmAll") && $("meWmAll").contains(e.target)) return;
+  meWmAllReset();
+}
 function meWmBar() {
   const m = meState(), n = meWmCount();
   const on = meLoadWmOn(), busy = !!(S.run && (S.run.running || S.run.state === "starting"));
@@ -5475,11 +5493,10 @@ function meWmBar() {
   $("meWmPadWrap").style.display = on ? "" : "none";
   $("meWmPad").value = $("meWmPadVal").textContent = meWmPad();
   $("meWmAll").disabled = !!m.wmBusy || !n || busy;
-  $("meWmAll").textContent = n ? `Remove watermarks from all pictures (${n})` : "Remove watermarks from all pictures";
+  if (!ME_WM_ALL.timer) { $("meWmAll").textContent = meWmAllLabel(); $("meWmAll").title = ME_WM_HINT; }
   $("meWmStop").style.display = m.wmBusy ? "" : "none";
   if (!m.wmBusy && !$("meWmState").dataset.keep)
-    $("meWmState").textContent = n ? `${n} picture${n === 1 ? " has" : "s have"} a watermark mask.` :
-      "No watermark masks in this folder. Run Make masks with Mask watermarks too or Just hide the watermarks first.";
+    $("meWmState").textContent = meWmCountNote(n);
 }
 async function meLoadWmStroke() {
   // paint the picture's watermark sidecar onto the Remove stroke (padded), unless the user already edited it
@@ -5531,7 +5548,7 @@ async function meGo(i, force) {
   await meLoadWmStroke();
   meStateLine(); meWmBar();
   $("meState").textContent = shown[i].watermark && meLoadWmOn() ?
-    "Watermark area loaded in red. Add or erase, then press Enter, or use Remove watermarks from all pictures." :
+    "Watermark area loaded in red. Press Enter to fill it in this picture's file (the original is saved first)." :
     (shown[i].mask ? "" : "No mask yet: paint one with the Brush.");
   meFit();
 }
@@ -5848,7 +5865,7 @@ function meImgBar() {
   $("meBefore").style.display = m.before ? "" : "none";
   $("meImgWhat").textContent = t === "crop" ? "Crop: drag the corners or edges, or drag inside to move the box." :
     showRm ? (m.rmFromWm && !m.rmHandEdited ?
-      "Remove: the watermark area is in red. Add or erase with the mouse, then press Enter (or Remove it)." :
+      "Remove: press Enter (or Remove it) to fill in the red area in this picture's file. The original is saved first. Add or erase with the mouse if you want." :
       (m.rmDirty ? "Remove: press Enter (or Remove it) to take out what's red." :
         "Remove: paint over what to take out. Right-click rubs the stroke out.")) : "Last Remove:";
 }
@@ -5963,11 +5980,6 @@ async function meRemoveAllWm() {
   const names = m.list.filter((p) => p.watermark).map((p) => p.name);
   if (!names.length) { meWmBar(); return; }
   const folder = m.folder || S.imageFolder;
-  const slash = (folder.indexOf("\\") >= 0 || /^[A-Za-z]:\\/.test(folder)) ? "\\" : "/";
-  const where = folder + slash + "removed_watermarks";
-  if (!confirm("Remove watermarks from " + names.length + " picture" + (names.length === 1 ? "" : "s") +
-      "?\n\nThis changes the pictures. A copy of each original is saved in:\n" + where +
-      "\n\nPictures without a watermark mask are skipped. You can press Stop.")) return;
   m.wmBusy = true; m.wmStop = false; $("meWmState").dataset.keep = "1"; meWmBar();
   let done = 0, skipped = 0, failed = 0, firstFail = "";
   try {
@@ -5987,15 +5999,34 @@ async function meRemoveAllWm() {
     }
   } finally {
     m.wmBusy = false; $("meWmStop").style.display = "none";
-    const bits = [];
-    if (done) bits.push("Removed watermarks from " + done + " picture" + (done === 1 ? "" : "s") + ".");
-    if (m.wmStop) bits.push("Stopped after " + done + " of " + names.length + ".");
-    if (skipped) bits.push(skipped + " had no watermark mask.");
-    if (failed) bits.push(failed + " failed" + (firstFail ? " (" + firstFail + ")" : "") + ".");
-    if (done) bits.push("Originals are in the folder's removed_watermarks/. The training mask in each watermark area was put back the way it was before the watermark was hidden, so your other mask edits stay.");
-    $("meWmState").textContent = bits.join(" ") || "Nothing to do.";
+    let text = "Cleaned " + done + " picture" + (done === 1 ? "" : "s") +
+      ", skipped " + skipped + " without a watermark mask.";
+    if (m.wmStop) text += " Stopped after " + done + " of " + names.length + ".";
+    if (failed) text += " " + failed + " failed" + (firstFail ? " (" + firstFail + ")" : "") + ".";
+    if (done) text += " Originals are in removed_watermarks.";
+    $("meWmState").textContent = text;
     meWmBar(); maskInfo();
   }
+}
+function meWmAllClick() {
+  // first click is the confirm (30 s, or click elsewhere), like training Stop and Make masks' Stop
+  if (meState().wmBusy || meState().stepBusy) return;
+  if (S.run && (S.run.running || S.run.state === "starting")) {
+    $("meWmState").textContent = "A run is training: remove watermarks when it finishes.";
+    return;
+  }
+  const n = meWmCount();
+  if (!n) { meWmBar(); return; }
+  if (!ME_WM_ALL.timer) {
+    const b = $("meWmAll");
+    b.textContent = "Confirm Removal";
+    b.title = "Click again within 30 s to fill in the red watermark areas with the colours around them, changing the picture files. Originals are copied to removed_watermarks first. Training masks stop blacking out those spots.";
+    ME_WM_ALL.timer = setTimeout(meWmAllReset, 30000);
+    setTimeout(() => document.addEventListener("click", meWmAllOutside), 0);
+    return;
+  }
+  meWmAllReset();
+  meRemoveAllWm();
 }
 function meWire() {
   const m = meState(), cv = $("meCanvas");
@@ -6024,7 +6055,7 @@ function meWire() {
     $("meWmPadVal").textContent = $("meWmPad").value;
     if (m.rmFromWm && !m.rmHandEdited) { await meLoadWmStroke(); meDraw(); }
   });
-  $("meWmAll").addEventListener("click", meRemoveAllWm);
+  $("meWmAll").addEventListener("click", meWmAllClick);
   $("meWmStop").addEventListener("click", () => { meState().wmStop = true; $("meWmState").textContent = "Stopping…"; });
   $("meApply").addEventListener("click", meApply);
   $("meCancel").addEventListener("click", meCancel);

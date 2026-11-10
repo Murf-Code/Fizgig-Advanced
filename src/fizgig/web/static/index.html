@@ -525,7 +525,7 @@
                   <div class="me-bar me-wmbar" id="meWmBar">
                     <label class="checkbox-label me-wmload" title="When you open a picture that has a watermark mask, paint that area in red in Remove, ready to edit or fill"><input type="checkbox" id="meLoadWm" checked> Load watermark masks into Remove</label>
                     <label class="me-slider" id="meWmPadWrap" title="Extra pixels around the watermark when it's loaded into Remove">Pad <input type="range" id="meWmPad" min="2" max="5" value="3"><span id="meWmPadVal">3</span> px</label>
-                    <button class="btn btn-sm" id="meWmAll" title="Fill the watermark area on every picture that has a watermark mask. The original pictures are copied into the folder's removed_watermarks/ first.">Remove watermarks from all pictures</button>
+                    <button class="btn btn-sm" id="meWmAll" title="Fills in every red watermark area (plus the pad) with the colours around it, changing the picture files. Originals are copied to removed_watermarks first. Training masks stop blacking out those spots. Pictures without a watermark mask are skipped.">Remove all watermarks</button>
                     <button class="btn btn-sm" id="meWmStop" style="display:none">Stop</button>
                     <span class="field-hint" id="meWmState"></span>
                   </div>
