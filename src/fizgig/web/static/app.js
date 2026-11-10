@@ -5717,12 +5717,20 @@ async function maskSamPreview() {
     const by = (p) => !sam && !wm && maskWho() === "auto" ? (p.by === "photo" ? " · photo" : " · character") : "";
     $("maskSamPreviews").replaceChildren(...r.pictures.map((p) => el("figure", {class: "mask-sam-shot"},
       el("img", {src: p.src, alt: p.name}),
-      el("figcaption", {text: (p.cover ? `${p.name} · ${Math.round(p.cover * 100)}% masked` : `${p.name} · ${p.note || "nothing found"}`) +
-        by(p) + (p.cover && p.note ? ` · ${p.note}` : "")}))));
+      el("figcaption", {text: maskShotCaption(p, wm) + by(p)}))));
     $("maskSamPrevState").textContent = "Blue is what the LoRA learns; nothing is saved yet. Press again for two " +
       `more (${Math.min(S.prep.samShown.length, r.of)} of ${r.of} seen).`;
   } catch (e) { $("maskSamPrevState").textContent = e.message; }
   $("maskSamPreview").disabled = false;
+}
+// a preview's caption: p.cover is the share the LoRA learns (blue). Watermarks: the share left out, or just the note
+// when none was found (never "100% masked" for a picture with no mask).
+function maskShotCaption(p, wm) {
+  const pct = (v) => (v > 0 && v < 0.01 ? "under 1" : String(Math.round(v * 100)));
+  if (wm) return /^no watermark/.test(p.note || "") ? `${p.name} · ${p.note}` :
+    `${p.name} · ${pct(1 - p.cover)}% left out` + (p.note ? ` · ${p.note}` : "");
+  return p.cover ? `${p.name} · ${pct(p.cover)}% learned` + (p.note ? ` · ${p.note}` : "") :
+    `${p.name} · ${p.note || "nothing found"}`;
 }
 function wmTrace() { return $("maskWmTrace").checked && !$("maskWmTrace").disabled; }
 function maskSamSave() {
