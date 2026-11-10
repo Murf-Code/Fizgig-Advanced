@@ -509,16 +509,59 @@ def watermark_models(loader=None, log=print):
     return out
 
 
+WM_TILES, WM_TILE_OVERLAP, WM_TILE_MAX = 2, 0.2, 0.5
+# Zoomed passes: the watermark models see the picture shrunk to 640 px, where a small or faint signature is only a
+# few pixels tall and scores ~0 (Chris's blackteagan set: a pencil "blackteagan" 0.00 whole, 0.82 in a 2x2 tile).
+# So each model also looks at WM_TILES x WM_TILES overlapping tiles (WM_TILE_OVERLAP of a tile shared), each shown
+# bigger. A tile box over WM_TILE_MAX of its tile is texture filling the zoomed view, not a mark: dropped.
+
+
+def tile_grid(w, h, n=None, overlap=None):
+    """[(x0, y0, x1, y1)] of n x n overlapping tiles covering a w x h picture."""
+    n = WM_TILES if n is None else n
+    ov = WM_TILE_OVERLAP if overlap is None else overlap
+    if n < 2:
+        return []
+    tw, th = w / (n - (n - 1) * ov), h / (n - (n - 1) * ov)
+    out = []
+    for j in range(n):
+        for i in range(n):
+            x0, y0 = int(round(i * tw * (1 - ov))), int(round(j * th * (1 - ov)))
+            x1 = w if i == n - 1 else min(w, int(round(x0 + tw)))
+            y1 = h if j == n - 1 else min(h, int(round(y0 + th)))
+            out.append((x0, y0, x1, y1))
+    return out
+
+
+def _model_finds(b, arr, ids):
+    """One model's (x1, y1, x2, y2, score) on the whole picture, plus its zoomed tile passes (YOLO models only: a
+    stand-in without an input size isn't tiled)."""
+    h, w = arr.shape[:2]
+    found = [tuple(t[:5]) for t in b.find_classes(arr, ids)]
+    if not getattr(b, "size", None):
+        return found
+    for x0, y0, x1, y1 in tile_grid(w, h):
+        area = (x1 - x0) * (y1 - y0)
+        for t in b.find_classes(np.ascontiguousarray(arr[y0:y1, x0:x1]), ids):
+            if (t[2] - t[0]) * (t[3] - t[1]) <= WM_TILE_MAX * area:
+                found.append((t[0] + x0, t[1] + y0, t[2] + x0, t[3] + y0, t[4]))
+    return found
+
+
 def watermark_boxes(arr, models):
     h, w = arr.shape[:2]
     out = []
     for b in models:
         try:
             ids = sorted((b.all_classes() or {}).keys())
-            for x1, y1, x2, y2, s, _c in b.find_classes(arr, ids):
+            for x1, y1, x2, y2, s in _model_finds(b, arr, ids):
+                if x2 <= x1 or y2 <= y1:                       # wholly in the letterbox's padding
+                    continue
                 if s >= WM_SCORE and (x2 - x1) * (y2 - y1) <= WM_MAX_SHARE * w * h:
-                    out.append((max(0, int(x1) - WM_PAD), max(0, int(y1) - WM_PAD),
-                                min(w, int(np.ceil(x2)) + WM_PAD), min(h, int(np.ceil(y2)) + WM_PAD)))
+                    box = (max(0, int(x1) - WM_PAD), max(0, int(y1) - WM_PAD),
+                           min(w, int(np.ceil(x2)) + WM_PAD), min(h, int(np.ceil(y2)) + WM_PAD))
+                    if box not in out:
+                        out.append(box)
         except Exception:
             continue
     return out

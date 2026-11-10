@@ -213,3 +213,24 @@ def test_converter_message_is_not_face_only():
     tool = open(os.path.join(os.path.dirname(prep.__file__), "..", "..", "..", "tools", "convert_detector_to_onnx.py"),
                 encoding="utf-8").read()
     assert '"--detector"' in tool
+
+
+def test_watermark_tiles_cover_the_picture_and_map_back():
+    """Small signatures: each YOLO model also looks at 2x2 overlapping tiles; tile boxes map back to the picture and a
+    box filling most of its tile (zoomed-in texture) is dropped. Stand-ins without an input size aren't tiled."""
+    g = D.tile_grid(1000, 600)
+    assert len(g) == 4 and g[0][:2] == (0, 0) and g[-1][2:] == (1000, 600)
+    assert g[0][2] > g[1][0] and g[0][3] > g[2][1]                   # neighbours overlap
+
+    class Tiled(Stub):
+        size = 640
+
+        def find_classes(self, arr, ids):
+            h, w = arr.shape[:2]
+            if (h, w) == (600, 1000):
+                return []                                            # whole picture: too small to see
+            return [(10, 10, 60, 30, 0.8, 0), (0, 0, w, h, 0.9, 0)]  # a mark, and a tile-filling misfire
+    boxes = D.watermark_boxes(np.zeros((600, 1000, 3), np.uint8), [Tiled({0: "watermark"}, [])])
+    x0, y0 = g[3][:2]
+    assert (max(0, 10 + x0 - D.WM_PAD), max(0, 10 + y0 - D.WM_PAD), 60 + x0 + D.WM_PAD, 30 + y0 + D.WM_PAD) in boxes
+    assert len(boxes) == 4
