@@ -20,11 +20,13 @@ def test_boxes_show_with_polora_only_and_read_the_args():
     desc = FAMILIES["krea2"]
     rows = {r["key"]: r for s in form.form(desc)["sections"] for r in s["rows"] if r}
     assert [rows[k]["label"] for k in form.POLORA_BOXES] == ["Magnitude", "Curl", "Compile"]
-    assert all(rows[k]["hint"] for k in form.POLORA_BOXES) and rows["POLORA_COMPILE"]["kind"] == "check"
+    assert all(rows[k]["hint"] and rows[k].get("tip") for k in form.POLORA_BOXES)
+    assert rows["POLORA_COMPILE"]["kind"] == "check"
+    assert rows["POLORA_COMPILE"]["hint"] == form.POLORA_COMPILE_HINT
     opt = rows["OPTIMIZER_TYPE"]
     assert "polora" in opt["choices"]
     assert opt["choice_labels"]["polora"] == POLORA_CHOICE_LABEL == "PoLoRA"
-    assert "polora" not in (opt.get("choice_tips") or {})
+    assert "polora" in (opt.get("choice_tips") or {})
     st = form.state(desc, {**form.DEFAULTS})
     assert "OPTIMIZER_TYPE" not in st.get("notes", {})          # the note only shows when PoLoRA is picked
     assert set(form.POLORA_BOXES) <= set(st["hidden"])

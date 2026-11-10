@@ -55,8 +55,63 @@ STAGE_HINT = ("Trains the first part of the run at this smaller size, then the f
               "run faster (about a fifth less training time at 0.25 MP for the first 30%). Likeness arrives a little "
               "later than training at the full size throughout, so allow a few more epochs. Below Target Megapixels "
               "only; standard LoRAs (not edits, sliders or fine-tunes). Caching makes the smaller size's cache too.")
-CAPTION_DROPOUT_HINT = ("Trains this share of steps with no caption, so the LoRA leans less on the trigger word and "
-                        "the caption's exact words. 0.05 is the usual choice.")
+CAPTION_DROPOUT_HINT = ("This share of steps trains with no caption. 0.05 is the usual choice.")
+CAPTION_DROPOUT_TIP = ("Trains this share of steps with no caption, so the LoRA leans less on the trigger word and "
+                       "the caption's exact words. 0.05 is the usual choice.")
+CAPTION_DROPOUT_TIPS = {
+    "Off": "Every step trains with the caption.",
+    "0.05": "About 1 in 20 steps trains with no caption.",
+    "0.10 (strong)": "About 1 in 10 steps trains with no caption.",
+}
+
+OPTIMIZER_TYPE_TIP = ("How the LoRA's weights are updated each step. Some types set their own learning rate, or need "
+                      "a different one.")
+OPTIMIZER_TYPE_TIPS = {
+    "adamw8bit": "AdamW with 8-bit optimizer state. Fizgig's default and the usual recipe.",
+    "adamw": "AdamW with full-precision state. Uses more VRAM than the 8-bit version.",
+    "adafactor": "Factored state, much smaller than AdamW's. The default for full fine-tunes. Uses the Learning Rate box.",
+    "pagedadamw8bit": "AdamW 8-bit that can page optimizer state to RAM if VRAM gets tight.",
+    "ademamix8bit": "Like AdamW 8-bit, with a second slow average, aimed at longer runs.",
+    "pagedademamix8bit": "AdEMAMix 8-bit that can page optimizer state to RAM if VRAM gets tight.",
+    "lion8bit": "Lion with 8-bit state. Use about a tenth of the usual AdamW learning rate.",
+    "polora": "Trains each LoRA down/up pair together and sets its own step size. Usual starting point: LR 2e-2 and Magnitude 3.",
+    "automagic3": "Sets its own learning rate from the update signs. The Learning Rate box is only the start; 1e-6 is recommended.",
+    "prodigy": "Estimates its own learning rate. The Learning Rate box is locked to 1.0 (a multiplier).",
+    "muon": "Orthogonalized momentum, with step size matched to AdamW, so the usual AdamW learning rates apply.",
+    "soap": "Adam run in Shampoo's eigenbasis. Uses more memory and is slower than AdamW; AdamW learning rates apply.",
+    "lora_tsd": "Trains each LoRA down/up pair together by spectral descent. Starts at LR 5e-3; each step's change is capped.",
+    "automagic4": "Like Automagic v3, sets its own learning rate, and evens out how hard each weight is pushed. Start at 1e-6.",
+}
+OPTIMIZER_ARGS_TIP = ("Extra settings as key=value words, passed to the optimizer. Leave blank unless you know what "
+                      "to set; some optimizers fill their own defaults here.")
+POLORA_MAGNITUDE_HINT = "How big each PoLoRA update is, on top of the learning rate. Empty: 1.0."
+POLORA_MAGNITUDE_TIP = ("PoLoRA's magnitude_scale: how big each update is, on top of the learning rate. Higher learns "
+                        "faster but can overcook; 2.5-3 works well at LR 2e-2. Empty uses 1.0. Adaptive LR and "
+                        "per-image LR scale this, rather than replacing it.")
+POLORA_CURL_HINT = "How slowly PoLoRA updates its sense of the loss's curve. Empty: 0.99."
+POLORA_CURL_TIP = ("PoLoRA's curvature_beta: how slowly it updates its sense of the loss's curve, between 0 and 1. "
+                   "Higher (0.99) is smoother and steadier; lower reacts faster but is noisier. Empty uses 0.99.")
+POLORA_COMPILE_HINT = ("Speeds up PoLoRA after a 30-second warm-up. Training results are the same. Untick if it "
+                       "errors or runs out of VRAM.")
+POLORA_COMPILE_TIP = ("On by default: uses torch.compile on PoLoRA's maths. If it can't compile (no triton, say) it "
+                      "runs uncompiled with a note in the log; untick sets compile=False.")
+LR_SCHEDULER_TIP = ("How the learning rate changes over the run. Has no effect with Adaptive LR, or with an "
+                    "optimizer that sets its own rate (PoLoRA, Prodigy, Automagic).")
+LR_SCHEDULER_TIPS = {
+    "constant": "Stays at the learning rate for the whole run (after any warmup).",
+    "constant_with_warmup": "Stays at the learning rate after the warmup steps. Set Warmup steps, or this matches Constant.",
+    "cosine": "Falls in a smooth curve from the learning rate down to zero.",
+    "cosine_with_restarts": "Like cosine, but the curve can restart. Fizgig uses one cycle by default.",
+    "linear": "Falls in a straight line from the learning rate down to zero.",
+    "polynomial": "Falls from the learning rate to zero on a curve. Fizgig's default matches Linear.",
+}
+LR_WARMUP_TIP = ("How many steps to ramp the learning rate up from zero at the start. Empty or 0 means no ramp. "
+                 "Has no effect with Adaptive LR, or with an optimizer that sets its own rate.")
+GRAD_ACCUM_HINT = "How many steps to average before each update, like a bigger batch without the extra memory."
+GRAD_ACCUM_TIP = ("Averages this many steps into one optimizer update: the same as a bigger batch, without using "
+                  "as much memory. 1 updates every step. Sliders already train both ends each step, so this stays at 1.")
+MAX_GRAD_NORM_TIP = ("Caps how large a step's gradients can be, so one spike can't knock training off course. "
+                     "1.0 is the usual cap; 0 turns clipping off.")
 
 
 def caption_dropout_share(label):
@@ -708,29 +763,23 @@ def form(desc):
         _row("KEEP_LAST_N_STATES", "Keep last N states", hint="States are big (a LoRA plus its optimizer)."),
     ])
     add("optimizer", "Optimizer", "training", [
-        _row("OPTIMIZER_TYPE", "Optimizer Type", "choice", choices=_optimizers(),
-             choice_labels={"polora": POLORA_CHOICE_LABEL}),
-        _row("OPTIMIZER_ARGS", "Optimizer Args"),
+        _row("OPTIMIZER_TYPE", "Optimizer Type", "choice", tip=OPTIMIZER_TYPE_TIP, choices=_optimizers(),
+             choice_labels={"polora": POLORA_CHOICE_LABEL}, choice_tips=OPTIMIZER_TYPE_TIPS),
+        _row("OPTIMIZER_ARGS", "Optimizer Args", tip=OPTIMIZER_ARGS_TIP),
         # PoLoRA's own settings as boxes (shown with PoLoRA only): each one IS its Optimizer Args word, kept in step
         # both ways (app.js POLORA_BOXES; state() reads the args back), so the args stay the one record
-        _row("POLORA_MAGNITUDE", "Magnitude", hint="PoLoRA's magnitude_scale: how big each update is, on top of the "
-             "learning rate. Higher learns faster but can overcook; 2.5-3 works well at LR 2e-2. Empty: 1.0."),
-        _row("POLORA_CURVATURE", "Curl", hint="PoLoRA's curvature_beta: how slowly it updates its sense of the "
-             "loss's curve, between 0 and 1. Higher (0.99) is smoother and steadier; lower reacts faster but is "
-             "noisier. Empty: 0.99."),
-        _row("POLORA_COMPILE", "Compile", "check", "PoLoRA's compile, on by default: speeds up its maths with "
-             "torch.compile after a short warm-up at the start (about 30 seconds, once). The training itself is "
-             "unchanged. Where it can't compile (no triton, say) it runs uncompiled with a note in the log. Untick "
-             "for compile=False."),
-        _row("LR_SCHEDULER", "LR Scheduler", "choice", choices=["constant", "constant_with_warmup", "cosine",
-                                                                 "cosine_with_restarts", "linear", "polynomial"]),
-        _row("LR_WARMUP_STEPS", "Warmup steps"),
+        _row("POLORA_MAGNITUDE", "Magnitude", hint=POLORA_MAGNITUDE_HINT, tip=POLORA_MAGNITUDE_TIP),
+        _row("POLORA_CURVATURE", "Curl", hint=POLORA_CURL_HINT, tip=POLORA_CURL_TIP),
+        _row("POLORA_COMPILE", "Compile", "check", POLORA_COMPILE_HINT, tip=POLORA_COMPILE_TIP),
+        _row("LR_SCHEDULER", "LR Scheduler", "choice", tip=LR_SCHEDULER_TIP,
+             choices=["constant", "constant_with_warmup", "cosine", "cosine_with_restarts", "linear", "polynomial"],
+             choice_tips=LR_SCHEDULER_TIPS),
+        _row("LR_WARMUP_STEPS", "Warmup steps", tip=LR_WARMUP_TIP),
         _row("CAPTION_DROPOUT", "Caption dropout", "choice", CAPTION_DROPOUT_HINT, CAPTION_DROPOUTS,
-             default=CAPTION_DROPOUTS[0]) if desc.caption_dropout and pictures else None,
-        _row("GRADIENT_ACCUMULATION", "Gradient Accumulation", hint="Every model trains one image at a time. For a "
-             "larger effective batch, raise this: the same averaged gradient as a bigger batch, at the memory of "
-             "batch 1."),
-        _row("MAX_GRAD_NORM", "Max Grad Norm"),
+             default=CAPTION_DROPOUTS[0], tip=CAPTION_DROPOUT_TIP, choice_tips=CAPTION_DROPOUT_TIPS)
+        if desc.caption_dropout and pictures else None,
+        _row("GRADIENT_ACCUMULATION", "Gradient Accumulation", hint=GRAD_ACCUM_HINT, tip=GRAD_ACCUM_TIP),
+        _row("MAX_GRAD_NORM", "Max Grad Norm", tip=MAX_GRAD_NORM_TIP),
     ], collapsed=True)
     add("other", "Other Options", "training", [
         _row("DATASET_CAPTION_EXT", "Caption Extension"),

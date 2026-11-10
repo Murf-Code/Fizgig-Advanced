@@ -2834,7 +2834,7 @@ a.pick-pill-vast:hover { border-color: var(--success); }
 #folderOptions .form-row { margin-top: 8px; }
 #folderOptions .form-row .field-hint { padding-left: 24px; }
 .tip-mark { cursor: help; color: var(--text-secondary); font-weight: 400; }
-label[title]:has(.tip-mark) { cursor: help; }
+label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; }
 /* Body-part and watermark detectors: one compact row per model (no new colours: theme text colours only) */
 .det-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
 .det-table td { padding: 4px 6px; vertical-align: middle; border-top: 1px solid var(--border, rgba(127,127,127,.25)); }
@@ -2970,7 +2970,7 @@ a.google-pill:visited { color: var(--text-primary); }
 #folderOptions .form-row { margin-top: 8px; }
 #folderOptions .form-row .field-hint { padding-left: 24px; }
 .tip-mark { cursor: help; color: var(--text-secondary); font-weight: 400; }
-label[title]:has(.tip-mark) { cursor: help; }
+label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; }
 /* Body-part and watermark detectors: one compact row per model (no new colours: theme text colours only) */
 .det-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
 .det-table td { padding: 4px 6px; vertical-align: middle; border-top: 1px solid var(--border, rgba(127,127,127,.25)); }

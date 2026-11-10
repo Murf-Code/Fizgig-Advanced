@@ -407,7 +407,12 @@ function renderRow(r) {
       input = el("input", {type: "text", id: "f_" + r.key, oninput: (e) => set(e.target.value)});
       input.value = v ?? "";
     }
-    const row = el("div", {class: "field-row"}, el("span", {class: "field-label", text: r.label + ":"}), input);
+    const lab = el("span", {class: "field-label", text: r.label + ":"});
+    if (r.tip) {                  // its explanation on hover (the ⓘ shows there is one), as with a tick
+      lab.title = r.tip;
+      lab.append(el("span", {class: "tip-mark", text: " ⓘ", "aria-label": r.tip}));
+    }
+    const row = el("div", {class: "field-row"}, lab, input);
     if (input._other) row.append(input._other);
     let upStatus = null;
     if (r.kind === "path" || r.kind === "folder") {
@@ -456,8 +461,11 @@ function renderRow(r) {
     }
     wrap.append(h);
   } else if (r.hint) {                            // a hint of several lines keeps its line breaks
-    const h = el("div", {class: "field-hint row-hint", text: r.hint, title: "Click to read it all",
-      onclick: () => h.classList.toggle("open")});
+    // a row with a hover tip already has the longer explanation there, so the short line under it
+    // is shown in full (no two-line clamp, no click to expand)
+    const clamp = !r.tip;
+    const h = el("div", {class: "field-hint" + (clamp ? " row-hint" : ""), text: r.hint,
+      ...(clamp ? {title: "Click to read it all", onclick: () => h.classList.toggle("open")} : {})});
     if (r.hint.includes("\n")) h.style.whiteSpace = "pre-line";
     wrap.append(h);
   }
