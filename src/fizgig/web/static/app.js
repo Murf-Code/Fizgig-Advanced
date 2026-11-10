@@ -6465,6 +6465,7 @@ async function meRemoveAllWm() {
         if (m.name === names[i]) await meReload();
       } catch (e) {
         if (/no watermark mask/i.test(e.message || "")) skipped++;
+        else if (/LaMa model/.test(e.message || "")) { failed = names.length - done - skipped; firstFail = e.message; break; }
         else { failed++; if (!firstFail) firstFail = names[i] + ": " + e.message; }
       }
     }

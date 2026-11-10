@@ -565,6 +565,19 @@ Licensed under the Apache License, Version 2.0:
 http://www.apache.org/licenses/LICENSE-2.0
 
 ---
+## LaMa / big-lama (Samsung AI Center Moscow, advimman/lama) — Apache License 2.0
+
+Upstream: https://github.com/advimman/lama ("Resolution-robust Large Mask Inpainting with Fourier Convolutions",
+Suvorov et al., 2021). The picture editor's **Remove Tool** uses the big-lama weights as a TorchScript file from
+https://huggingface.co/JosephCatrambone/big-lama-torchscript (Apache-2.0), revision
+7dfbdc6dc27602d370909e8688f8f84404a1f995, file `lama.pt` (206,134,115 bytes). It is downloaded into
+`user_data/models/lama/` the first time Remove runs and is not shipped with Fizgig. No LaMa code is copied:
+`src/fizgig/dataset/lama.py` is Fizgig's own wrapper.
+
+Licensed under the Apache License, Version 2.0:
+http://www.apache.org/licenses/LICENSE-2.0
+
+---
 ## Note on model weights
 
 The third-party notices above cover **source code** only. Krea 2 / FLUX.2 model

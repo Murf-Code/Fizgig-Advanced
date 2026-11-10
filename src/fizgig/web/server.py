@@ -4785,13 +4785,17 @@ class Handler(BaseHTTPRequestHandler):
                                                        "mask tools work now."}, 400)
                         return self.json(image_edit.crop(folder, name, [b.get(k) for k in ("left", "top", "right", "bottom")]))
                     if path == "/api/masks/edit/remove":
+                        # LaMa stays on the CPU while a run holds the GPU
                         return self.json(image_edit.remove(folder, name, str(b.get("png") or ""),
-                                                           backup=bool(b.get("backup"))))
+                                                           backup=bool(b.get("backup")), gpu=not _gpu_training()))
                     if path == "/api/masks/edit/remove_watermark":
                         if _gpu_training():
                             return self.json({"error": "A run is training: remove watermarks when it finishes."}, 400)
                         return self.json(image_edit.remove_watermark(folder, name, b.get("pad")))
                     return self.json(image_edit.step(b.get("step"), "redo" if b.get("redo") else "undo"))
+                except image_edit.LamaUnavailable as e:   # nothing was changed; the page shows it, the log keeps it
+                    logger.error("Remove: %s", e)
+                    return self.json({"error": str(e), "lama": True}, 400)
                 except (ValueError, TypeError) as e:
                     return self.json({"error": str(e)}, 400)
                 except Exception as e:

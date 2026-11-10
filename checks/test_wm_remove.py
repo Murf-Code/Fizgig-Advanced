@@ -4,12 +4,25 @@ edits stay), originals are copied to removed_watermarks/, and a finished sidecar
 import io
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from fizgig.dataset import detectors as D
 from fizgig.dataset import wm_regions
 from fizgig.dataset.masks import MASK_SUFFIX, mask_for
 from fizgig.web import image_edit, mask_edit
+
+
+def _mean_fill(rgb, hole, gpu=True):
+    """Stands in for LaMa (a 206 MB download) in these checks: the hole takes the mean colour of the rest."""
+    out = rgb.copy()
+    out[hole] = np.round(rgb[~hole].reshape(-1, 3).mean(0)).astype(np.uint8)
+    return out
+
+
+@pytest.fixture(autouse=True)
+def _no_lama(monkeypatch):
+    monkeypatch.setattr(image_edit, "lama_fill", _mean_fill)
 
 
 class Stub:

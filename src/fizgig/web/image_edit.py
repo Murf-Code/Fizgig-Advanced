@@ -2,8 +2,9 @@
 
 Everything happens on the picture as it is seen (upright, a phone photo's rotation flag applied), as the mask editor
 works, and the file is written back in its own format with its rotation flag reset. Crop crops the picture's masks
-the same way, so they stay lined up. Remove fills what was painted over from what is around it (OpenCV's Telea
-inpainting, part of opencv-python, already a Fizgig dependency).
+the same way, so they stay lined up. Remove rebuilds what was painted over from what is around it with LaMa
+(dataset/lama.py, an Apache-2.0 model fetched on first use). When LaMa can't be downloaded or loaded, Remove says so
+and the picture is left as it was.
 
 Each change is a step kept in memory (the file's bytes before and after, its masks' too, at most UNDO_STEPS of
 them), so the page can undo and redo it. Nothing is kept on disk and the steps go when Fizgig closes. Every write is
@@ -18,11 +19,12 @@ import numpy as np
 from PIL import Image
 
 from fizgig.dataset.masks import MASK_SUFFIX, MASKS_DIR, mask_for, read_mask, _EXTS as MASK_EXTS
-from fizgig.dataset import wm_regions
+from fizgig.dataset import lama, wm_regions
+from fizgig.dataset.lama import LamaUnavailable  # noqa: F401  (Remove's error when LaMa can't run)
 from fizgig.utils.upright import ORIENTATION, upright, upright_size
 
 UNDO_STEPS = 30          # image steps kept, across all pictures
-MAX_WINDOW = 2048        # a Remove window bigger than this is worked on scaled down
+MAX_WINDOW = 1024        # a Remove window bigger than this is worked on scaled down (LaMa's sweet spot)
 FEATHER = 3              # px: the filled part fades into the picture over this much
 
 
@@ -242,13 +244,12 @@ def window(hole, size):
     return max(0, l - pad), max(0, t - pad), min(w, r + pad), min(h, b + pad)
 
 
-def telea(rgb, hole):
-    """OpenCV's Telea inpainting: fills the hole from its edges inward."""
-    import cv2
-    return cv2.inpaint(np.ascontiguousarray(rgb), hole.astype(np.uint8) * 255, 5, cv2.INPAINT_TELEA)
+def lama_fill(rgb, hole, gpu=True):
+    """LaMa rebuilds the hole (rgb's sides are multiples of 8). Raises lama.LamaUnavailable."""
+    return lama.inpaint(rgb, hole, gpu=gpu)
 
 
-def inpaint_rgb(rgb, stroke, fill=telea):
+def inpaint_rgb(rgb, stroke, fill=None, gpu=True):
     """rgb uint8 HxWx3 and the painted stroke (bool HxW) -> rgb with the stroke's things removed. Only a window round
     the stroke is worked on (scaled down past MAX_WINDOW px, padded to a multiple of 8); the filled part is pasted
     back fading into the picture over FEATHER px."""
@@ -273,7 +274,7 @@ def inpaint_rgb(rgb, stroke, fill=telea):
     ph, pw = (-small.shape[0]) % 8, (-small.shape[1]) % 8
     padded = np.pad(small, ((0, ph), (0, pw), (0, 0)), mode="reflect")
     padded_hole = np.pad(small_hole, ((0, ph), (0, pw)), mode="reflect")
-    filled = fill(padded, padded_hole)[:small.shape[0], :small.shape[1]]
+    filled = (fill or lama_fill)(padded, padded_hole, gpu=gpu)[:small.shape[0], :small.shape[1]]
     if k < 1:
         filled = np.asarray(Image.fromarray(filled).resize((ww, wh), Image.LANCZOS))
     # fade: 1 inside the hole, falling to 0 at the widened edge
@@ -285,7 +286,7 @@ def inpaint_rgb(rgb, stroke, fill=telea):
     return out
 
 
-def remove_image(img, stroke):
+def remove_image(img, stroke, gpu=True):
     """The upright PIL picture with the stroke's things removed; its mode and see-through parts kept."""
     mode = img.mode
     if mode == "P":
@@ -293,7 +294,7 @@ def remove_image(img, stroke):
         mode = img.mode
     alpha = img.getchannel("A") if mode in ("RGBA", "LA") else None
     rgb = np.asarray(img.convert("RGB"))
-    out = Image.fromarray(inpaint_rgb(rgb, stroke), "RGB")
+    out = Image.fromarray(inpaint_rgb(rgb, stroke, gpu=gpu), "RGB")
     if mode in ("L", "LA"):
         out = out.convert("L")
     elif mode not in ("RGB", "RGBA"):
@@ -371,26 +372,29 @@ def _write_la(im):
     return buf.getvalue()
 
 
-def _commit_remove(pic, img, stroke, backup=False):
-    """Fill `stroke` on the upright picture, apply watermark-mask aftermath, write the files, remember the step."""
+def _commit_remove(pic, img, stroke, backup=False, gpu=True):
+    """Fill `stroke` on the upright picture, apply watermark-mask aftermath, write the files, remember the step.
+    The fill comes first, so when LaMa can't run (LamaUnavailable) nothing has been written or backed up."""
     if not stroke.any():
         raise ValueError("Paint over what to remove first.")
+    before = {pic: _read(pic)}
+    filled = remove_image(img, stroke, gpu=gpu)
     if backup:
         wm_regions.backup_originals(pic)
-    before = {pic: _read(pic)}
-    after = {pic: encode_like(remove_image(img, stroke), before[pic])}
+    after = {pic: encode_like(filled, before[pic])}
     hole = prepare_hole(stroke)
     info = _apply_wm_aftermath(pic, hole, img.size, before, after)
     _put(after)
     return {"ok": True, "step": _remember(before, after), "watermark": info}
 
 
-def remove(folder, name, stroke_png, backup=False):
-    """Remove what the stroke (PNG bytes or a data URL; painted = remove, any size: stretched to the picture) covers."""
+def remove(folder, name, stroke_png, backup=False, gpu=True):
+    """Remove what the stroke (PNG bytes or a data URL; painted = remove, any size: stretched to the picture) covers.
+    gpu=False keeps LaMa on the CPU (a run is training)."""
     pic = _picture(folder, name)
     img = open_upright(_read(pic))
     stroke = _stroke_from_png(stroke_png, img.size)
-    return _commit_remove(pic, img, stroke, backup=backup)
+    return _commit_remove(pic, img, stroke, backup=backup, gpu=gpu)
 
 
 def watermark_stroke_png(folder, name, pad=wm_regions.DEFAULT_PAD):
@@ -407,7 +411,7 @@ def watermark_stroke_png(folder, name, pad=wm_regions.DEFAULT_PAD):
     return buf.getvalue()
 
 
-def remove_watermark(folder, name, pad=wm_regions.DEFAULT_PAD, backup=True):
+def remove_watermark(folder, name, pad=wm_regions.DEFAULT_PAD, backup=True, gpu=True):
     """Remove the picture's watermark sidecar (padded), restore the training mask there, and copy the original
     into removed_watermarks/ the first time. Raises ValueError when there is no watermark sidecar."""
     pic = _picture(folder, name)
@@ -417,7 +421,7 @@ def remove_watermark(folder, name, pad=wm_regions.DEFAULT_PAD, backup=True):
     img = open_upright(_read(pic))
     cover, _prior = wm_regions.resize_pair(pair[0], pair[1], img.size)
     stroke = wm_regions.pad_cover(cover, pad)
-    return _commit_remove(pic, img, stroke, backup=backup)
+    return _commit_remove(pic, img, stroke, backup=backup, gpu=gpu)
 
 
 def save_watermark_edit(folder, name, add_png="", erase_png="", pad=wm_regions.DEFAULT_PAD):
