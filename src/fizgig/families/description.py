@@ -320,9 +320,9 @@ class FamilyOption:
         return [t.replace("{}", text) for t in self.tokens.split()] if text else []
 
 
-POLORA_PRESET = "🪄 PoLoRA (experimental)"
-POLORA_PRESET_ALIASES = ("PoLoRA", "PoLoRA (experimental)", POLORA_PRESET)   # the old built-in name still counts as this preset
-POLORA_CHOICE_LABEL = "PoLoRA (experimental)"       # Optimizer Type dropdown (value stays "polora")
+POLORA_PRESET = "🪄 PoLoRA"
+POLORA_PRESET_ALIASES = ("PoLoRA", "PoLoRA (experimental)", "🪄 PoLoRA (experimental)", POLORA_PRESET)   # the old built-in name still counts as this preset
+POLORA_CHOICE_LABEL = "PoLoRA"       # Optimizer Type dropdown (value stays "polora")
 
 
 def _is_polora_preset(name, values=None):
@@ -715,7 +715,7 @@ class FamilyDescription:
     # by default: previews render without it until the Samples tab's Turbo strength is raised)
 
     # built-in Training-tab presets: ((name, {GUI setting key: value}), ...); the first is applied on a first visit
-    # (the family's own standard LoRA preset; the built-in PoLoRA (experimental) preset is added last in __post_init__)
+    # (the family's own standard LoRA preset; the built-in 🪄 PoLoRA preset is added last in __post_init__)
     presets: tuple = ()
 
     # small files the text encoder / captioner load by repo name: ((repo, (allow_patterns...)), ...); the model
@@ -775,7 +775,7 @@ class FamilyDescription:
     cache_script = "src/fizgig/families/cache.py"
 
     def __post_init__(self):
-        # every family's built-in "PoLoRA (experimental)" preset, last (the first is a first visit's standard
+        # every family's built-in "🪄 PoLoRA" preset, last (the first is a first visit's standard
         # LoRA preset). It is an opt-in: pick it, or pick PoLoRA in the optimizer list, to use it. Edit, slider
         # and fine-tune presets are unchanged.
         if self.presets is not None and not any(_is_polora_preset(n, v) for n, v in self.presets):

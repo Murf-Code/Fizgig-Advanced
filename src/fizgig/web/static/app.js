@@ -952,7 +952,7 @@ function choiceAlias(r, v) {
   return r && r.aliases && v != null ? r.aliases[String(v).trim().toLowerCase()] : undefined;
 }
 
-// a choice's shown name and hover (OPTIMIZER_TYPE: "polora" reads "PoLoRA (experimental)")
+// a choice's shown name and hover (OPTIMIZER_TYPE: "polora" reads "PoLoRA")
 function choiceText(r, c) {
   const labels = r && r.choice_labels;
   return (labels && labels[c] != null) ? labels[c] : c;

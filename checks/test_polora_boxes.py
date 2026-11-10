@@ -1,5 +1,5 @@
 """PoLoRA's Magnitude / Curl / Compile boxes (each one its Optimizer Args word, shown with PoLoRA only, kept in step
-both ways) and every family's built-in "PoLoRA (experimental)" preset."""
+both ways) and every family's built-in "🪄 PoLoRA" preset."""
 import json
 import os
 import re
@@ -23,7 +23,7 @@ def test_boxes_show_with_polora_only_and_read_the_args():
     assert all(rows[k]["hint"] for k in form.POLORA_BOXES) and rows["POLORA_COMPILE"]["kind"] == "check"
     opt = rows["OPTIMIZER_TYPE"]
     assert "polora" in opt["choices"]
-    assert opt["choice_labels"]["polora"] == POLORA_CHOICE_LABEL == "PoLoRA (experimental)"
+    assert opt["choice_labels"]["polora"] == POLORA_CHOICE_LABEL == "PoLoRA"
     assert "polora" not in (opt.get("choice_tips") or {})
     st = form.state(desc, {**form.DEFAULTS})
     assert "OPTIMIZER_TYPE" not in st.get("notes", {})          # the note only shows when PoLoRA is picked
