@@ -12,3 +12,4 @@ A small patch on 1.5. Auto Blocks Swap now plans enough memory for 12 GB cards, 
 
 ## Changed
 - The Masks card's fourth step is now **4. Image Editor** (was 4. Edit masks). Its picture tools are **Remove Tool** and **Crop Image**.
+- Krea 2's 🪄 PoLoRA preset now trains at rank 16 (alpha 16) for 50 epochs, instead of copying Ultra Fast's rank 8 and 30 epochs. It still fits a 12 GB card at Blocks Swap 20, about 4 s a step at 0.25 MP.

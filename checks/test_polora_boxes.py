@@ -101,7 +101,10 @@ def test_every_family_has_the_polora_preset(key):
     assert not (p.get("FAMILY_SLIDER") or p.get("FAMILY_FT") or p.get("FAMILY_EDIT"))
     std_name, std = _standard_lora(desc)
     assert names[0] == std_name and str(std.get("OPTIMIZER_TYPE") or "").lower() != "polora"
-    assert p.get("NETWORK_DIM") == std.get("NETWORK_DIM")                # the rest: the family's own
+    # the rest: the family's own, except keys the family overrides on the PoLoRA preset
+    overrides = desc.polora_preset_overrides or {}
+    for key in ("NETWORK_DIM", "NETWORK_ALPHA", "MAX_TRAIN_EPOCHS"):
+        assert p.get(key) == (overrides[key] if key in overrides else std.get(key))
     assert float(desc.lr) < 1e-2                                         # the family's usual rate isn't PoLoRA's
     out = form.apply_preset(desc, dict(form.DEFAULTS), p)
     assert out["OPTIMIZER_TYPE"] == "polora" and out["LEARNING_RATE"] == "2e-2"
@@ -137,3 +140,31 @@ def test_a_saved_run_keeps_its_optimizer_and_a_first_visit_is_the_standard_prese
     assert other is not None
     applied = form.apply_preset(desc, dict(form.DEFAULTS), other)
     assert str(applied.get("OPTIMIZER_TYPE") or form.DEFAULTS["OPTIMIZER_TYPE"]).lower() != "polora"
+
+
+def test_krea2_polora_preset_uses_rank_16_and_50_epochs():
+    """Krea 2's PoLoRA preset is rank 16 / alpha 16 / 50 epochs; other families still copy their standard preset."""
+    krea = FAMILIES["krea2"]
+    p = dict(krea.presets)[POLORA_PRESET]
+    assert (p["NETWORK_DIM"], p["NETWORK_ALPHA"], p["MAX_TRAIN_EPOCHS"]) == (16, 16, 50)
+    assert p["SAVE_EVERY_N_EPOCHS"] == 1
+    assert krea.polora_preset_overrides == {"NETWORK_DIM": 16, "NETWORK_ALPHA": 16, "MAX_TRAIN_EPOCHS": 50}
+    # the other Krea 2 presets, including Ultra Fast (the one PoLoRA used to copy), are unchanged
+    ultra_name, ultra = krea.presets[0]
+    assert "Ultra Fast" in ultra_name
+    assert (ultra["NETWORK_DIM"], ultra["NETWORK_ALPHA"], ultra["MAX_TRAIN_EPOCHS"]) == (8, 8, 30)
+    by_name = dict(krea.presets)
+    standard = by_name["✨ Krea 2 Standard (rank 32, full model)"]
+    style = by_name["✨ Krea 2 Style (rank 16, gentle LR)"]
+    slider = by_name["✨ Krea 2 Slider (rank 8, 2e-4)"]
+    assert (standard["NETWORK_DIM"], standard["MAX_TRAIN_EPOCHS"]) == (32, 64)
+    assert (style["NETWORK_DIM"], style["MAX_TRAIN_EPOCHS"]) == (16, 64)
+    assert (slider["NETWORK_DIM"], slider["MAX_TRAIN_EPOCHS"]) == (8, 20)
+    # Qwen 2.1 still copies its first standard preset (Fast: rank 8, 30 epochs)
+    other = FAMILIES["qwen_image21"]
+    assert not other.polora_preset_overrides
+    op = dict(other.presets)[POLORA_PRESET]
+    std = _standard_lora(other)[1]
+    assert (op.get("NETWORK_DIM"), op.get("NETWORK_ALPHA"), op.get("MAX_TRAIN_EPOCHS")) == (
+        std.get("NETWORK_DIM"), std.get("NETWORK_ALPHA"), std.get("MAX_TRAIN_EPOCHS"))
+    assert (op.get("NETWORK_DIM"), op.get("NETWORK_ALPHA"), op.get("MAX_TRAIN_EPOCHS")) == (8, 8, 30)

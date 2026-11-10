@@ -717,6 +717,9 @@ class FamilyDescription:
     # built-in Training-tab presets: ((name, {GUI setting key: value}), ...); the first is applied on a first visit
     # (the family's own standard LoRA preset; the built-in 🪄 PoLoRA (experimental) preset is added last in __post_init__)
     presets: tuple = ()
+    # optional per-family tweaks merged into that PoLoRA preset after it is built from the family's standard LoRA
+    # preset (e.g. Krea 2's rank 16 / 50 epochs instead of Ultra Fast's 8 / 30). None = no tweaks.
+    polora_preset_overrides: dict = None
 
     # small files the text encoder / captioner load by repo name: ((repo, (allow_patterns...)), ...); the model
     # downloader fetches them with the helper models so first use works offline
@@ -779,7 +782,10 @@ class FamilyDescription:
         # LoRA preset). It is an opt-in: pick it, or pick PoLoRA in the optimizer list, to use it. Edit, slider
         # and fine-tune presets are unchanged.
         if self.presets is not None and not any(_is_polora_preset(n, v) for n, v in self.presets):
-            object.__setattr__(self, "presets", tuple(self.presets) + ((POLORA_PRESET, polora_preset(self.presets)),))
+            values = polora_preset(self.presets)
+            if self.polora_preset_overrides:
+                values = {**values, **self.polora_preset_overrides}
+            object.__setattr__(self, "presets", tuple(self.presets) + ((POLORA_PRESET, values),))
 
     @property
     def training_ready(self) -> bool:

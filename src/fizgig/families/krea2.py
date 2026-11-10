@@ -212,6 +212,7 @@ KREA2 = FamilyDescription(
         # prompt slider (16 practice pictures, guidance 2) was right at 20 and had turned +1 into an illustration by 25.
         ("✨ Krea 2 Slider (rank 8, 2e-4)", _preset(8, lr=2e-4, epochs=20, slider=True, mp="0.5")),
     ),
+    polora_preset_overrides={"NETWORK_DIM": 16, "NETWORK_ALPHA": 16, "MAX_TRAIN_EPOCHS": 50},
     notes=(
         ("Timesteps: logit-normal with a resolution-dependent shift (mu 0.5 at 256 image tokens to 1.15 at 6400), "
          "unweighted MSE on the flow-matching velocity.", "src/fizgig/krea2/trainer.py sample_krea2_timesteps"),
