@@ -540,9 +540,12 @@ def watermark_mask(image_path, img, models, tracer=None):
         with Image.open(old) as o:
             m = np.asarray(o.convert("L").resize((w, h))).copy()
     cover = watermark_cover(arr, boxes, tracer)
+    prior = m.copy()
     m[cover] = 0
     stem = os.path.splitext(os.path.basename(image_path))[0]
     Image.fromarray(m, "L").save(os.path.join(os.path.dirname(image_path), stem + MASK_SUFFIX + ".png"))
+    from fizgig.dataset import wm_regions
+    wm_regions.write_sidecar(image_path, cover, prior)
     return float(cover.mean())
 
 
@@ -587,12 +590,16 @@ def watermarks_only_folder(folder, models, overwrite=False, log=print, tracer=No
             if old and not overwrite:
                 with Image.open(old) as o:
                     base = np.asarray(o.convert("L").resize((arr.shape[1], arr.shape[0]))).copy()
-            m = watermarks_only(arr.shape, boxes, base, watermark_cover(arr, boxes, tracer) if tracer else None)
+            cover = watermark_cover(arr, boxes, tracer) if boxes else None
+            m = watermarks_only(arr.shape, boxes, base, cover)
         except Exception as e:
             log(f"  {name}: not checked ({e})\n")
             c["skipped"] += 1
             continue
+        from fizgig.dataset import wm_regions
         if m is None:
+            if overwrite:
+                wm_regions.drop_sidecar(p)
             if base is not None:
                 c["kept"] += 1
                 log(f"  {name}: no watermark found - its mask is kept as it is\n")
@@ -608,6 +615,8 @@ def watermarks_only_folder(folder, models, overwrite=False, log=print, tracer=No
         stem = os.path.splitext(name)[0] + MASK_SUFFIX
         where = os.path.dirname(old) if base is not None else os.path.dirname(p)
         Image.fromarray(m, "L").save(os.path.join(where, stem + ".png"))
+        prior = base if base is not None else np.full(arr.shape[:2], 255, np.uint8)
+        wm_regions.write_sidecar(p, cover, prior)
         if base is not None and os.path.normcase(old) != os.path.normcase(os.path.join(where, stem + ".png")):
             os.remove(old)                     # a .jpg/.webp mask replaced by its merged .png
         c["merged" if base is not None else "made"] += 1

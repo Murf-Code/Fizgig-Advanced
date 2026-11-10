@@ -2599,6 +2599,10 @@ a.pick-pill-vast:hover { border-color: var(--success); }
 @keyframes boot-tip-in { from { opacity: 0; transform: translateY(6px); } }
 .me-stage canvas { display: block; width: 100%; touch-action: none; cursor: none; }
 
+.me-wmbar { padding: 4px 0; }
+.me-wmbar .me-wmload { margin: 0; }
+.me-wmbar #meWmPad { width: 72px; }
+.me-wmbar #meWmAll { border-color: color-mix(in srgb, var(--pic-remove) 55%, var(--border)); }
 .me-imgbar { padding: 6px 10px; border: 1px solid var(--border); border-left: 3px solid var(--accent);
   border-radius: var(--radius-sm); background: var(--bg-raised); }
 .me-imgbar-what { color: var(--text-primary); font-size: 9.5pt; font-weight: 600; }

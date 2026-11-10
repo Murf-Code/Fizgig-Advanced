@@ -25,7 +25,8 @@ def _st(d, **kw):
 
 
 @pytest.mark.parametrize("name", ["originals", "originals_2", "originals_17", "Originals", "ORIGINALS_3",
-                                  "excluded_by_look", "Excluded_By_Look", "removed", "Removed"])
+                                  "excluded_by_look", "Excluded_By_Look", "removed", "Removed",
+                                  "watermarks", "removed_watermarks", "Watermarks"])
 def test_fizgigs_own_folders_by_name_any_case(name):
     assert launch.is_own_subfolder(name)
 

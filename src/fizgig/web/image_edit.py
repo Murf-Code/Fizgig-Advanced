@@ -17,7 +17,8 @@ from collections import OrderedDict
 import numpy as np
 from PIL import Image
 
-from fizgig.dataset.masks import MASK_SUFFIX, MASKS_DIR, _EXTS as MASK_EXTS
+from fizgig.dataset.masks import MASK_SUFFIX, MASKS_DIR, mask_for, read_mask, _EXTS as MASK_EXTS
+from fizgig.dataset import wm_regions
 from fizgig.utils.upright import ORIENTATION, upright
 
 UNDO_STEPS = 30          # image steps kept, across all pictures
@@ -48,12 +49,19 @@ def mask_files(picture_path):
     return out
 
 
+def sidecar_files(picture_path):
+    """The picture's watermark sidecar, active or already applied (done), if the file is there."""
+    return [p for p in (wm_regions.active_path(picture_path), wm_regions.done_path(picture_path))
+            if os.path.isfile(p)]
+
+
 def _read(path):
     with open(path, "rb") as f:
         return f.read()
 
 
 def write_atomic(path, data):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".fzedit.part"
     with open(tmp, "wb") as f:
         f.write(data)
@@ -174,6 +182,21 @@ def crop_mask_bytes(data, pic_size, box):
     return buf.getvalue()
 
 
+def crop_sidecar_bytes(data, pic_size, box):
+    """A watermark sidecar cropped to `box`: the cover is resized by nearest neighbour so it stays sharp."""
+    with Image.open(io.BytesIO(data)) as m:
+        m.load()
+        m = m.convert("LA").copy()
+    if m.size != pic_size:
+        cover, prior = wm_regions.decode(m)
+        cover, prior = wm_regions.resize_pair(cover, prior, pic_size)
+        m = wm_regions.encode(cover, prior)
+    m = m.crop(box)
+    buf = io.BytesIO()
+    m.save(buf, "PNG")
+    return buf.getvalue()
+
+
 def crop(folder, name, box):
     """Crop the picture to box (left, top, right, bottom on the upright picture), and its masks with it."""
     pic = _picture(folder, name)
@@ -186,6 +209,9 @@ def crop(folder, name, box):
     for m in mask_files(pic):
         before[m] = _read(m)
         after[m] = crop_mask_bytes(before[m], img.size, box)
+    for s in sidecar_files(pic):
+        before[s] = _read(s)
+        after[s] = crop_sidecar_bytes(before[s], img.size, box)
     _put(after)
     return {"ok": True, "step": _remember(before, after), "size": [box[2] - box[0], box[3] - box[1]]}
 
@@ -277,22 +303,118 @@ def remove_image(img, stroke):
     return out
 
 
-def remove(folder, name, stroke_png):
-    """Remove what the stroke (PNG bytes or a data URL; painted = remove, any size: stretched to the picture) covers."""
+def _stroke_from_png(stroke_png, size):
+    """PNG bytes or a data URL -> bool (H, W) at `size` (w, h)."""
     import base64
-    pic = _picture(folder, name)
     if isinstance(stroke_png, str):
         stroke_png = base64.b64decode(stroke_png.split(",", 1)[1] if "," in stroke_png else stroke_png)
-    before = {pic: _read(pic)}
-    img = open_upright(before[pic])
     with Image.open(io.BytesIO(stroke_png)) as s:
         s.load()
         s = s.getchannel("A") if s.mode in ("RGBA", "LA") else s.convert("L")
-    if s.size != img.size:
-        s = s.resize(img.size, Image.NEAREST)
-    stroke = np.asarray(s) > 127
+        if s.size != size:
+            s = s.resize(size, Image.NEAREST)
+        return np.asarray(s) > 127
+
+
+def _write_mask_png(mask):
+    buf = io.BytesIO()
+    Image.fromarray(np.asarray(mask, np.uint8), "L").save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _apply_wm_aftermath(pic, hole, size, before, after):
+    """After a Remove: if this picture has a watermark sidecar, restore the training mask only in the watermark
+    pixels that were filled, shrink or finish the sidecar, and record those files in before/after for undo.
+    Other mask edits are left as they are."""
+    pair = wm_regions.read(pic)
+    if pair is None or not hole.any():
+        return {"restored": False, "finished": False}
+    cover, prior = wm_regions.resize_pair(pair[0], pair[1], size)
+    touched = cover & hole
+    if not touched.any():
+        return {"restored": False, "finished": False}
+    sidecar = wm_regions.active_path(pic)
+    before[sidecar] = _read(sidecar)
+    mask_path = mask_for(pic)
+    new_mask = None
+    if mask_path:
+        before[mask_path] = _read(mask_path)
+        mask = np.asarray(read_mask(mask_path))
+        if mask.shape[1] != size[0] or mask.shape[0] != size[1]:
+            mask = np.asarray(Image.fromarray(mask, "L").resize(size, Image.BILINEAR))
+        new_mask = wm_regions.restore_mask_array(mask, touched, prior)
+        if wm_regions.mask_is_all_white(new_mask):
+            after[mask_path] = None
+        else:
+            out = mask_path
+            if not out.lower().endswith(".png"):
+                out = os.path.join(os.path.dirname(pic),
+                                   os.path.splitext(os.path.basename(pic))[0] + MASK_SUFFIX + ".png")
+                if os.path.normcase(out) != os.path.normcase(mask_path):
+                    after[mask_path] = None
+            after[out] = _write_mask_png(new_mask)
+    left = wm_regions.remaining_cover(cover, hole)
+    if left.any():
+        after[sidecar] = _write_la(wm_regions.encode(left, prior))
+    else:
+        after[sidecar] = None
+        done = wm_regions.done_path(pic)
+        after[done] = before[sidecar]     # the finished sidecar, for undo
+        before.setdefault(done, None)
+    return {"restored": new_mask is not None, "finished": not left.any(),
+            "mask_removed": bool(new_mask is not None and wm_regions.mask_is_all_white(new_mask))}
+
+
+def _write_la(im):
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _commit_remove(pic, img, stroke, backup=False):
+    """Fill `stroke` on the upright picture, apply watermark-mask aftermath, write the files, remember the step."""
     if not stroke.any():
         raise ValueError("Paint over what to remove first.")
+    if backup:
+        wm_regions.backup_originals(pic)
+    before = {pic: _read(pic)}
     after = {pic: encode_like(remove_image(img, stroke), before[pic])}
+    hole = prepare_hole(stroke)
+    info = _apply_wm_aftermath(pic, hole, img.size, before, after)
     _put(after)
-    return {"ok": True, "step": _remember(before, after)}
+    return {"ok": True, "step": _remember(before, after), "watermark": info}
+
+
+def remove(folder, name, stroke_png, backup=False):
+    """Remove what the stroke (PNG bytes or a data URL; painted = remove, any size: stretched to the picture) covers."""
+    pic = _picture(folder, name)
+    img = open_upright(_read(pic))
+    stroke = _stroke_from_png(stroke_png, img.size)
+    return _commit_remove(pic, img, stroke, backup=backup)
+
+
+def watermark_stroke_png(folder, name, pad=wm_regions.DEFAULT_PAD):
+    """The picture's active watermark region, grown by `pad` px, as a grayscale PNG (white = remove), or None."""
+    pic = _picture(folder, name)
+    pair = wm_regions.read(pic)
+    if pair is None:
+        return None
+    img = open_upright(_read(pic))
+    cover, _prior = wm_regions.resize_pair(pair[0], pair[1], img.size)
+    cover = wm_regions.pad_cover(cover, pad)
+    buf = io.BytesIO()
+    Image.fromarray(cover.astype(np.uint8) * 255, "L").save(buf, "PNG")
+    return buf.getvalue()
+
+
+def remove_watermark(folder, name, pad=wm_regions.DEFAULT_PAD, backup=True):
+    """Remove the picture's watermark sidecar (padded), restore the training mask there, and copy the original
+    into removed_watermarks/ the first time. Raises ValueError when there is no watermark sidecar."""
+    pic = _picture(folder, name)
+    pair = wm_regions.read(pic)
+    if pair is None:
+        raise ValueError("This picture has no watermark mask to remove.")
+    img = open_upright(_read(pic))
+    cover, _prior = wm_regions.resize_pair(pair[0], pair[1], img.size)
+    stroke = wm_regions.pad_cover(cover, pad)
+    return _commit_remove(pic, img, stroke, backup=backup)

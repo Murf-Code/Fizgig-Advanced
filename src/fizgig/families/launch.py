@@ -627,7 +627,7 @@ def _media_count(folder):
 # (originals, then originals_2, _3... on later runs; crop tag trimming backs captions up there too), Exclude by look,
 # and the desktop's Remove. Matched in any case.
 OWN_SUBFOLDERS = {"excluded_by_look", "originals", "removed", "skipped", "fizgig_detail_crops", "detail_masters",
-                  "_fizgig_holdout"}
+                  "_fizgig_holdout", "watermarks", "removed_watermarks"}
 # Image Prep's outputs (resized copies, close-ups): always trained, even with Include sub-folders off; a picture with
 # a copy in resized/ trains from that copy only (the full-size one beside it is left out - no duplicates).
 PREP_OUTPUTS = ("resized", "crops")

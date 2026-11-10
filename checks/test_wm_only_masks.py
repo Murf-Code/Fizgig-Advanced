@@ -40,6 +40,9 @@ def test_folder(tmp_path):
     assert c["made"] == 2
     m = np.asarray(Image.open(mask_for(str(tmp_path / "a.png"))))
     assert m[200, 200] == 255 and m[20, 20] == 0
+    from fizgig.dataset import wm_regions
+    cover, prior = wm_regions.read(str(tmp_path / "a.png"))
+    assert cover[20, 20] and not cover[200, 200] and prior[20, 20] == 255 and prior[200, 200] == 255
     # a character mask already there: merged, then no watermark keeps it
     char = np.full((400, 400), 255, np.uint8); char[:, 300:] = 0
     Image.fromarray(char).save(mask_for(str(tmp_path / "a.png")))

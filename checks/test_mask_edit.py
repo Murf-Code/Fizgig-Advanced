@@ -29,7 +29,7 @@ def test_listing_and_upright_picture(tmp_path):
     _rotated(tmp_path)
     Image.new("RGB", (32, 32)).save(tmp_path / "b.png")
     Image.new("L", (32, 32), 255).save(tmp_path / "b-masklabel.png")
-    assert mask_edit.listing(str(tmp_path)) == [{"name": "b.png", "mask": True}, {"name": "phone.jpg", "mask": False}]
+    assert mask_edit.listing(str(tmp_path)) == [{"name": "b.png", "mask": True, "watermark": False}, {"name": "phone.jpg", "mask": False, "watermark": False}]
     with Image.open(io.BytesIO(mask_edit.picture_jpeg(str(tmp_path), "phone.jpg"))) as im:
         assert im.size == (40, 60)
     assert mask_edit.mask_png(str(tmp_path), "phone.jpg") is None

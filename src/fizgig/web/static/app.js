@@ -5451,14 +5451,50 @@ function meState() {
 }
 function meShown() {
   const m = meState(), f = $("meFilter").value;
+  if (f === "wm") return m.list.filter((p) => p.watermark);
   return m.list.filter((p) => f === "all" || (f === "mask") === p.mask);
+}
+const ME_WM_KEY = "fizgig.meLoadWm", ME_WM_PAD_KEY = "fizgig.meWmPad";
+function meLoadWmOn() {
+  try { if (localStorage.getItem(ME_WM_KEY) === "0") return false; } catch (e) { /* private */ }
+  return true;                                          // on by default
+}
+function meWmPad() {
+  try { const n = Number(localStorage.getItem(ME_WM_PAD_KEY)); if (n >= 2 && n <= 5) return n; } catch (e) { /* private */ }
+  return 3;
+}
+function meWmCount() { return meState().list.filter((p) => p.watermark).length; }
+function meWmBar() {
+  const m = meState(), n = meWmCount();
+  const on = meLoadWmOn(), busy = !!(S.run && (S.run.running || S.run.state === "starting"));
+  $("meLoadWm").checked = on;
+  $("meWmPadWrap").style.display = on ? "" : "none";
+  $("meWmPad").value = $("meWmPadVal").textContent = meWmPad();
+  $("meWmAll").disabled = !!m.wmBusy || !n || busy;
+  $("meWmAll").textContent = n ? `Remove watermarks from all pictures (${n})` : "Remove watermarks from all pictures";
+  $("meWmStop").style.display = m.wmBusy ? "" : "none";
+  if (!m.wmBusy && !$("meWmState").dataset.keep)
+    $("meWmState").textContent = n ? `${n} picture${n === 1 ? " has" : "s have"} a watermark mask.` :
+      "No watermark masks in this folder. Run Make masks with Mask watermarks too or Just hide the watermarks first.";
+}
+async function meLoadWmStroke() {
+  // paint the picture's watermark sidecar onto the Remove stroke (padded), unless the user already edited it
+  const m = meState(), item = m.list.find((p) => p.name === m.name);
+  if (!meLoadWmOn() || !item || !item.watermark || !m.mask) return;
+  const q = `folder=${encodeURIComponent(m.folder || S.imageFolder)}&name=${encodeURIComponent(m.name)}&pad=${meWmPad()}&t=${encodeURIComponent(TOKEN)}`;
+  const img = await meImage("/api/masks/edit/watermark?" + q + "&v=" + Date.now()).catch(() => null);
+  if (!img || m.name !== item.name) return;
+  const cv = el("canvas", {width: m.mask.width, height: m.mask.height});
+  meFromGray(cv, img);
+  m.rm = cv; m.rmDirty = true; m.rmFromWm = true; m.rmHandEdited = false;
+  meImgBar();
 }
 async function meOpen() {
   const m = meState();
   if (!S.imageFolder) { $("meState").textContent = "Choose the training folder on the Start tab first."; return; }
   try {
     const r = await api("/api/masks/edit/list?folder=" + encodeURIComponent(S.imageFolder));
-    m.list = r.pictures; m.folder = S.imageFolder;
+    m.list = r.pictures; m.folder = S.imageFolder; meWmBar();
   } catch (e) { $("meState").textContent = e.message; return; }
   const shown = meShown();
   const keep = shown.findIndex((p) => p.name === m.name);
@@ -5488,8 +5524,11 @@ async function meGo(i, force) {
   }
   m.pic = pic; m.mask = mask; m.dirty = false; m.undo = []; m.redo = [];
   m.before = null; meFresh();
-  meStateLine();
-  $("meState").textContent = shown[i].mask ? "" : "No mask yet: paint one with the Brush.";
+  await meLoadWmStroke();
+  meStateLine(); meWmBar();
+  $("meState").textContent = shown[i].watermark && meLoadWmOn() ?
+    "Watermark area loaded in red. Add or erase, then press Enter, or use Remove watermarks from all pictures." :
+    (shown[i].mask ? "" : "No mask yet: paint one with the Brush.");
   meFit();
 }
 function meWorkCanvas(pic) {
@@ -5518,7 +5557,7 @@ async function meReload() {
     if (mimg) meFromGray(mask, mimg);
   }
   m.pic = pic; m.mask = mask; m.dirty = false;
-  meFresh(); meStateLine(); meFit();
+  meFresh(); await meLoadWmStroke(); meStateLine(); meWmBar(); meFit();
   return true;
 }
 function meImage(src) {
@@ -5795,16 +5834,19 @@ function meDrawCrop(c, w, h) {
 function meImgBar() {
   // the Remove / Crop bar under the tools: what Apply does, the crop's shape and size, Hold for before
   const m = meState(), t = m.tool, on = t === "crop" || t === "remove";
-  $("meImgBar").style.display = on || m.before ? "" : "none";
+  const showRm = t === "remove" || (m.rmDirty && t !== "crop");
+  $("meImgBar").style.display = on || showRm || m.before ? "" : "none";
   $("meRatioWrap").style.display = t === "crop" ? "" : "none";
   $("meCropSize").style.display = t === "crop" ? "" : "none";
-  $("meApply").style.display = $("meCancel").style.display = on ? "" : "none";
+  $("meApply").style.display = $("meCancel").style.display = (on || showRm) ? "" : "none";
   $("meApply").textContent = t === "crop" ? "Crop" : "Remove it";
-  $("meApply").disabled = m.stepBusy || (t === "remove" ? !m.rmDirty : t === "crop" ? meCropWhole() : true);
+  $("meApply").disabled = m.stepBusy || (t === "crop" ? meCropWhole() : !m.rmDirty);
   $("meBefore").style.display = m.before ? "" : "none";
   $("meImgWhat").textContent = t === "crop" ? "Crop: drag the corners or edges, or drag inside to move the box." :
-    t === "remove" ? (m.rmDirty ? "Remove: press Enter (or Remove it) to take out what's red." :
-      "Remove: paint over what to take out. Right-click rubs the stroke out.") : "Last Remove:";
+    showRm ? (m.rmFromWm && !m.rmHandEdited ?
+      "Remove: the watermark area is in red. Add or erase with the mouse, then press Enter (or Remove it)." :
+      (m.rmDirty ? "Remove: press Enter (or Remove it) to take out what's red." :
+        "Remove: paint over what to take out. Right-click rubs the stroke out.")) : "Last Remove:";
 }
 async function mePicStep(path, body, what, busy) {
   // Crop or Remove: the mask is saved first (so a crop crops it as it is), then the picture changes on the server
@@ -5833,21 +5875,29 @@ async function meApply() {
     $("meState").textContent = `Cropped to ${r.size[0]} × ${r.size[1]}${m.list.find((p) => p.name === m.name && p.mask) ?
       ", the mask with it" : ""}. Ctrl+Z undoes it.`;
     maskInfo();
-  } else if (m.tool === "remove") {
+  } else if (m.tool === "remove" || (m.rmDirty && m.tool !== "crop")) {
     if (!m.rmDirty) { $("meState").textContent = "Paint over what to remove first."; return; }
-    const old = m.pic;
-    const r = await mePicStep("/api/masks/edit/remove", {png: m.rm.toDataURL("image/png")}, "remove", "Removing…");
+    const old = m.pic, fromWm = m.rmFromWm;
+    const r = await mePicStep("/api/masks/edit/remove", {png: m.rm.toDataURL("image/png"), backup: !!fromWm},
+      "remove", "Removing…");
     if (!r) { meImgBar(); return; }
+    const item = m.list.find((p) => p.name === m.name);
+    if (item && r.watermark) {
+      if (r.watermark.finished) item.watermark = false;
+      if (r.watermark.mask_removed) item.mask = false;
+    }
     await meReload();
-    m.before = old; meImgBar();
-    $("meState").textContent = "Removed. Hold \u201cHold for before\u201d to compare; Ctrl+Z undoes it.";
+    m.before = old; meImgBar(); meWmBar();
+    $("meState").textContent = fromWm ?
+      "Watermark removed. The training mask in that area was put back the way it was before the watermark was hidden. Hold \u201cHold for before\u201d to compare; Ctrl+Z undoes it." :
+      "Removed. Hold \u201cHold for before\u201d to compare; Ctrl+Z undoes it.";
   }
   meDraw();
 }
 function meCancel() {
   const m = meState();
   if (m.tool === "crop") meTool(m.prevTool || "brush");  // Esc leaves crop mode, the picture as it was
-  else if (m.tool === "remove") { m.rm = null; m.rmDirty = false; meImgBar(); meDraw(); }
+  else if (m.tool === "remove" || m.rmDirty) { m.rm = null; m.rmDirty = false; m.rmFromWm = false; meImgBar(); meDraw(); }
 }
 function meSizeKey(k) {
   const s = $("meSize"), v = Number(s.value);
@@ -5899,6 +5949,50 @@ async function meSave() {
     return true;
   } catch (e) { $("meState").textContent = e.message; return false; }
 }
+async function meRemoveAllWm() {
+  const m = meState();
+  if (m.wmBusy || m.stepBusy) return;
+  if (S.run && (S.run.running || S.run.state === "starting")) {
+    $("meWmState").textContent = "A run is training: remove watermarks when it finishes.";
+    return;
+  }
+  const names = m.list.filter((p) => p.watermark).map((p) => p.name);
+  if (!names.length) { meWmBar(); return; }
+  const folder = m.folder || S.imageFolder;
+  const slash = (folder.indexOf("\\") >= 0 || /^[A-Za-z]:\\/.test(folder)) ? "\\" : "/";
+  const where = folder + slash + "removed_watermarks";
+  if (!confirm("Remove watermarks from " + names.length + " picture" + (names.length === 1 ? "" : "s") +
+      "?\n\nThis changes the pictures. A copy of each original is saved in:\n" + where +
+      "\n\nPictures without a watermark mask are skipped. You can press Stop.")) return;
+  m.wmBusy = true; m.wmStop = false; $("meWmState").dataset.keep = "1"; meWmBar();
+  let done = 0, skipped = 0, failed = 0, firstFail = "";
+  try {
+    for (let i = 0; i < names.length; i++) {
+      if (m.wmStop) break;
+      $("meWmState").textContent = "Removing " + (i + 1) + " of " + names.length + ": " + names[i] + "…";
+      try {
+        await api("/api/masks/edit/remove_watermark", {folder, name: names[i], pad: meWmPad()});
+        const item = m.list.find((p) => p.name === names[i]);
+        if (item) item.watermark = false;
+        done++;
+        if (m.name === names[i]) await meReload();
+      } catch (e) {
+        if (/no watermark mask/i.test(e.message || "")) skipped++;
+        else { failed++; if (!firstFail) firstFail = names[i] + ": " + e.message; }
+      }
+    }
+  } finally {
+    m.wmBusy = false; $("meWmStop").style.display = "none";
+    const bits = [];
+    if (done) bits.push("Removed watermarks from " + done + " picture" + (done === 1 ? "" : "s") + ".");
+    if (m.wmStop) bits.push("Stopped after " + done + " of " + names.length + ".");
+    if (skipped) bits.push(skipped + " had no watermark mask.");
+    if (failed) bits.push(failed + " failed" + (firstFail ? " (" + firstFail + ")" : "") + ".");
+    if (done) bits.push("Originals are in the folder's removed_watermarks/. The training mask in each watermark area was put back the way it was before the watermark was hidden, so your other mask edits stay.");
+    $("meWmState").textContent = bits.join(" ") || "Nothing to do.";
+    meWmBar(); maskInfo();
+  }
+}
 function meWire() {
   const m = meState(), cv = $("meCanvas");
   let last = null, pan = null, space = false;
@@ -5914,6 +6008,20 @@ function meWire() {
   $("meTool").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => meTool(b.dataset.tool)));
   $("mePicTool").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => meTool(b.dataset.tool)));
   $("meRatio").addEventListener("change", () => { m.ratio = $("meRatio").value; meCropFit(); meImgBar(); meDraw(); });
+  $("meLoadWm").checked = meLoadWmOn();
+  $("meLoadWm").addEventListener("change", async () => {
+    try { localStorage.setItem(ME_WM_KEY, $("meLoadWm").checked ? "1" : "0"); } catch (e) { /* private */ }
+    meWmBar();
+    if ($("meLoadWm").checked) { await meLoadWmStroke(); meDraw(); }
+    else if (m.rmFromWm && !m.rmHandEdited) { m.rm = null; m.rmDirty = false; m.rmFromWm = false; meImgBar(); meDraw(); }
+  });
+  $("meWmPad").addEventListener("input", async () => {
+    try { localStorage.setItem(ME_WM_PAD_KEY, $("meWmPad").value); } catch (e) { /* private */ }
+    $("meWmPadVal").textContent = $("meWmPad").value;
+    if (m.rmFromWm && !m.rmHandEdited) { await meLoadWmStroke(); meDraw(); }
+  });
+  $("meWmAll").addEventListener("click", meRemoveAllWm);
+  $("meWmStop").addEventListener("click", () => { meState().wmStop = true; $("meWmState").textContent = "Stopping…"; });
   $("meApply").addEventListener("click", meApply);
   $("meCancel").addEventListener("click", meCancel);
   const before = (on) => () => { if (m.showBefore !== on) { m.showBefore = on; meDraw(); } };
@@ -5953,7 +6061,7 @@ function meWire() {
     }
     if (m.tool === "remove") {                         // paint what to take out; right-drag rubs it out
       if (e.button !== 0 && e.button !== 2) return;
-      m.flip = e.button === 2; meRmLine(p, p); last = p; meImgBar(); meDraw(); return;
+      m.flip = e.button === 2; meRmLine(p, p); last = p; m.rmHandEdited = true; meImgBar(); meDraw(); return;
     }
     if (m.tool === "sam") {                            // a click adds; right-click or Alt+click takes away
       if (e.button === 0 || e.button === 2) meSamClick(p, e.button === 2 || e.altKey);
@@ -5999,8 +6107,8 @@ function meWire() {
     else if (k === "ArrowLeft") { e.preventDefault(); meGo(m.at - 1); }
     else if (k === "ArrowRight") { e.preventDefault(); meGo(m.at + 1); }
     else if (k === "[" || k === "]") meSizeKey(k);
-    else if (k === "Enter" && (m.tool === "crop" || m.tool === "remove")) { e.preventDefault(); meApply(); }
-    else if (k === "Escape" && (m.tool === "crop" || m.tool === "remove")) { e.preventDefault(); meCancel(); }
+    else if (k === "Enter" && (m.tool === "crop" || m.tool === "remove" || m.rmDirty)) { e.preventDefault(); meApply(); }
+    else if (k === "Escape" && (m.tool === "crop" || m.tool === "remove" || m.rmDirty)) { e.preventDefault(); meCancel(); }
     else if (e.ctrlKey || e.metaKey || e.altKey) return;
     else if (k === "c" || k === "C") meTool("crop");
     else if (k === "j" || k === "J") meTool("remove");
@@ -6055,7 +6163,7 @@ function meTool(t) {
   if (t === "crop" && was === "crop") t = m.prevTool || "brush";   // C again leaves crop mode
   if (t === "crop") m.prevTool = was;
   m.tool = t;
-  if (was === "remove" && t !== "remove") { m.rm = null; m.rmDirty = false; }   // a stroke not applied is dropped
+  if (was === "remove" && t !== "remove" && !m.rmFromWm) { m.rm = null; m.rmDirty = false; }   // a hand stroke not applied is dropped; a preloaded watermark stays
   m.cropDrag = null;
   m.crop = t === "crop" && m.mask ? {l: 0, t: 0, r: m.mask.width, b: m.mask.height} : null;
   if (m.crop) meCropFit();

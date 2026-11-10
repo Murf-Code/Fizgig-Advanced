@@ -3409,8 +3409,9 @@ class Handler(BaseHTTPRequestHandler):
                               "faces": _prep.FACE_TARGETS, "other": _prep.OTHER_TARGET,
                               "face_tools": prep_jobs.faces_available(),
                               "face_settings": prep_jobs.face_settings()})
-        if path in ("/api/masks/edit/list", "/api/masks/edit/picture", "/api/masks/edit/mask"):   # the mask editor
-            from fizgig.web import mask_edit
+        if path in ("/api/masks/edit/list", "/api/masks/edit/picture", "/api/masks/edit/mask",
+                    "/api/masks/edit/watermark"):   # the mask editor
+            from fizgig.web import mask_edit, image_edit
             folder, name = (qs.get("folder") or [""])[0], (qs.get("name") or [""])[0]
             if not folder or not os.path.isdir(folder):
                 return self.json({"error": "Choose the training folder on the Start tab first."}, 400)
@@ -3419,6 +3420,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"pictures": mask_edit.listing(folder)})
                 if path == "/api/masks/edit/picture":
                     return self._send(200, mask_edit.picture_jpeg(folder, name), "image/jpeg")
+                if path == "/api/masks/edit/watermark":
+                    data = image_edit.watermark_stroke_png(folder, name, (qs.get("pad") or [None])[0])
+                    return self.json({"error": "no watermark"}, 404) if data is None else self._send(200, data, "image/png")
                 data = mask_edit.mask_png(folder, name)
                 return self.json({"error": "no mask"}, 404) if data is None else self._send(200, data, "image/png")
             except ValueError as e:
@@ -4725,7 +4729,8 @@ class Handler(BaseHTTPRequestHandler):
                     pics.append({"name": name, "cover": round(cover, 3),
                                  "src": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()})
                 return self.json({"ok": True, "pictures": pics, "fresh": fresh, "of": len(sammask.pictures(folder))})
-            if path in ("/api/masks/edit/crop", "/api/masks/edit/remove", "/api/masks/edit/image_step"):
+            if path in ("/api/masks/edit/crop", "/api/masks/edit/remove", "/api/masks/edit/image_step",
+                        "/api/masks/edit/remove_watermark"):
                 # the picture editor's Crop and Remove change the picture file (web/image_edit.py); each request runs
                 # in its own server thread, so a slow Remove doesn't hold up the page. Undo/redo: an image step's id
                 from fizgig.web import image_edit
@@ -4739,7 +4744,12 @@ class Handler(BaseHTTPRequestHandler):
                                                        "mask tools work now."}, 400)
                         return self.json(image_edit.crop(folder, name, [b.get(k) for k in ("left", "top", "right", "bottom")]))
                     if path == "/api/masks/edit/remove":
-                        return self.json(image_edit.remove(folder, name, str(b.get("png") or "")))
+                        return self.json(image_edit.remove(folder, name, str(b.get("png") or ""),
+                                                           backup=bool(b.get("backup"))))
+                    if path == "/api/masks/edit/remove_watermark":
+                        if _gpu_training():
+                            return self.json({"error": "A run is training: remove watermarks when it finishes."}, 400)
+                        return self.json(image_edit.remove_watermark(folder, name, b.get("pad")))
                     return self.json(image_edit.step(b.get("step"), "redo" if b.get("redo") else "undo"))
                 except (ValueError, TypeError) as e:
                     return self.json({"error": str(e)}, 400)

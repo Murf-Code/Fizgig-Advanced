@@ -23,9 +23,12 @@ def _picture(folder, name):
 
 
 def listing(folder):
-    """[{"name", "mask"}] for every picture in the folder, in name order."""
+    """[{"name", "mask", "watermark"}] for every picture in the folder, in name order.
+    watermark: an active Make-masks watermark sidecar is waiting to be loaded into Remove."""
+    from fizgig.dataset import wm_regions
     names = folder_names(folder)
-    return [{"name": os.path.basename(p), "mask": bool(mask_for(p, names))} for p in pictures(folder)]
+    return [{"name": os.path.basename(p), "mask": bool(mask_for(p, names)),
+             "watermark": wm_regions.has_active(p)} for p in pictures(folder)]
 
 
 def _open_upright(path):

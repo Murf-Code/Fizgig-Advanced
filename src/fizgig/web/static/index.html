@@ -509,15 +509,25 @@
                     <b>Save now</b>, and on its own when you move to another picture, change the filter, close Edit
                     masks or leave this tab. A mask saved all black is deleted (the picture then trains as normal).
                     <b>Remove</b> and <b>Crop</b> change the picture file itself (its mask is cropped with it, so they
-                    stay lined up); Ctrl+Z undoes them while Fizgig stays open.</div>
+                    stay lined up); Ctrl+Z undoes them while Fizgig stays open. If you used <b>Mask watermarks too</b>
+                    or <b>Just hide the watermarks</b>, each picture's watermark area can be loaded into Remove as a
+                    red stroke, edited, and filled, one picture or all of them.</div>
                   <div class="me-bar">
                     <button class="btn btn-sm" id="mePrev" title="Previous picture (←)">←</button>
                     <span class="me-count" id="meCount"></span>
                     <button class="btn btn-sm" id="meNext" title="Next picture (→)">→</button>
                     <select id="meFilter" class="w-combo st-small-select">
                       <option value="all">All pictures</option><option value="mask">With a mask</option>
-                      <option value="none">Without a mask</option></select>
+                      <option value="none">Without a mask</option>
+                      <option value="wm">With a watermark</option></select>
                     <span class="me-name" id="meName"></span>
+                  </div>
+                  <div class="me-bar me-wmbar" id="meWmBar">
+                    <label class="checkbox-label me-wmload" title="When you open a picture that has a watermark mask, paint that area in red in Remove, ready to edit or fill"><input type="checkbox" id="meLoadWm" checked> Load watermark masks into Remove</label>
+                    <label class="me-slider" id="meWmPadWrap" title="Extra pixels around the watermark when it's loaded into Remove">Pad <input type="range" id="meWmPad" min="2" max="5" value="3"><span id="meWmPadVal">3</span> px</label>
+                    <button class="btn btn-sm" id="meWmAll" title="Fill the watermark area on every picture that has a watermark mask. The original pictures are copied into the folder's removed_watermarks/ first.">Remove watermarks from all pictures</button>
+                    <button class="btn btn-sm" id="meWmStop" style="display:none">Stop</button>
+                    <span class="field-hint" id="meWmState"></span>
                   </div>
                   <div class="me-bar">
                     <span class="seg" id="meTool"><button class="btn btn-sm active" data-tool="brush" title="Paint white: learned (B). Right-click paints black">Brush</button><button
