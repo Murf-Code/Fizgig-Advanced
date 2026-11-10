@@ -323,12 +323,22 @@ class FamilyOption:
 POLORA_PRESET = "PoLoRA"
 
 
+def _standard_lora_base(presets):
+    """The family's own standard-LoRA preset (its first, not an edit, slider, fine-tune or the PoLoRA one)."""
+    for name, v in presets or ():
+        if name == POLORA_PRESET or str(v.get("OPTIMIZER_TYPE") or "").lower() == "polora":
+            continue
+        if v.get("FAMILY_EDIT") or v.get("FAMILY_SLIDER") or v.get("FAMILY_FT"):
+            continue
+        return dict(v)
+    return {}
+
+
 def polora_preset(presets):
     """The built-in PoLoRA preset: the family's own standard-LoRA preset (its first, not an edit, slider or
     fine-tune one) with PoLoRA as the optimizer - Adaptive LR moving its real rate from 1e-2 to 4e-2 (2e-2 where a
     model has no Adaptive LR), magnitude_scale 3, curvature_beta 0.99 and compile on; everything else the family's."""
-    base = next((dict(v) for _n, v in presets or ()
-                 if not (v.get("FAMILY_EDIT") or v.get("FAMILY_SLIDER") or v.get("FAMILY_FT"))), {})
+    base = _standard_lora_base(presets)
     return {**base, "OPTIMIZER_TYPE": "polora", "OPTIMIZER_ARGS": "magnitude_scale=3 curvature_beta=0.99 compile=True",
             "LEARNING_RATE": "2e-2", "ADAPTIVE_LR": True, "ADAPTIVE_LR_MIN": "1e-2", "ADAPTIVE_LR_MAX": "4e-2"}
 
@@ -689,6 +699,7 @@ class FamilyDescription:
     # by default: previews render without it until the Samples tab's Turbo strength is raised)
 
     # built-in Training-tab presets: ((name, {GUI setting key: value}), ...); the first is applied on a first visit
+    # (that first is the built-in PoLoRA preset, added in __post_init__; the family's own standard LoRA preset is next)
     presets: tuple = ()
 
     # small files the text encoder / captioner load by repo name: ((repo, (allow_patterns...)), ...); the model
@@ -748,9 +759,12 @@ class FamilyDescription:
     cache_script = "src/fizgig/families/cache.py"
 
     def __post_init__(self):
-        # every family's built-in "PoLoRA" preset, last (the first is a first visit's): polora_preset
+        # every family's built-in "PoLoRA" preset, first: a first visit (a new run on a model you haven't
+        # used yet) applies it. The family's earlier standard LoRA preset stays in the list under its own name
+        # (Muon, AdamW or Automagic, as it was), so you can pick it to go back. Edit, slider and fine-tune
+        # presets are unchanged.
         if self.presets is not None and not any(n == POLORA_PRESET for n, _v in self.presets):
-            object.__setattr__(self, "presets", tuple(self.presets) + ((POLORA_PRESET, polora_preset(self.presets)),))
+            object.__setattr__(self, "presets", ((POLORA_PRESET, polora_preset(self.presets)),) + tuple(self.presets))
 
     @property
     def training_ready(self) -> bool:
