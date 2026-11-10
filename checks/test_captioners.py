@@ -139,3 +139,21 @@ def test_captions_tab_offers_the_registry():
     assert with_file["default_model"] == captioners.get("qwen3vl").label
     assert captioners.get("qwen3vl").label not in without["models"]       # its file isn't set
     assert captions.need_gb(captioners.get("florence2_base").label) == 2.5
+
+
+def test_e621_tags_type_and_cleanup():
+    from fizgig.captioners import clean_e621_tags, is_e621_instruction, get
+    jc = get("joycaption_beta_one")
+    labels = [t[0] for t in jc.prompt_types]
+    assert "e621 tags" in labels
+    any_len, words, length = next(t[1:] for t in jc.prompt_types if t[0] == "e621 tags")
+    assert "e621 conventions" in any_len and "{" not in any_len
+    assert "{word_count}" in words and "{length}" in length
+    assert is_e621_instruction(any_len) and not is_e621_instruction(jc.prompt_types[0][1])
+    raw = ("Anthro, male, fox, orange_fur, orange fur, looking_at_viewer, score_90, rating:explicit, "
+           "meta:highres, 2024, species:fox, character:swirl, lore:something, Safe, commentary, "
+           "blue jeans, forest background, digital art")
+    assert clean_e621_tags(raw) == (
+        "anthro, male, fox, orange fur, looking at viewer, swirl, blue jeans, forest background, digital art")
+    assert clean_e621_tags("") == "" and clean_e621_tags("score_120, rating:s") == ""
+

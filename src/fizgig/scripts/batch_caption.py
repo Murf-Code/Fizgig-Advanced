@@ -175,6 +175,9 @@ def caption_file(state: CaptionState, path: str, request, job: dict) -> str:
     text = captioners.finish(state.captioner.caption(picture(path), request),
                              threshold=float(job.get("threshold") or 0.35), leave_out=job.get("leave_out") or (),
                              underscores=bool(job.get("underscores")))
+    instr = getattr(request, "instruction", "") or ""
+    if job.get("clean") == "e621" or captioners.is_e621_instruction(instr):
+        text = captioners.clean_e621_tags(text)
     return captioners.with_trigger(text, job.get("trigger") or "")
 
 

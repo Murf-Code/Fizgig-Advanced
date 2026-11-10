@@ -130,6 +130,53 @@ def with_trigger(caption: str, trigger: str) -> str:
     return f"{trigger}, {caption}" if trigger and caption else (caption or "")
 
 
+# Whole tags dropped from a JoyCaption e621 list: rating/score/meta junk, not useful as training tags.
+_E621_JUNK = {
+    "explicit", "questionable", "safe", "general", "e621", "tagme", "unknown artist", "conditional dnp",
+    "invalid tag", "commentary", "metadata",
+}
+_E621_JUNK_PREFIX = (
+    "score", "favs", "fav count", "favourite", "favorite", "rating", "meta", "lore",
+)
+
+
+def is_e621_instruction(instruction: str) -> bool:
+    """True when the instruction is JoyCaption's e621 tags type (or a Custom... copy of it)."""
+    t = str(instruction or "").strip().lower()
+    return "e621-style tags" in t or t.startswith("write a comma-separated list of e621")
+
+
+def clean_e621_tags(text: str) -> str:
+    """A JoyCaption e621 tag list: lowercase, underscores as spaces, comma-separated, duplicates and
+    rating/score/meta junk (score_*, rating:*, year, commentary, category prefixes with no tag) removed.
+    Category prefixes (artist:, character:, species:) are stripped so only the tag itself is kept.
+    meta: and lore: tags are dropped entirely."""
+    import re
+    parts, seen = [], set()
+    raw = str(text or "").replace("\n", ",")
+    raw = re.sub(r"[;|/]+", ",", raw)
+    for piece in raw.split(","):
+        t = piece.strip().strip(".'\"")
+        if not t:
+            continue
+        t = t.lower().replace("_", " ")
+        t = re.sub(r"\s+", " ", t).strip()
+        prefix = re.match(r"^(artist|copyright|character|species|meta|lore):\s*(.*)$", t)
+        if prefix:
+            if prefix.group(1) in ("meta", "lore"):
+                continue
+            t = prefix.group(2).strip()
+        if not t or t in seen or t in _E621_JUNK:
+            continue
+        if re.fullmatch(r"(19|20)\d{2}s?", t):
+            continue
+        if any(t == p or t.startswith(p + " ") or t.startswith(p + ":") for p in _E621_JUNK_PREFIX):
+            continue
+        seen.add(t)
+        parts.append(t)
+    return ", ".join(parts)
+
+
 # ---- the registry --------------------------------------------------------------------------------------------
 from fizgig.captioners.registry import CAPTIONERS  # noqa: E402  (descriptions only: no torch, no model code)
 

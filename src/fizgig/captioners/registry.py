@@ -5,9 +5,12 @@ from fizgig.captioners import CaptionerDescription, HFRepo, PrefFile
 _FLORENCE_TASKS = ("<CAPTION>", "<DETAILED_CAPTION>", "<MORE_DETAILED_CAPTION>")
 
 # JoyCaption Beta One's own caption types and extra options, worded as in its author's demo (fpgaminer/joycaption,
-# Apache-2.0; the Space fancyfeast/joy-caption-beta-one). Left out: its tag modes (its README calls them less stable;
-# the WD tagger does tags), the product-listing and social-media types (not training captions), and the profanity
-# options. Anyone can still type any instruction (Custom...).
+# Apache-2.0; the Space fancyfeast/joy-caption-beta-one). Left out: its Danbooru / Rule34 / Booru-like tag modes
+# (its README calls tag modes less stable; the WD tagger does booru tags), the product-listing and social-media
+# types (not training captions), and the profanity options. "e621 tags" is a training-oriented type: JoyCaption
+# has an official "e621 tag list" mode, but that one asks for underscores and artist/copyright/meta/lore prefixes;
+# ours asks for lowercase tags with spaces between words and no rating/score/meta junk, then the worker cleans
+# and deduplicates the list. Anyone can still type any instruction (Custom...).
 _JC_STRAIGHT = ("Begin with the main subject and medium. Mention pivotal elements\u2014people, objects, scenery\u2014using "
                 "confident, definite language. Focus on concrete details like color, shape, texture, and spatial "
                 "relationships. Show how elements interact. Omit mood and speculative wording. If text is present, quote "
@@ -39,6 +42,22 @@ _JC_TYPES = (
      "of color, light, any artistic movement it might belong to, etc. Keep it within {word_count} words.",
      "Analyze this image like an art critic would with information about its composition, style, symbolism, the use "
      "of color, light, any artistic movement it might belong to, etc. Keep it {length}."),
+    ("e621 tags",
+     "Write a comma-separated list of e621-style tags for this image. Use e621 conventions: species, whether the "
+     "subject is anthro or feral, gender, body parts, fur colour, clothing, pose, background, and artistic style. "
+     "Write tags in lowercase with spaces between words (for example: orange fur, looking at viewer), not underscores. "
+     "Do not include rating tags, score tags, or other meta junk such as year, commentary, or tag counts. Output only "
+     "the tags, separated by commas, with no extra sentences.",
+     "Write a comma-separated list of e621-style tags for this image in {word_count} words or less. Use e621 "
+     "conventions: species, whether the subject is anthro or feral, gender, body parts, fur colour, clothing, pose, "
+     "background, and artistic style. Write tags in lowercase with spaces between words (for example: orange fur, "
+     "looking at viewer), not underscores. Do not include rating tags, score tags, or other meta junk such as year, "
+     "commentary, or tag counts. Output only the tags, separated by commas, with no extra sentences.",
+     "Write a {length} comma-separated list of e621-style tags for this image. Use e621 conventions: species, whether "
+     "the subject is anthro or feral, gender, body parts, fur colour, clothing, pose, background, and artistic style. "
+     "Write tags in lowercase with spaces between words (for example: orange fur, looking at viewer), not underscores. "
+     "Do not include rating tags, score tags, or other meta junk such as year, commentary, or tag counts. Output only "
+     "the tags, separated by commas, with no extra sentences."),
 )
 _JC_LENGTHS = ("any", "very short", "short", "medium-length", "long", "very long") + tuple(str(n) for n in range(20, 261, 20))
 _JC_EXTRAS = (

@@ -557,6 +557,8 @@ def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_to
         with open(instr, "w", encoding="utf-8") as f:
             f.write(instruction.strip())
         job["instruction_file"] = instr
+        if str(task_label or "").strip().lower() == "e621 tags" or _captioners.is_e621_instruction(instruction):
+            job["clean"] = "e621"
     if desc is not None and desc.tasks:
         job["task"] = task_label if task_label in desc.tasks else desc.default_task
     if desc is not None and desc.kind == "tags":
