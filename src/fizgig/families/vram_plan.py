@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 
 logger = logging.getLogger(__name__)
@@ -136,22 +137,167 @@ def file_weights_gb(path, bytes_per=2) -> float:
     for k, info in head.items():
         shape = (info or {}).get("shape") if isinstance(info, dict) and k != "__metadata__" else None
         if shape:
-            m = 1
-            for d in shape:
-                m *= int(d)
-            n += m
+            n += _numel(shape)
     return n * bytes_per / 1024 ** 3
 
 
+# Frozen files (a context LoRA, a training adapter) are not merged into the base weights. FamilyLoRA.add_file
+# keeps them as a separate forward path (W x + s * B(A(x))) in bf16, and LoRAFactor is skipped by block-swap
+# offloaders (its class name does not end in "Linear"), so the whole adapter stays resident on the GPU. Only the
+# low-rank intermediate of the busiest block is an extra at the run's resolution (frozen adapters do not keep
+# intermediates for backward; with checkpointing only one block is live).
+FROZEN_BYTES = 2
+_DOWN_SUF = (".lora_down.weight", ".lora_A.weight", ".lora.down.weight")
+_UP_SUF = (".lora_up.weight", ".lora_B.weight", ".lora.up.weight")
+_OTHER_WT = (".lokr_w1_a", ".lokr_w1_b", ".lokr_w2_a", ".lokr_w2_b", ".lokr_w1", ".lokr_w2",
+             ".hada_w1_a", ".hada_w1_b", ".hada_w2_a", ".hada_w2_b")
+_BLOCK_RE = re.compile(
+    r"(?:^|[._])(?:double_blocks?|single_blocks?|transformer_blocks?|blocks?|layers?)[._](\d+)(?:[._]|$)",
+    re.I,
+)
+
+
+def _numel(shape) -> int:
+    n = 1
+    for d in shape:
+        n *= int(d)
+    return n if shape else 0
+
+
+def _stem_kind(key):
+    for suf in _DOWN_SUF:
+        if key.endswith(suf):
+            return key[:-len(suf)], "down"
+    for suf in _UP_SUF:
+        if key.endswith(suf):
+            return key[:-len(suf)], "up"
+    for suf in _OTHER_WT:
+        if key.endswith(suf):
+            return key[:-len(suf)], "other"
+    return None, None
+
+
+def inspect_frozen_lora(path) -> dict:
+    """A frozen LoRA file's GPU footprint, read from its header only (nothing loaded).
+
+    Fizgig loads frozen adapters in bf16 (families/lora.py LoRALinear.add), even when the file is fp32, and
+    only the down/up (or A/B, LoKR, LoHa) weights stay on the card. Returns rank, layer count, weight GB,
+    and whether the header could be read (otherwise a file-size fallback)."""
+    name = os.path.basename(str(path or ""))
+    out = {"path": path, "name": name, "rank": None, "layers": 0, "block_layers": 0,
+           "weights_gb": 0.0, "ok": False, "fallback": False, "kind": "lora"}
+    if not path:
+        return out
+    if not os.path.isfile(path):
+        logger.warning("[vram] %s is missing; not counted in the plan", name or path)
+        return out
+    try:
+        from fizgig.utils.st_meta import _header
+        with open(path, "rb") as f:
+            head = _header(f)[1]
+    except Exception:
+        gb = os.path.getsize(path) / 1024 ** 3
+        logger.warning("[vram] couldn't read %s; using its file size (%.2f GB)", name, gb)
+        out.update(weights_gb=gb, fallback=True)
+        return out
+
+    tensors = []
+    for k, info in head.items():
+        if k == "__metadata__" or not isinstance(info, dict):
+            continue
+        shape = info.get("shape")
+        if shape:
+            tensors.append((k, tuple(int(d) for d in shape)))
+
+    elems, ranks, stems, other = 0, [], [], False
+    counted = set()
+    for k, shape in tensors:
+        stem, kind = _stem_kind(k)
+        if stem is None:
+            continue
+        elems += _numel(shape)
+        counted.add(k)
+        if kind == "down":
+            ranks.append(int(shape[0]))          # (rank, in, [kH, kW])
+            stems.append(stem)
+        elif kind == "other":
+            other = True
+            stems.append(stem)
+
+    if not counted:                              # unusual key names: skip alpha / bias (they don't stay on the GPU)
+        twod = []
+        for k, shape in tensors:
+            kl = k.lower()
+            if k.endswith(".alpha") or k.endswith(".diff_b") or kl.endswith(".bias"):
+                continue
+            elems += _numel(shape)
+            if len(shape) >= 2:
+                ranks.append(int(min(shape[:2])))
+                twod.append(k)
+        stems = twod[:len(twod) // 2] or twod    # each module is a down/up pair
+
+    layers = len(set(stems))
+    rank = None
+    if ranks:
+        lo, hi = min(ranks), max(ranks)
+        rank = lo if lo == hi else (lo, hi)
+    groups = {}
+    for stem in set(stems):
+        m = _BLOCK_RE.search(stem)
+        if m:                                        # only numbered blocks; outside layers aren't all live at once
+            groups[m.group(1)] = groups.get(m.group(1), 0) + 1
+    out.update(ok=True, rank=rank, layers=layers,
+               block_layers=max(groups.values()) if groups else (1 if layers else 0),
+               weights_gb=elems * FROZEN_BYTES / 1024 ** 3,
+               kind="lokr" if other and not ranks else "lora")
+    return out
+
+
+def frozen_act_gb(rank, block_layers, *, megapixels=0.25, pictures=1, bucket_step=16) -> float:
+    """GB of the low-rank intermediate at the run's size, for the busiest block (the peak: frozen adapters do
+    not keep intermediates for backward, and with checkpointing only one block is live)."""
+    r = max(rank) if isinstance(rank, tuple) else int(rank or 0)
+    if r <= 0 or int(block_layers or 0) <= 0:
+        return 0.0
+    step = max(1, int(bucket_step or 16))
+    tokens = max(1, int(float(megapixels if megapixels is not None else 0.25) * 1e6 / (step * step)))
+    return tokens * max(1, int(pictures or 1)) * r * FROZEN_BYTES * int(block_layers) / 1024 ** 3
+
+
+def frozen_file_term(path, *, megapixels=None, pictures=1, bucket_step=16) -> tuple:
+    """(plan-line label, GB) for one frozen LoRA, or ("", 0) when there is nothing to count."""
+    info = inspect_frozen_lora(path)
+    gb = info["weights_gb"]
+    if info["ok"] and not info["fallback"]:
+        gb += frozen_act_gb(info["rank"], info["block_layers"], megapixels=megapixels,
+                            pictures=pictures, bucket_step=bucket_step)
+    if gb <= 0:
+        return "", 0.0
+    name = info["name"] or os.path.basename(str(path))
+    if info["fallback"]:
+        return f"{name} (from file size)", gb
+    bits = []
+    if info["kind"] != "lora" and info["rank"] is None:
+        bits.append("LoKR")
+    elif isinstance(info["rank"], tuple):
+        bits.append(f"rank {info['rank'][0]}-{info['rank'][1]}")
+    elif info["rank"] is not None:
+        bits.append(f"rank {info['rank']}")
+    if info["layers"]:
+        bits.append(f"{info['layers']} layers" if info["layers"] != 1 else "1 layer")
+    return (f"{name} ({', '.join(bits)})" if bits else name), gb
+
+
 def extra_gb(desc, dit_path, network_type, rank, optimizer, *, optimizer_args="", ema=False, frozen_files=(),
-             card_gb=None) -> tuple:
+             card_gb=None, megapixels=None, pictures=1) -> tuple:
     """(GB, why) this run holds beyond what the family's figures were measured with (their recipe:
     TRAIN_MEMORY_RECIPE, rank 16 on AdamW8bit unless the family says otherwise), every term from this run's own
     choices:
       * the LoRA and its optimizer: weights + gradients + state against the recipe's - a proper difference, so a
         smaller LoRA or a lighter optimizer plans less (never below ADAPTER_FLOOR_GB) - plus the difference in what
         one optimizer step holds for a moment (STEP_BYTES), and compiled kernels' extra (COMPILE_BYTES);
-      * the EMA's fp32 shadow; frozen LoRA files (a context LoRA, a training adapter) in bf16;
+      * the EMA's fp32 shadow; frozen LoRA files (a context LoRA, a training adapter) in bf16 at the file's real
+        rank and layer count, plus a little for the low-rank intermediate at this run's size;
       * on a card under SMALL_CARD_GB planned from big-card figures, SMALL_CARD_RESERVE_GB.
     The adapter terms need a plain LoRA and a readable model file (LoKr's factors are far smaller: 0 for them)."""
     terms = []
@@ -168,11 +314,12 @@ def extra_gb(desc, dit_path, network_type, rank, optimizer, *, optimizer_args=""
             terms.append((f"{opt} compile", c))
         if ema:
             terms.append(("EMA", sum(max(1, int(rank)) * (o + i) for o, i in shapes) * EMA_BYTES / 1024 ** 3))
+    step = getattr(desc, "bucket_step", None) or 16
     for f in frozen_files or ():
         if f:
-            w = file_weights_gb(f)
+            label, w = frozen_file_term(f, megapixels=megapixels, pictures=pictures, bucket_step=step)
             if w:
-                terms.append((os.path.basename(str(f)), w))
+                terms.append((label, w))
     small = bool(getattr(desc, "train_memory_small", None)) and _uses_small_table(desc)
     if card_gb and 0 < float(card_gb) < SMALL_CARD_GB and not small:
         terms.append((f"{float(card_gb):.0f} GB card reserve", SMALL_CARD_RESERVE_GB))
@@ -247,5 +394,5 @@ def margin(value) -> float:
     return min(8.0, max(0.0, v))
 
 
-__all__ = ["DEFAULT_MARGIN_GB", "STATE_BYTES", "file_weights_gb", "optimizer_compiles", "step_gb", "TRAIN_MEMORY_RECIPE", "adapter_gb", "correction", "extra_gb", "key",
+__all__ = ["DEFAULT_MARGIN_GB", "STATE_BYTES", "file_weights_gb", "frozen_file_term", "inspect_frozen_lora", "optimizer_compiles", "step_gb", "TRAIN_MEMORY_RECIPE", "adapter_gb", "correction", "extra_gb", "key",
            "linear_shapes", "margin", "record", "state_bytes"]

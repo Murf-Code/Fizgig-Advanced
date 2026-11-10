@@ -83,7 +83,8 @@ def test_the_margin_is_a_preference_passed_to_the_trainer(tiny, tmp_path):
 def test_chris_4070ti_krea2_config_swaps_at_least_20(tmp_path):
     """Chris's 12 GB 4070 Ti, Nov 2026: Krea 2 at 0.25 MP, int8, rank 8 PoLoRA, EMA, a context LoRA. Auto swapped 17
     and spilled (22 s a step uncompiled, 66 s compiled); 20 ran clean at 3.9 s. The plan now counts the EMA, the
-    optimizer's step and compile, the context LoRA and a small card's reserve."""
+    optimizer's step and compile, the context LoRA (its real rank and layers, from the file) and a small card's
+    reserve."""
     import json
     import struct
     from fizgig.families.krea2 import KREA2
@@ -103,13 +104,36 @@ def test_chris_4070ti_krea2_config_swaps_at_least_20(tmp_path):
     io = [(6144, 64), (6144, 256), (6144, 6144), (6144, 2560), (6144, 6144), (36864, 6144), (64, 6144), (6144, 2560)]
     shapes = blk * 28 + fus * 4 + io                                   # Krea 2's 264 LoRA Linears (29.4 M at rank 8)
     dit = header(str(tmp_path / "krea2.safetensors"), shapes)
-    ctx = header(str(tmp_path / "ctx.safetensors"), [s for o, i in shapes for s in ((16, i), (o, 16))])
+    def lora_header(path, modules):         # proper lora_down / lora_up names, rank and layers from the header
+        head, off = {}, 0
+        for stem, o, i, r in modules:
+            for key, shape in ((f"{stem}.lora_down.weight", (r, i)), (f"{stem}.lora_up.weight", (o, r)),
+                               (f"{stem}.alpha", (1,))):
+                n = 1
+                for d in shape:
+                    n *= d
+                head[key] = {"dtype": "F32", "shape": list(shape), "data_offsets": [off, off + n * 4]}
+                off += n * 4
+        b = json.dumps(head).encode()
+        with open(path, "wb") as f:
+            f.write(struct.pack("<Q", len(b)) + b)
+        return path
+    mods, n = [], 0
+    for bi, group in enumerate([blk] * 28 + [fus] * 4 + [io]):
+        for j, (o, i) in enumerate(group):
+            tag = "blocks" if bi < 28 else ("txt" if bi < 32 else "io")
+            idx = bi if bi < 28 else (bi - 28 if bi < 32 else j)
+            mods.append((f"lora_unet_{tag}_{idx}_m{j}", o, i, 16))
+            n += 1
+    assert n == 264
+    ctx = lora_header(str(tmp_path / "Furry_Parts.safetensors"), mods)
     drv = SimpleNamespace(max_blocks_to_swap=lambda: 26)
     picks = {}
     for args in ("magnitude_scale=3", "magnitude_scale=3 compile=False"):
         gb, why = vram_plan.extra_gb(KREA2, dit, "lora", 8, "polora", optimizer_args=args, ema=True,
-                                     frozen_files=(ctx, None), card_gb=12.0)
-        assert "EMA" in why and "ctx.safetensors" in why and "12 GB card reserve" in why
+                                     frozen_files=(ctx, None), card_gb=12.0, megapixels=0.25, pictures=1)
+        assert "EMA" in why and "Furry_Parts.safetensors (rank 16, 264 layers)" in why
+        assert "12 GB card reserve" in why
         assert ("polora compile" in why) == ("compile=False" not in args)
         picks[args] = quant.plan(KREA2, drv, "auto", -1, free_gb=10.8, megapixels=0.25, extra_gb=gb)[:2]
     assert picks["magnitude_scale=3"] in (("int8", 20), ("int8", 21))
@@ -121,6 +145,70 @@ def test_chris_4070ti_krea2_config_swaps_at_least_20(tmp_path):
     # the user's own Blocks Swap is what the reason says
     why = quant.plan(KREA2, drv, "auto", 20, free_gb=10.8, megapixels=0.25)[2]
     assert why == "int8 with your Blocks Swap 20; Auto would swap 17 to fit 10.8 GB"
+
+
+def test_frozen_lora_cost_comes_from_the_file(tmp_path, caplog):
+    """The context LoRA term is the file's real tensors in bf16, its rank and layer count, plus a little for
+    applying it; a missing or unreadable file falls back (or is skipped) and is logged."""
+    import json
+    import logging
+    import struct
+
+    def write_lora(path, modules, keyfn=None):
+        keyfn = keyfn or (lambda stem, ab: f"{stem}.{ab}.weight")
+        head, off = {}, 0
+        for stem, i, o, r in modules:
+            for ab, shape in (("lora_down", (r, i)), ("lora_up", (o, r))):
+                n = 1
+                for d in shape:
+                    n *= d
+                # stored as fp32 in the header: the plan still counts bf16 (how Fizgig loads a frozen file)
+                head[keyfn(stem, ab)] = {"dtype": "F32", "shape": list(shape), "data_offsets": [off, off + n * 4]}
+                off += n * 4
+            head[f"{stem}.alpha"] = {"dtype": "F32", "shape": [1], "data_offsets": [off, off + 4]}
+            off += 4
+        b = json.dumps(head).encode()
+        with open(path, "wb") as f:
+            f.write(struct.pack("<Q", len(b)) + b)
+        return path
+
+    p = write_lora(str(tmp_path / "parts.safetensors"),
+                   [(f"lora_unet_blocks_{b}_attn_wq", 64, 128, 8) for b in range(3)]
+                   + [(f"lora_unet_blocks_{b}_attn_wo", 128, 64, 8) for b in range(3)])
+    info = vram_plan.inspect_frozen_lora(p)
+    assert info["rank"] == 8 and info["layers"] == 6 and info["ok"] and not info["fallback"]
+    assert abs(info["weights_gb"] - 6 * 8 * (64 + 128) * 2 / 1024 ** 3) < 1e-15
+    label, gb = vram_plan.frozen_file_term(p, megapixels=0.25, pictures=1, bucket_step=16)
+    assert label == "parts.safetensors (rank 8, 6 layers)"
+    assert gb >= info["weights_gb"]
+    act = gb - info["weights_gb"]
+    assert 0 <= act < 0.01                               # a little (the busiest block's rank-r activations)
+    _, gb2 = vram_plan.frozen_file_term(p, megapixels=1.0, pictures=4, bucket_step=16)
+    assert gb2 > gb and (gb2 - info["weights_gb"]) < 0.05
+
+    p2 = write_lora(str(tmp_path / "peft.safetensors"),
+                    [("diffusion_model.layers.0.q", 32, 32, 4), ("diffusion_model.layers.1.q", 32, 32, 16)],
+                    keyfn=lambda stem, ab: f"{stem}.{'lora_A' if ab == 'lora_down' else 'lora_B'}.weight")
+    info2 = vram_plan.inspect_frozen_lora(p2)
+    assert info2["rank"] == (4, 16) and info2["layers"] == 2
+    assert "rank 4-16, 2 layers" in vram_plan.frozen_file_term(p2)[0]
+
+    desc = SimpleNamespace(train_memory_recipe=None, train_memory_small={})
+    _, why = vram_plan.extra_gb(desc, None, "lora", 8, "adamw8bit", frozen_files=(p, p2), megapixels=0.25)
+    assert "parts.safetensors (rank 8, 6 layers)" in why
+    assert "peft.safetensors (rank 4-16, 2 layers)" in why
+
+    with caplog.at_level(logging.WARNING, logger="fizgig.families.vram_plan"):
+        assert vram_plan.frozen_file_term(str(tmp_path / "nope.safetensors")) == ("", 0.0)
+    assert "missing" in caplog.text
+
+    junk = tmp_path / "junk.safetensors"
+    junk.write_bytes(b"\x00" * (2 * 1024 * 1024))
+    with caplog.at_level(logging.WARNING, logger="fizgig.families.vram_plan"):
+        label, w = vram_plan.frozen_file_term(str(junk))
+    assert label == "junk.safetensors (from file size)"
+    assert abs(w - 2 * 1024 * 1024 / 1024 ** 3) < 1e-12
+    assert "couldn't read" in caplog.text
 
 
 def test_slow_steps_warn_once_and_the_warmup_line_tells_the_truth():

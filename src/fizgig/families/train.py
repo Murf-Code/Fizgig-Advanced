@@ -1713,7 +1713,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     _vram_adapter, _vram_why = (vram_plan.extra_gb(desc, dit_path, network_type, network_dim, optimizer_type,
                                                    optimizer_args=optimizer_args, ema=_ema_on,
                                                    frozen_files=(context_lora_path, training_adapter),
-                                                   card_gb=quant.card_gb())
+                                                   card_gb=quant.card_gb(),
+                                                   megapixels=_vram_mp, pictures=bsz)
                                 if _vram_learn else (0.0, ""))
     vram_margin_gb = vram_plan.margin(vram_margin_gb)
     if finetune:
