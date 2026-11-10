@@ -40,7 +40,7 @@ def test_no_preset_picks_a_new_optimizer():
     its default arguments - and every family's own "PoLoRA (experimental)" preset (test_polora_boxes.py)."""
     for desc in registry.training_families():
         for name, p in desc.presets or ():
-            if name in ("PoLoRA", "PoLoRA (experimental)") or str(p.get("OPTIMIZER_TYPE") or "").lower() == "polora":
+            if name in ("PoLoRA", "PoLoRA (experimental)", "🪄 PoLoRA (experimental)") or str(p.get("OPTIMIZER_TYPE") or "").lower() == "polora":
                 continue
             opt = str(p.get("OPTIMIZER_TYPE") or "").lower()
             if p.get("FAMILY_FT"):

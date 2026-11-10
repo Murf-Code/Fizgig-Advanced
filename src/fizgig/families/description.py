@@ -320,8 +320,8 @@ class FamilyOption:
         return [t.replace("{}", text) for t in self.tokens.split()] if text else []
 
 
-POLORA_PRESET = "PoLoRA (experimental)"
-POLORA_PRESET_ALIASES = ("PoLoRA", POLORA_PRESET)   # the old built-in name still counts as this preset
+POLORA_PRESET = "🪄 PoLoRA (experimental)"
+POLORA_PRESET_ALIASES = ("PoLoRA", "PoLoRA (experimental)", POLORA_PRESET)   # the old built-in name still counts as this preset
 POLORA_CHOICE_LABEL = "PoLoRA (experimental)"       # Optimizer Type dropdown (value stays "polora")
 POLORA_EXPERIMENTAL_NOTE = "Experimental: new and less tested than the other optimizers."
 
