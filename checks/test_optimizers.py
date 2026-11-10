@@ -465,7 +465,7 @@ def test_polora_factors_multiply_magnitude():
     import torch
     from fizgig.training.polora import Polora
     A, B = torch.nn.Parameter(torch.randn(2, 6)), torch.nn.Parameter(torch.zeros(4, 2))
-    o = Polora(pairs=[(A, B)], lr=2e-2, magnitude_scale=2.0)
+    o = Polora(pairs=[(A, B)], lr=2e-2, magnitude_scale=2.0, compile=False)
     for img, want in ((0.5, 1.0), (1.1, 2.2), (1.2, 2.4)):
         o.set_magnitude_factors(image=img)
         assert abs(o.effective_magnitude() - want) < 1e-9

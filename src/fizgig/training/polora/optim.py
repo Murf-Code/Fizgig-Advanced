@@ -124,15 +124,16 @@ class Polora(Optimizer):
         ns_steps: Iterations of the PolarExpress matrix-sign solver. (Default: 8)
         higham_iters: Newton-Schulz iterations for the ``C_A``/``C_B``
             inverse square roots. (Default: 8)
-        compile: If True, wraps the two spectral kernels in ``torch.compile``;
-            the update is unchanged. (Default: False)
+        compile: If True, wraps the spectral kernels in ``torch.compile``;
+            the update is unchanged. A compile that can't run falls back to
+            the plain kernels with one line. (Default: True - Fizgig change)
         pairs: Explicit ``[(A, B), ...]`` parameter list for non-PEFT use.
             (Default: None)
     """
 
     def __init__(self, model=None, lr=2e-4, beta1=0.9, epsilon=1e-12,
                  delta=1e-4, curvature_beta=0.99, ns_steps=8, higham_iters=8,
-                 compile=False, magnitude_scale=1.0, decay_start=1.0,
+                 compile=True, magnitude_scale=1.0, decay_start=1.0,
                  decay_type="none", log_norms_every=0, *, pairs=None):
         if pairs is None:
             if model is None:

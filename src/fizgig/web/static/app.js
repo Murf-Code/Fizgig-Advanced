@@ -808,10 +808,11 @@ function _stripOptKeys(raw, defaultStr, onlyKeys) {
 
 function stripProdigyArgs(raw) { return _stripOptKeys(raw, PRODIGY_DEFAULT_ARGS, PRODIGY_ONLY_KEYS); }
 function stripMuonArgs(raw) { return _stripOptKeys(raw, MUON_DEFAULT_ARGS, MUON_ONLY_KEYS); }
-// PoLoRA's own args (magnitude_scale=3 pre-filled when picked; ns_steps is shared with Muon so it is left alone)
+// PoLoRA's own args (magnitude_scale=3 and compile=True pre-filled when picked; ns_steps is shared with Muon so it
+// is left alone)
 const POLORA_ONLY_KEYS = new Set(["magnitude_scale", "curvature_beta", "beta1", "delta", "higham_iters", "compile",
   "decay_start", "decay_type", "log_norms_every"]);
-const POLORA_DEFAULT_ARGS = "magnitude_scale=3";
+const POLORA_DEFAULT_ARGS = {magnitude_scale: "3", compile: "True"};
 const POLORA_ADAPTIVE = {ADAPTIVE_LR_MIN: "1e-2", ADAPTIVE_LR_MAX: "4e-2"};   // Adaptive LR's real range for PoLoRA
 const ADAPTIVE_USUAL = {ADAPTIVE_LR_MIN: "1e-5", ADAPTIVE_LR_MAX: "4e-4"};   // the form's defaults (form.py)
 function stripPoloraArgs(raw) { return _stripOptKeys(raw, "", POLORA_ONLY_KEYS); }
@@ -846,8 +847,8 @@ function onValue(r, val) {
   const prev = S.values[r.key];
   S.values[r.key] = val;
   if (r.key === "FAMILY_PREVIEW_SMALL") S.values._chosen_FAMILY_PREVIEW_SMALL = true;   // the person's own choice: kept
-  if (r.key in POLORA_BOXES) {           // a PoLoRA box: its word in Optimizer Args (empty / unticked: PoLoRA's default)
-    const v = r.key === "POLORA_COMPILE" ? (val ? "True" : "") : String(val ?? "").trim();
+  if (r.key in POLORA_BOXES) {           // a PoLoRA box: its word in Optimizer Args (an empty box: PoLoRA's default)
+    const v = r.key === "POLORA_COMPILE" ? (val ? "True" : "False") : String(val ?? "").trim();   // compile is on by default
     S.values.OPTIMIZER_ARGS = setOptArg(S.values.OPTIMIZER_ARGS, POLORA_BOXES[r.key], v);
     syncInputs(["OPTIMIZER_ARGS"]);
   }
@@ -876,7 +877,8 @@ function onValue(r, val) {
       S.values.OPTIMIZER_ARGS = curArgs || MUON_DEFAULT_ARGS;
       syncInputs(touched);
     } else if (opt === "polora") {
-      // PoLoRA: magnitude_scale=3 pre-filled (2.5-3 works well at LR 2e-2). Adaptive LR moves its real rate, as with
+      // PoLoRA: magnitude_scale=3 (2.5-3 works well at LR 2e-2) and compile=True pre-filled, each unless the args
+      // already say. Adaptive LR moves its real rate, as with
       // Muon: Min/Max start around it (1e-2 to 4e-2, midpoint 2e-2)
       const touched = ["OPTIMIZER_ARGS"];
       if (wasProdigy || prevOpt !== "polora") { S.values.LEARNING_RATE = "2e-2"; touched.push("LEARNING_RATE"); }
@@ -884,7 +886,9 @@ function onValue(r, val) {
         Object.assign(S.values, POLORA_ADAPTIVE); touched.push(...Object.keys(POLORA_ADAPTIVE));
       }
       let a = (wasProdigy || wasMuon) ? "" : curArgs;
-      if (!/(^|[\s,])magnitude_scale\s*=/.test(a)) a = (a ? a + " " : "") + POLORA_DEFAULT_ARGS;
+      for (const [k, v] of Object.entries(POLORA_DEFAULT_ARGS)) {
+        if (!new RegExp(`(^|[\\s,])${k}\\s*=`).test(a)) a = (a ? a + " " : "") + `${k}=${v}`;
+      }
       S.values.OPTIMIZER_ARGS = a;
       syncInputs(touched);
     } else if (opt === "lora_tsd") {

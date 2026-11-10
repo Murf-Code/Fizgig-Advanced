@@ -24,11 +24,33 @@ def test_boxes_show_with_polora_only_and_read_the_args():
     v = {**form.DEFAULTS, "OPTIMIZER_TYPE": "polora", "OPTIMIZER_ARGS": "magnitude_scale=2.5 compile=True ns_steps=6"}
     st = form.state(desc, v)
     assert not set(form.POLORA_BOXES) & set(st["hidden"])
-    assert st["force"]["POLORA_MAGNITUDE"] == "2.5" and st["force"]["POLORA_COMPILE"] is True
+    assert st["force"]["POLORA_MAGNITUDE"] == "2.5" and "POLORA_COMPILE" not in st["force"]   # ticked already
     assert "POLORA_CURVATURE" not in st["force"]                     # not in the args: empty (PoLoRA's 0.99)
     assert not set(form.POLORA_BOXES) & set(form.state(desc, {**v, **st["force"]})["force"])   # in step: nothing
     # a preset holds the args only (no duplicates)
     assert not set(form.POLORA_BOXES) & set(form.to_preset(desc, {**v, **st["force"]}))
+
+
+def test_compile_is_on_unless_the_args_turn_it_off():
+    import inspect
+    from fizgig.training.polora import Polora
+    assert inspect.signature(Polora.__init__).parameters["compile"].default is True
+    desc = FAMILIES["krea2"]
+    assert form.DEFAULTS["POLORA_COMPILE"] is True
+    for args, want in (("magnitude_scale=3", True), ("", True), ("compile=True", True), ("compile=False", False),
+                       ("compile=false", False), ("compile=0", False)):
+        v = {**form.DEFAULTS, "OPTIMIZER_TYPE": "polora", "OPTIMIZER_ARGS": args}
+        st = form.state(desc, v)
+        assert st["force"].get("POLORA_COMPILE", v["POLORA_COMPILE"]) is want, args
+    # an older form that had the box unticked by default and no compile word: it shows ticked now
+    st = form.state(desc, {**form.DEFAULTS, "POLORA_COMPILE": False, "OPTIMIZER_TYPE": "polora",
+                           "OPTIMIZER_ARGS": "magnitude_scale=3"})
+    assert st["force"]["POLORA_COMPILE"] is True
+    from fizgig.training.optimizers import parse_optimizer_args
+    assert parse_optimizer_args("compile=False") == {"compile": False}
+    src = open(os.path.join(ROOT, "src/fizgig/web/static/app.js"), encoding="utf-8").read()
+    assert 'const POLORA_DEFAULT_ARGS = {magnitude_scale: "3", compile: "True"};' in src      # filled when picked
+    assert '(val ? "True" : "False")' in src                                                  # unticked: compile=False
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="needs node")

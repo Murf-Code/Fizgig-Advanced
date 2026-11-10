@@ -91,14 +91,17 @@ def test_resume_new_old_and_cold_saves():
     ref = PoloraReference(pairs=p_ref, **KW)
     _run(ref, p_ref, 6)
 
+    def _opt(cls, pairs):
+        return cls(pairs=pairs, compile=False, **KW) if cls is Polora else cls(pairs=pairs, **KW)
+
     for save_cls, load_cls in ((Polora, Polora), (PoloraReference, Polora), (Polora, PoloraReference)):
         p1 = _pairs()
-        o1 = save_cls(pairs=p1, **KW)
+        o1 = _opt(save_cls, p1)
         _run(o1, p1, 3)
         sd = _roundtrip(o1.state_dict())
         assert set(sd["polora"]["pairs"][0]) >= {"M_A", "M_B", "Q", "P", "v_sigma_A", "v_sigma_DB"}
         p2 = [(torch.nn.Parameter(A.detach().clone()), torch.nn.Parameter(B.detach().clone())) for A, B in p1]
-        o2 = load_cls(pairs=p2, **KW)
+        o2 = _opt(load_cls, p2)
         o2.load_state_dict(copy.deepcopy(sd))
         assert o2._step_count == 3
         _run(o2, p2, 3, first=4)
@@ -108,7 +111,7 @@ def test_resume_new_old_and_cold_saves():
     p3, p4 = _pairs(), _pairs()
     sd0 = _roundtrip(PoloraReference(pairs=_pairs(), **KW).state_dict())
     assert "v_sigma_A" not in sd0["polora"]["pairs"][0]
-    o3 = Polora(pairs=p3, **KW)
+    o3 = Polora(pairs=p3, compile=False, **KW)
     o3.load_state_dict(sd0)
     o4 = PoloraReference(pairs=p4, **KW)
     _run(o3, p3, 2)

@@ -84,7 +84,7 @@ DEFAULTS = {
     "OPTIMIZER_ARGS": "", "GRADIENT_ACCUMULATION": "1", "BATCH_SIZE": "1", "MAX_GRAD_NORM": "1.0", "LR_SCHEDULER": "constant",
     "LR_WARMUP_STEPS": "", "VALIDATION_LOSS": False, "VALIDATION_IMAGES": "4", "VALIDATION_TIMESTEPS": "4",
     "VALIDATION_SEED": "42", "VALIDATION_EVERY_STEPS": "0", "VALIDATION_PICKED": [], "VALIDATION_HOLDOUT": True, "INT8_ROTATED_BACKWARD": False,
-    "POLORA_MAGNITUDE": "", "POLORA_CURVATURE": "", "POLORA_COMPILE": False,
+    "POLORA_MAGNITUDE": "", "POLORA_CURVATURE": "", "POLORA_COMPILE": True,
     "VALIDATION_EARLY_STOP": False, "VALIDATION_PATIENCE": "3", "ADAPTIVE_LR": False, "ADAPTIVE_LR_ON_VAL": True, "ADAPTIVE_LR_MIN": "1e-5", "ADAPTIVE_LR_MAX": "4e-4",
     "CONTEXT_LORA_PATH": "", "CONTEXT_LORA_STRENGTH": "1.0", "FAMILY_DOP": False, "FAMILY_MULTI_PERSON": False, "FAMILY_DOP_TRIGGER": "",
     "FAMILY_DOP_CLASS": "", "FAMILY_DOP_TRIGGER2": "", "FAMILY_DOP_CLASS2": "",
@@ -708,8 +708,10 @@ def form(desc):
         _row("POLORA_CURVATURE", "Curl", hint="PoLoRA's curvature_beta: how slowly it updates its sense of the "
              "loss's curve, between 0 and 1. Higher (0.99) is smoother and steadier; lower reacts faster but is "
              "noisier. Empty: 0.99."),
-        _row("POLORA_COMPILE", "Compile", "check", "PoLoRA's compile: speeds up its maths with torch.compile after a "
-             "short warm-up at the start. The training itself is unchanged."),
+        _row("POLORA_COMPILE", "Compile", "check", "PoLoRA's compile, on by default: speeds up its maths with "
+             "torch.compile after a short warm-up at the start (about 30 seconds, once). The training itself is "
+             "unchanged. Where it can't compile (no triton, say) it runs uncompiled with a note in the log. Untick "
+             "for compile=False."),
         _row("LR_SCHEDULER", "LR Scheduler", "choice", choices=["constant", "constant_with_warmup", "cosine",
                                                                  "cosine_with_restarts", "linear", "polynomial"]),
         _row("LR_WARMUP_STEPS", "Warmup steps"),
@@ -982,6 +984,11 @@ def _arg_words(raw):
     return dict(w.split("=", 1) for w in str(raw or "").split() if "=" in w)
 
 
+def _compile_on(word):
+    """PoLoRA's compile from its Optimizer Args word: on unless it says off (no word: PoLoRA's default, on)."""
+    return str(word if word is not None else "true").strip().lower() not in ("false", "0", "no", "off", "none")
+
+
 def _polora_boxes(values, hidden, force):
     """PoLoRA's Magnitude / Curl / Compile boxes: hidden unless PoLoRA is the optimizer, and drawn from Optimizer
     Args (forced where they differ, so a typed arg, a preset or Last Train shows in them)."""
@@ -990,7 +997,7 @@ def _polora_boxes(values, hidden, force):
         return
     words = _arg_words(values.get("OPTIMIZER_ARGS"))
     for key, arg in POLORA_BOXES.items():
-        want = (words.get(arg, "").lower() == "true") if key == "POLORA_COMPILE" else words.get(arg, "")
+        want = (_compile_on(words.get(arg)) if key == "POLORA_COMPILE" else words.get(arg, ""))
         have = values.get(key, DEFAULTS[key])
         if (bool(have) if key == "POLORA_COMPILE" else str(have or "")) != want:
             force[key] = want
