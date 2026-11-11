@@ -103,6 +103,26 @@ def test_measured_peaks_correct_the_estimate(tmp_path):
     assert h_keep
 
 
+def test_a_run_measured_on_this_card_drops_the_small_card_reserve(tmp_path):
+    """The 0.8 GB small-card reserve stands in for what big-card figures miss on a small card; once a run on this
+    card (same total VRAM, same GPU name, same family) was measured, its peak holds that, so learned() says so."""
+    h = str(tmp_path / "vram_history.json")
+    desc = SimpleNamespace(train_memory={"int8": (((0.25, 16.0), (1.0, 19.0)), 0.5)}, train_memory_small={},
+                           batch_gb=(0.0, 0.0))
+    k = vram_plan.key("krea2", "int8", "lora", "polora")
+    assert vram_plan.learned(k, path=h, desc=desc, card_gb=12.0, gpu="RTX 4070 Ti") == (0.0, "", False)
+    base = quant.predicted_gb(desc, "int8", 20, 1.0, 1)
+    vram_plan.record(k, "r", base + 1.8, 7.5, path=h, info=dict(base=base, extra=1.0, swap=20, mp=1.0, batch=1,
+                                                               card=12.0, gpu="RTX 4070 Ti"))
+    c, why, here = vram_plan.learned(k, path=h, desc=desc, card_gb=11.99, gpu="RTX 4070 Ti")
+    assert here and abs(c - (7.5 - base - 1.0 + vram_plan.LEARN_HEADROOM_GB)) < 1e-9 and why
+    assert not vram_plan.learned(k, path=h, desc=desc, card_gb=16.0, gpu="RTX 4070 Ti")[2]       # another card
+    assert not vram_plan.learned(k, path=h, desc=desc, card_gb=12.0, gpu="RTX 3060")[2]           # another GPU
+    assert not vram_plan.learned(vram_plan.key("zimage", "int8", "lora", "polora"), path=h, desc=desc,
+                                 card_gb=12.0, gpu="RTX 4070 Ti")[2]                              # another family
+    assert vram_plan.correction(k, path=h, desc=desc)[0] == c                                     # the same offset
+
+
 def test_nothing_fits_never_picks_an_nf4_that_cannot_fit():
     """Issue #2: 12 GB, rank 64 - Krea 2 and Fibo 2 planned NF4 with no swap and ran out of memory; Qwen and Z-Image at
     16 GB rank 64 dropped to NF4 where INT8 fits with a block or two swapped."""

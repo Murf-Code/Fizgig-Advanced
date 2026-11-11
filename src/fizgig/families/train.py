@@ -1724,6 +1724,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     _vram_reserve = vram_plan.reserve_gb(desc, quant.card_gb()) if _vram_learn else 0.0
     _vram_previews = bool(sample_prompts and (sample_every_n_epochs or sample_at_first))
     _vram_corr = {}
+    _dropped = set()
+    try:
+        _vram_gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else ""
+    except Exception:
+        _vram_gpu = ""
     PREVIEW_PEAK_GB[0] = 0.0
     vram_margin_gb = vram_plan.margin(vram_margin_gb)
     if finetune:
@@ -1739,10 +1744,13 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if own is not None:
             precision, blocks_to_swap, why = own
         else:
-            _corr = {p: vram_plan.correction(vram_plan.key(desc.key, p, network_type, optimizer_type), desc=desc,
-                                             previews=_vram_previews)
-                     for p in desc.precisions} if _vram_learn else {}
+            # a run measured on this card already holds what the small card's reserve stands in for: dropped then
+            _lrn = {p: vram_plan.learned(vram_plan.key(desc.key, p, network_type, optimizer_type), desc=desc,
+                                         previews=_vram_previews, card_gb=quant.card_gb(), gpu=_vram_gpu)
+                    for p in desc.precisions} if _vram_learn else {}
+            _corr = {p: (c - (_vram_reserve if here else 0.0), w) for p, (c, w, here) in _lrn.items()}
             _vram_corr = {p: c for p, (c, _w) in _corr.items()}
+            _dropped = {p for p, (_c, _w, here) in _lrn.items() if here and _vram_reserve}
             precision, blocks_to_swap, why = quant.plan(
                 desc, driver, precision, blocks_to_swap, megapixels=mp, pictures=bsz, margin_gb=vram_margin_gb,
                 extra_gb={p: _vram_adapter + c for p, (c, _w) in _corr.items()} or _vram_adapter)
@@ -1750,6 +1758,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     [f"safety margin {vram_margin_gb:g} GB"] if abs(vram_margin_gb - 1.5) > 1e-9 else []):
                 if line:
                     say(logger, f"[vram] plan: {line}")
+            if precision in _dropped:
+                say(logger, f"[vram] plan: {quant.card_gb():.0f} GB card reserve ({_vram_reserve:.2f} GB) dropped - "
+                            "a run on this card was measured, so its peak already counts it")
             _pp = quant.predicted_gb(desc, precision, max(0, blocks_to_swap) if precision != "nf4" else 0, mp, bsz)
             if _pp is not None and _vram_learn:
                 say(logger, f"[vram] plan: predicted peak {_pp + _vram_adapter + _vram_corr.get(precision, 0.0):.2f} GB"
@@ -2426,6 +2437,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                                        "batch": bsz, "base": round(_pred, 3),
                                        "extra": round(_vram_adapter - _vram_reserve, 3),
                                        "previews": _vram_previews, "card": round(quant.card_gb(), 1),
+                                       **({"gpu": _vram_gpu} if _vram_gpu else {}),
                                        **({"preview": round(PREVIEW_PEAK_GB[0], 3)} if PREVIEW_PEAK_GB[0] else {})})
         except Exception:
             logger.debug("[vram] couldn't record this run's peak", exc_info=True)

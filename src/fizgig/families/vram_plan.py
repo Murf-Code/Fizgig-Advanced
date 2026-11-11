@@ -416,11 +416,29 @@ def _offset(r, precision, desc, previews):
     return None if unseen and o <= 0 else o
 
 
-def correction(k, *, path=None, desc=None, previews=False) -> tuple:
-    """(GB, why) to add to the figures for runs like `k` (key()): the largest recent offset (_offset) among runs like
-    this one, else runs of the same model and precision, else of the same model at another precision (a lowering
-    counted at OTHER_PRECISION_SHARE). A lowering keeps LEARN_HEADROOM_GB above the highest measured peak and goes at
-    most CORRECTION_DOWN_GB. (0, "") with nothing to learn from. Upward offsets (a run held more) count in full."""
+SAME_CARD_GB = 0.3                           # a recorded run within this much of this card's total is the same card
+
+
+def same_card(r, card_gb=None, gpu=None) -> bool:
+    """Whether a history entry was measured on this card: the same total VRAM (its "card", GB) and, when both are
+    known, the same GPU name ("gpu")."""
+    if not card_gb or not isinstance(r, dict) or not r.get("card"):
+        return False
+    try:
+        if abs(float(r["card"]) - float(card_gb)) > SAME_CARD_GB:
+            return False
+    except (TypeError, ValueError):
+        return False
+    return not (gpu and r.get("gpu") and str(r["gpu"]) != str(gpu))
+
+
+def learned(k, *, path=None, desc=None, previews=False, card_gb=None, gpu=None) -> tuple:
+    """(GB, why, on_this_card) to add to the figures for runs like `k` (key()): the largest recent offset (_offset)
+    among runs like this one, else runs of the same model and precision, else of the same model at another precision
+    (a lowering counted at OTHER_PRECISION_SHARE). A lowering keeps LEARN_HEADROOM_GB above the highest measured peak
+    and goes at most CORRECTION_DOWN_GB; upward offsets (a run held more) count in full. on_this_card: a run the
+    correction learned from was measured on this card (same_card) - its peak already holds what the small card's
+    reserve stands in for, so the caller drops reserve_gb(). (0, "", False) with nothing to learn from."""
     d = _read(path)
     parts = k.split("|")
     fam, prec = parts[0], (parts[1] if len(parts) > 1 else "")
@@ -429,7 +447,7 @@ def correction(k, *, path=None, desc=None, previews=False) -> tuple:
              ("past runs of this model at another precision",
               lambda kk: kk.startswith(f"{fam}|") and not kk.startswith(f"{fam}|{prec}|"), OTHER_PRECISION_SHARE))
     for where, match, share in tiers:
-        deltas = []
+        deltas, here = [], False
         for kk, v in d.items():
             if not match(kk) or not isinstance(v, dict):
                 continue
@@ -438,6 +456,7 @@ def correction(k, *, path=None, desc=None, previews=False) -> tuple:
                 o = _offset(r, p, desc, previews) if isinstance(r, dict) else None
                 if o is not None:
                     deltas.append(o)
+                    here = here or same_card(r, card_gb, gpu)
         if not deltas:
             continue
         c = max(deltas)
@@ -446,8 +465,14 @@ def correction(k, *, path=None, desc=None, previews=False) -> tuple:
             c = max(-CORRECTION_DOWN_GB, c)
         n = len(deltas)
         return c, (f"{'+' if c >= 0 else ''}{c:.2f} GB learned from {n} of {where}"
-                   + (" (their previews counted)" if previews else ""))
-    return 0.0, ""
+                   + (" (their previews counted)" if previews else "")), here
+    return 0.0, "", False
+
+
+def correction(k, *, path=None, desc=None, previews=False) -> tuple:
+    """(GB, why): learned() without the card check."""
+    c, why, _here = learned(k, path=path, desc=desc, previews=previews)
+    return c, why
 
 
 def margin(value) -> float:
@@ -459,5 +484,5 @@ def margin(value) -> float:
     return min(8.0, max(0.0, v))
 
 
-__all__ = ["DEFAULT_MARGIN_GB", "STATE_BYTES", "file_weights_gb", "frozen_file_term", "inspect_frozen_lora", "optimizer_compiles", "reserve_gb", "step_gb", "TRAIN_MEMORY_RECIPE", "adapter_gb", "correction", "extra_gb", "key",
+__all__ = ["DEFAULT_MARGIN_GB", "STATE_BYTES", "file_weights_gb", "frozen_file_term", "inspect_frozen_lora", "learned", "optimizer_compiles", "same_card", "reserve_gb", "step_gb", "TRAIN_MEMORY_RECIPE", "adapter_gb", "correction", "extra_gb", "key",
            "linear_shapes", "margin", "record", "state_bytes"]
