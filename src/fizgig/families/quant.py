@@ -217,6 +217,7 @@ def _peak(entry, megapixels):
 
 
 TIGHT_MARGIN_GB = 0.5      # nf4 with no swap beats a swapped int8 base down to this much headroom
+MODEST_SWAP_SHARE = 0.25   # int8 with up to this share of the blocks swapped beats nf4 (quality; a small speed cost)
 
 
 def small_card_figures(desc) -> bool:
@@ -236,7 +237,10 @@ def plan(desc, driver, precision="auto", blocks_to_swap=-1, free_gb=None, margin
     Auto precision takes the most precise base that fits without swap (bf16, then int8, then nf4), since swap costs
     far more speed than quantisation. If none fits with the full margin, nf4 still goes first when it fits with a
     small one: swapping int8 instead cost 4.4x the step time and 4x the CPU on a 16 GB card (#216; measured July
-    2026). Only if nothing fits does it swap (int8, the smaller swappable base). An explicit precision with auto swap
+    2026) - but INT8 with only a few blocks swapped (MODEST_SWAP_SHARE of them) still goes before NF4. Only then does
+    it swap (int8, the smaller swappable base). When nothing fits with the margin, the most-swapped base goes before
+    NF4 unless NF4 needs less: NF4 can't swap, so an NF4 that doesn't fit has nothing left to give (Krea 2 and Fibo 2
+    at 12 GB, rank 64, issue #2). An explicit precision with auto swap
     gets the fewest blocks that fit. pictures: a batched step's (Batch size), each past the first adding
     desc.batch_gb's figure at megapixels. extra_gb: GB on top of every figure (a number, or {precision: GB}) - this
     run's LoRA rank and optimizer state past the figures' recipe, and what past runs measured
@@ -266,21 +270,41 @@ def plan(desc, driver, precision="auto", blocks_to_swap=-1, free_gb=None, margin
     if precision == "auto":
         if not mem:
             return offered[0], max(0, blocks_to_swap), "no memory figures in the description: first precision"
-        for p in offered:
-            if p in mem and mem[p][0] <= budget:
-                return p, 0 if blocks_to_swap < 0 else blocks_to_swap, f"{p} fits {free_gb:.1f} GB free"
-        if "nf4" in offered and "nf4" in mem and mem["nf4"][0] <= free_gb - TIGHT_MARGIN_GB:
-            return "nf4", 0 if blocks_to_swap < 0 else blocks_to_swap, (f"nf4 fits {free_gb:.1f} GB free, closely "
-                                                                        "(block swap would be far slower)")
-        swappable = [p for p in ("int8", "bf16") if p in offered and p in mem]
-        if swappable and cap > 0:
-            p = swappable[0]
+        keep = (lambda n: n) if blocks_to_swap < 0 else (lambda n: blocks_to_swap)
+        swappable = [p for p in ("int8", "bf16") if p in offered and p in mem and mem[p][1] > 0] if cap > 0 else []
+
+        def swapped_fit(p):
             n = swap_for(p)
-            if mem[p][0] - n * mem[p][1] <= budget:
+            return n if mem[p][0] - n * mem[p][1] <= budget else None
+
+        for p in offered:
+            if p not in mem:
+                continue
+            if mem[p][0] <= budget:
+                return p, keep(0), f"{p} fits {free_gb:.1f} GB free"
+            # INT8 with a few blocks swapped beats dropping to NF4 (better quality, NF4 can't swap at all)
+            if p == "int8" and p in swappable and "nf4" in offered[offered.index(p) + 1:]:
+                n = swapped_fit(p)
+                if n is not None and n <= max(1, round(cap * MODEST_SWAP_SHARE)):
+                    return p, keep(n), f"{p} + {n} swapped blocks fit {free_gb:.1f} GB (a few, so not nf4)"
+        if "nf4" in offered and "nf4" in mem and mem["nf4"][0] <= free_gb - TIGHT_MARGIN_GB:
+            return "nf4", keep(0), (f"nf4 fits {free_gb:.1f} GB free, closely "
+                                    "(block swap would be far slower)")
+        if swappable:
+            p = swappable[0]
+            n = swapped_fit(p)
+            if n is not None:
                 if blocks_to_swap >= 0:       # the user's own Blocks Swap: say what runs, and what Auto would pick
                     return p, blocks_to_swap, (f"{p} with your Blocks Swap {blocks_to_swap}; Auto would swap {n} to "
                                                f"fit {free_gb:.1f} GB")
                 return p, n, f"{p} + {n} swapped blocks fit {free_gb:.1f} GB"
+            # nothing fits with the margin: NF4 can't swap, so it only goes first when it needs less than the most
+            # swapped base does (an NF4 that doesn't fit runs out of memory with nothing left to give)
+            left = mem[p][0] - cap * mem[p][1]
+            nf4 = mem["nf4"][0] if ("nf4" in offered and "nf4" in mem) else float("inf")
+            if left < nf4:
+                return p, keep(cap), (f"nothing fits {free_gb:.1f} GB comfortably: {p} with the most blocks swapped "
+                                      f"({cap}) needs the least")
         p = "nf4" if "nf4" in offered else offered[-1]
         return p, 0, f"nothing fits {free_gb:.1f} GB comfortably: {p}, the smallest base"
     if precision not in offered:

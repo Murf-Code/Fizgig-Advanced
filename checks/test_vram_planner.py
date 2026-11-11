@@ -103,6 +103,27 @@ def test_measured_peaks_correct_the_estimate(tmp_path):
     assert h_keep
 
 
+def test_nothing_fits_never_picks_an_nf4_that_cannot_fit():
+    """Issue #2: 12 GB, rank 64 - Krea 2 and Fibo 2 planned NF4 with no swap and ran out of memory; Qwen and Z-Image at
+    16 GB rank 64 dropped to NF4 where INT8 fits with a block or two swapped."""
+    desc = SimpleNamespace(train_memory={"int8": (((0.25, 16.2), (1.0, 19.1)), 0.42),
+                                         "nf4": (((0.25, 11.4), (1.0, 15.0)), 0.0)},
+                           precisions=("int8", "nf4"), auto_precisions=("int8", "nf4"), batch_gb=(0.0, 0.0),
+                           display_name="t", train_memory_small={})
+    drv = SimpleNamespace(max_blocks_to_swap=lambda: 26)
+    # 10.7 GB free, 4 GB over the figures: NF4 needs 19, INT8 with all 26 swapped 12.18 - neither fits, INT8 is nearer
+    p, n, why = quant.plan(desc, drv, "auto", -1, free_gb=10.7, extra_gb=4.0)
+    assert (p, n) == ("int8", 26) and "most blocks swapped" in why
+    # an NF4 that needs less than the most-swapped INT8 still goes first
+    tiny = SimpleNamespace(max_blocks_to_swap=lambda: 2)
+    assert quant.plan(desc, tiny, "auto", -1, free_gb=10.7, extra_gb=4.0)[:2] == ("nf4", 0)
+    # INT8 with a few blocks swapped beats NF4 (19.1 + 0.3 vs 18.0 budget: 4 blocks of 26)
+    p, n, why = quant.plan(desc, drv, "auto", -1, free_gb=19.5, extra_gb=0.3)
+    assert (p, n) == ("int8", 4) and "not nf4" in why
+    # many blocks: NF4 that fits comfortably still wins (#216: heavy swap is far slower)
+    assert quant.plan(desc, drv, "auto", -1, free_gb=17.0)[:2] == ("nf4", 0)
+
+
 def test_the_margin_is_a_preference_passed_to_the_trainer(tiny, tmp_path):
     assert launch.RECLAIM_PREF_DEFAULTS["vram_margin_gb"] == "1.5"
     assert launch.vram_margin_flags({}) == [] and launch.vram_margin_flags({"vram_margin_gb": "1.5"}) == []
