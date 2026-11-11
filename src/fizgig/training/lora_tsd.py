@@ -48,9 +48,17 @@ def _proj_T_factored(L, R, U_B, V_A):
 
 @torch.no_grad()
 def _spd_inv(M: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    """Inverse of a small SPD matrix after a relative ridge."""
-    ridge = eps * M.diagonal().mean().clamp_min(1e-12)
-    return torch.linalg.inv(M + ridge * torch.eye(M.shape[0], device=M.device, dtype=M.dtype))
+    """Inverse of a small symmetric PSD matrix (a factor's Gram), as a pseudo-inverse when it is rank-deficient.
+
+    A factor can be short of full rank - a layer fed a single vector (a modulation layer) has a rank-1 weight
+    gradient, so its up leaves the zero start rank 1 - and a plain inverse then fails. Directions whose eigenvalue
+    is below eps times the largest (never below float32's resolution) are dropped, so the step stays in the
+    factor's own span; a full-rank Gram gets its ordinary inverse."""
+    M = 0.5 * (M + M.t())
+    evals, evecs = torch.linalg.eigh(M.double())
+    tol = max(float(eps), 1e-6) * evals.abs().max().clamp_min(1e-30)
+    inv = torch.where(evals > tol, 1.0 / evals.clamp_min(tol), torch.zeros_like(evals))
+    return ((evecs * inv) @ evecs.t()).to(M.dtype)
 
 
 class LoRATSD(Optimizer):
