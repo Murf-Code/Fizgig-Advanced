@@ -46,9 +46,11 @@ POLORA_ONLY_KEYS = ("magnitude_scale", "curvature_beta", "beta1", "delta", "high
 # LoRA-TSD shares momentum and ns_steps with Muon: they're kept for it.
 SOAP_ONLY_KEYS = ("shampoo_beta", "precondition_frequency", "max_precond_dim", "merge_dims", "precondition_1d",
                   "normalize_grads", "data_format", "correct_bias")
-LORA_TSD_ONLY_KEYS = ("ball_iters", "max_delta_norm", "ridge_eps", "balance", "zero_eps")
+LORA_TSD_ONLY_KEYS = ("ball_iters", "max_delta_norm", "ridge_eps", "balance", "zero_eps", "log_every")
 # the Muon keys each pair-wise optimizer reads too (not stripped for it)
 _SHARED_MUON_KEYS = {"polora": ("ns_steps",), "lora_tsd": ("ns_steps", "momentum")}
+# PoLoRA's keys LoRA-TSD reads too (not stripped for it): magnitude_scale, pre-filled at 3 for both
+SHARED_POLORA_KEYS = {"lora_tsd": ("magnitude_scale",)}
 
 
 def _strip_keys(raw: str, default_str: str, only_keys: tuple[str, ...]) -> str:
@@ -79,10 +81,11 @@ def strip_muon_args(raw: str) -> str:
     return _strip_keys(raw, MUON_DEFAULT_ARGS, MUON_ONLY_KEYS)
 
 
-def strip_polora_args(raw: str) -> str:
+def strip_polora_args(raw: str, to: str = "") -> str:
     """Remove PoLoRA-specific key=value tokens from an Optimizer Args string when switching to
-    another optimizer."""
-    return _strip_keys(raw, "", POLORA_ONLY_KEYS)
+    another optimizer (`to`: the one it switches to - LoRA-TSD keeps magnitude_scale)."""
+    keep = SHARED_POLORA_KEYS.get((to or "").strip().lower(), ())
+    return _strip_keys(raw, "", tuple(k for k in POLORA_ONLY_KEYS if k not in keep))
 
 # they never fall back to AdamW (#292)
 NEW_OPTIMIZERS = ("prodigy", "muon", "automagic4", "polora", "soap", "lora_tsd")
@@ -134,10 +137,13 @@ _CATALOG = {
                                             "Slower and heavier than AdamW - an experiment for smaller models (Anima, "
                                             "SDXL)"),
     # LoRA-TSD, adapted (fizgig/training/lora_tsd.py, MIT): spectral steepest descent on the rank-r tangent space of
-    # each down/up pair. An experiment next to PoLoRA; plain LoRA only.
+    # each down/up pair. An experiment next to PoLoRA; plain LoRA only. magnitude_scale scales each step and its
+    # cap, as PoLoRA's does (pre-filled at 3: at 1 the steps were too small to change the previews much).
     "lora_tsd":           (None,           "LoRA-TSD - trains each down/up pair together by spectral descent on the "
-                                            "LoRA's own shape (an experiment next to PoLoRA). LR 5e-3 (pre-filled); "
-                                            "each step's change is capped (max_delta_norm=0.1)"),
+                                            "LoRA's own shape (an experiment next to PoLoRA). LR 5e-3 with "
+                                            "magnitude_scale=3 (pre-filled; it makes each step bigger, and the cap "
+                                            "on each step's change, max_delta_norm=0.1, grows with it). Adaptive LR "
+                                            "and per-image LR move its learning rate"),
 }
 
 DEFAULT_OPTIMIZER = "adamw8bit"
@@ -382,7 +388,8 @@ def create_optimizer(name: str, params, lr: float, args_str: str = "",
     for own, keys in (("polora", POLORA_ONLY_KEYS), ("soap", SOAP_ONLY_KEYS), ("lora_tsd", LORA_TSD_ONLY_KEYS)):
         if key != own:
             for k in keys:
-                kwargs.pop(k, None)
+                if k not in SHARED_POLORA_KEYS.get(key, ()):    # LoRA-TSD reads PoLoRA's magnitude_scale too
+                    kwargs.pop(k, None)
 
     if eps_floor_8bit and "8bit" in key and "lion" not in key:
         kwargs.setdefault("eps", 1e-6)

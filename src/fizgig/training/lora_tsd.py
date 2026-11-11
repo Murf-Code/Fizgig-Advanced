@@ -15,9 +15,16 @@ Adaptive LR move it as for any optimizer; the reference config's defaults (momen
 5 Newton-Schulz steps, max_delta_norm 0.1, norm balancing on); and a start for a zero factor (Fizgig's addition):
 a LoRA's up starts at zero, where the tangent space is undefined, so until both factors are non-zero the zero one
 steps alone by the matrix sign of its momentum (a Muon step), capped the same way.
+
+magnitude_scale (Fizgig's addition, as PoLoRA's): multiplies every step and its cap alike, so a bigger magnitude
+isn't swallowed by max_delta_norm. 1.0 is the reference's step. Adaptive LR and per-image LR move the group's "lr",
+so the step is lr x magnitude_scale and the effective size is magnitude_scale x image x adaptive, as with PoLoRA.
+Every log_every steps one log line gives the magnitude, the average weight change a pair and how many hit the cap.
 """
 
 from __future__ import annotations
+
+import logging
 
 import torch
 from torch.optim import Optimizer
@@ -65,11 +72,17 @@ class LoRATSD(Optimizer):
     """`pairs`: [(down, up)] (fizgig.training.optimizers.polora_pairs) - each pair is its own param group."""
 
     def __init__(self, pairs, lr: float = 5e-3, momentum: float = 0.95, ball_iters: int = 5, ns_steps: int = 5,
-                 max_delta_norm: float = 0.1, ridge_eps: float = 1e-8, balance: bool = True, zero_eps: float = 1e-12):
+                 max_delta_norm: float = 0.1, ridge_eps: float = 1e-8, balance: bool = True, zero_eps: float = 1e-12,
+                 magnitude_scale: float = 1.0, log_every: int = 50):
         groups = [{"params": [a, b]} for a, b in pairs]
         super().__init__(groups, dict(lr=lr, momentum=momentum, ball_iters=int(ball_iters), ns_steps=int(ns_steps),
                                       max_delta_norm=max_delta_norm, ridge_eps=ridge_eps))
         self.balance, self.zero_eps = bool(balance), zero_eps
+        # an attribute, not a group key: a resumed state keeps the magnitude set now (and an older state has none)
+        self.magnitude_scale = float(magnitude_scale)
+        self.log_every = int(log_every or 0)
+        self._step_count = 0
+        self.last_stats = None           # {"step", "magnitude", "avg_change", "capped", "pairs"} at its logging steps
 
     def _buf(self, p, g, mom):
         st = self.state[p]
@@ -98,11 +111,15 @@ class LoRATSD(Optimizer):
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
+        self._step_count += 1
+        mag = self.magnitude_scale
+        changes, capped = [], 0
         for group in self.param_groups:
             A, B = group["params"]
             if A.grad is None or B.grad is None:
                 continue
-            lr, cap = group["lr"], group["max_delta_norm"]
+            # magnitude_scale scales the step and its cap together (1.0: the reference's step)
+            lr, cap = group["lr"] * mag, group["max_delta_norm"] * mag
             A32, B32 = A.float(), B.float()
             G_A = self._buf(A, A.grad.float(), group["momentum"])
             G_B = self._buf(B, B.grad.float(), group["momentum"])
@@ -114,6 +131,8 @@ class LoRATSD(Optimizer):
                     dw = (d @ A32).norm()
                     if dw > cap:
                         d.mul_(cap / dw)
+                        capped += 1
+                    changes.append(min(float(dw), cap))
                     B.add_(d.to(B.dtype))
                 elif A32.norm() < self.zero_eps and B32.norm() >= self.zero_eps:
                     d = -lr * _zeropower_via_newtonschulz(G_A, (DEFAULT_A, DEFAULT_B, DEFAULT_C),
@@ -121,6 +140,8 @@ class LoRATSD(Optimizer):
                     dw = (B32 @ d).norm()
                     if dw > cap:
                         d.mul_(cap / dw)
+                        capped += 1
+                    changes.append(min(float(dw), cap))
                     A.add_(d.to(A.dtype))
                 continue
             U_B = torch.linalg.qr(B32, mode="reduced")[0]
@@ -144,10 +165,20 @@ class LoRATSD(Optimizer):
             if dw > cap:
                 dA.mul_(cap / dw)
                 dB.mul_(cap / dw)
+                capped += 1
+            changes.append(min(float(dw), cap))
             A.add_(dA.to(A.dtype))
             B.add_(dB.to(B.dtype))
             if self.balance:
                 self._rebalance(A, B)
+        if changes and self.log_every and (self._step_count == 1 or self._step_count % self.log_every == 0):
+            lrs = [g["lr"] for g in self.param_groups]
+            self.last_stats = {"step": self._step_count, "magnitude": mag, "avg_change": sum(changes) / len(changes),
+                               "capped": capped, "pairs": len(changes)}
+            logging.getLogger("fizgig.lora_tsd").info(
+                "[lora_tsd] step %d: magnitude %.3g x LR %.3g, avg weight change a pair %.4f (cap %.3g), "
+                "%d of %d pairs at the cap", self._step_count, mag, sum(lrs) / len(lrs),
+                self.last_stats["avg_change"], self.param_groups[0]["max_delta_norm"] * mag, capped, len(changes))
         return loss
 
 

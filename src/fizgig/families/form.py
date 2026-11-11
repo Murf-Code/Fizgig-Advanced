@@ -79,7 +79,8 @@ OPTIMIZER_TYPE_TIPS = {
     "prodigy": "Estimates its own learning rate. The Learning Rate box is locked to 1.0 (a multiplier).",
     "muon": "Orthogonalized momentum, with step size matched to AdamW, so the usual AdamW learning rates apply.",
     "soap": "Adam run in Shampoo's eigenbasis. Uses more memory and is slower than AdamW; AdamW learning rates apply.",
-    "lora_tsd": "Trains each LoRA down/up pair together by spectral descent. Starts at LR 5e-3; each step's change is capped.",
+    "lora_tsd": "Trains each LoRA down/up pair together by spectral descent. Starts at LR 5e-3 with magnitude_scale=3 "
+                "in Optimizer Args (bigger steps); each step's change is capped, and the cap grows with it.",
     "automagic4": "Like Automagic v3, sets its own learning rate, and evens out how hard each weight is pushed. Start at 1e-6.",
 }
 OPTIMIZER_ARGS_TIP = ("Extra settings as key=value words, passed to the optimizer. Leave blank unless you know what "
@@ -1130,7 +1131,7 @@ def apply_preset(desc, values, preset, whole=False):
         if _opt_p != "muon":
             _oa = strip_muon_args(_oa)
         if _opt_p != "polora":
-            _oa = strip_polora_args(_oa)
+            _oa = strip_polora_args(_oa, _opt_p)        # LoRA-TSD keeps magnitude_scale
         from fizgig.training.optimizers import LORA_TSD_ONLY_KEYS, SOAP_ONLY_KEYS, _strip_keys
         for _own, _keys in (("soap", SOAP_ONLY_KEYS), ("lora_tsd", LORA_TSD_ONLY_KEYS)):
             if _opt_p != _own:
@@ -1370,7 +1371,8 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
                                    "4e-2), as with Muon; magnitude_scale stays as you set it."
         if str(values.get("OPTIMIZER_TYPE", "")).strip().lower() == "lora_tsd" and kind not in ("slider", "finetune"):
             notes["ADAPTIVE_LR"] = "With LoRA-TSD, Min and Max are its real learning rates (it trains around 2e-3 to " \
-                                   "1e-2); each step's change stays capped by max_delta_norm."
+                                   "1e-2); magnitude_scale stays as you set it, and each step's change stays " \
+                                   "capped by max_delta_norm times magnitude_scale."
         from fizgig.training.optimizers import (
             MUON_DEFAULT_ARGS, PRODIGY_DEFAULT_ARGS, strip_muon_args, strip_prodigy_args,
         )
