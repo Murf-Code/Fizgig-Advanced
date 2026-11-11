@@ -235,8 +235,11 @@ def _load_state(state_dir, net, optimizer, device, arch, untagged_own=False, dri
     return int(meta.get("epoch", 0)), int(meta.get("global_step", 0)), meta
 
 
+PREVIEW_PEAK_GB = [0.0]     # the largest reserved peak a preview reached this run (the Auto plan learns from it)
+
+
 def _preview_vram(tag, reset_peak=False):
-    """One line of VRAM state at a preview waypoint (the same lines Krea 2 logs, #123)."""
+    """One line of VRAM state at a preview waypoint (the same lines Krea 2 logs, #123); keeps PREVIEW_PEAK_GB."""
     try:
         if not torch.cuda.is_available():
             return
@@ -245,6 +248,7 @@ def _preview_vram(tag, reset_peak=False):
         a = torch.cuda.memory_allocated() / 1024 ** 3
         r = torch.cuda.memory_reserved() / 1024 ** 3
         pk = torch.cuda.max_memory_reserved() / 1024 ** 3
+        PREVIEW_PEAK_GB[0] = max(PREVIEW_PEAK_GB[0], pk)
         f = torch.cuda.mem_get_info()[0] / 1024 ** 3
         logger.info(f"[preview-vram] {tag}: allocated {a:.2f} GB, reserved {r:.2f} GB (peak {pk:.2f} GB), "
                     f"free {f:.2f} GB")
@@ -1716,6 +1720,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                                                    card_gb=quant.card_gb(),
                                                    megapixels=_vram_mp, pictures=bsz)
                                 if _vram_learn else (0.0, ""))
+    # the small card's reserve stays on top of whatever past runs teach; previews: their peak is what the figures hold
+    _vram_reserve = vram_plan.reserve_gb(desc, quant.card_gb()) if _vram_learn else 0.0
+    _vram_previews = bool(sample_prompts and (sample_every_n_epochs or sample_at_first))
+    _vram_corr = {}
+    PREVIEW_PEAK_GB[0] = 0.0
     vram_margin_gb = vram_plan.margin(vram_margin_gb)
     if finetune:
         from fizgig.families import ft as _ft_mod
@@ -1730,8 +1739,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if own is not None:
             precision, blocks_to_swap, why = own
         else:
-            _corr = {p: vram_plan.correction(vram_plan.key(desc.key, p, network_type, optimizer_type))
+            _corr = {p: vram_plan.correction(vram_plan.key(desc.key, p, network_type, optimizer_type), desc=desc,
+                                             previews=_vram_previews)
                      for p in desc.precisions} if _vram_learn else {}
+            _vram_corr = {p: c for p, (c, _w) in _corr.items()}
             precision, blocks_to_swap, why = quant.plan(
                 desc, driver, precision, blocks_to_swap, megapixels=mp, pictures=bsz, margin_gb=vram_margin_gb,
                 extra_gb={p: _vram_adapter + c for p, (c, _w) in _corr.items()} or _vram_adapter)
@@ -1739,6 +1750,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     [f"safety margin {vram_margin_gb:g} GB"] if abs(vram_margin_gb - 1.5) > 1e-9 else []):
                 if line:
                     say(logger, f"[vram] plan: {line}")
+            _pp = quant.predicted_gb(desc, precision, max(0, blocks_to_swap) if precision != "nf4" else 0, mp, bsz)
+            if _pp is not None and _vram_learn:
+                say(logger, f"[vram] plan: predicted peak {_pp + _vram_adapter + _vram_corr.get(precision, 0.0):.2f} GB"
+                            f" for {precision} with {max(0, blocks_to_swap)} blocks swapped, plus the {vram_margin_gb:g}"
+                            " GB safety margin")
             why += f" at {mp:.2f} MP" + (f" x {bsz} pictures a step" if bsz > 1 else "")
             if share_worker is not None:
                 # a helper's share trains at the lead's precision (the same base numbers): say so plainly, before the
@@ -2394,11 +2410,33 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
 
     previews_off = [False]
 
+    _train_peak = [0.0]                      # training's own reserved peak over the epochs so far
+
+    def _vram_record():
+        """What the plan said against what this run held - training's peak and its previews' (vram_plan.record)."""
+        if not (_vram_learn and not share_worker and torch.cuda.is_available() and _train_peak[0] > 0):
+            return
+        try:
+            _swap = max(0, blocks_to_swap) if precision != "nf4" else 0
+            _pred = quant.predicted_gb(desc, precision, _swap, _vram_mp, bsz)
+            if _pred is not None:
+                vram_plan.record(vram_plan.key(desc.key, precision, network_type, optimizer_type), output_name,
+                                 _pred + _vram_adapter + _vram_corr.get(precision, 0.0), _train_peak[0],
+                                 info={"rank": int(network_dim), "mp": round(_vram_mp, 3), "swap": _swap,
+                                       "batch": bsz, "base": round(_pred, 3),
+                                       "extra": round(_vram_adapter - _vram_reserve, 3),
+                                       "previews": _vram_previews, "card": round(quant.card_gb(), 1),
+                                       **({"preview": round(PREVIEW_PEAK_GB[0], 3)} if PREVIEW_PEAK_GB[0] else {})})
+        except Exception:
+            logger.debug("[vram] couldn't record this run's peak", exc_info=True)
+
     def previews(epoch):
         """The epoch's previews. A preview that fails (out of memory, say) switches previews off for the rest of the
         run and training carries on, as the original Krea 2 trainer did: a picture is never worth the run."""
         if encoded is None or previews_off[0]:
             return
+        if torch.cuda.is_available():         # training's peak so far, before the preview resets the counter
+            _train_peak[0] = max(_train_peak[0], torch.cuda.max_memory_reserved() / 1024 ** 3)
         parked = []
         try:
             if desc.preview_park_optimizer and optimizer is not None:
@@ -3604,16 +3642,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     f"lr={_step_rate():.3e}  "
                     + (f"({group_rates(optimizer)})  " if optimizer is not None and group_rates(optimizer) else "") +
                     f"peak VRAM {torch.cuda.max_memory_reserved() / 1024 ** 3:.1f} GB")
-        if _vram_learn and not share_worker and torch.cuda.is_available():
-            try:                               # what the plan said against what this run held (vram_plan)
-                _pred = quant.predicted_gb(desc, precision, max(0, blocks_to_swap), _vram_mp, bsz)
-                if _pred is not None:
-                    vram_plan.record(vram_plan.key(desc.key, precision, network_type, optimizer_type), output_name,
-                                     _pred + _vram_adapter, torch.cuda.max_memory_reserved() / 1024 ** 3,
-                                     info={"rank": int(network_dim), "mp": round(_vram_mp, 3),
-                                           "swap": max(0, blocks_to_swap), "batch": bsz})
-            except Exception:
-                logger.debug("[vram] couldn't record this run's peak", exc_info=True)
+        _train_peak[0] = max(_train_peak[0], torch.cuda.max_memory_reserved() / 1024 ** 3
+                             if torch.cuda.is_available() else 0.0)
+        _vram_record()
         steplog.flush()
         if validator is not None and not share_worker and not validation_every_steps:
             _validate(epoch + 1)
@@ -3676,6 +3707,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 prune_state_dirs(output_dir, output_name, keep_last_n_states)
         if sample_every_n_epochs and _preview_due(done):
             previews(done)
+            _vram_record()                  # the preview's peak, now measured too
             # this epoch's checkpoint was saved before its preview existed, with the previous epoch's as its
             # thumbnail (#122): re-embed its own. An explicit --metadata_thumbnail (or "off") stays.
             if cadence and not (metadata_thumbnail or "").strip():

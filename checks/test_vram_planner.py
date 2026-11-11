@@ -47,21 +47,60 @@ def test_the_plan_swaps_more_for_extra_and_a_bigger_margin():
 
 
 def test_measured_peaks_correct_the_estimate(tmp_path):
+    """Issue #2: the gap stayed ~constant over 4 learning runs. The offset is now measured less today's figures for
+    that run's own swap and size, applied in full (plus a little headroom), carried across swap and rank."""
     h = str(tmp_path / "vram_history.json")
+    desc = SimpleNamespace(train_memory={"int8": (((0.25, 16.0), (1.0, 19.0)), 0.5), "nf4": (((0.25, 11.0), (1.0, 14.0)), 0.0)},
+                           train_memory_small={}, batch_gb=(0.0, 0.0))
     k = vram_plan.key("krea2", "int8", "lora", "muon")
-    assert vram_plan.correction(k, path=h) == (0.0, "")
-    vram_plan.record(k, "run1", 10.0, 10.8, path=h)
-    vram_plan.record(k, "run2", 10.0, 10.3, path=h)
-    c, why = vram_plan.correction(k, path=h)
-    assert abs(c - 0.8) < 1e-9 and "2 of past runs like this one" in why
-    other = vram_plan.key("krea2", "int8", "lora", "adamw8bit")          # same model + precision, no runs of its own
-    assert abs(vram_plan.correction(other, path=h)[0] - 0.8) < 1e-9
-    vram_plan.record(k, "run1", 12.0, 8.0, path=h)                      # a re-run replaces its own entry
-    vram_plan.record(k, "run2", 12.0, 8.0, path=h)
-    assert vram_plan.correction(k, path=h)[0] == -vram_plan.CORRECTION_DOWN_GB    # lowered, but only so far
+
+    def run(name, swap, measured, preview=None, key=k, extra=1.0, prec="int8"):
+        base = quant.predicted_gb(desc, prec, swap, 1.0, 1)
+        vram_plan.record(key, name, base + extra, measured, path=h, info=dict(
+            base=base, extra=extra, swap=swap, mp=1.0, batch=1, **({"preview": preview} if preview else {})))
+
+    assert vram_plan.correction(k, path=h, desc=desc) == (0.0, "")
+    run("run1", 4, 14.3)                                   # predicted 19 - 2 + 1 = 18: measured 3.7 under it
+    c, why = vram_plan.correction(k, path=h, desc=desc)
+    assert abs(c - (-3.7 + vram_plan.LEARN_HEADROOM_GB)) < 1e-9 and "1 of past runs like this one" in why
+    # the next plan, even at another swap, predicts measured + headroom for the same run, not 3.7 over
+    pred = quant.predicted_gb(desc, "int8", 8, 1.0, 1) + 1.0 + c
+    assert abs(pred - (14.3 - 8 * 0.5 + 4 * 0.5 + vram_plan.LEARN_HEADROOM_GB)) < 1e-9
+    run("run2", 8, 13.0)                                   # a second run held more than the first: the larger wins
+    assert abs(vram_plan.correction(k, path=h, desc=desc)[0] - (-3.0 + vram_plan.LEARN_HEADROOM_GB)) < 1e-9
+    run("run3", 8, 16.5)                                   # a run over its prediction raises the plan in full
+    assert abs(vram_plan.correction(k, path=h, desc=desc)[0] - 0.5) < 1e-9
+    # retuned figures: the stored base is not reused, today's figures for that run are
+    desc2 = SimpleNamespace(**{**vars(desc), "train_memory": {"int8": (((0.25, 15.0), (1.0, 18.0)), 0.5)}})
+    assert abs(vram_plan.correction(k, path=h, desc=desc2)[0] - 1.5) < 1e-9
+    h2 = str(tmp_path / "h2.json")
+    h, h_keep = h2, h
+    run("a", 0, 12.0)                                      # 7 GB under: bounded by CORRECTION_DOWN_GB
+    assert vram_plan.correction(k, path=h, desc=desc)[0] == -vram_plan.CORRECTION_DOWN_GB
+    # previews on: a run without a measured preview can't lower the plan; with one, the larger peak counts
+    assert vram_plan.correction(k, path=h, desc=desc, previews=True) == (0.0, "")
+    run("a", 0, 12.0, preview=17.0)
+    c, why = vram_plan.correction(k, path=h, desc=desc, previews=True)
+    assert abs(c - (-3.0 + vram_plan.LEARN_HEADROOM_GB)) < 1e-9 and "previews counted" in why
+    # same model + precision, other optimizer: in full; other precision: half a lowering
+    other = vram_plan.key("krea2", "int8", "lora", "adamw8bit")
+    assert vram_plan.correction(other, path=h, desc=desc)[0] == -vram_plan.CORRECTION_DOWN_GB
+    nf4 = vram_plan.key("krea2", "nf4", "lora", "muon")
+    c, why = vram_plan.correction(nf4, path=h, desc=desc)
+    assert abs(c - (-8.0 + vram_plan.LEARN_HEADROOM_GB) * vram_plan.OTHER_PRECISION_SHARE) < 1e-9 and "another precision" in why
+    # entries from before (no base / extra) are not used: they were weighed against an uncorrected prediction
+    h = str(tmp_path / "old.json")
+    vram_plan.record(k, "old", 12.0, 8.0, path=h)
+    d = vram_plan._read(h)
+    d[k]["old"].pop("v")
+    import json
+    with open(h, "w") as f:
+        json.dump(d, f)
+    assert vram_plan.correction(k, path=h, desc=desc) == (0.0, "")
     for i in range(8):
         vram_plan.record(k, f"r{i}", 1.0, 1.0, path=h)
     assert len(vram_plan._read(h)[k]) == vram_plan.KEEP_RUNS
+    assert h_keep
 
 
 def test_the_margin_is_a_preference_passed_to_the_trainer(tiny, tmp_path):

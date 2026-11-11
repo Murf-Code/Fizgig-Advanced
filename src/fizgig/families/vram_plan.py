@@ -7,11 +7,16 @@ moments, Muon one, SOAP two moments plus two square matrices per side of every w
 the model file's own Linear shapes (its header, nothing loaded) and extra_gb() adds what this run holds beyond the
 recipe (never less - a smaller LoRA's saving is too small to plan swap on).
 
-Past runs correct the figures: at each epoch end the trainer records the peak it measured against the peak the plan
-predicted for the precision, swap and size it ran at (record()); correction() gives the largest recent difference for
-the same model, precision, network and optimizer (else the same model and precision), at most CORRECTION_DOWN_GB less.
-Kept in user_data/vram_history.json. The safety margin (Preferences > Training memory, default 1.5 GB) is what the
-plan leaves free beyond all of it.
+Past runs correct the figures: at each epoch end, and again after its previews, the trainer records what it
+measured - training's own peak and the previews' peak - with the precision, swap, size, rank and optimizer it ran at
+(record()). correction() turns those into an offset on the figures: for each recent run, what it measured less what
+today's figures predict for that run's own precision, swap and size, so it carries over when the plan changes (other
+swap, other rank) and stays right when the figures themselves are retuned. The largest such offset wins (the
+cautious one), plus LEARN_HEADROOM_GB when it lowers the plan. Runs of the same model, precision, network and
+optimizer count first, then the same model and precision, then the same model at another precision (half of a
+lowering only). A run that renders previews only lowers its plan from runs whose previews were measured (the
+figures are the preview's peak on most families). The small card's reserve and the safety margin (Preferences >
+Training memory, default 1.5 GB) stay on top of all of it. Kept in user_data/vram_history.json.
 """
 from __future__ import annotations
 
@@ -25,7 +30,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MARGIN_GB = 1.5
 TRAIN_MEMORY_RECIPE = (16, "adamw8bit")      # (rank, optimizer) the train_memory figures were measured with
-CORRECTION_DOWN_GB = 1.0                     # a learned correction lowers the figures by at most this
+CORRECTION_DOWN_GB = 6.0                     # a learned correction lowers the figures by at most this
+LEARN_HEADROOM_GB = 0.3                      # a lowering stops this far above the highest measured peak
+OTHER_PRECISION_SHARE = 0.5                  # runs at another precision lower the plan by half their offset
+LEARN_VERSION = 2                            # history entries before this (no base / preview figures) are not used
 KEEP_RUNS = 5                                # recent runs remembered per key
 # optimizer state per trained weight, bytes, beyond its own value and gradient (fp32 LoRA weights: 4 + 4)
 STATE_BYTES = {"adamw": 8, "adamw8bit": 2, "pagedadamw8bit": 2, "ademamix8bit": 3, "pagedademamix8bit": 3,
@@ -320,12 +328,21 @@ def extra_gb(desc, dit_path, network_type, rank, optimizer, *, optimizer_args=""
             label, w = frozen_file_term(f, megapixels=megapixels, pictures=pictures, bucket_step=step)
             if w:
                 terms.append((label, w))
-    small = bool(getattr(desc, "train_memory_small", None)) and _uses_small_table(desc)
-    if card_gb and 0 < float(card_gb) < SMALL_CARD_GB and not small:
-        terms.append((f"{float(card_gb):.0f} GB card reserve", SMALL_CARD_RESERVE_GB))
+    r = reserve_gb(desc, card_gb)
+    if r:
+        terms.append((f"{float(card_gb):.0f} GB card reserve", r))
     gb = sum(v for _n, v in terms)
     why = (" + ".join(f"{n} {v:+.2f}" for n, v in terms) + f" = {gb:+.2f} GB on the figures") if terms else ""
     return gb, why
+
+
+def reserve_gb(desc, card_gb) -> float:
+    """SMALL_CARD_RESERVE_GB on a card under SMALL_CARD_GB planned from the big-card table, else 0 - the part of
+    extra_gb() a learned correction never takes away."""
+    small = bool(getattr(desc, "train_memory_small", None)) and _uses_small_table(desc)
+    if card_gb and 0 < float(card_gb) < SMALL_CARD_GB and not small:
+        return SMALL_CARD_RESERVE_GB
+    return 0.0
 
 
 def _uses_small_table(desc) -> bool:
@@ -351,12 +368,15 @@ def _read(path=None):
 
 
 def record(k, run, predicted_gb, measured_gb, *, path=None, info=None) -> None:
-    """This run's measured peak against the plan's prediction (one entry per run, the latest kept)."""
+    """This run's measured peak against the plan's prediction (one entry per run, the latest kept). For learning,
+    info carries what correction() recomputes the prediction from: "base" (quant.predicted_gb's figure), "extra" (this
+    run's own terms past the figures, without the small card's reserve), "swap", "mp", "batch", and "preview" (the
+    previews' peak, GB) / "previews" (whether the run renders them)."""
     path = path or _history_path()
     d = _read(path)
     runs = d.setdefault(k, {})
     runs[str(run)] = {"predicted": round(float(predicted_gb), 3), "measured": round(float(measured_gb), 3),
-                      "t": int(time.time()), **(info or {})}
+                      "t": int(time.time()), "v": LEARN_VERSION, **(info or {})}
     for old in sorted(runs, key=lambda r: runs[r].get("t", 0))[:-KEEP_RUNS]:
         runs.pop(old, None)
     try:
@@ -368,21 +388,66 @@ def record(k, run, predicted_gb, measured_gb, *, path=None, info=None) -> None:
         logger.warning("[vram] couldn't save this run's measured peak", exc_info=True)
 
 
-def correction(k, *, path=None) -> tuple:
-    """(GB, why) to add to the figures for runs like `k`: the largest of its recent runs' (measured - predicted),
-    else of any run of the same model and precision; never below -CORRECTION_DOWN_GB. (0, "") with none."""
+def _offset(r, precision, desc, previews):
+    """GB one history entry says the figures are off by for a run like it (measured - predicted), or None when it
+    can't say. With desc the prediction is today's figures for that run's own precision, swap and size; with
+    previews on, only an entry whose previews were measured, at the larger of the two peaks."""
+    if "measured" not in r or int(r.get("v", 1) or 1) < LEARN_VERSION:
+        return None
+    peak = float(r["measured"])
+    unseen = previews and not r.get("preview")   # a run without measured previews can only raise the plan
+    if previews and not unseen:
+        peak = max(peak, float(r["preview"]))
+    pred = None
+    if desc is not None and "extra" in r and "swap" in r:
+        try:
+            from fizgig.families import quant
+            base = quant.predicted_gb(desc, precision, int(r.get("swap") or 0), float(r.get("mp") or 1.0),
+                                      int(r.get("batch") or 1))
+        except Exception:
+            base = None
+        if base is not None:
+            pred = base + float(r["extra"])
+    if pred is None and "base" in r and "extra" in r:
+        pred = float(r["base"]) + float(r["extra"])
+    if pred is None:
+        return None
+    o = peak - pred
+    return None if unseen and o <= 0 else o
+
+
+def correction(k, *, path=None, desc=None, previews=False) -> tuple:
+    """(GB, why) to add to the figures for runs like `k` (key()): the largest recent offset (_offset) among runs like
+    this one, else runs of the same model and precision, else of the same model at another precision (a lowering
+    counted at OTHER_PRECISION_SHARE). A lowering keeps LEARN_HEADROOM_GB above the highest measured peak and goes at
+    most CORRECTION_DOWN_GB. (0, "") with nothing to learn from. Upward offsets (a run held more) count in full."""
     d = _read(path)
-    runs = list((d.get(k) or {}).values())
-    where = "past runs like this one"
-    if not runs:
-        pre = "|".join(k.split("|")[:2]) + "|"
-        runs = [r for kk, v in d.items() if kk.startswith(pre) for r in v.values()]
-        where = "past runs of this model at this precision"
-    deltas = [float(r["measured"]) - float(r["predicted"]) for r in runs if "measured" in r and "predicted" in r]
-    if not deltas:
-        return 0.0, ""
-    c = max(-CORRECTION_DOWN_GB, max(deltas))
-    return c, f"{'+' if c >= 0 else ''}{c:.2f} GB learned from {len(deltas)} of {where}"
+    parts = k.split("|")
+    fam, prec = parts[0], (parts[1] if len(parts) > 1 else "")
+    tiers = (("past runs like this one", lambda kk: kk == k, 1.0),
+             ("past runs of this model at this precision", lambda kk: kk.startswith(f"{fam}|{prec}|"), 1.0),
+             ("past runs of this model at another precision",
+              lambda kk: kk.startswith(f"{fam}|") and not kk.startswith(f"{fam}|{prec}|"), OTHER_PRECISION_SHARE))
+    for where, match, share in tiers:
+        deltas = []
+        for kk, v in d.items():
+            if not match(kk) or not isinstance(v, dict):
+                continue
+            p = kk.split("|")[1] if "|" in kk else prec
+            for r in v.values():
+                o = _offset(r, p, desc, previews) if isinstance(r, dict) else None
+                if o is not None:
+                    deltas.append(o)
+        if not deltas:
+            continue
+        c = max(deltas)
+        if c < 0:
+            c = min(0.0, c + LEARN_HEADROOM_GB) * share
+            c = max(-CORRECTION_DOWN_GB, c)
+        n = len(deltas)
+        return c, (f"{'+' if c >= 0 else ''}{c:.2f} GB learned from {n} of {where}"
+                   + (" (their previews counted)" if previews else ""))
+    return 0.0, ""
 
 
 def margin(value) -> float:
@@ -394,5 +459,5 @@ def margin(value) -> float:
     return min(8.0, max(0.0, v))
 
 
-__all__ = ["DEFAULT_MARGIN_GB", "STATE_BYTES", "file_weights_gb", "frozen_file_term", "inspect_frozen_lora", "optimizer_compiles", "step_gb", "TRAIN_MEMORY_RECIPE", "adapter_gb", "correction", "extra_gb", "key",
+__all__ = ["DEFAULT_MARGIN_GB", "STATE_BYTES", "file_weights_gb", "frozen_file_term", "inspect_frozen_lora", "optimizer_compiles", "reserve_gb", "step_gb", "TRAIN_MEMORY_RECIPE", "adapter_gb", "correction", "extra_gb", "key",
            "linear_shapes", "margin", "record", "state_bytes"]
