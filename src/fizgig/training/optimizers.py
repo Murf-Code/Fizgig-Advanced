@@ -119,6 +119,11 @@ _CATALOG = {
     # 17 Sep 2026 — unmeasured against the AdamW recipe until an A/B says otherwise.
     "automagic3":         (None,           "Automagic v3 (Ostris) — sets its own learning rate from the update signs; "
                                             "the LR box is its start, 1e-6 recommended. Experiment"),
+    # Automagic v4 (fizgig/training/automagic4.py, MIT): v3 plus a per-weight brake on the most
+    # sensitive weights and a rate controller that settles instead of annealing to zero.
+    "automagic4":         (None,           "Automagic v4 (Ostris) — like v3, sets its own learning rate, and evens "
+                                            "out how hard each weight is pushed; the LR box is its start, 1e-6 "
+                                            "recommended"),
     "prodigy":            (None,           "Prodigy — estimates the learning rate itself; the Learning Rate box is "
                                             "locked to 1.0 (a multiplier)"),
     "muon":               (None,           "Muon — orthogonalized momentum, step size matched to AdamW's, so AdamW's "
@@ -133,11 +138,6 @@ _CATALOG = {
     "lora_tsd":           (None,           "LoRA-TSD - trains each down/up pair together by spectral descent on the "
                                             "LoRA's own shape (an experiment next to PoLoRA). LR 5e-3 (pre-filled); "
                                             "each step's change is capped (max_delta_norm=0.1)"),
-    # Automagic v4 (fizgig/training/automagic4.py, MIT): v3 plus a per-weight brake on the most
-    # sensitive weights and a rate controller that settles instead of annealing to zero.
-    "automagic4":         (None,           "Automagic v4 (Ostris) — like v3, sets its own learning rate, and evens "
-                                            "out how hard each weight is pushed; the LR box is its start, 1e-6 "
-                                            "recommended"),
 }
 
 DEFAULT_OPTIMIZER = "adamw8bit"
