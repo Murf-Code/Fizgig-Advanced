@@ -41,6 +41,7 @@ from fizgig.families import quant  # noqa: E402
 from fizgig.families.lora import FamilyLoRA  # noqa: E402
 from fizgig.families.registry import get as get_family  # noqa: E402
 from fizgig.training.adaptive_lr import AdaptiveLR  # noqa: E402
+from fizgig.krea2.block_local import warmup_phase as _block_local_warmup_phase  # noqa: E402
 from fizgig.training.resume_lr import resume_lr  # noqa: E402
 from fizgig.training.metadata import (build_metadata, latest_sample_image, refresh_checkpoint_thumbnail,  # noqa: E402
                                       resolve_title, sample_for_epoch, thumbnail_data_uri)
@@ -99,7 +100,7 @@ def _batch_key(batch, i):
 
 
 def _save_state(output_dir, output_name, net, optimizer, *, epoch, global_step, arch_id, extra=None, ema=None,
-                folder_epoch=None):
+                folder_epoch=None, auxiliary=None, auxiliary_optimizer=None):
     """folder_epoch: the number in the folder's name when it isn't `epoch` - a Save & stop restore point mid-epoch is
     named after the epoch in progress (so it is the newest), while its training_state.json says the epochs done."""
     state_dir = os.path.join(output_dir, f"{output_name}-{epoch if folder_epoch is None else folder_epoch:06d}-state")
@@ -110,6 +111,10 @@ def _save_state(output_dir, output_name, net, optimizer, *, epoch, global_step, 
         pass
     net.save(os.path.join(state_dir, "lora.safetensors"), dtype=torch.float32)
     torch.save(optimizer.state_dict(), os.path.join(state_dir, "optimizer.pt"))
+    if auxiliary is not None:
+        torch.save(auxiliary.state_dict(), os.path.join(state_dir, "block_local_heads.pt"))
+    if auxiliary_optimizer is not None:
+        torch.save(auxiliary_optimizer.state_dict(), os.path.join(state_dir, "block_local_optimizer.pt"))
     if ema is not None:
         torch.save(ema.state_dict(), os.path.join(state_dir, "ema.pt"))
     rng = {"torch": torch.get_rng_state()}
@@ -165,7 +170,8 @@ def _legacy_perm(driver, net):
     return {k: here[key] for k, key in enumerate(old)}
 
 
-def _load_state(state_dir, net, optimizer, device, arch, untagged_own=False, driver=None):
+def _load_state(state_dir, net, optimizer, device, arch, untagged_own=False, driver=None,
+                auxiliary=None, auxiliary_optimizer=None):
     """(epoch, global step, training_state.json) of a saved state, its LoRA weights and RNG restored. The optimizer
     (and, by the caller, the EMA) is restored only from a state this family wrote: another trainer's (the original
     Krea 2's) orders its parameters differently, so its moments would land on the wrong tensors - that state goes on
@@ -200,6 +206,15 @@ def _load_state(state_dir, net, optimizer, device, arch, untagged_own=False, dri
     with open(os.path.join(state_dir, "training_state.json"), encoding="utf-8") as f:
         meta = json.load(f)
     meta["own_state"] = meta.get("architecture") == arch or (untagged_own and "architecture" not in meta)
+    if meta["own_state"] and auxiliary is not None:
+        _heads_path = os.path.join(state_dir, "block_local_heads.pt")
+        _head_opt_path = os.path.join(state_dir, "block_local_optimizer.pt")
+        if not os.path.isfile(_heads_path) or (auxiliary_optimizer is not None and not os.path.isfile(_head_opt_path)):
+            raise RuntimeError("[resume] this block-local flow state is missing its temporary-head weights or optimizer "
+                               "state; choose a complete state folder from the same experimental method.")
+        auxiliary.load_state_dict(torch.load(_heads_path, map_location=device))
+        if auxiliary_optimizer is not None:
+            auxiliary_optimizer.load_state_dict(torch.load(_head_opt_path, map_location=device))
     if meta["own_state"]:
         sd = torch.load(os.path.join(state_dir, "optimizer.pt"), map_location=device)
         perm = _legacy_perm(driver, net) if (driver is not None and "architecture" not in meta) else None
@@ -1300,6 +1315,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                  adaptive_lr_on_val=True,
                  max_grad_norm=1.0, ema_decay=0.0, optimizer_type=None, optimizer_args="",
                  lr_scheduler="constant", lr_warmup_steps=0, lr_scheduler_num_cycles=1, lr_scheduler_power=1.0,
+                 block_local_head_warmup_steps=0, block_local_lora_ramp_steps=0, residual_path_exact_every=8,
+                 residual_path_approx_lr_multiplier=2.0,
                  gradient_accumulation_steps=1, compile_blocks="auto", gradient_checkpointing="auto", blocks_to_swap=0, network_type="lora", lokr_factor=8,
                  log_per_image_loss=False, per_image_lr=False, auto_recaption=False, warmup_look_outliers=False,
                  validation_loss=False, validation_images=4, validation_timesteps=4, validation_seed=42,
@@ -1346,10 +1363,70 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                            "itself, so the two don't combine. Drop --context_lora_path.")
     driver = desc.load_driver()
     driver.set_options(dict(family_options or {}))      # before the data: an option may shape the dataset
+    block_local_flow = bool(desc.key == "krea2" and getattr(driver, "block_local_flow", False))
+    selective_global_replay = bool(desc.key == "krea2" and getattr(driver, "selective_global_replay", False))
+    residual_path_hybrid = bool(desc.key == "krea2" and getattr(driver, "residual_path_hybrid", False))
+    block_local_head_warmup_steps = int(block_local_head_warmup_steps or 0)
+    block_local_lora_ramp_steps = int(block_local_lora_ramp_steps or 0)
+    residual_path_exact_every = 8 if residual_path_exact_every is None else int(residual_path_exact_every)
+    residual_path_approx_lr_multiplier = (2.0 if residual_path_approx_lr_multiplier is None
+                                           else float(residual_path_approx_lr_multiplier))
+    if residual_path_hybrid and (not math.isfinite(residual_path_approx_lr_multiplier)
+                                 or residual_path_approx_lr_multiplier <= 0.0):
+        raise ValueError("Residual-path approximate-update LR multiplier must be a finite number greater than zero.")
+    if block_local_head_warmup_steps < 0 or block_local_lora_ramp_steps < 0:
+        raise ValueError("Block-local warm-up and LoRA ramp steps must be zero or positive.")
+    if not block_local_flow and (block_local_head_warmup_steps or block_local_lora_ramp_steps):
+        raise RuntimeError("Block-local warm-up arguments require Krea 2 Block-local flow matching.")
+    if selective_global_replay and (block_local_head_warmup_steps or block_local_lora_ramp_steps):
+        raise RuntimeError("Blockwise head warm-up and LoRA ramp are only available with Blockwise flow, not "
+                           "Selective global replay.")
+    if residual_path_hybrid and (block_local_head_warmup_steps or block_local_lora_ramp_steps):
+        raise RuntimeError("Blockwise head warm-up and LoRA ramp are not used by Residual-path hybrid training.")
+    if residual_path_hybrid and residual_path_exact_every < 2:
+        raise ValueError("Residual-path hybrid exact calibration interval must be at least 2 optimizer updates.")
+    if selective_global_replay and str(optimizer_type or "").lower() == "polora":
+        raise RuntimeError("Selective global replay does not currently support PoLoRA: its paired optimizer requires "
+                           "gradients for every down/up pair, including blocks this method skips. Use Muon, AdamW, "
+                           "LoRA-TSD, or another optimizer that skips parameters with grad=None.")
+    if residual_path_hybrid and str(optimizer_type or "").lower() in ("polora", "lora_tsd"):
+        raise RuntimeError("Residual-path hybrid does not currently support PoLoRA or LoRA-TSD: approximate "
+                           "updates omit A-factor gradients on most steps (including all steps in the B-only "
+                           "variants), while these paired optimizers require A/B gradients together. Use Muon, "
+                           "AdamW, or another optimizer that skips parameters with grad=None.")
+    if block_local_flow:
+        unsupported = []
+        if str(network_type or "lora").lower() != "lora":
+            unsupported.append("Network Type must be standard LoRA (not LoKR)")
+        if finetune:
+            unsupported.append("fine-tuning")
+        if slider_pairs or slider_prompts:
+            unsupported.append("slider training")
+        if dop:
+            unsupported.append("DOP")
+        if masked_training or float(mask_prior or 0.0) > 0.0:
+            unsupported.append("masked training / mask prior")
+        if int8_rotated_backward:
+            unsupported.append("rotated INT8 backward")
+        if training_maps:
+            unsupported.append("training attention maps")
+        if share_worker is not None:
+            unsupported.append("shared/helper training")
+        if unsupported:
+            raise RuntimeError("Krea 2 block-local flow currently requires a plain batch-1 LoRA run; unsupported: "
+                               + ", ".join(unsupported) + ".")
+        if compile_blocks not in (None, "", "off", "Off"):
+            logger.info("[block-local] torch.compile is disabled: this prototype replays individual blocks.")
+        if gradient_checkpointing not in (False, "off", "Off", "0"):
+            logger.info("[block-local] gradient checkpointing is disabled: local block replay already bounds live "
+                        "activations.")
     _check_timestep_spread(desc, driver)
     if train_blocks:
         train_blocks = driver.expand_train_blocks(train_blocks)
     arch = desc.arch_id
+    state_arch = (f"{arch}:residual-path-hybrid-v1" if residual_path_hybrid else
+                  f"{arch}:selective-global-replay-v1" if selective_global_replay else
+                  f"{arch}:block-local-flow-v2-global-replay" if block_local_flow else arch)
     speed_desc = desc.preview_speed() if speed_lora else None
     if speed_lora and speed_desc is None:
         logger.warning(f"[sample] {desc.display_name} declares no preview speed LoRA - ignoring --speed_lora")
@@ -1596,6 +1673,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     if slider:
         driver.slider_setup(group)           # e.g. H3: still previews unless the pairs are clips
     bsz = max((int(getattr(ds, "batch_size", 1) or 1) for ds in group.datasets), default=1)   # a prompt slider has none
+    if block_local_flow and bsz != 1:
+        raise RuntimeError("Krea 2 block-local flow currently requires Batch Size = 1. Use gradient accumulation "
+                           "for an effective batch instead.")
     if bsz != 1 and not desc.batch_training:
         raise RuntimeError("Fizgig trains one image at a time: set batch_size = 1 in the dataset config. For a "
                            "larger effective batch use --gradient_accumulation_steps (the same averaged "
@@ -1783,7 +1863,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     # checkpoint where it fits at the largest bucket.
     do_compile = False
     cb = str(compile_blocks or "off").lower()
-    if desc.compiles and cb != "off":
+    if desc.compiles and cb != "off" and not block_local_flow:
         try:
             mp_max = max(k[-2] * k[-1] / 1e6 for ds in group.datasets for k in ds.batch_manager.bucket_resos)
         except Exception:
@@ -1807,7 +1887,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     # LoKR without checkpointing measured 3-16 GB over a LoRA at 1 MP, Qwen edit pairs ~26 GB; fine-tunes, sliders, edit pairs and
     # the mid-run captioner carry memory the figures don't cover)
     gc_off_blocks = 0
-    if gradient_checkpointing == "auto":
+    if block_local_flow:
+        gradient_checkpointing = False
+    elif gradient_checkpointing == "auto":
         paired = any(d.get("control_directory") for d in user_config.get("datasets", []))
         if (quant.card_gb() < quant.NOGC_MIN_CARD_GB or finetune or slider or paired or auto_recaption
                 or str(network_type).lower() != "lora"
@@ -1982,8 +2064,19 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     logger.info(f"Loading {desc.display_name} DiT ({precision}) from {dit_path}")
     _res = user_config.get("general", {}).get("resolution") or [1024, 1024]
     _mp = (_res[0] * _res[1] if isinstance(_res, (list, tuple)) else _res * _res) / 1e6
-    send_only = send_only_plan(send_only_swap, blocks_to_swap, precision, gradient_checkpointing, gc_off_blocks,
-                               finetune, wont_help="" if send_only_force else send_only_wont_help(blocks_to_swap, _mp))
+    h2d_replay_swap = bool(block_local_flow and getattr(driver, "h2d_block_swap", False))
+    send_only = (h2d_replay_swap if block_local_flow else
+                 send_only_plan(send_only_swap, blocks_to_swap, precision, gradient_checkpointing, gc_off_blocks,
+                                finetune, wont_help="" if send_only_force else send_only_wont_help(blocks_to_swap, _mp)))
+    if block_local_flow and blocks_to_swap:
+        if h2d_replay_swap:
+            logger.info("[block-local] H2D-only block swap explicitly selected; the same manual global-loss replay "
+                        "is retained. Each block is replayed and backpropagated before its ring slot can be reused.")
+        else:
+            logger.info("[block-local] using classic bidirectional block swap (send-only off) for local backward replay.")
+    elif h2d_replay_swap:
+        logger.warning("[block-local] H2D-only block swap was selected, but zero blocks are configured to swap; "
+                       "no H2D offloading will occur.")
     dit, swapped = quant.load_base(driver, dit_path, device, precision, blocks_to_swap, send_only=send_only)
     if int8_rotated_backward:            # experimental, opt-in (modules/int8_train.py): an INT8 backward too
         from fizgig.modules import int8_train as _i8
@@ -2081,7 +2174,15 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             swapped = 1          # blocks stream: previews and caption re-encodes must not park + restore the whole DiT
     else:
         blocks = None
-        if train_blocks:
+        if block_local_flow:
+            main_blocks = {b.id for b in driver.block_map(dit)[0].blocks}
+            if train_blocks and set(train_blocks) != main_blocks:
+                raise RuntimeError("Krea 2 block-local flow currently trains all 28 main transformer blocks; "
+                                   "custom --train_blocks selections are not supported.")
+            blocks = main_blocks
+            logger.info(("[selective-replay]" if selective_global_replay else "[blockwise]") +
+                        " LoRA targets: all 28 main transformer blocks only; text-fusion and I/O adapters remain frozen.")
+        elif train_blocks:
             known = {b.id for g in driver.block_map(dit) for b in g.blocks}
             unknown = sorted(set(train_blocks) - known)
             if unknown:
@@ -2089,6 +2190,38 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             blocks = set(train_blocks)
             logger.info(f"[blocks] the LoRA trains {len(blocks)} of {len(known)} blocks only: {', '.join(train_blocks)}")
         net.add_trainable(network_dim, network_alpha, blocks=blocks, kind=network_type, factor=lokr_factor)
+        if residual_path_hybrid:
+            driver.configure_residual_path_hybrid(
+                dit, net, exact_every=residual_path_exact_every,
+                approx_lr_multiplier=residual_path_approx_lr_multiplier)
+            if driver.residual_path_selective_a:
+                approx_factor_note = ("Approximate updates train B on attn.wo and mlp.down every time, plus A "
+                                      "every fourth approximate update. Full-width A inputs are staged through "
+                                      "pinned host RAM and transferred back one projection at a time.")
+            else:
+                approx_factor_note = ("Approximate updates train the attn.wo and mlp.down LoRA B factors; "
+                                      "A factors are refreshed by exact calibration.")
+            logger.info("[residual-path] enabled identity-path hybrid: one forward-only transformer update between "
+                        f"exact global-replay calibrations every {residual_path_exact_every} optimizer updates. "
+                        f"Approximate updates use {residual_path_approx_lr_multiplier:.2f}x the scheduled LR; "
+                        "exact calibration updates use the unmodified LR. " + approx_factor_note + " "
+                        "The final readout derivative is exact; credit through transformer residual paths is an approximation.")
+        if selective_global_replay:
+            driver.configure_selective_global_replay(dit, net, warmup_updates=8, reactivate_every=8, score_decay=0.5)
+            logger.info("[selective-replay] all blocks train for the first 8 optimizer updates; then each block's "
+                        "actual optimizer displacement is scored against its global-loss gradient. Uphill blocks "
+                        "skip LoRA-factor gradients; all blocks are reactivated for one probe update every 8 steps. "
+                        "Block input gradients still propagate through every transformer block.")
+
+    local_heads = local_head_optimizer = None
+    local_head_params = []
+    if block_local_flow and block_local_head_warmup_steps > 0:
+        local_heads = driver.make_block_local_heads(dit, device)
+        local_head_params = list(local_heads.parameters())
+        local_head_optimizer = torch.optim.AdamW(local_head_params, lr=1e-3, weight_decay=0.0)
+        logger.info(f"[block-local] {len(local_heads)} temporary velocity heads initialized from Krea 2's final "
+                    f"readout ({sum(p.numel() for p in local_head_params) / 1e6:.1f}M parameters); "
+                    "separate AdamW at 1e-3 for head-only calibration, then frozen and excluded from LoRA exports.")
     def render_bank():
         """The practice bank: the base model's own renders of the neutral prompt (adapter at 0, training adapter
         off, the speed LoRA on when it is loaded), decoded and re-encoded into training latents."""
@@ -2138,21 +2271,24 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     if ftr is not None:
         params, optimizer, opt_label = [], None, ftr.opt_label
     else:
-        params = net.parameters()
+        lora_params = list(net.parameters())
+        # The user-facing grad norm / clipping remains scoped to the exported LoRA. Temporary block-local heads
+        # have their own optimizer and are clipped separately below.
+        params = lora_params
         logger.info((f"LoKR factor {lokr_factor}" if network_type == "lokr" else
                      f"LoRA rank {network_dim} alpha {network_alpha:g}") +
-                    f": {len(net.trainable_modules())} modules, {sum(p.numel() for p in params) / 1e6:.1f}M "
-                    f"trainable params")
+                    f": {len(net.trainable_modules())} modules, {sum(p.numel() for p in lora_params) / 1e6:.1f}M "
+                    f"LoRA parameters")
         if share_worker is None:         # a round's LoRA in bf16, for a training share's estimate before its first round
             try:
                 with open(os.path.join(output_dir, SHARE_DIR, "setup.json"), encoding="utf-8") as f:
                     _s = json.load(f)
-                _s["lora_bytes"] = 2 * sum(p.numel() for p in params)
+                _s["lora_bytes"] = 2 * sum(p.numel() for p in lora_params)
                 _s["precision"] = precision      # Auto's pick here: the helper trains on the same base numbers
                 _write_json(os.path.join(output_dir, SHARE_DIR, "setup.json"), _s)
             except (OSError, ValueError):
                 pass
-        opt_params = params
+        opt_params = lora_params
         if str(optimizer_type or "").lower() in ("polora", "lora_tsd"):   # each LoRA's down/up pair together
             from fizgig.training.optimizers import polora_pairs
             opt_params = polora_pairs(net)
@@ -2236,11 +2372,14 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     start_epoch = global_step = 0
     resume_mid = None                # a Save & stop restore point: where inside its epoch the run stopped
     resume_es = None                 # the early stop's count, from the resumed state
+    resume_meta = None
     es = None                        # early stopping on the validation loss (training/early_stop.py)
     if resume_state_dir:
         _fresh_lrs = [g["lr"] for g in optimizer.param_groups] if optimizer is not None else []
-        start_epoch, global_step, meta = _load_state(resume_state_dir, net, optimizer, device, arch,
-                                                     untagged_own=desc.resumes_untagged_states, driver=driver)
+        start_epoch, global_step, meta = _load_state(resume_state_dir, net, optimizer, device, state_arch,
+                                                     untagged_own=desc.resumes_untagged_states, driver=driver,
+                                                     auxiliary=local_heads, auxiliary_optimizer=local_head_optimizer)
+        resume_meta = meta
         if global_step is None:
             global_step = start_epoch * steps_per_epoch
         elif int(meta.get("batch_size", 1)) != bsz:
@@ -2270,6 +2409,15 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         logger.info(f"[resume] from {resume_state_dir}: continuing at epoch {start_epoch + 1}/{max_train_epochs}"
                     + (f", after the {len(resume_mid.get('batches') or [])} of its steps trained before Save & stop"
                        if resume_mid else ""))
+        if selective_global_replay:
+            driver.load_selective_state_dict(meta.get("selective_global_replay"))
+            logger.info("[selective-replay] restored block activity and descent scores from the resume state: "
+                        f"{len(driver.selective_active_blocks())}/{len(dit.blocks)} blocks active.")
+        if residual_path_hybrid:
+            driver.load_residual_path_state_dict(meta.get("residual_path_hybrid"))
+            logger.info("[residual-path] restored exact-calibration cadence from the resume state: "
+                        f"{driver.residual_path_state_dict()['optimizer_steps']} optimizer updates completed; "
+                        f"exact replay every {residual_path_exact_every} updates.")
     from fizgig.families.loss_watch import Watch
     watch = Watch(output_dir, group, user_config, driver, log=log_per_image_loss, per_image_lr=per_image_lr,
                   auto_recaption=auto_recaption, warmup_look=warmup_look_outliers,
@@ -2290,9 +2438,51 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     f"{updates_per_epoch} updates/epoch")
     elif int(gradient_accumulation_steps or 1) > 1:
         logger.info("[grad_accum] off for sliders: each step already backpropagates both ends")
+
+    # The local warm-up schedule is measured in optimizer updates (after gradient accumulation), not data steps.
+    block_local_optimizer_steps = 0
+    if block_local_flow:
+        saved_schedule = (resume_meta or {}).get("block_local_warmup") if resume_state_dir else None
+        requested_schedule = {"head_warmup_steps": block_local_head_warmup_steps,
+                              "lora_ramp_steps": block_local_lora_ramp_steps}
+        if resume_state_dir and saved_schedule is None and (block_local_head_warmup_steps or block_local_lora_ramp_steps):
+            raise RuntimeError("This block-local resume state predates the head-warm-up schedule. Start a fresh run "
+                               "to use head-only warm-up, or resume with both warm-up values set to 0.")
+        if saved_schedule is not None and saved_schedule != requested_schedule:
+            raise RuntimeError("Block-local warm-up settings differ from the saved run state. Resume with the same "
+                               "head warm-up and LoRA ramp step counts, or start a fresh run.")
+        if resume_state_dir:
+            if (resume_meta or {}).get("block_local_optimizer_steps") is not None:
+                block_local_optimizer_steps = int(resume_meta["block_local_optimizer_steps"])
+            elif resume_mid:
+                block_local_optimizer_steps = (start_epoch * updates_per_epoch
+                                               + int(resume_mid.get("steps", 0)) // accum)
+            else:
+                block_local_optimizer_steps = start_epoch * updates_per_epoch
+        if block_local_flow:
+            head_only, _ = _block_local_warmup_phase(
+                block_local_optimizer_steps, block_local_head_warmup_steps, block_local_lora_ramp_steps)
+            driver.set_block_local_head_only(head_only)
+            if block_local_head_warmup_steps:
+                for _p in params:
+                    _p.requires_grad_(not head_only)
+                if head_only:
+                    logger.info(f"[block-local] head-only warm-up: {block_local_head_warmup_steps} optimizer updates; "
+                                "temporary heads train, while LoRA/Muon, LR scheduler and LoRA EMA remain frozen.")
+                else:
+                    logger.info(f"[block-local] resumed after head-only warm-up at optimizer update "
+                                f"{block_local_optimizer_steps}; LoRA parameters are enabled and training uses "
+                                "the full Krea 2 prediction loss.")
+        if block_local_lora_ramp_steps:
+            logger.info(f"[block-local] LoRA activation ramp: {block_local_lora_ramp_steps} optimizer updates "
+                        f"after the {block_local_head_warmup_steps}-update head-only phase.")
+
     scheduler = None
     if ftr is None and not adaptive and not owns_its_rate(optimizer):
-        scheduler = _step_scheduler(optimizer, lr_scheduler, lr_warmup_steps, updates_per_epoch * max_train_epochs,
+        _total_updates = updates_per_epoch * max_train_epochs
+        if block_local_flow:
+            _total_updates = max(1, _total_updates - block_local_head_warmup_steps)
+        scheduler = _step_scheduler(optimizer, lr_scheduler, lr_warmup_steps, _total_updates,
                                     lr_scheduler_num_cycles, lr_scheduler_power)
         import warnings
         with warnings.catch_warnings():
@@ -2300,6 +2490,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             # PyTorch's "lr_scheduler.step() before optimizer.step()" warning is for training loops, not this
             warnings.filterwarnings("ignore", message=r"Detected call of `lr_scheduler\.step\(\)` before")
             _n = (start_epoch * updates_per_epoch if accum > 1 else global_step)
+            if block_local_flow:
+                _n = max(0, block_local_optimizer_steps - block_local_head_warmup_steps)
             if resume_mid and resume_mid.get("scheduler_steps") is not None:
                 _n = int(resume_mid["scheduler_steps"])      # mid-epoch: exactly where the schedule stood
             for _ in range(_n):
@@ -2740,12 +2932,21 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         for attempt in (1, 2):
             try:
                 _save_state(output_dir, output_name, net, optimizer, epoch=epoch, global_step=global_step,
-                            arch_id=arch, ema=ema, folder_epoch=None if mid is None else epoch + 1,
+                            arch_id=state_arch, ema=ema, folder_epoch=None if mid is None else epoch + 1,
+                            auxiliary=local_heads, auxiliary_optimizer=local_head_optimizer,
                             extra={"learning_rate": box_learning_rate,
                                    **({"adaptive_lr_state": adaptive.state_dict()} if adaptive else {}),
                                    **({"mid_epoch": mid} if mid is not None else {}),
                                    **({"early_stop": es.state_dict()} if es is not None else {}),
                                    **({"batch_size": bsz} if bsz > 1 else {}),
+                                   **({"block_local_warmup": {"head_warmup_steps": block_local_head_warmup_steps,
+                                                               "lora_ramp_steps": block_local_lora_ramp_steps},
+                                       "block_local_optimizer_steps": block_local_optimizer_steps}
+                                      if block_local_flow and not selective_global_replay else {}),
+                                   **({"selective_global_replay": driver.selective_state_dict()}
+                                      if selective_global_replay else {}),
+                                   **({"residual_path_hybrid": driver.residual_path_state_dict()}
+                                      if residual_path_hybrid else {}),
                                    # the pictures set aside for validation: a resume holds out the same ones
                                    **({"validation_holdout": {"paths": holdout_list["paths"],
                                                               "names": holdout_list.get("names") or []}}
@@ -2914,14 +3115,20 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     lag = []
 
     def _step_rate(raw=False):
-        """The rate the step applied: the optimizer's (raw: its group rate, as the bar shows it), or under a
-        fine-tune's free-each-gradient - one optimizer per weight, none to read (#312) - the stepper's rate times
-        this step's multiplier."""
+        """The next step's effective rate (including the local-flow LoRA activation ramp, when enabled)."""
         if optimizer is not None:
-            return float(optimizer.param_groups[0]["lr"]) if raw else optimizer_lr(optimizer)
-        if ftr is not None and ftr.fused is not None:
-            return float(ftr.fused.lr) * float(ftr.fused.scale)
-        return float(learning_rate)
+            rate = float(optimizer.param_groups[0]["lr"]) if raw else optimizer_lr(optimizer)
+        elif ftr is not None and ftr.fused is not None:
+            rate = float(ftr.fused.lr) * float(ftr.fused.scale)
+        else:
+            rate = float(learning_rate)
+        if block_local_flow and (block_local_head_warmup_steps or block_local_lora_ramp_steps):
+            _, ramp = _block_local_warmup_phase(block_local_optimizer_steps, block_local_head_warmup_steps,
+                                                block_local_lora_ramp_steps)
+            rate *= ramp
+        if residual_path_hybrid:
+            rate *= driver.residual_path_update_lr_multiplier
+        return rate
 
     def _later(fn, **vals):
         """Call fn(**vals as Python numbers / lists) one step from now, without waiting for the GPU now."""
@@ -2946,24 +3153,75 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             adaptive.record_clip(gn, max_grad_norm)
 
     def _update():
-        nonlocal pending
+        nonlocal pending, block_local_optimizer_steps
         if ftr is not None and ftr.fused is not None:
             pending = 0                    # every parameter already stepped from its own gradient hook
             lr_acc.clear()
             return
+
+        head_only = False
+        ramp_multiplier = 1.0
+        if block_local_flow:
+            head_only, ramp_multiplier = _block_local_warmup_phase(
+                block_local_optimizer_steps, block_local_head_warmup_steps, block_local_lora_ramp_steps)
+
         if max_grad_norm:
-            pre = torch.nn.utils.clip_grad_norm_(params, max_grad_norm)
-            _later(_gn_done, gn=pre, clip=bool(adaptive is not None and adaptive.clip_signal))   # read next step
+            if not head_only:
+                pre = torch.nn.utils.clip_grad_norm_(params, max_grad_norm)
+                _later(_gn_done, gn=pre, clip=bool(adaptive is not None and adaptive.clip_signal))
+            if head_only and local_head_params:
+                torch.nn.utils.clip_grad_norm_(local_head_params, max_grad_norm)
+
         m = sum(lr_acc) / len(lr_acc) if lr_acc else 1.0
         lr_acc.clear()
         if owns_its_rate(optimizer) and not _polora:
             m = 1.0                        # Automagic v3 / Prodigy owns the rate (PoLoRA's per-image LR scales it)
-        if m != 1.0:                       # the window's mean, composed into the LR for this step only (never the loss:
-            held = [g["lr"] for g in optimizer.param_groups]        # Adam is invariant to a constant on the gradient)
+
+        if head_only:
+            # Do not call Muon.step(): even with requires_grad=False, an optimizer step can apply decoupled weight
+            # decay or existing momentum. Only the temporary heads learn during this calibration phase.
+            if local_head_optimizer is None:
+                raise RuntimeError("Block-local head warm-up is active but its head optimizer is missing.")
+            local_head_optimizer.step()
+            block_local_optimizer_steps += 1
+            pending = 0
+            if block_local_optimizer_steps == block_local_head_warmup_steps:
+                for _p in params:
+                    _p.requires_grad_(True)
+                logger.info(f"[block-local] head-only warm-up complete at optimizer update "
+                            f"{block_local_optimizer_steps}; LoRA enabled. The {block_local_lora_ramp_steps}-update "
+                            "LR ramp starts on the next optimizer update.")
+            return
+
+        residual_approx_lr_multiplier = (driver.residual_path_update_lr_multiplier
+                                         if residual_path_hybrid else 1.0)
+        effective_multiplier = m * ramp_multiplier * residual_approx_lr_multiplier
+        if effective_multiplier != 1.0:
+            held = [g["lr"] for g in optimizer.param_groups]
             for g in optimizer.param_groups:
-                g["lr"] = g["lr"] * m
+                g["lr"] = g["lr"] * effective_multiplier
+        selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
         optimizer.step()
-        if m != 1.0:
+        if selective_global_replay:
+            selective_status = driver.finish_selective_optimizer_step(selective_snapshot)
+            if selective_status is not None:
+                if selective_status["kind"] == "probe":
+                    skipped = selective_status["total"] - selective_status["active"]
+                    logger.info(f"[selective-replay] probe {driver.selective_state_dict()['optimizer_steps']}: "
+                                f"{selective_status['active']}/{selective_status['total']} blocks active; "
+                                f"{skipped} uphill/neutral blocks skip adapter-gradient computation until rechecked.")
+                else:
+                    logger.info(f"[selective-replay] periodic reactivation: all "
+                                f"{selective_status['total']} blocks are active for the next probe update.")
+        if residual_path_hybrid:
+            hybrid_status = driver.finish_residual_path_optimizer_step()
+            if hybrid_status["next_exact"]:
+                logger.info("[residual-path] next optimizer update is an exact global-loss calibration replay; "
+                            "both LoRA factors will receive exact gradients.")
+            elif hybrid_status.get("next_a_update"):
+                logger.info("[residual-path] next approximate update will refresh A and B for attn.wo and mlp.down; "
+                            "full-width inputs are staged through pinned host RAM.")
+        if effective_multiplier != 1.0:
             for g, lr in zip(optimizer.param_groups, held):
                 g["lr"] = lr
         if _polora:                        # its factor sizes at its logging steps: the graph's green line
@@ -2975,7 +3233,13 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if scheduler is not None and not catching[0]:
             scheduler.step()
         if ema is not None:
-            ema.update()                   # after the clipped step, so the average tracks what was applied
+            ema.update()                   # only after an actual LoRA update; head-only warm-up does not advance EMA
+        if block_local_flow:
+            block_local_optimizer_steps += 1
+            if (block_local_lora_ramp_steps
+                    and block_local_optimizer_steps == block_local_head_warmup_steps + block_local_lora_ramp_steps):
+                logger.info(f"[block-local] LoRA activation ramp complete at optimizer update "
+                            f"{block_local_optimizer_steps}; full configured learning rate is now active.")
         pending = 0
 
     def _early_final(final, epoch):
@@ -3518,6 +3782,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     # per-step routing (a family's step_frozen_blocks): those blocks' trainable weights sit out this
                     # step's forward and backward, so the backward stops at the first trained block and they get no grad
                     _frozen_now = _step_freeze(driver.step_frozen_blocks(batch))
+                    if block_local_flow:
+                        _head_only_now, _ = _block_local_warmup_phase(
+                            block_local_optimizer_steps, block_local_head_warmup_steps, block_local_lora_ramp_steps)
+                        driver.set_block_local_head_only(_head_only_now)
                     _lm = _loss_mask(batch)
                     loss, _info = driver.training_loss(dit, latents, cond, gen, min_t=min_timestep, max_t=max_timestep,
                                                        **({"refs": refs} if refs else {}),
@@ -3528,6 +3796,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     lr_acc[-1] *= _info["lr_mult"]     # where the step landed (the H3 noise-band LR)
                 if pending == 0 and optimizer is not None:
                     optimizer.zero_grad(set_to_none=True)
+                    if local_head_optimizer is not None:
+                        local_head_optimizer.zero_grad(set_to_none=True)
                 _wb = watch.weigh(_info, batch.get("item_keys"), reg_keys, reg_lr_multiplier) if _many else None
                 if _wb is not None:                # a batch: each picture at its own weight (loss_watch.Watch.weigh)
                     _scaled, loss, _kept = _wb
@@ -3549,7 +3819,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     _dc = None
                 if ftr is not None and ftr.fused is not None:
                     ftr.fused.scale = lr_acc[-1] if lr_acc else 1.0   # each weight steps in this backward's hooks
-                (_scaled / accum if accum > 1 else _scaled).backward()
+                if getattr(driver, "manual_loss_backward", False):
+                    if _wb is not None:
+                        raise RuntimeError("Block-local flow matching does not support batched loss weighting.")
+                    driver.backward_training_loss(float(mult) / (accum if accum > 1 else 1))
+                else:
+                    (_scaled / accum if accum > 1 else _scaled).backward()
                 if _dc is not None and ftr is None:
                     dop_sum[0] += _dop_step(driver, dit, net, latents, _dc, gen, weight=dop_weight,
                                             min_t=min_timestep, max_t=max_timestep, accum=accum,
@@ -3985,6 +4260,17 @@ def setup_parser():
                    choices=["constant", "constant_with_warmup", "cosine", "cosine_with_restarts", "linear",
                             "polynomial"])
     p.add_argument("--lr_warmup_steps", type=int, default=0)
+    p.add_argument("--block_local_head_warmup_steps", type=int, default=0,
+                   help="Krea 2 block-local: train temporary velocity heads only for this many optimizer updates")
+    p.add_argument("--block_local_lora_ramp_steps", type=int, default=0,
+                   help="Krea 2 block-local: ramp the LoRA learning rate from 1/N to full over N optimizer updates "
+                        "after the head-only warm-up")
+    p.add_argument("--residual_path_exact_every", type=int, default=8,
+                   help="Krea 2 residual-path hybrid: exact global-loss gradient replay every N optimizer updates "
+                        "(minimum 2; intervening updates use residual identity-path credit)")
+    p.add_argument("--residual_path_approx_lr_multiplier", type=float, default=2.0,
+                   help="Krea 2 residual-path hybrid: multiply the scheduled LR on approximate identity-credit "
+                        "updates only; exact calibration updates retain the unmodified LR (default 2.0)")
     p.add_argument("--lr_scheduler_num_cycles", type=int, default=1)
     p.add_argument("--lr_scheduler_power", type=float, default=1.0)
     p.add_argument("--dop", action="store_true",
@@ -4085,6 +4371,10 @@ def main():
         ema_decay=a.ema_decay, optimizer_type=a.optimizer_type, optimizer_args=a.optimizer_args,
         lr_scheduler=a.lr_scheduler, lr_warmup_steps=a.lr_warmup_steps,
         lr_scheduler_num_cycles=a.lr_scheduler_num_cycles, lr_scheduler_power=a.lr_scheduler_power,
+        block_local_head_warmup_steps=a.block_local_head_warmup_steps,
+        block_local_lora_ramp_steps=a.block_local_lora_ramp_steps,
+        residual_path_exact_every=a.residual_path_exact_every,
+        residual_path_approx_lr_multiplier=a.residual_path_approx_lr_multiplier,
         gradient_accumulation_steps=a.gradient_accumulation_steps, compile_blocks=a.compile_blocks,
         gradient_checkpointing=True if a.gradient_checkpointing == "on" else "auto",
         batch_size_auto=a.batch_size_auto,

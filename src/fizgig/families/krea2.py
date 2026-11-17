@@ -6,7 +6,7 @@ Facts are the original trainer's (src/fizgig/krea2/trainer.py - removed with the
 from fizgig.training.optimizers import MUON_DEFAULT_ARGS
 from fizgig.families.description import (
     GENERAL_NEGATIVE,
-    FamilyDescription, LoRAFormat, ModelFile, SamplingSettings, SpeedLoRA, TextEncoderBuild,
+    FamilyDescription, FamilyOption, LoRAFormat, ModelFile, SamplingSettings, SpeedLoRA, TextEncoderBuild,
 )
 from fizgig.training import timestep_spread
 
@@ -33,6 +33,99 @@ def _preset(rank, lr=1e-4, adaptive=None, epochs=30, slider=False, mp="0.25"):
 
 KREA2 = FamilyDescription(
     key="krea2",
+    options=(FamilyOption(
+        key="KREA2_TRAINING_METHOD",
+        label="Training method",
+        choices=(("Standard backprop", ""),
+                 ("Blockwise flow (experimental)", "training_method=block_local"),
+                 ("Selective global replay (experimental)", "training_method=selective_global_replay"),
+                 ("Blockwise flow H2D (experimental)", "training_method=block_local_h2d"),
+                 ("Selective global replay H2D (experimental)", "training_method=selective_global_replay_h2d"),
+                 ("Residual-path hybrid (experimental)", "training_method=residual_path_hybrid"),
+                 ("Residual-path hybrid H2D (experimental)", "training_method=residual_path_hybrid_h2d"),
+                 ("Residual-path hybrid H2D — selective A (experimental)",
+                  "training_method=residual_path_hybrid_h2d_selective_a")),
+        choice_values=("", "Block-local flow matching (experimental)", "selective_global_replay",
+                       "block_local_h2d", "selective_global_replay_h2d", "residual_path_hybrid",
+                       "residual_path_hybrid_h2d", "residual_path_hybrid_h2d_selective_a"),
+        default="Standard backprop",
+        section="other",
+        mode="lora",
+        hint=("Blockwise flow replays the exact global Krea 2 loss one transformer block at a time. Selective global "
+              "replay uses that same replay and global loss, adding adaptive block selection: it measures each block's "
+              "actual optimizer-step direction, skips LoRA adapter-gradient computation for blocks whose recent "
+              "updates point uphill, and periodically reactivates all blocks to reassess them. The H2D choices run "
+              "the same respective algorithms but explicitly use Fizgig's H2D-only block offloader (host-to-device "
+              "streaming after a one-time CPU-master setup, with no per-step device-to-host swaps; they do not change the replay order or training objective. "
+              "Residual-path hybrid uses one ordinary forward on most updates, then estimates credit for the "
+              "attn.wo and mlp.down LoRA B factors by carrying the final readout signal through the residual identity "
+              "paths. Every Nth optimizer update runs exact global replay to refresh both LoRA factors. Its H2D "
+              "choice uses the same H2D-only offloader. The selective-A H2D variant updates B on every approximate "
+              "step and updates A every fourth approximate step, staging its full-width inputs through pinned host "
+              "RAM. All experimental choices require batch 1 and standard LoRA; "
+              "only the 28 main transformer blocks train, while text-fusion and I/O adapters remain frozen. H2D may "
+              "fall back to classic swapping if the selected weights cannot be streamed safely."),
+        summary="{} (experimental)",
+    ), FamilyOption(
+        key="KREA2_BLOCK_LOCAL_HEAD_WARMUP_STEPS",
+        label="Blockwise head-only warm-up",
+        kind="entry",
+        tokens="--block_local_head_warmup_steps={}",
+        default="0",
+        width=8,
+        suffix="optimizer updates",
+        section="other",
+        mode="lora",
+        requires="KREA2_TRAINING_METHOD=Blockwise flow (experimental)|Blockwise flow H2D (experimental)",
+        hint=("Train the temporary per-block velocity heads while the LoRA is completely frozen. Muon, its weight "
+              "decay/momentum state, the LR scheduler and LoRA EMA do not step during this phase. Counted in "
+              "optimizer updates, after gradient accumulation."),
+        summary="Head-only warm-up: {} updates",
+    ), FamilyOption(
+        key="KREA2_BLOCK_LOCAL_LORA_RAMP_STEPS",
+        label="Blockwise LoRA activation ramp",
+        kind="entry",
+        tokens="--block_local_lora_ramp_steps={}",
+        default="0",
+        width=8,
+        suffix="optimizer updates",
+        section="other",
+        mode="lora",
+        requires="KREA2_TRAINING_METHOD=Blockwise flow (experimental)|Blockwise flow H2D (experimental)",
+        hint=("After the head-only phase, ramp the LoRA optimizer's current learning rate from 1/N to full over N "
+              "updates. Works as a multiplier with Muon and its match_rms_adamw adjustment."),
+        summary="LoRA activation ramp: {} updates",
+    ), FamilyOption(
+        key="KREA2_RESIDUAL_PATH_EXACT_EVERY",
+        label="Exact calibration interval",
+        kind="entry",
+        tokens="--residual_path_exact_every={}",
+        default="8",
+        width=8,
+        suffix="optimizer updates",
+        section="other",
+        mode="lora",
+        requires="KREA2_TRAINING_METHOD=Residual-path hybrid (experimental)|Residual-path hybrid H2D (experimental)|Residual-path hybrid H2D — selective A (experimental)",
+        hint=("Run an exact global-loss block replay every N optimizer updates. Updates between calibrations use "
+              "residual identity-path credit for the attention-output and MLP-down LoRA B factors. The selective-A "
+              "variant also updates those A factors every fourth approximate update. Exact updates refresh both A "
+              "and B factors. Minimum 2; default 8."),
+        summary="Exact calibration every {} updates",
+    ), FamilyOption(
+        key="KREA2_RESIDUAL_PATH_APPROX_LR_MULTIPLIER",
+        label="Approximate update LR multiplier",
+        kind="entry",
+        tokens="--residual_path_approx_lr_multiplier={}",
+        default="2.0",
+        width=8,
+        suffix="×",
+        section="other",
+        mode="lora",
+        requires="KREA2_TRAINING_METHOD=Residual-path hybrid (experimental)|Residual-path hybrid H2D (experimental)|Residual-path hybrid H2D — selective A (experimental)",
+        hint=("Multiply the current scheduled learning rate only on residual identity-path approximate updates. "
+              "Exact global-loss calibration updates keep the unmodified learning rate. Default 2.0×."),
+        summary="Approximate updates: {}× LR",
+    )),
     trigger_attention=True,           # training maps' trigger-word map (an experiment)
     start_lr_bands=(("lora", 3e-5, 3e-4), ("slider", 7e-5, 6e-4)),
     masked_training=True,

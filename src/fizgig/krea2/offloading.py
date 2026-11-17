@@ -982,10 +982,13 @@ class LoRAStreamOffloader:
             self._bind(prev, self.cpu_master[prev])
 
         # single coalesced H2D copy of the whole block, gated behind the slot's free_event (compute done
-        # with it). The ring params are views into ring_flat, so the copy bumps their autograd version
-        # counter: safe under gradient checkpointing (weights are re-read at recompute time, and a slot is
-        # only overwritten after its free_event); without checkpointing autograd raises a version error
-        # instead of silently using stale-saved weights -- which the old per-tensor `.data.copy_` hid.
+        # with it). The ring params are views into ring_flat, so the copy bumps their autograd version counter.
+        # This is safe under gradient checkpointing (weights are re-read at recompute time, and a slot is only
+        # overwritten after its free_event). Krea 2's manual block replay is also safe without checkpointing: it
+        # builds and backpropagates one block's graph immediately before the next reverse-replay block can reuse
+        # that ring slot. A conventional full-model autograd graph still needs gradient checkpointing; otherwise
+        # autograd correctly raises a version error instead of silently using stale-saved weights -- which the old
+        # per-tensor `.data.copy_` hid.
         self.copier.submit(blk, self.ring_flat[slot], self.cpu_flat[blk], self.free_event[slot])
         self.transfers["h2d_copies"] += 1
         self.transfers["h2d_bytes"] += self.cpu_flat[blk].numel()
