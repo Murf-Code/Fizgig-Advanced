@@ -1467,6 +1467,7 @@ def train_command(desc, inputs, plan):
             m = re.match(r"\d+", str(st.get(key, dflt) or dflt).strip())
             return m.group() if m else dflt
         cmd += ["--validation_loss", "--validation_images", _vi("VALIDATION_IMAGES", "4"),
+                "--validation_groups", str(validation_groups(st)),
                 "--validation_timesteps", _vi("VALIDATION_TIMESTEPS", "4"),
                 "--validation_seed", _vi("VALIDATION_SEED", "42"),
                 "--validation_every_steps", str(validation_every_steps(st.get("VALIDATION_EVERY_STEPS")))]
@@ -2536,6 +2537,12 @@ _HOW = {"picked": "your validation pictures", "auto": "picked by Fizgig: about a
          "main folder, spread over picture shapes", "resume": "the same ones as before the pause"}
 
 
+def validation_groups(st):
+    """Image Validation's Validation groups: 1 to 3 (anything else, or nothing: 1 - the check as it always was)."""
+    from fizgig.training.val_pick import clamp_groups
+    return clamp_groups(st.get("VALIDATION_GROUPS") or 1)
+
+
 def holdout_on(st):
     """Validation hold-out's switch (Image Validation): on unless switched off."""
     v = st.get("VALIDATION_HOLDOUT", True)
@@ -2572,7 +2579,8 @@ def holdout_pick(desc, st, toml_text):
     except (AttributeError, ValueError):
         cap = 4
     from fizgig.training.val_pick import picked_list
-    return _ho.choose(_ho.candidates(toml_text), cap, picked_list(st.get("VALIDATION_PICKED")))
+    return _ho.choose(_ho.candidates(toml_text), cap, picked_list(st.get("VALIDATION_PICKED")),
+                      groups=validation_groups(st))
 
 
 def plan(desc, inputs):
@@ -2627,6 +2635,9 @@ def plan(desc, inputs):
             p.dataset_toml = dataset_toml(desc, inputs)
             shown = ", ".join(names[:6]) + (f" and {len(names) - 6} more" if len(names) > 6 else "")
             how_txt = _HOW.get(how, how)
+            if how == "auto" and validation_groups(inputs) > 1:
+                how_txt = ("picked by Fizgig: up to a fifth of the pictures in the main folder, spread over picture "
+                           f"shapes, for {validation_groups(inputs)} validation groups")
             if why:
                 how_txt = f"{how_txt}; {why.lstrip('; ').rstrip()}"
             p.console.append(f"[validation] Hold-out: {len(paths)} picture(s) set aside for validation for the whole "

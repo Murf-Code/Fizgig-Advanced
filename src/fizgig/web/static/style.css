@@ -53,6 +53,9 @@
   --data-green: #70AD47;       /* Identity */
   --data-olive: #B8A547;       /* ID/Detail */
   --data-orange: #ED7D31;      /* Details */
+  --vg-1: #F26CA7;             /* validation groups on the loss graph: pink, lime, yellow ... */
+  --vg-2: #A3E04A;
+  --vg-3: #F2D45A;             /* ... each also has its own dash pattern and mark, so colour is never the only cue */
 
   /* ---- Fixed: over pictures and masks, the same in every theme ---- */
   --pic-text: #FFFFFF;         /* Labels and badges on a picture, the QR code's light */
@@ -2630,6 +2633,19 @@ a.pick-pill-vast:hover { border-color: var(--success); }
 .lg-ravg { fill: none; stroke: var(--gold); stroke-width: 2.5; }
 .lg-val { fill: none; stroke: var(--data-teal); stroke-width: 2.5; stroke-dasharray: 6 3; }
 .lg-val-dot { fill: var(--data-teal); stroke: var(--bg-surface); stroke-width: 1.2; }
+/* validation groups: thin lines under the thick dashed average, each its own colour, dash pattern and mark; the
+   colour-blind-safe theme and the others re-map --vg-1..3 below */
+.lg-vg { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+.lg-vg-1 { stroke: var(--vg-1); }
+.lg-vg-2 { stroke: var(--vg-2); stroke-dasharray: 2 3; }
+.lg-vg-3 { stroke: var(--vg-3); stroke-dasharray: 9 2 2 2; }
+.lg-vg-dot { stroke: var(--bg-surface); stroke-width: 0.8; }
+.lg-vg-dot-1 { fill: var(--vg-1); }
+.lg-vg-dot-2 { fill: var(--vg-2); }
+.lg-vg-dot-3 { fill: var(--vg-3); }
+.loss-graph-svg .lg-vg-band { fill: var(--data-teal); fill-opacity: 0.16; stroke: none; }
+.lg-sw-vgband { height: 10px; border: 0; background: var(--data-teal); opacity: 0.3; }
+.lg-vg-sw { overflow: visible; }
 .loss-graph-svg .lg-stop { stroke: var(--danger); stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
 .loss-graph-svg .lg-stop-label { fill: var(--danger-text); }
 .loss-graph-svg .lg-stop-best { fill: none; stroke: var(--danger); stroke-width: 2; vector-effect: non-scaling-stroke; }
@@ -2835,6 +2851,7 @@ a.pick-pill-vast:hover { border-color: var(--success); }
   --danger-text: #B91C1C; --gold: #D4A106;
   --special-strong: #1F1F1F; --special: #4A4A4A; --special-soft: #7A7A7A; --special-text: #2A2A2A; --special-light: #111111;
   --data-blue: #3F7FBF; --data-teal: #3A9488; --data-green: #4E8F2A; --data-olive: #9A8A2A; --data-orange: #E0661A;
+  --vg-1: #C2417F; --vg-2: #5E8F12; --vg-3: #9A7A00;
   --radius: 4px; --radius-sm: 2px;
   --pulse: #DC2626;
 }
@@ -2935,6 +2952,7 @@ a.pick-pill-vast:hover { border-color: var(--success); }
   --special-strong: #A8578A; --special: #CC79A7; --special-soft: #D89BBE; --special-text: #E5B5D0; --special-light: #F0D3E3;
   --data-blue: #0072B2; --data-teal: #56B4E9; --data-green: #009E73; --data-olive: #F0E442; --data-orange: #D55E00;
   --pic-remove: #D55E00;
+  --vg-1: #E69F00; --vg-2: #CC79A7; --vg-3: #F0E442;      /* Okabe-Ito: orange, reddish purple, yellow */
   --pulse: #D55E00;
 }
 
@@ -2951,6 +2969,7 @@ a.pick-pill-vast:hover { border-color: var(--success); }
   --danger-text: #FF9B9B; --gold: #FFE45C;
   --special-strong: #C9A8FF; --special: #D6BBFF; --special-soft: #E2CEFF; --special-text: #EBDDFF; --special-light: #F5EEFF;
   --data-blue: #6CB4FF; --data-teal: #4DE8D8; --data-green: #7DFF7D; --data-olive: #FFE45C; --data-orange: #FF9E4D;
+  --vg-1: #FF8FD0; --vg-2: #B8FF5C; --vg-3: #FFE45C;
   --pulse: #FF6B6B;
 }
 /* High contrast's brand buttons keep white text; links are underlined; a clear focus ring */

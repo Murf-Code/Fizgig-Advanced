@@ -77,7 +77,7 @@ def test_trainer_wiring():
     src = open(os.path.join(ROOT, "families", "train.py"), encoding="utf-8").read()
     assert '_vsnap = os.path.join(output_dir, f".fizgig_val_{output_name}.pt")' in src
     assert "_vs = validator.restore(_vsnap)" in src and "os.remove(_vsnap)" in src
-    assert "seg=validator.seg)" in src
+    assert "seg=validator.seg," in src and "groups=getattr(validator" in src
     assert 'so the validation line starts a new "' in src and 'section from epoch {start_epoch + 1}.' in src
 
 

@@ -155,7 +155,7 @@ DEFAULTS = {
     "SAVE_LATER": False, "SAVE_UNTIL_EPOCH": "10", "SAVE_EVERY_AFTER": "1",
     "SEED": "42", "BLOCKS_SWAP": "Auto (detect from GPU)", "RESUME_TRAINING": "", "OPTIMIZER_TYPE": "adamw8bit",
     "OPTIMIZER_ARGS": "", "GRADIENT_ACCUMULATION": "1", "BATCH_SIZE": "1", "MAX_GRAD_NORM": "1.0", "LR_SCHEDULER": "constant",
-    "LR_WARMUP_STEPS": "", "VALIDATION_LOSS": False, "VALIDATION_IMAGES": "4", "VALIDATION_TIMESTEPS": "4",
+    "LR_WARMUP_STEPS": "", "VALIDATION_LOSS": False, "VALIDATION_IMAGES": "4", "VALIDATION_GROUPS": "1", "VALIDATION_TIMESTEPS": "4",
     "VALIDATION_SEED": "42", "VALIDATION_EVERY_STEPS": "0", "VALIDATION_PICKED": [], "VALIDATION_HOLDOUT": True, "INT8_ROTATED_BACKWARD": False,
     "POLORA_MAGNITUDE": "", "POLORA_CURVATURE": "", "POLORA_COMPILE": True,
     "VALIDATION_EARLY_STOP": False, "VALIDATION_PATIENCE": "3", "ADAPTIVE_LR": False, "ADAPTIVE_LR_ON_VAL": True, "ADAPTIVE_LR_MIN": "1e-5", "ADAPTIVE_LR_MAX": "4e-4",
@@ -1002,12 +1002,20 @@ def form(desc):
         _row("VALIDATION_IMAGES", "Images to check", hint="Used when you haven't picked any: picked evenly from "
              "pictures in the main training folder (not subfolders), the same ones every check (and every run of "
              "this dataset). With the hold-out on, Fizgig sets aside about a tenth of those pictures, up to this "
-             "many."),
+             "many (for each group, with Validation groups below)."),
+        _row("VALIDATION_GROUPS", "Validation groups", "choice",
+             "1 checks the images as one set, as it always has. 2 or 3 checks that many separate sets of Images to "
+             "check (Fizgig picks them for you, or deals your own picked images between them) and draws each set as "
+             "its own thin line on the loss graph, under the average. If every line dips on the same epoch, the dip "
+             "is real; if only one does, that set just had a bad check. Early stop and Adaptive LR keep going by the "
+             "average. Each check takes that many times longer, and with the hold-out on up to a fifth of your "
+             "pictures are set aside.", ["1", "2", "3"], default="1"),
         _row("VALIDATION_HOLDOUT", "Hold the validation images out of training", "check",
              "On (default): a few pictures are set aside before the cache is made and never train, so validation "
              "measures pictures the LoRA hasn't seen - it turns up when the LoRA starts to overcook instead of just "
              "memorising. Your picked images are the ones set aside; none picked, Fizgig picks about a tenth from "
-             "the main training folder, not from subfolders (none for under 5 pictures). They come back to the "
+             "the main training folder, not from subfolders (about a fifth with Validation groups; none for under 5 "
+             "pictures). They come back to the "
              "dataset when the run stops, pauses or ends, and a resume "
              "sets aside the same ones. Works with or without Fixed validation loss. Off: every picture trains.",
              full=True),
@@ -1408,6 +1416,18 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
     if picked_list(values.get("VALIDATION_PICKED")):    # your own validation images: the count is not used
         disabled.add("VALIDATION_IMAGES")
         notes["VALIDATION_IMAGES"] = "Not used: your picked images are checked instead."
+    from fizgig.training.val_pick import clamp_groups
+    _vg = clamp_groups(values.get("VALIDATION_GROUPS") or 1)
+    _picks = len(picked_list(values.get("VALIDATION_PICKED")))
+    if _vg > 1 and _picks:
+        notes["VALIDATION_GROUPS"] = (f"Your {_picks} picked image(s) are dealt between the groups." if _picks >= _vg
+                                      else f"Only {_picks} picked image(s): that many groups, one image each.")
+    elif _vg > 1:
+        try:
+            _per = max(1, int(str(values.get("VALIDATION_IMAGES") or "4").strip()))
+        except ValueError:
+            _per = 4
+        notes["VALIDATION_GROUPS"] = f"{_vg} groups of {_per} images: {_vg * _per} in all, {_vg}x the time a check takes."
     poll = False                                  # something is under way (a download): the page asks again soon
     ck_turbo = False                              # previews on a preview checkpoint that takes the Turbo LoRA
     hidden |= ({"TURBO_MISSING"} if speed_file else

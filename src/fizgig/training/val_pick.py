@@ -2,6 +2,17 @@
 trainer finds them in the dataset. No torch here: the web form and the launcher use it too."""
 
 
+MAX_GROUPS = 3          # Validation groups: the most the form offers
+
+
+def clamp_groups(n):
+    """The Validation groups setting as a whole number from 1 to MAX_GROUPS (anything else: 1, the check as ever)."""
+    try:
+        return max(1, min(MAX_GROUPS, int(float(str(n).strip()))))
+    except (TypeError, ValueError):
+        return 1
+
+
 MEDIA_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".avif", ".jxl", ".mp4", ".webm",
               ".mov", ".mkv", ".avi", ".wav", ".mp3", ".flac", ".ogg"}
 

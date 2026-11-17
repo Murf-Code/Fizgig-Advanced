@@ -169,7 +169,7 @@ def test_validation_rows_live_in_samples_and_stay_in_presets():
     assert sec["title"] == "Image Validation" and sec["tab"] == "samples" and sec["collapsed"] is True
     samples = [s["id"] for s in secs if s["tab"] == "samples"]
     assert samples.index("validation") > samples.index("samples")  # after the preview cards
-    assert [r["key"] for r in sec["rows"]] == ["VALIDATION_LOSS", "VALIDATION_PICKED", "VALIDATION_IMAGES",
+    assert [r["key"] for r in sec["rows"]] == ["VALIDATION_LOSS", "VALIDATION_PICKED", "VALIDATION_IMAGES", "VALIDATION_GROUPS",
                                                "VALIDATION_HOLDOUT", "VALIDATION_TIMESTEPS", "VALIDATION_SEED", "VALIDATION_EVERY_STEPS",
                                                "VALIDATION_EARLY_STOP", "VALIDATION_PATIENCE",
                                                "ADAPTIVE_LR_ON_VAL"]

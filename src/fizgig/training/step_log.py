@@ -57,14 +57,17 @@ class StepLog:
         self.buf.append(json.dumps({"k": "pf", "s": int(step), "f": float(f"{factor_size:.6g}"),
                                     "m": float(f"{magnitude:.6g}")}) + "\n")
 
-    def add_validation(self, step, epoch, loss, per_t=None, seconds=None, seg=0):
-        """A fixed validation check: {"k": "val", "s", "e", "v": mean, "vt": [per timestep], "sec"}. It has no "l",
-        so anything reading only step lines skips it. Written straight away (one a check)."""
+    def add_validation(self, step, epoch, loss, per_t=None, seconds=None, seg=0, groups=None):
+        """A fixed validation check: {"k": "val", "s", "e", "v": mean, "vt": [per timestep], "vg": [per group],
+        "sec"}. It has no "l", so anything reading only step lines skips it. "vg" is there only with 2 or 3
+        validation groups (a group with nothing to score is null). Written straight away (one a check)."""
         if self.path is None:
             return
         rec = {"k": "val", "s": int(step), "e": int(epoch), "v": round(float(loss), 6)}
         if per_t:
             rec["vt"] = [round(float(x), 6) for x in per_t]
+        if groups:
+            rec["vg"] = [None if x is None else round(float(x), 6) for x in groups]
         if seconds is not None:
             rec["sec"] = round(float(seconds), 1)
         if seg:                      # a new section of the validation line (what's checked changed on a resume)
@@ -152,9 +155,11 @@ def read(path, max_points=4000):
     """The graph's data: {"points": [[step, epoch, loss, lr], ...] (every k-th when longer than max_points, the
     last always kept), "epochs": [[epoch, first step], ...], "steps": total, and the trend views, worked out from
     every step: "epoch_mean", "running_avg" and "val"
-    ([[step, epoch, loss, [per timestep]], ...], the fixed validation checks), and "stop": where an early stop
-    finished the run ({step, epoch, best_step, best_epoch, best}) or None}."""
-    rows, val, stop, pf = [], [], None, []
+    ([[step, epoch, loss, [per timestep]], ...], the fixed validation checks), "val_groups" (the checks of a run
+    with 2 or 3 validation groups: [[step, epoch, [mean of each group], seg], ...], [] otherwise - the "val" rows
+    keep their shape), and "stop": where an early stop finished the run ({step, epoch, best_step, best_epoch,
+    best}) or None}."""
+    rows, val, stop, pf, vgroups = [], [], None, [], []
     try:
         with open(path, encoding="utf-8") as f:
             for line in f:
@@ -170,6 +175,10 @@ def read(path, max_points=4000):
                     if d.get("k") == "val":
                         val.append([int(d["s"]), int(d["e"]), float(d["v"]), d.get("vt") or []]
                                    + ([int(d["seg"])] if d.get("seg") else []))   # [.., seg] from a new section
+                        if d.get("vg"):
+                            vgroups.append([int(d["s"]), int(d["e"]),
+                                            [None if x is None else float(x) for x in d["vg"]],
+                                            int(d.get("seg") or 0)])
                         continue
                     rows.append([int(d["s"]), int(d["e"]), float(d["l"]), d.get("lr")])
                 except (ValueError, KeyError, TypeError, AttributeError):
@@ -188,5 +197,5 @@ def read(path, max_points=4000):
     if rows and pts[-1] is not rows[-1]:
         pts.append(rows[-1])
     return {"points": pts, "epochs": epochs, "steps": len(rows), "stride": k, "epoch_mean": epoch_means(rows),
-            "running_avg": _thin(running_avg(rows), max_points), "val": val, "stop": stop,
+            "running_avg": _thin(running_avg(rows), max_points), "val": val, "val_groups": vgroups, "stop": stop,
             "polora": _thin(pf, max_points)}

@@ -19,12 +19,14 @@ pictures sorted by shape, so every aspect is represented. Subfolders (crops, clo
 with Include sub-folders) are left out of the automatic pick. If the main folder has nothing to pick from (Image
 Prep trains those pictures from resized/, or everything lives in subfolders), resized/ is used next, then the
 other training folders, still leaving crops/ out; the log says so. Never every picture; a set under MIN_POOL
-pictures holds none. The same dataset always gives the same pick. No torch here (the web form and Start use it)."""
+pictures holds none. With 2 or 3 validation groups the pick is up to groups x Images to check, taking about a fifth
+of the pictures at most. The same dataset always gives the same pick. No torch here (the web form and Start use it)."""
 import json
 import os
 
 HOLDOUT_CACHE = "_fizgig_holdout"   # the cache folder's sub-folder of the set-aside pictures' cache
 SHARE = 0.10                        # about this much of the pictures when none are picked
+SHARE_GROUPS = 0.20                 # ... and this much with 2 or 3 validation groups (each needs its own pictures)
 MIN_POOL = 5                        # fewer pictures than this: none held out
 
 
@@ -155,10 +157,14 @@ def _auto_folders(cands):
     return [], "no pictures in the main folder to pick from"
 
 
-def choose(cands, cap=4, picked=()):
+def choose(cands, cap=4, picked=(), groups=1):
     """(paths, names, how, why): the pictures to hold out. how: "picked" / "auto" / "" (none, why says so).
     The automatic pick uses the main training folder only (see _auto_folders); hand-picked pictures can
-    come from any folder."""
+    come from any folder. groups (Validation groups, 1 to 3): each group needs Images to check pictures of its
+    own, so the pick is up to groups x cap, and the share it may take rises from about a tenth to about a fifth;
+    when that is not enough for a full set in every group, why says how many pictures the groups share."""
+    from fizgig.training.val_pick import clamp_groups
+    groups = clamp_groups(groups)
     from fizgig.training.val_pick import picked_list, resolve_picked
     flat = [(prefix + os.path.basename(p), p) for prefix, pics in cands for p in pics]
     n = len(flat)
@@ -176,7 +182,15 @@ def choose(cands, cap=4, picked=()):
     n = sum(len(pics) for _p, pics in auto)
     if n < 2:
         return [], [], "", note or f"only {n} picture(s) in the main folder to pick from"
-    k = min(max(1, int(cap or 1)), max(1, round(n * SHARE)), n - 1)
+    want = max(1, int(cap or 1)) * groups
+    k = min(want, max(1, round(n * (SHARE_GROUPS if groups > 1 else SHARE))), n - 1)
+    if groups > 1 and k < want:
+        fit = min(groups, k)
+        extra = (f"{groups} validation groups would need {want} pictures, but a hold-out takes about a fifth of "
+                 f"the pictures at most: {k} are held out, "
+                 + (f"in {fit} group(s) of about {k // fit}" if fit < groups
+                    else f"about {k // groups} in each group"))
+        note = f"{note}; {extra}" if note else extra
     sizes = [len(pics) for _p, pics in auto]
     quota = [k * s // n for s in sizes]                  # each folder its share, the rest to the largest remainders
     for i in sorted(range(len(sizes)), key=lambda i: (-(k * sizes[i] % n), i))[:k - sum(quota)]:

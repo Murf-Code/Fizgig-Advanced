@@ -18,6 +18,12 @@ both rewrite the cache's text embedding) trains from the next epoch but never re
 measuring the same thing. The snapshot is saved beside the loss log (.fizgig_val_<name>.pt) once every image is kept,
 and a resumed run checks against it again; resumed with other validation settings (other images, noise levels or
 seed), the check starts over and its line starts a new section (`seg`) from there.
+
+Validation groups (1 to 3, default 1): the pictures to check are picked as ever (your own picks, the hold-out's, or the
+automatic pick of groups x Images to check) and then dealt round-robin into that many groups, in shape order, so each
+group is spread over the picture shapes. Every picture keeps its own noise seed (its place in the picked list), so
+one group is exactly the old check. A check still returns the one overall mean (early stop and Adaptive LR go by it);
+each group's own mean is left in `last_groups` for the loss graph - empty with one group.
 """
 import logging
 import os
@@ -25,7 +31,7 @@ import time
 
 import torch
 
-from fizgig.training.val_pick import picked_list, resolve_picked  # noqa: F401
+from fizgig.training.val_pick import MAX_GROUPS, clamp_groups, picked_list, resolve_picked  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +40,26 @@ def fixed_timesteps(n):
     """n evenly spaced noise levels inside (0, 1): cell centres, e.g. 4 -> 0.125, 0.375, 0.625, 0.875."""
     n = max(1, int(n))
     return [(k + 0.5) / n for k in range(n)]
+
+
+def _aspect(reso):
+    try:
+        return float(reso[0]) / max(1.0, float(reso[1]))
+    except (TypeError, ValueError, IndexError):
+        return 0.0
+
+
+def deal_groups(pool, groups, shapes=None):
+    """The picked keys dealt round-robin into `groups` groups (never more groups than pictures): the pictures are
+    put in shape order first (shapes: {key: bucket size}, else the picked order), so every group holds some of each
+    shape. Deterministic. One group is the picked list as it is."""
+    pool = list(pool)
+    groups = max(1, min(clamp_groups(groups), len(pool)))
+    if groups == 1:
+        return [pool]
+    shapes = shapes or {}
+    order = sorted(range(len(pool)), key=lambda i: (_aspect(shapes.get(pool[i])) if pool[i] in shapes else 0.0, i))
+    return [[pool[i] for i in order[g::groups]] for g in range(groups)]
 
 
 def pick_keys(keys, n):
@@ -91,13 +117,20 @@ def one_picture(batch, i):
 
 
 class FixedValidation:
-    def __init__(self, keys, *, images=4, timesteps=4, seed=42, every_steps=0, picked=None):
+    def __init__(self, keys, *, images=4, timesteps=4, seed=42, every_steps=0, picked=None, groups=1, shapes=None):
         self.picked, self.missing = resolve_picked(picked, keys) if picked_list(picked) else ([], [])
         for m in self.missing:
             logger.warning(f"[validation] picked image {m!r} is not in this run's dataset (or its cache) - skipped")
         if picked_list(picked) and not self.picked:
             logger.warning("[validation] none of the picked images are in the dataset - using the automatic pick")
-        self.wanted = self.picked or auto_pick_keys(keys, images)
+        want_groups = clamp_groups(groups)
+        # the picture pool: your picks, or groups x Images to check from the automatic pick (the same rules as ever)
+        self.wanted = self.picked or auto_pick_keys(keys, int(images) * want_groups)
+        self.groups = deal_groups(self.wanted, want_groups, shapes) if self.wanted else [[]]
+        if len(self.groups) < want_groups and self.wanted:
+            logger.info(f"[validation] only {len(self.wanted)} image(s) to check, so {len(self.groups)} validation "
+                        f"group(s) instead of {want_groups}")
+        self.last_groups = []        # the latest check's mean for each group (empty with one group)
         self.ts = fixed_timesteps(timesteps)
         self.seed = int(seed)
         self.every_steps = max(0, int(every_steps or 0))
@@ -137,7 +170,8 @@ class FixedValidation:
         return self.ready
 
     def _setup(self):
-        return {"wanted": list(self.wanted), "ts": [round(t, 6) for t in self.ts], "seed": self.seed}
+        return {"wanted": list(self.wanted), "ts": [round(t, 6) for t in self.ts], "seed": self.seed,
+                "groups": [list(g) for g in self.groups]}
 
     def save(self):
         """The snapshot to snapshot_path, once (never fatal)."""
@@ -163,7 +197,10 @@ class FixedValidation:
         except Exception:
             return "none"
         prev_seg = int(snap.get("seg") or 0)
-        if {k: snap.get(k) for k in ("wanted", "ts", "seed")} != self._setup() or \
+        cur = self._setup()
+        # a snapshot from before the groups had none: the one group of every picture
+        was_groups = snap.get("groups") or [snap.get("wanted")]
+        if any(snap.get(k) != cur[k] for k in ("wanted", "ts", "seed")) or was_groups != cur["groups"] or \
                 not isinstance(snap.get("batches"), dict) or set(snap["batches"]) != set(self.wanted):
             self.seg = prev_seg + 1
             return "changed"
@@ -187,6 +224,7 @@ class FixedValidation:
         cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
         modes = [(m, m.training) for m in (dit, net) if isinstance(m, torch.nn.Module)]
         per_t = [[] for _ in self.ts]
+        per_img = {}
         streaming = False
         try:
             if swapped:
@@ -208,6 +246,7 @@ class FixedValidation:
                         loss, _ = driver.training_loss(dit, latents, cond, g, min_t=t, max_t=t,
                                                        **({"refs": refs} if refs else {}))
                         per_t[i].append(float(loss))
+                        per_img.setdefault(k, []).append(float(loss))
                     del latents, cond, refs
         finally:
             for m, was in modes:
@@ -220,6 +259,11 @@ class FixedValidation:
         means = [sum(v) / len(v) for v in per_t if v]
         if not means:
             return None
+        self.last_groups = []
+        if len(self.groups) > 1:         # each group's own mean (its pictures count alike, as in the overall mean)
+            for g in self.groups:
+                vals = [sum(per_img[k]) / len(per_img[k]) for k in g if per_img.get(k)]
+                self.last_groups.append(sum(vals) / len(vals) if vals else None)
         return sum(means) / len(means), means, time.time() - t0
 
 

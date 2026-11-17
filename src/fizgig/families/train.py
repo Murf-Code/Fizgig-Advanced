@@ -1272,6 +1272,13 @@ def _check_timestep_spread(desc, driver):
         logger.info(f"Timestep focus: {TS.LABELS[k]}")
 
 
+def _groups_text(validator):
+    """The log's "groups [g1 0.1234, g2 0.1301]  " for a check with 2 or 3 validation groups, else nothing."""
+    gs = getattr(validator, "last_groups", None) or []
+    return ("groups [" + ", ".join(f"g{i + 1} {x:.4f}" if x is not None else f"g{i + 1} -" for i, x in enumerate(gs))
+            + "]  ") if gs else ""
+
+
 def _baseline(validator, adaptive, datasets, steplog, step, epoch, run):
     """The step-0 validation baseline (see train_family): -> True when it ran. run() -> (result, failed) as
     val_loss.run_or_skip. A failed check is never fatal: the run goes on, the per-epoch checks as before."""
@@ -1282,10 +1289,10 @@ def _baseline(validator, adaptive, datasets, steplog, step, epoch, run):
     if failed or r is None:
         return False
     v, per_t, sec = r
-    steplog.add_validation(step, epoch, v, per_t, sec, seg=validator.seg)
+    steplog.add_validation(step, epoch, v, per_t, sec, seg=validator.seg, groups=getattr(validator, "last_groups", None))
     logger.info(f"[validation] step {step} (baseline): loss {v:.5f}  "
                 f"[{', '.join(f't{t:.2f} {x:.4f}' for t, x in zip(validator.ts, per_t))}]  "
-                f"{len(validator.batches)} image(s), {sec:.1f}s")
+                f"{_groups_text(validator)}{len(validator.batches)} image(s), {sec:.1f}s")
     if adaptive is not None:
         adaptive.set_baseline(v)
     return True
@@ -1439,7 +1446,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                  gradient_accumulation_steps=1, compile_blocks="auto", gradient_checkpointing="auto", blocks_to_swap=0, network_type="lora", lokr_factor=8,
                  log_per_image_loss=False, per_image_lr=False, auto_recaption=False, warmup_look_outliers=False,
                  validation_loss=False, validation_images=4, validation_timesteps=4, validation_seed=42,
-                 validation_every_steps=0, validation_picked=None, validation_holdout=False,
+                 validation_every_steps=0, validation_picked=None, validation_holdout=False, validation_groups=1,
                  int8_rotated_backward=False,
                  validation_early_stop=False, validation_patience=3, validation_min_delta=0.001,
                  auto_reclaim_vram=True, reclaim_slowdown=1.5, reclaim_slow_steps=20, reclaim_warmup_steps=50,
@@ -3460,13 +3467,23 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                         "without a cached image dataset don't have it)")
         else:
             from fizgig.training.val_loss import FixedValidation
+            # each picture's bucket size: the groups are dealt in shape order, so every group spans the shapes
+            _val_shapes = {str(it.item_key): reso for ds in getattr(group, "datasets", [])
+                           for reso, b in getattr(getattr(ds, "batch_manager", None), "buckets", {}).items()
+                           for it in b}
+            _val_shapes.update({k: reso for k, (reso, _it) in val_held.items()})
             validator = FixedValidation(val_keys or _share_keys, images=validation_images,
                                         timesteps=validation_timesteps, seed=validation_seed,
-                                        every_steps=validation_every_steps, picked=validation_picked)
+                                        every_steps=validation_every_steps, picked=validation_picked,
+                                        groups=validation_groups, shapes=_val_shapes)
             logger.info(f"[validation] fixed validation loss on: {len(validator.wanted)} "
                         + ("picked" if validator.picked else "auto-picked") + " image(s) x "
                         f"{len(validator.ts)} noise level(s), seed {validation_seed}, "
                         + (f"every {validation_every_steps} steps" if validation_every_steps else "each epoch"))
+            if len(validator.groups) > 1:
+                logger.info(f"[validation] {len(validator.groups)} validation groups of "
+                            + " / ".join(str(len(g)) for g in validator.groups) + " image(s): each group is its own "
+                            "line on the graph, and early stop and Adaptive LR go by the average of them all")
             # its snapshot (the images with the captions they had when first kept): a resume checks the same again
             _vsnap = os.path.join(output_dir, f".fizgig_val_{output_name}.pt")
             if resume_state_dir:
@@ -3528,10 +3545,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             return
         v, per_t, sec = r
         last_val[0] = v                   # adaptive LR judges on it at this epoch's end
-        steplog.add_validation(step_off + global_step, epoch_no, v, per_t, sec, seg=validator.seg)
+        steplog.add_validation(step_off + global_step, epoch_no, v, per_t, sec, seg=validator.seg,
+                               groups=getattr(validator, "last_groups", None))
         logger.info(f"[validation] step {step_off + global_step} (epoch {epoch_no}): loss {v:.5f}  "
                     f"[{', '.join(f't{t:.2f} {x:.4f}' for t, x in zip(validator.ts, per_t))}]  "
-                    f"{len(validator.batches)} image(s), {sec:.1f}s")
+                    f"{_groups_text(validator)}{len(validator.batches)} image(s), {sec:.1f}s")
         if es is None:
             return
         verdict = es.observe(v, step_off + global_step, epoch_no, seg=validator.seg)
@@ -4193,6 +4211,9 @@ def setup_parser():
     p.add_argument("--validation_timesteps", type=int, default=4)
     p.add_argument("--validation_seed", type=int, default=42)
     p.add_argument("--validation_every_steps", type=int, default=0, help="0 = at the end of each epoch")
+    p.add_argument("--validation_groups", type=int, default=1,
+                   help="1 to 3: check that many separate sets of --validation_images pictures, each its own line "
+                        "on the loss graph (1 = one set, as ever)")
     p.add_argument("--int8_rotated_backward", action="store_true",
                    help="experimental: an INT8 backward for INT8 bases, after a Hadamard rotation (may harm likeness)")
     p.add_argument("--validation_holdout", action="store_true",
@@ -4439,7 +4460,7 @@ def main():
         validation_loss=a.validation_loss, validation_images=a.validation_images,
         validation_timesteps=a.validation_timesteps, validation_seed=a.validation_seed,
         validation_every_steps=a.validation_every_steps, validation_picked=a.validation_pick,
-        validation_holdout=a.validation_holdout,
+        validation_holdout=a.validation_holdout, validation_groups=a.validation_groups,
         int8_rotated_backward=a.int8_rotated_backward,
         validation_early_stop=a.validation_early_stop, validation_patience=a.validation_patience,
         validation_min_delta=a.validation_min_delta,
