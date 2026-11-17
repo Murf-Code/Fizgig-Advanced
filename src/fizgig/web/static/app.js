@@ -343,6 +343,12 @@ function renderRow(r) {
       id: "note_" + r.key}));
     return wrap;
   }
+  if (r.kind === "folders") {                      // per-subfolder weight and repeats, under Include sub-folders
+    wrap.classList.add("kind-note");
+    wrap.append(el("div", {id: "folderTable"}));
+    wrap.append(el("div", {class: "field-hint", id: "folderTableNote"}));
+    return wrap;
+  }
   const v = S.values[r.key];
   let input;
   const set = (val) => onValue(r, val);
@@ -1083,6 +1089,7 @@ async function refreshState() {
     d.style.display = extras.some((c) => c.style.display !== "none") ? "" : "none";
   });
   turboFollow();
+  renderFolderTable();
   if (S.state.pending) setTimeout(refreshStateSoon, 2500);   // a note still being worked out (the fine-tune plan)
 }
 
@@ -1142,6 +1149,82 @@ function turboFollow() {
   // pass finds nothing to move, so this settles after one round
   if (moved.length) refreshStateSoon();
 }
+function renderFolderTable() {
+  const host = $("folderTable"), note = $("folderTableNote");
+  if (!host) return;
+  const rows = (S.state && S.state.folders) || [];
+  const balance = !!(S.values || {}).FOLDER_BALANCE;
+  const active = document.activeElement;
+  const keep = (active && host.contains(active) && active.id) ?
+    {id: active.id, start: active.selectionStart, end: active.selectionEnd} : null;
+  if (!rows.length) {
+    host.replaceChildren();
+    if (note) note.textContent = "";
+    return;
+  }
+  const th = (t) => el("td", {}, el("b", {text: t}));
+  const head = el("tr", {}, th("Folder"), th("Pictures"), th("Weight"), th("Repeats"), th("Items/epoch"));
+  const body = [head];
+  let warns = [];
+  for (const r of rows) {
+    const w = el("input", {type: "text", class: "w-num-xs", id: "folderW_" + r.rel, value: String(r.weight ?? 1),
+      title: "1 is unchanged. 0.5 trains this folder at half weight.",
+      oninput: (e) => setFolderOpt(r.rel, "weight", e.target.value)});
+    const rep = el("input", {type: "text", class: "w-num-xs", id: "folderR_" + r.rel, value: String(r.repeats ?? 1),
+      title: balance ? "Set by Balance folders." : "How many times each picture in this folder trains an epoch.",
+      oninput: (e) => setFolderOpt(r.rel, "repeats", e.target.value)});
+    rep.disabled = balance;
+    const tr = el("tr", {},
+      el("td", {text: r.label}),
+      el("td", {text: Number(r.count).toLocaleString()}),
+      el("td", {}, w),
+      el("td", {}, rep),
+      el("td", {id: "folderItems_" + r.rel, text: Number(r.items).toLocaleString()}));
+    body.push(tr);
+    if (r.cap_warn) warns.push(`${r.label} would repeat ${r.uncapped} times; it is capped at 20.`);
+    if (r.error) warns.push(`${r.label}: weight ${r.error}.`);
+  }
+  host.replaceChildren(el("table", {class: "det-table"}, ...body));
+  const total = Number((S.state && S.state.folder_items) || 0);
+  const batch = Math.max(1, parseInt(String((S.values || {}).BATCH_SIZE || "1"), 10) || 1);
+  const steps = batch <= 1 ? total : Math.ceil(total / batch);
+  let line = total ? `${total.toLocaleString()} items an epoch, about ${steps.toLocaleString()} steps/epoch` +
+    (batch > 1 ? ` at batch size ${batch}` : "") + "." : "";
+  if (warns.length) line = (line ? line + " " : "") + warns.join(" ");
+  if (note) note.textContent = line;
+  if (keep) {
+    const n = $(keep.id);
+    if (n) { n.focus(); if (n.setSelectionRange && keep.start != null) try { n.setSelectionRange(keep.start, keep.end); } catch (e) {} }
+  }
+}
+
+function setFolderOpt(rel, key, val) {
+  const opts = {...(S.values.FOLDER_OPTS || {})};
+  opts[rel] = {...(opts[rel] || {}), [key]: val};
+  S.values.FOLDER_OPTS = opts;
+  saveStateSoon();
+  // items/epoch from the typed repeats, without waiting for a form-state round trip
+  if (key === "repeats") {
+    const row = ((S.state && S.state.folders) || []).find((r) => r.rel === rel);
+    const cell = $("folderItems_" + rel);
+    const n = parseInt(String(val), 10);
+    if (row && cell && n >= 1) {
+      row.repeats = n;
+      row.items = row.count * n;
+      cell.textContent = Number(row.items).toLocaleString();
+      if (S.state) S.state.folder_items = ((S.state.folders) || []).reduce((s, r) => s + r.items, 0);
+      const note = $("folderTableNote");
+      const total = S.state.folder_items;
+      const batch = Math.max(1, parseInt(String((S.values || {}).BATCH_SIZE || "1"), 10) || 1);
+      const steps = batch <= 1 ? total : Math.ceil(total / batch);
+      if (note && !((S.state.folders) || []).some((r) => r.cap_warn || r.error))
+        note.textContent = `${Number(total).toLocaleString()} items an epoch, about ${Number(steps).toLocaleString()} steps/epoch` +
+          (batch > 1 ? ` at batch size ${batch}` : "") + ".";
+    }
+  }
+  if (key === "weight") refreshStateSoon();   // a 0 or a typo is refused at Start; the hint updates
+}
+
 const refreshStateSoon = debounce(refreshState, 250);
 
 async function renderPresets() {
@@ -1948,19 +2031,6 @@ function showProblems(list, okText) {
   box.textContent = bad ? "Can't start yet:\n• " + list.join("\n• ") : (okText || "");
 }
 
-async function check() {
-  try {
-    const p = await api("/api/plan", runBody());
-    showProblems(p.problems, "✓ All good - nothing missing, Start Training will work. It will run: " +
-      p.stages.map((s) => s.name).join(" → ") + ".");
-    if ((p.warnings || []).length) {
-      const box = $("problems");
-      box.classList.remove("ok");
-      box.textContent += (box.textContent ? "\n\n" : "") + "Worth a look:\n• " + p.warnings.join("\n• ");
-    }
-  } catch (e) { showProblems([e.message]); }
-}
-
 // the Start checks' warnings (launch.start_checks): shown with Start anyway, never a block
 function showWarnings(list, body) {
   const box = $("problems");
@@ -2620,6 +2690,19 @@ function sideSpark(d) {
   box.title = `Loss, smoothed: ${ys[ys.length - 1].toFixed(4)} now`;
 }
 
+// steps left in the current epoch ("214 / 428"), from the run-wide step bar. Works on resume (the bar keeps the
+// absolute step) and when the step count runs past the planned total (Global replay): the epoch length stays the
+// planned total / epochs, and the remainder wraps.
+function epochStepsLeft(p) {
+  const step = Number(p && p.step), total = Number(p && p.total_steps), epochs = Number(p && p.total_epochs);
+  if (!(step >= 0) || !(total > 0) || !(epochs > 0) || total < epochs) return "";
+  const spe = Math.round(total / epochs);
+  if (!(spe > 0)) return "";
+  const done = step % spe;
+  const left = (done === 0 && step > 0) ? 0 : (spe - done);
+  return `${left} / ${spe}`;
+}
+
 // the run's figures (the same from a web run and from a desktop run): the bar, the tiles, the sidebar
 function showProgress(p, state, name, extraNote) {
   const pct = p ? p.percent : (["completed"].includes(state) ? 100 : 0);
@@ -2629,10 +2712,13 @@ function showProgress(p, state, name, extraNote) {
   $("sideRunName").textContent = name || "No run yet";
   const tiles = $("runTiles");
   tiles.innerHTML = "";
-  const tile = (k, v) => v ? tiles.append(el("div", {class: "run-tile"}, el("span", {text: k}), el("b", {text: v}))) : null;
+  const tile = (k, v, title) => v ? tiles.append(el("div", {class: "run-tile", title: title || ""},
+    el("span", {text: k}), el("b", {text: v}))) : null;
   if (p) {
     tile("Epoch", p.epoch ? `${p.epoch} / ${p.total_epochs}` : "");
     tile("Step", p.total_steps ? `${p.step} / ${p.total_steps}` : "");
+    tile("Epoch steps left", epochStepsLeft(p),
+      "Steps left in this epoch, out of the epoch's length. It keeps counting when a run goes past its planned total.");
     tile("Speed", p.speed);
     tile("Loss", p.loss);
     tile("Time left", p.eta);
@@ -5112,7 +5198,7 @@ function lossGraph(data) {
     set.val && hasVal ? key("lg-sw-val", "fixed validation loss (same images, noise and seed)" +
       (valScale((set.emean && em.length) || (set.ravg && ra.length), set.val, val.length) ?
         " - its own scale, the teal numbers" : "")) : null,
-    em.length ? key("lg-sw-best", "lowest epoch loss") : null, key("lg-sw-epoch", "start of an epoch (e1, e2…)")].filter(Boolean));
+    em.length ? key("lg-sw-best", "lowest epoch loss") : null, key("lg-sw-epoch", "end of an epoch (e1 is the end of epoch 1)")].filter(Boolean));
   legendFill();
   const tip = (node, text) => { node.title = text; return node; };
   box.append(el("div", {class: "field-row loss-graph-ctl"},
@@ -5171,12 +5257,29 @@ function lossGraph(data) {
     const ns = "http://www.w3.org/2000/svg";
     const mk = (tag, attrs) => { const n = document.createElementNS(ns, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v); return n; };
     const svg = mk("svg", {viewBox: `0 0 ${W} ${H}`, class: "loss-graph-svg"});
-    // epochs along the bottom: a faint line at each epoch's first step, labels thinned to fit
-    const eps = (data.epochs || []).filter((e) => e[1] >= x0 && e[1] <= x1);
-    const every = Math.max(1, Math.ceil(eps.length / 12));
-    eps.forEach((e, i) => {
+    // epochs along the bottom: a faint line and "eN" at the end of each finished epoch, so e1 lines up with
+    // that epoch's average-loss dot and the usual end-of-epoch validation point. The start of training (step 0)
+    // is not labelled. data.epochs is still [[epoch, first step], ...]; the end is the epoch-average's step,
+    // or one before the next epoch starts.
+    const starts = data.epochs || [];
+    const emAt = new Map((data.epoch_mean || []).map((p) => [p[1], p[0]]));
+    const ends = [];
+    for (let i = 0; i < starts.length; i++) {
+      const ep = starts[i][0];
+      const end = emAt.has(ep) ? emAt.get(ep)
+        : (i + 1 < starts.length ? starts[i + 1][1] - 1 : null);
+      if (end == null || end < x0 || end > x1) continue;
+      ends.push([ep, end]);
+    }
+    const every = Math.max(1, Math.ceil(ends.length / 12));
+    ends.forEach((e, i) => {
       svg.append(mk("line", {x1: X(e[1]), x2: X(e[1]), y1: T, y2: H - B, class: "lg-epoch"}));
-      if (i % every === 0) { const t = mk("text", {x: X(e[1]) + 2, y: H - 8, class: "lg-axis"}); t.textContent = `e${e[0]}`; svg.append(t); }
+      if (i % every === 0) {
+        const last = i === ends.length - 1 && (x1 - e[1]) <= 0.05 * (x1 - x0 || 1);
+        const t = mk("text", {x: X(e[1]) + (last ? -2 : 2), y: H - 8, class: "lg-axis",
+          "text-anchor": last ? "end" : "start"});
+        t.textContent = `e${e[0]}`; svg.append(t);
+      }
     });
     // the loss axis: three ticks
     for (const f of [0, 0.5, 1]) {
@@ -12195,7 +12298,6 @@ function wire() {
   });
   $("outFrom").addEventListener("change", renderOutputs);
   $("outTo").addEventListener("change", renderOutputs);
-  $("btnCheck").addEventListener("click", check);
   $("btnStart").addEventListener("click", () => start("/api/start"));
   $("galleryRun").addEventListener("change", () => { S.galleryRun = $("galleryRun").value; loadGallery(); });
   LIK_TITLE = $("likBtn").title;

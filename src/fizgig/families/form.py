@@ -151,7 +151,7 @@ DEFAULTS = {
     "FAMILY_MP_MANUAL": False, "FAMILY_MP_FACECROPS_FIRST": True, "FAMILY_SUBJECT_KIND": "From its captions", "FAMILY_SUBJECT_KIND2": "From its captions",
     "FAMILY_SUBJECT_KIND3": "From its captions", "FAMILY_SUBJECT_KIND4": "From its captions",
     "SAVE_STATE_ON_TRAIN_END": True, "KEEP_LAST_N_STATES": "2", "KREA2_LOSS_WATCH": False,
-    "KREA2_PER_IMAGE_LR": False, "KREA2_AUTO_RECAPTION": False, "TRAIN_SUBFOLDERS": False, "CAPTION_TRIGGER_WORD": "",
+    "KREA2_PER_IMAGE_LR": False, "KREA2_AUTO_RECAPTION": False, "TRAIN_SUBFOLDERS": False, "FOLDER_BALANCE": False, "FOLDER_OPTS": {}, "CAPTION_TRIGGER_WORD": "",
     "RECAPTION_FIRST": "Training caption (person or character)", "RECAPTION_SECOND": "Exhaustive detail (person or character)", "KREA2_WARMUP_LOOK": False,
     "FAMILY_PRECISION": launch.PRECISION_LABELS["auto"], "FAMILY_EMA": "0.98 (recommended)",
     "FAMILY_TRAINING_ADAPTER": True, "FAMILY_KIND": "standard", "FAMILY_FAST_ID": False,
@@ -369,6 +369,11 @@ def form(desc):
              sets={label: kind_sets(desc, k) for k, label in ks if kind_sets(desc, k)}) if len(ks) > 1 else None,
         # shown on the Start tab, under the training folder (place); its explanation is the label's hover text (tip)
         _row("TRAIN_SUBFOLDERS", SUBFOLDERS_LABEL, "check", default=False, tip=SUBFOLDERS_HINT, place="start_folder"),
+        _row("FOLDER_BALANCE", "Balance folders", "check", default=False,
+             tip="Repeats the smaller folders so each gets about as many steps an epoch as the largest, at most "
+                 "20 times. A folder that would need more is capped at 20, and the table says so. Epochs get "
+                 "longer by the repeats.", place="start_folder"),
+        _row("FOLDER_OPTS", "Folders", "folders", place="start_folder"),
         _row("LEARNING_RATE", "Learning Rate", default=DEFAULTS["LEARNING_RATE"]),
     ]
     if desc.adaptive_lr:
@@ -1325,11 +1330,13 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
     # Include sub-folders: a plain LoRA or a fine-tune (Subjects 2-4, DOP and Isolation keep one folder per
     # subject; an edit or a slider pairs files)
     if kind in ("edit", "slider") or values.get("FAMILY_MULTICONCEPT") or values.get("FAMILY_DOP")             or values.get("FAMILY_MULTI_PERSON"):
-        hidden.add("TRAIN_SUBFOLDERS")
+        hidden.update({"TRAIN_SUBFOLDERS", "FOLDER_BALANCE", "FOLDER_OPTS"})
     else:
         notes["TRAIN_SUBFOLDERS"], act = subfolders_note(desc, values, image_folder)
         if act:
             actions["TRAIN_SUBFOLDERS"] = act
+        if not values.get("TRAIN_SUBFOLDERS"):
+            hidden.update({"FOLDER_BALANCE", "FOLDER_OPTS"})
     if desc.masked_training:
         prompt_slider = kind == "slider" and launch.slider_on(desc, {"FAMILY_SLIDER": True, "FAMILY_SLIDER_SOURCE": (
             "prompts" if values.get("FAMILY_SLIDER_SOURCE") == "Prompts" else "pairs")}, "prompts")
@@ -1698,10 +1705,24 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
             disabled |= off
             for k in off:
                 notes.setdefault(k, BATCH_OFF)
+    folders, folder_items = [], 0
+    if "FOLDER_OPTS" not in hidden and values.get("TRAIN_SUBFOLDERS"):
+        opts = launch.folder_opts_of(values)
+        for rel, info in launch.folder_schedule(desc, {**values, "image_folder": image_folder}).items():
+            opt = opts.get(rel) or {}
+            shown_w = opt["weight"] if opt.get("weight") not in (None, "") else 1
+            items = info["count"] * info["repeats"]
+            folder_items += items
+            folders.append({"rel": rel, "label": rel or "the training folder", "count": info["count"],
+                            "weight": shown_w, "repeats": info["repeats"], "items": items,
+                            "uncapped": info["uncapped"], "cap_warn": info["cap_warn"], "error": info["error"]})
+        if not folders:
+            hidden.update({"FOLDER_BALANCE", "FOLDER_OPTS"})
     return {"hidden": sorted(hidden), "disabled": sorted(disabled), "notes": notes, "kind": kind,
             "media": sorted(media), "turbo_file": bool(speed_file), "force": force, "actions": actions,
             "shown": shown, "checkpoint_file": bool(checkpoint_file), "labels": labels, "checkpoint_turbo": ck_turbo,
-            "disabled_choices": disabled_choices, "poll": poll, "tips": tips}
+            "disabled_choices": disabled_choices, "poll": poll, "tips": tips, "folders": folders,
+            "folder_items": folder_items}
 
 
 def adaptive_lr_notes(values):
@@ -1991,6 +2012,8 @@ def inputs(desc, values, *, models, python, repo_dir, image_folder, cache_root, 
                        if b("FAMILY_MULTICONCEPT") and desc.multi_concept and kind not in ("edit", "slider") else []),
         concept_balance=b("FAMILY_CONCEPT_BALANCE"),
         subfolders=b("TRAIN_SUBFOLDERS"),
+        folder_opts=dict(v["FOLDER_OPTS"]) if isinstance(v.get("FOLDER_OPTS"), dict) else {},
+        folder_balance=b("FOLDER_BALANCE") and b("TRAIN_SUBFOLDERS"),
         FAMILY_OPTIONS=_option_values(desc, v),
         vram_reclaim=dict(vram_reclaim or {}),           # Preferences > Training memory (launch.reclaim_flags)
     )

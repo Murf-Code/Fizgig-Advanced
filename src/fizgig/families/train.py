@@ -60,6 +60,33 @@ LOOK = "preview_look"         # a LoRA for previews only (MOSS-Image's SFT look 
 TRAINABLE_PREVIEW = "epoch_lora"         # the epoch's LoRA, frozen on a preview checkpoint
 
 
+def folder_weight_map(group):
+    """item_key -> folder loss_weight for every picture whose folder is not at 1.0."""
+    out = {}
+    for ds in getattr(group, "datasets", []) or []:
+        try:
+            w = float(getattr(ds, "loss_weight", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            w = 1.0
+        if w == 1.0 or not getattr(ds, "batch_manager", None):
+            continue
+        for bucket in ds.batch_manager.buckets.values():
+            for it in bucket:
+                out[str(it.item_key)] = w
+    return out
+
+
+def folder_loss_mult(item_keys, weights):
+    """The folder loss_weight for this step (1.0 if none). A batch is always one folder."""
+    if not weights or not item_keys:
+        return 1.0
+    key = item_keys[0] if isinstance(item_keys, (list, tuple)) else item_keys
+    try:
+        return float(weights.get(str(key), 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+
+
 class _Collator:
     def __init__(self, shared_epoch, dataset):
         self.shared_epoch = shared_epoch
@@ -1740,6 +1767,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     elif reg_ds:
         logger.warning("[reg] the dataset config has a regularisation block, but this is a LoRA run - those images "
                        "train as ordinary images at full LR; remove the is_reg block if that is not what you want")
+    folder_weights = folder_weight_map(group)
+    if folder_weights:
+        logger.info(f"[folders] {len(folder_weights)} training item(s) use a folder loss weight; it scales the "
+                    f"backward step only, not the loss in the log or the validation check")
 
     # ---- Auto precision / swap: planned on an empty card (the description's figures include the preview VAE)
     auto_precision = precision == "auto"
@@ -3614,14 +3645,18 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     lr_acc[-1] *= _info["lr_mult"]     # where the step landed (the H3 noise-band LR)
                 if pending == 0 and optimizer is not None:
                     optimizer.zero_grad(set_to_none=True)
+                _fw = folder_loss_mult(batch.get("item_keys"), folder_weights)
                 _wb = watch.weigh(_info, batch.get("item_keys"), reg_keys, reg_lr_multiplier) if _many else None
                 if _wb is not None:                # a batch: each picture at its own weight (loss_watch.Watch.weigh)
                     _scaled, loss, _kept = _wb
+                    if _fw != 1.0:
+                        _scaled = _scaled * _fw      # folder weight: recorded loss stays the unweighted mean
+                    mult = _fw
                 else:
                     if reg_keys and all(str(k) in reg_keys for k in batch.get("item_keys") or [None]):
-                        mult = reg_lr_multiplier       # a regularisation image: a fixed nudge, never the watch's
+                        mult = reg_lr_multiplier * _fw  # a regularisation image: a fixed nudge, never the watch's
                     else:
-                        mult = watch.multiplier(batch)  # per-image LR: the raw loss is still what's recorded
+                        mult = watch.multiplier(batch) * _fw  # per-image LR: the raw loss is still what's recorded
                     _scaled = loss * mult if mult != 1.0 else loss
                 _dc = dop_cond_for(batch, cond) if dop_cond and global_step % dop_every == 0 else None
                 _dk = str((batch.get("item_te_paths") or [None])[0])

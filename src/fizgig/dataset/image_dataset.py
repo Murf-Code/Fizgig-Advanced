@@ -1012,6 +1012,7 @@ class ImageDataset(torch.utils.data.Dataset):
         keep_words: Optional[list] = None,
         holdout_file: Optional[str] = None,
         holdout_only: bool = False,
+        loss_weight: float = 1.0,
         **kwargs,
     ):
         super().__init__()
@@ -1042,6 +1043,12 @@ class ImageDataset(torch.utils.data.Dataset):
         self.caption_extension = caption_extension
         self.batch_size = batch_size
         self.num_repeats = num_repeats
+        try:
+            self.loss_weight = float(loss_weight)
+        except (TypeError, ValueError):
+            self.loss_weight = 1.0
+        if not (self.loss_weight > 0):
+            self.loss_weight = 1.0
         self.enable_bucket = enable_bucket
         self.bucket_no_upscale = bucket_no_upscale if enable_bucket else False
         self.image_directory = image_directory

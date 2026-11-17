@@ -104,6 +104,8 @@ class ImageDatasetParams(BaseDatasetParams):
     item_prefix: str = ""
     # words always kept, first, when tags are shuffled or dropped (the folder's trigger word)
     keep_words: Optional[list] = None
+    # Per-folder training weight (a loss scale on backward only; 1.0 = unchanged)
+    loss_weight: float = 1.0
 
 
 @dataclass
@@ -178,6 +180,7 @@ class ConfigSanitizer:
         "mask_directory": str,
         "item_prefix": str,
         "keep_words": [str],
+        "loss_weight": Any(int, float),
     }
 
     # Options that come from argparse only (not from user config)
@@ -342,6 +345,7 @@ def generate_dataset_group_by_blueprint(
         resolution: {dataset.resolution}
         batch_size: {dataset.batch_size}
         num_repeats: {dataset.num_repeats}
+        loss_weight: {getattr(dataset, "loss_weight", 1.0)}
         caption_extension: "{dataset.caption_extension}"
         enable_bucket: {dataset.enable_bucket}
         bucket_no_upscale: {dataset.bucket_no_upscale}

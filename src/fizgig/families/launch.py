@@ -43,6 +43,7 @@ active; delete a stale <LORA_OUTPUT_DIR>/.pause_requested (the trainer would sto
 already at Max Train Epochs.
 """
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -840,6 +841,121 @@ def _balance_repeats(folders):
     counts = {f: _media_count(f) for f in folders}
     top = max(counts.values() or [0])
     return {f: max(1, round(top / c)) for f, c in counts.items() if c}
+
+
+FOLDER_REPEAT_CAP = 20
+
+
+def _folder_key(rel):
+    """A folder's key in FOLDER_OPTS: the relative path with '/', or "" for the training folder itself."""
+    return str(rel or "").replace("\\", "/").strip("/")
+
+
+def folder_opts_of(st):
+    """The form's FOLDER_OPTS (or launch inputs' folder_opts): {rel: {weight, repeats}}."""
+    raw = st.get("folder_opts")
+    if raw is None:
+        raw = st.get("FOLDER_OPTS")
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for rel, opt in raw.items():
+        if isinstance(opt, dict):
+            out[_folder_key(rel)] = opt
+    return out
+
+
+def folder_rows(desc, st):
+    """[(rel, path, count)] of folders that become dataset blocks when Include sub-folders is on."""
+    # the form's values use TRAIN_SUBFOLDERS; launch inputs use subfolders
+    if "subfolders" not in st:
+        st = {**st, "subfolders": bool(st.get("TRAIN_SUBFOLDERS"))}
+    if not subfolders_on(desc, st):
+        return []
+    folder = _s(st.get("image_folder"))
+    rows = []
+    top = _media_count(folder) if folder else 0
+    if top:
+        rows.append(("", folder, top))
+    for rel, f in run_subfolders(desc, st):
+        n = _media_count(f)
+        if n:
+            rows.append((_folder_key(rel), f, n))
+    return rows
+
+
+def parse_folder_weight(opt):
+    """(weight, error). Missing or blank is 1.0. 0, negative, or not a number is an error."""
+    if not isinstance(opt, dict) or opt.get("weight") in (None, ""):
+        return 1.0, ""
+    try:
+        w = float(opt.get("weight"))
+    except (TypeError, ValueError):
+        return None, "must be a number above 0 (0.5 trains at half weight)"
+    if not math.isfinite(w) or w <= 0:
+        return None, "must be a number above 0 (0.5 trains at half weight); 0 is not allowed"
+    return w, ""
+
+
+def parse_folder_repeats(opt):
+    if not isinstance(opt, dict) or opt.get("repeats") in (None, ""):
+        return 1
+    try:
+        r = int(float(opt.get("repeats")))
+    except (TypeError, ValueError):
+        return 1
+    return max(1, r)
+
+
+def folder_schedule(desc, st):
+    """rel -> {path, count, weight, repeats, uncapped, cap_warn, error} for each training folder."""
+    opts = folder_opts_of(st)
+    rows = folder_rows(desc, st)
+    bal = st.get("folder_balance")
+    if bal is None:
+        bal = st.get("FOLDER_BALANCE")
+    balance = bool(bal)
+    top = max((n for _r, _f, n in rows), default=0)
+    out = {}
+    for rel, path, n in rows:
+        opt = opts.get(rel, {})
+        w, err = parse_folder_weight(opt)
+        if balance and n:
+            raw = max(1, round(top / n))
+            reps = min(FOLDER_REPEAT_CAP, raw)
+            cap_warn = raw > FOLDER_REPEAT_CAP
+        else:
+            reps = parse_folder_repeats(opt)
+            raw, cap_warn = reps, False
+        out[rel] = {"path": path, "count": n, "weight": 1.0 if err else w, "repeats": reps,
+                    "uncapped": raw, "cap_warn": cap_warn, "error": err}
+    return out
+
+
+def folder_problems(desc, st):
+    """Start refusals for a folder weight of 0, a negative weight, or a weight that is not a number."""
+    out = []
+    for rel, info in folder_schedule(desc, st).items():
+        if info["error"]:
+            name = rel or "the training folder"
+            out.append(f"Folder weight for {name} {info['error']}.")
+    return out
+
+
+def _append_folder_training(lines, rel, sched, concept_reps=1):
+    """num_repeats and loss_weight for one dataset block, omitted when they are the defaults (1)."""
+    sched = sched or {}
+    if rel in sched:
+        info = sched[rel]
+        reps = info.get("repeats") or 1
+        w = 1.0 if info.get("error") else info.get("weight", 1.0)
+    else:
+        reps, w = concept_reps or 1, 1.0
+    if reps > 1:
+        lines.append(f"num_repeats = {reps}")
+    if w != 1:
+        lines.append(f"loss_weight = {w:g}")
+
 
 
 def dataset_media(folder, include_subfolders=False):
@@ -1768,6 +1884,7 @@ def dataset_toml(desc, inputs, cache_suffix=""):
         lines.append(f'holdout_file = "{_toml_str(inputs["_holdout_file"].replace(chr(92), "/"))}"')
     trig = (lambda w: _keep_words_line(w)) if tags else (lambda w: [])
     reps = _balance_repeats([folder] + extra) if extra and inputs.get("concept_balance") else {}
+    sched = folder_schedule(desc, inputs)
     mp = {f: (s, w) for f, s, _why, w in multi_person_subjects(desc, inputs) if s} \
         if multi_person_on(desc, inputs) else {}
 
@@ -1780,8 +1897,7 @@ def dataset_toml(desc, inputs, cache_suffix=""):
                 lines.append("photos_only = true")
     head = len(lines)
     lines += ["", "[[datasets]]", f'image_directory = "{folder.replace(chr(92), "/")}"']
-    if reps.get(folder, 1) > 1:
-        lines.append(f"num_repeats = {reps[folder]}")
+    _append_folder_training(lines, "", sched, reps.get(folder, 1))
     _fuse(folder)
     lines += trig(inputs.get("DOP_FOLDER_TRIGGER") or inputs.get("CAPTION_TRIGGER_WORD") or inputs.get("caption_trigger"))
     if edit_on(desc, inputs):
@@ -1798,6 +1914,7 @@ def dataset_toml(desc, inputs, cache_suffix=""):
     for rel, f in subs:                  # Include sub-folders: each its own block and cache folder
         lines += ["", "[[datasets]]", f'image_directory = "{f.replace(chr(92), "/")}"',
                   f'item_prefix = "{_toml_str(rel + "/")}"']
+        _append_folder_training(lines, _folder_key(rel), sched)
         lines += trig((inputs.get("recaption_triggers") or {}).get(item_prefix(rel)))
         if root:
             lines.append(f'cache_directory = "{(cache_dir_for(root, f) + cache_suffix).replace(chr(92), "/")}"')
@@ -2083,6 +2200,7 @@ def start_problems(desc, inputs):
         out += checks.training_folder(f, _s(v.get("caption_ext", ".txt")), media_exts=exts,
                                       label=f"the sub-folder {rel}")
         out += clip_problems(desc, f)
+    out += folder_problems(desc, v)
     if masked_on(desc, v) and not mask_report(desc, v)["with"]:
         out.append("Masked training is on, but no picture in the training folder has a mask it can use. Save each "
                    "mask beside its picture with -masklabel added to the name (photo.jpg -> photo-masklabel.png: "
