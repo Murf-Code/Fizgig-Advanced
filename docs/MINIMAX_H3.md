@@ -51,19 +51,15 @@ In every mode the LoRA leaves the model's text token refiner alone, and blocks 0
 
 ## Optimizer
 
-Every H3 preset runs **automagic3**, the Automagic v3 optimizer (MIT, see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)), started at 1e-6. It sets its own learning rate from the update signs, one rate for the whole LoRA, rising while the signs hold steady and falling while they alternate. In practice it warms up over the first couple of epochs, then anneals a few percent an epoch. The Learning Rate box is only its start, so leave it at 1e-6 rather than an AdamW number. The scheduler, Adaptive LR, the adapter ramp and band multipliers all stand down while it owns the rate. Krea 2's Optimizer Type row lists it too, with the same rules.
+Every H3 preset runs **automagic3**, the Automagic v3 optimizer (MIT, see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)), started at 1e-6. It sets its own learning rate from the update signs, one rate for the whole LoRA, rising while the signs hold steady and falling while they alternate. In practice it warms up over the first couple of epochs, then anneals a few percent an epoch. The Learning Rate box is only its start, so leave it at 1e-6 rather than an AdamW number. The scheduler, Adaptive LR, the adapter ramp and band multipliers all stand down while it owns the rate. Krea 2's Optimizer Type row lists it too, with the same rules. With **Leave the rest of the model alone** or **Fizgig LoRA Isolation** on, a run trains with **adamw** instead, at 2e-4 (the Learning Rate box when it holds an AdamW rate rather than Automagic's 1e-6 start), and Start says so: the pass that keeps the rest of the model as it was runs on every second step, and Automagic reads the back-and-forth as overshooting and lowers its rate until nothing more is learned (a two-person Isolation run sat at its floor from the second epoch).
 
 The Optimizer Type dropdown also offers full-precision **adamw**, which measured as the single biggest likeness gain on H3 and is the right choice when you want a rate that does not move. For a style set, adamw is worth trying: its images all share the look being learned, so the signs agree for longer and automagic3 pushes harder than you want.
 
 ## Training adapter
 
-A frozen LoRA rides at full strength on every training step, so the gradient goes into your subject rather than into undoing H3's guidance distillation. It is off for previews and never written into your LoRA. The **Training adapter** dropdown picks which one:
+A frozen LoRA rides at full strength on every training step, so the gradient goes into your subject rather than into undoing H3's guidance distillation. It is off for previews and never written into your LoRA. The adapter is [@ostris](https://github.com/ostris)'s ([training adapter](https://huggingface.co/ostris/minimax_h3_training_adapter)), in two files: an fl2va run gets the fl2va one and a ref2va run gets the ref2va one, picked from your Training Base.
 
-- **Circlestone** ([circlestone-labs](https://huggingface.co/circlestone-labs/MiniMax-H3-Image-Training-Adapter)) is the default and the one for photos. In A/Bs on the same data it trained sharper, cleaner LoRAs that follow the prompt better. One file serves both the fl2va and ref2va bases.
-- **Ostris** ([@ostris](https://github.com/ostris), [training adapter](https://huggingface.co/ostris/minimax_h3_training_adapter)) is the one for videos: on a video-only style run it learned the look about three times faster. The Training tab suggests it when it sees a clips-only dataset. It comes as fl2va and ref2va files; the one matching your Training Base is used. Against no adapter, with likeness mode on, it reached 50% likeness seven epochs sooner and peaked higher, and its best window arrives earlier, so watch the gallery.
-- **Off** trains without one.
-
-For a mixed dataset, choose by whether the photos or the videos are the priority. The updater and the Preferences download buttons fetch the adapter files. The adapter used is recorded in the output metadata. It also rides under full fine-tuning (forward hooks, on by default, never in the checkpoint); see [FINETUNE.md](FINETUNE.md).
+The updater and the Preferences download buttons fetch the adapter files. The adapter used is recorded in the output metadata. It also rides under full fine-tuning (forward hooks, on by default, never in the checkpoint); see [FINETUNE.md](FINETUNE.md).
 
 ## Context LoRA
 
@@ -83,14 +79,13 @@ Each has a **Download link on its row in Preferences**:
 
 | Model | Size | Notes |
 |---|---|---|
-| DiT — pruned int8 | ~21 GB | The training base, `minimax_h3_fl2va_pruned_int8_convrot.safetensors`, the same file ComfyUI runs. The ~66 GB bf16 file also works for LoRA training (NF4 at load), but [full fine-tuning](FINETUNE.md) needs the int8 file |
+| DiT — pruned int8 | ~21 GB | The training base, `minimax_h3_fl2va_pruned_int8_convrot.safetensors`, the same file ComfyUI runs. The ~66 GB bf16 file also works for LoRA training (NF4 at load), and a pruned bf16 or fp8 file (`minimax_h3_fl2va_pruned_bf16`, a fine-tune saved that way) trains at int8 too, converted as it loads. [Full fine-tuning](FINETUNE.md) needs the int8 file |
 | Qwen3-VL-32B text encoder | ~15.7 GB | The **nvfp4** file, the same one ComfyUI uses. Loaded once for caching, then freed |
 | Video VAE | ~4.9 GB | Caching and preview decode |
 | Audio VAE *(optional)* | ~605 MB | Sound training and previews with sound |
 | Turbo LoRA *(optional)* | ~780 MB | 6-step previews, `minimax_h3_turbo_v4_step600.safetensors` from [larryvrh/MiniMax-H3-Turbo-Lora](https://huggingface.co/larryvrh/MiniMax-H3-Turbo-Lora); you may already have it in ComfyUI's loras folder |
 | DiT — reference *(optional)* | ~21 GB | Only for reference distillation (`ref2va`) |
-| Training adapter (Circlestone) | ~620 MB | The default training adapter, one file for both bases |
-| Training adapter (Ostris) *(optional)* | ~155 MB each | fl2va and ref2va files, used when the dropdown says Ostris |
+| Training adapter (fl2va, ref2va) | ~310 MB each | Ostris's, one per base; the one matching your Training Base is used |
 
 **You train on the pruned file.** "Pruned" here swaps the AdaLN modulation MLP for a curve table. That branch only sees the timestep, so nothing a LoRA learns lives there: you train against the exact weights you deploy on.
 
@@ -148,11 +143,11 @@ Stills teach H3 a look; clips teach it **motion**, and clips with sound teach it
 | Frame rate | exactly 24 fps |
 | Frame count | 5, 22, 39, 56, 73, 90, 107 or 124 frames |
 | Dimensions | multiples of 32 |
-| Audio | 32 kHz stereo, or no track at all |
+| Audio | any sample rate, mono or stereo (converted to 32 kHz stereo when it caches), or no track at all |
 
 <p align="center"><img src="assets/gizmo_video.png" alt="Gizmo — Find the moment: first/last frame previews with frame-accurate stepping" width="720"></p>
 
-**Gizmo makes clips that meet it.** Mark every section you want (frame-accurate stepping, first/last-frame previews, a ▶ Play of the exact clip), then export the lot in one go. **Crop to the subject**: a clip's cost is its pixels, so drag a rectangle and every token goes on what you want learned, with shape locks (1:1, 16:9, 9:16…) for consistent framing. High-frame-rate footage can keep extra frames as slow motion, offered as a choice. Clips are cut at native resolution and resized to your Target Megapixels at training time, so cutting large keeps the choice open.
+**Gizmo makes clips that meet it.** Mark every section you want (frame-accurate stepping, first/last-frame previews, a ▶ Play of the exact clip), then export the lot in one go. **Crop to the subject**: a clip's cost is its pixels, so drag a rectangle and every token goes on what you want learned, with shape locks (1:1, 16:9, 9:16…) for consistent framing. The box follows the mouse in any direction and stops flush at the frame's edges; drag inside it to move it, or a corner or side to resize it; type its X, Y, W and H for exact numbers; the Place arrows put it flush against an edge or in the centre (Largest then ← is a crop from the left); and Saved boxes keep a box for the next clip from the same camera. High-frame-rate footage can keep extra frames as slow motion, offered as a choice. Clips are cut at native resolution and resized to your Target Megapixels at training time, so cutting large keeps the choice open.
 
 **What it costs:** 22 frames is the shortest that shows real movement, at ~7× a still per step; 124 frames is ~37×. Gizmo says which lengths your card can train, at which megapixels, before you cut anything:
 

@@ -26,52 +26,19 @@ from PIL import Image
 import cv2
 
 from fizgig.dataset import compact_text
-from fizgig.dataset.masks import folder_names, is_mask_file, load_mask, mask_for_stem, mask_problem
+from fizgig.dataset.masks import (SEG_AREAS, element_map, face_box, folder_names, is_mask_file, load_element,
+                                  load_face, load_mask, mask_for_stem, mask_problem)
 from fizgig.utils.safetensors import mem_eff_save_file, MemoryEfficientSafeOpen
 from fizgig.training.metadata import (ARCHITECTURE_KLEIN_9B, ARCHITECTURE_KLEIN_9B_FULL,
                                       ARCHITECTURE_MINIMAX)
 
 import logging
 from fizgig.utils.upright import open_upright
+from fizgig.dataset.caption_file import decode_caption, read_caption  # noqa: F401  (light: Start reads captions too)
 
 logger = logging.getLogger(__name__)
 
 
-def decode_caption(raw: bytes, caption_path: str) -> str:
-    """Decode a caption file's bytes, tolerating encodings other than UTF-8.
-
-    Captions written by the Captions tab are UTF-8, but datasets assembled elsewhere
-    routinely carry Windows-1252 text — one curly apostrophe (0x92) in one file out of a
-    hundred used to abort the whole caching run with a bare UnicodeDecodeError deep in a
-    worker thread that named no file at all.
-
-    Order: UTF-16 if there's a BOM (Notepad's "Unicode" save), then UTF-8 (BOM tolerated),
-    then cp1252, then latin-1 — which maps every byte and so cannot fail. Anything past
-    UTF-8 is logged with the path, so a genuinely mis-encoded caption is still visible
-    instead of being silently mangled into the training data.
-    """
-    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
-        try:
-            text = raw.decode("utf-16")
-            logger.warning("Caption %s is UTF-16 — decoded, but re-save it as UTF-8.", caption_path)
-            return text
-        except UnicodeDecodeError:
-            pass
-    try:
-        return raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        pass
-    for encoding in ("cp1252", "latin-1"):
-        try:
-            text = raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue  # cp1252 leaves a handful of bytes undefined; latin-1 won't.
-        logger.warning("Caption %s is not valid UTF-8 — decoded as %s. Re-save it as UTF-8 to "
-                       "silence this warning.", caption_path, encoding)
-        return text
-    logger.warning("Caption %s could not be decoded in any known encoding — undecodable bytes "
-                   "replaced.", caption_path)
-    return raw.decode("utf-8", errors="replace")
 logging.basicConfig(level=logging.INFO)
 
 
@@ -555,6 +522,7 @@ class BucketBatchManager:
         self.variants = None          # tag_variants.VariantPicker: a cached caption variant per image per step
         self.epoch = 0
 
+        self.quota: Optional[dict] = None   # limit(): items a bucket gives each epoch (None = all of them)
         self.reindex()
 
     def reindex(self):
@@ -567,6 +535,22 @@ class BucketBatchManager:
             num_batches = math.ceil(len(self.buckets[reso]) / self.bucket_batch(reso))
             for i in range(num_batches):
                 self.bucket_batch_indices.append((reso, i))
+
+    def limit(self, per_epoch: int) -> int:
+        """At most per_epoch items an epoch (a LoRA's regularisation set, --reg_per_epoch). Each bucket gives a fixed
+        share of them by its size, so an epoch's steps are the same every epoch (the run's totals hold), and the
+        buckets' shuffle at each epoch's start makes them a different handful each time. Returns the items there are."""
+        total = sum(len(b) for b in self.buckets.values())
+        if per_epoch <= 0 or per_epoch >= total:
+            return total
+        raw = {r: per_epoch * len(self.buckets[r]) / total for r in self.bucket_resos}
+        quota = {r: int(v) for r, v in raw.items()}
+        for r in sorted(self.bucket_resos, key=lambda r: raw[r] - quota[r], reverse=True)[:per_epoch - sum(quota.values())]:
+            quota[r] += 1                      # largest remainders first: the shares add up to per_epoch
+        self.quota = quota
+        self.bucket_batch_indices = [(r, i) for r in self.bucket_resos
+                                     for i in range(math.ceil(quota[r] / self.bucket_batch(r)))]
+        return total
 
     def bucket_batch(self, reso):
         """Items a step from this bucket: Batch size for pictures, 1 for a clip's or a voice's bucket (a step packs
@@ -608,7 +592,8 @@ class BucketBatchManager:
         bucket_reso, batch_idx = self.bucket_batch_indices[idx]
         bucket = self.buckets[bucket_reso]
         start = batch_idx * self.bucket_batch(bucket_reso)
-        end = min(start + self.bucket_batch(bucket_reso), len(bucket))
+        end = min(start + self.bucket_batch(bucket_reso), len(bucket) if self.quota is None
+                  else self.quota.get(bucket_reso, len(bucket)))
 
         batch_tensor_data: dict[str, list[torch.Tensor]] = {}
         picks = []
@@ -712,6 +697,22 @@ class BucketBatchManager:
                         m = load_mask(it.mask_path, it.original_size, it.bucket_size, (lh, lw))
                 masks.append(torch.from_numpy(m)[None] if m is not None else torch.ones(1, *lat.shape[-2:]))
             batch_tensor_data["loss_mask"] = masks
+        # Boost the face: each item's face oval on its latent's grid (zeros without a face)
+        if any(getattr(it, "face_box", None) or getattr(it, "element_map", None) is not None
+               for it in bucket[start:end]):
+            faces = []
+            for it, lat in zip(bucket[start:end], batch_tensor_data.get("latents", [])):
+                lh, lw = lat.shape[-2:]
+                bw, bh = it.bucket_size
+                f = None
+                if abs(bw / lw - bh / lh) < 1e-6:
+                    if getattr(it, "face_box", None):
+                        f = load_face(it.face_box, it.original_size, it.bucket_size, (lh, lw),
+                                      getattr(it, "face_area", "face"))
+                    elif getattr(it, "element_map", None) is not None:
+                        f = load_element(it.element_map, it.original_size, it.bucket_size, (lh, lw))
+                faces.append(torch.from_numpy(f)[None] if f is not None else torch.zeros(1, lh, lw))
+            batch_tensor_data["face_weight"] = faces
 
         # Stack tensors per key
         stacked: dict[str, Any] = {}
@@ -982,6 +983,11 @@ class ImageDataset(torch.utils.data.Dataset):
     # Tag variants (dataset/tag_variants.py): the run's seed, set on the CLASS by the trainer like loss_masks. None (the
     # cache pass, tools) = no per-step picks: every item trains on its own caption.
     variant_seed: Optional[int] = None
+    # Boost the face (an experiment): anything but 1 gives each still's largest face (masks.face_box) as `face_weight` in the
+    # batch, a soft oval on its latent's grid; the trainer multiplies it into the loss weights. Set on the CLASS.
+    face_boost: float = 1.0
+    face_area: str = "face"           # "head": the oval takes in the hair (masks.load_face); masks.SEG_AREAS: the
+                                      # Make masks person finder's area instead (masks.element_map)
 
     def __init__(
         self,
@@ -1445,6 +1451,7 @@ class ImageDataset(torch.utils.data.Dataset):
 
         bucketed: dict[Tuple, list[ItemInfo]] = {}   # (w, h), or ("audio", w, h) for voice items
         _mask_names, masked_items, misfit_masks = None, 0, []
+        _pic_names, face_items = None, 0
         for cache_file in latent_cache_files:
             tokens = os.path.basename(cache_file).split("_")
             # Filename: {basename}_{W:04d}x{H:04d}_{arch}.safetensors
@@ -1494,7 +1501,9 @@ class ImageDataset(torch.utils.data.Dataset):
                                  latent_cache_path=cache_file)
             item_info.text_encoder_output_cache_path = te_cache
             _mdir = self.mask_directory or self.image_directory
-            if self.loss_masks and _mdir and bucket_key == bucket_reso \
+            # a regularisation set's pictures train whole and plain: no mask, no Boost the face (an anchor for the kind
+            # of thing they show, not a subject)
+            if self.loss_masks and _mdir and bucket_key == bucket_reso and not self.is_reg \
                     and self.latent_cache_frames(cache_file) <= 1:          # stills only: never a clip or a voice
                 if _mask_names is None:
                     _mask_names = folder_names(_mdir)
@@ -1507,6 +1516,19 @@ class ImageDataset(torch.utils.data.Dataset):
                         misfit_masks.append(f"{os.path.basename(item_info.mask_path)} ({_why})")
                         item_info.mask_path = None              # its picture trains unmasked, and the log says so
                 masked_items += bool(item_info.mask_path)
+            if self.face_boost != 1.0 and self.image_directory and bucket_key == bucket_reso and not self.is_reg \
+                    and self.latent_cache_frames(cache_file) <= 1:          # Boost the face: stills only
+                if _pic_names is None:
+                    _pic_names = folder_names(self.image_directory)
+                _pic = next((os.path.join(self.image_directory, _pic_names[n]) for n in
+                             (item_key.lower() + e.lower() for e in IMAGE_EXTENSIONS) if n in _pic_names), None)
+                item_info.face_area = self.face_area
+                if self.face_area in SEG_AREAS:
+                    item_info.element_map = element_map(_pic, self.face_area) if _pic else None
+                    face_items += item_info.element_map is not None
+                else:
+                    item_info.face_box = face_box(_pic) if _pic else None
+                    face_items += item_info.face_box is not None
 
             bucket = bucketed.get(bucket_key, [])
             for _ in range(self.num_repeats):
@@ -1555,6 +1577,10 @@ class ImageDataset(torch.utils.data.Dataset):
                     f"[dataset] {still_frame0_fallback} clip(s) were cached without a picked "
                     f"still — their frame 0 is used instead. Re-run caching with the tick on "
                     f"(or flush the cache) to pick sharp frames for them.")
+        if self.face_boost != 1.0:
+            what = {"face": "a face", "head": "a face (with its hair)"}.get(self.face_area, self.face_area.replace("_", " "))
+            logger.info(f"[face boost] {face_items} picture(s) in {self.image_directory} have {what} found: it counts "
+                        f"x{self.face_boost:g} in the loss; the rest train as normal")
         if self.loss_masks:
             logger.info(f"[masks] {masked_items} picture(s) in {self.mask_directory or self.image_directory} train "
                         f"with their mask"

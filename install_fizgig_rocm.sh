@@ -9,19 +9,20 @@ set -euo pipefail
 
 FIZGIG_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-ROCM_INDEX="${ROCM_INDEX:-https://repo.amd.com/rocm/whl-multi-arch/}"
-ROCM_NIGHTLY_INDEX="${ROCM_NIGHTLY_INDEX:-https://rocm.nightlies.amd.com/whl-multi-arch/}"
-# nightly (default) = TheRock multi-arch + [device-gfx*]; pinned to ROCm 7.14 (not 7.16+).
-# stable = repo.amd.com ROCm 7.14 wheels (torch 2.12.0+rocm7.14.0 today).
-ROCM_CHANNEL="${ROCM_CHANNEL:-nightly}"
+# Default stable = AMD's stable whl-next (torch 2.14.0+rocm10.1.0 today), same family as Windows.
+# Stable index is fixed; override versions with TORCH_PIN / TORCHVISION_PIN / ROCM_SDK_PIN.
+# Nightly (ROCM_CHANNEL=nightly) = floating builds; override the index with ROCM_NIGHTLY_INDEX.
+ROCM_INDEX="https://stable.repo.amd.com/rocm/whl-next/"
+ROCM_NIGHTLY_INDEX="${ROCM_NIGHTLY_INDEX:-https://nightly.repo.amd.com/rocm/whl-next/}"
+ROCM_CHANNEL="${ROCM_CHANNEL:-stable}"
 if [[ "$ROCM_CHANNEL" == "stable" ]]; then
-    ROCM_SDK_PIN="${ROCM_SDK_PIN:-7.14.0}"
-    TORCH_PIN="${TORCH_PIN:-2.12.0+rocm7.14.0}"
+    ROCM_SDK_PIN="${ROCM_SDK_PIN:-10.1.0}"
+    TORCH_PIN="${TORCH_PIN:-2.14.0+rocm10.1.0}"
+    TORCHVISION_PIN="${TORCHVISION_PIN:-0.29.0a0+rocm10.1.0}"
 else
-    ROCM_SDK_PIN="${ROCM_SDK_PIN:-7.14.0}"
+    ROCM_SDK_PIN="${ROCM_SDK_PIN:-}"
     TORCH_PIN="${TORCH_PIN:-}"
-    ROCM_META_PIN="${ROCM_META_PIN:-}"
-    TORCH_NIGHTLY_MINOR="${TORCH_NIGHTLY_MINOR:-2.12}"
+    TORCHVISION_PIN="${TORCHVISION_PIN:-}"
 fi
 
 # python3 used to create venv — not conda; override with FIZGIG_PYTHON=/usr/bin/python3.12
@@ -95,175 +96,21 @@ _fizgig_rocm_python() {
     fi
 }
 
-# Nightly: resolve torch + matching rocm meta on 7.14 (bitsandbytes 714); stable uses _resolve_stable_stack.
-_resolve_nightly_stack() {
-    local index="$1"
-    local py
-    py="$(_fizgig_rocm_python)"
-    TORCH_VER=""
-    ROCM_META_VER=""
-    VISION_VER=""
-    while IFS= read -r line; do
-        case "$line" in
-            TORCH_VER=*) TORCH_VER="${line#TORCH_VER=}" ;;
-            ROCM_META_VER=*) ROCM_META_VER="${line#ROCM_META_VER=}" ;;
-            VISION_VER=*) VISION_VER="${line#VISION_VER=}" ;;
-        esac
-    done < <("$py" - <<PY
-import json
-import re
-import subprocess
-import sys
-
-index = """${index}"""
-sdk_pin = """${ROCM_SDK_PIN:-7.14.0}"""
-torch_pin = """${TORCH_PIN:-}"""
-rocm_meta_pin = """${ROCM_META_PIN:-}"""
-prefer_minor = """${TORCH_NIGHTLY_MINOR:-2.12}"""
-
-
-def semver_tuple(v: str) -> tuple[int, ...]:
-    base = v.split("+", 1)[0]
-    return tuple(int(p) for p in re.split(r"[.\-]", base) if p.isdigit())
-
-
-def pip_versions(package: str) -> list[str]:
-    proc = subprocess.run(
-        [
-            sys.executable, "-m", "pip", "index", "versions", package,
-            "--index-url", index, "--pre", "--json",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        print(proc.stderr or proc.stdout, file=sys.stderr)
-        sys.exit(1)
-    return json.loads(proc.stdout)["versions"]
-
-
-sdk_major_minor = ".".join(sdk_pin.split(".")[:2])
-sdk_prefix = sdk_pin if sdk_pin.endswith(".0") else f"{sdk_pin.split('.')[0]}.{sdk_pin.split('.')[1]}.0"
-
-
-def rocm714_meta_versions() -> list[str]:
-    return [
-        v for v in pip_versions("rocm")
-        if v.startswith(sdk_prefix) or v.startswith(f"{sdk_major_minor}.")
-    ]
-
-
-def torch714_versions() -> list[str]:
-    out = []
-    for v in pip_versions("torch"):
-        if not re.search(rf"\+rocm{re.escape(sdk_major_minor)}", v, re.I):
-            continue
-        if re.search(r"\+rocm7\.15|7\.16|rocm10", v, re.I):
-            continue
-        out.append(v)
-    return out
-
-
-def alpha_key(v: str) -> tuple:
-    m = re.search(r"\.0a(\d+)$", v)
-    if m:
-        return (int(m.group(1)),)
-    m2 = re.match(r"(\d+)\.(\d+)\.(\d+)$", v)
-    if m2:
-        return (0, int(m2.group(1)), int(m2.group(2)), int(m2.group(3)))
-    return (0,)
-
-
-def torch_sort_key(v: str) -> tuple:
-    m = re.search(r"\+rocm7\.14\.0a(\d+)", v, re.I)
-    alpha = int(m.group(1)) if m else 0
-    return (*semver_tuple(v), alpha)
-
-
-def vision714_versions() -> list[str]:
-    out = []
-    for v in pip_versions("torchvision"):
-        if not re.search(rf"\+rocm{re.escape(sdk_major_minor)}", v, re.I):
-            continue
-        if re.search(r"\+rocm7\.15|7\.16|rocm10", v, re.I):
-            continue
-        out.append(v)
-    return out
-
-
-def vision_for_torch(torch_ver: str) -> str:
-    """TheRock matrix: torch 2.12 -> 0.27, 2.13 -> 0.28, 2.14 -> 0.29, etc."""
-    base = torch_ver.split("+", 1)[0]
-    rocm_tag = torch_ver.split("+", 1)[1] if "+" in torch_ver else ""
-    m = re.match(r"(\d+)\.(\d+)\.(\d+)(.*)$", base)
-    if not m:
-        print(f"ERROR: cannot parse torch version {torch_ver!r}", file=sys.stderr)
-        sys.exit(1)
-    _major, minor, patch, rest = m.groups()
-    vision_base = f"0.{int(minor) + 15}.{patch}{rest}"
-    exact = f"{vision_base}+{rocm_tag}" if rocm_tag else vision_base
-    versions = vision714_versions()
-    if exact in versions:
-        return exact
-    prefix = f"{vision_base}+"
-    cands = [v for v in versions if v.startswith(prefix)]
-    if cands:
-        return max(cands, key=semver_tuple)
-    print(
-        f"ERROR: no torchvision match for torch {torch_ver} on {index} "
-        f"(expected ~{vision_base}+rocm…)",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
-if torch_pin:
-    torch_ver = torch_pin
-elif rocm_meta_pin:
-    meta = rocm_meta_pin
-    suffix = f"+rocm{meta}"
-    cands = [v for v in torch714_versions() if v.lower().endswith(suffix.lower())]
-    if not cands:
-        cands = [v for v in torch714_versions() if f"+rocm{meta.split('a')[0]}" in v.lower()]
-    if not cands:
-        print(
-            f"ERROR: no torch +rocm{meta} on {index}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    pref = [v for v in cands if v.startswith(f"{prefer_minor}.")]
-    torch_ver = max(pref or cands, key=torch_sort_key)
-    meta = re.search(r"\+rocm(7\.14\.0(?:a\d+)?)", torch_ver, re.I)
-    meta = meta.group(1) if meta else rocm_meta_pin
-else:
-    meta_vers = rocm714_meta_versions()
-    if not meta_vers:
-        print(f"ERROR: no rocm {sdk_prefix}* on {index}", file=sys.stderr)
-        sys.exit(1)
-    meta = max(meta_vers, key=alpha_key)
-    suffix = f"+rocm{meta}"
-    cands = [v for v in torch714_versions() if v.lower().endswith(suffix.lower())]
-    if not cands:
-        cands = [v for v in torch714_versions() if re.search(r"\+rocm7\.14", v, re.I)]
-    if not cands:
-        print(f"ERROR: no torch +rocm{sdk_major_minor} on {index}", file=sys.stderr)
-        sys.exit(1)
-    pref = [v for v in cands if v.startswith(f"{prefer_minor}.")]
-    torch_ver = max(pref or cands, key=torch_sort_key)
-    m = re.search(r"\+rocm(7\.14\.0(?:a\d+)?)", torch_ver, re.I)
-    if m:
-        meta = m.group(1)
-
-print(f"TORCH_VER={torch_ver}")
-print(f"ROCM_META_VER={meta}")
-print(f"VISION_VER={vision_for_torch(torch_ver)}")
-PY
-)
-    if [[ -z "$TORCH_VER" || -z "$ROCM_META_VER" || -z "$VISION_VER" ]]; then
-        echo "ERROR: failed to resolve nightly torch/vision/rocm ${ROCM_SDK_PIN} from ${index}" >&2
-        return 1
-    fi
+# Runtime PATH / LD_LIBRARY_PATH, rocm-sdk init and the bitsandbytes ROCm suffix (restored: #319 kept their calls)
+_fizgig_export_rocm_runtime_path() {
+    local _bin="${FIZGIG_ROOT}/venv/bin"
+    [[ -d "$_bin" ]] && PATH="${_bin}${PATH:+:$PATH}"
+    for _d in /opt/rocm/core-*/bin /opt/rocm/bin; do
+        [[ -d "$_d" ]] && PATH="${_d}${PATH:+:$PATH}"
+    done
+    export PATH
+    for _lib in "${FIZGIG_ROOT}"/venv/lib/python*/site-packages/_rocm_sdk_core/lib \
+                "${FIZGIG_ROOT}"/venv/lib/python*/site-packages/_rocm_sdk/lib \
+                "${FIZGIG_ROOT}"/venv/lib/python*/site-packages/_rocm_sdk_libraries/lib \
+                /opt/rocm/lib /opt/rocm/lib64; do
+        [[ -d "$_lib" ]] && LD_LIBRARY_PATH="${_lib}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    done
+    export LD_LIBRARY_PATH
 }
 
 _rocm_sdk_init_post_torch() {
@@ -282,22 +129,6 @@ _rocm_sdk_init_post_torch() {
     if rocm-sdk targets 2>/dev/null | head -1; then
         :
     fi
-}
-
-_fizgig_export_rocm_runtime_path() {
-    local _bin="${FIZGIG_ROOT}/venv/bin"
-    [[ -d "$_bin" ]] && PATH="${_bin}${PATH:+:$PATH}"
-    for _d in /opt/rocm/core-*/bin /opt/rocm/bin; do
-        [[ -d "$_d" ]] && PATH="${_d}${PATH:+:$PATH}"
-    done
-    export PATH
-    for _lib in "${FIZGIG_ROOT}"/venv/lib/python*/site-packages/_rocm_sdk_core/lib \
-                "${FIZGIG_ROOT}"/venv/lib/python*/site-packages/_rocm_sdk/lib \
-                "${FIZGIG_ROOT}"/venv/lib/python*/site-packages/_rocm_sdk_libraries/lib \
-                /opt/rocm/lib /opt/rocm/lib64; do
-        [[ -d "$_lib" ]] && LD_LIBRARY_PATH="${_lib}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    done
-    export LD_LIBRARY_PATH
 }
 
 _bnb_rocm_suffix_from_torch() {
@@ -325,142 +156,8 @@ print("714")
 PY
 }
 
-# Stable: never use torch[device-*] extras (2.13+ warns and skips device wheels). Install
-# amd-torch-device-{arch} explicitly when that package exists on the index.
-_resolve_stable_stack() {
-    local index="$1"
-    local py
-    py="$(_fizgig_rocm_python)"
-    TORCH_VER=""
-    VISION_VER=""
-    STABLE_DEVICE_WHEEL=0
-    if [[ -n "${TORCH_PIN:-}" ]]; then
-        TORCH_VER="$TORCH_PIN"
-    fi
-    while IFS= read -r line; do
-        case "$line" in
-            TORCH_VER=*) TORCH_VER="${line#TORCH_VER=}" ;;
-            VISION_VER=*) VISION_VER="${line#VISION_VER=}" ;;
-            STABLE_DEVICE_WHEEL=*) STABLE_DEVICE_WHEEL="${line#STABLE_DEVICE_WHEEL=}" ;;
-        esac
-    done < <("$py" - <<PY
-import json
-import re
-import subprocess
-import sys
-
-index = """${index}"""
-arch = """${ARCH}"""
-torch_pin = """${TORCH_PIN:-}"""
-torch_device_pkg = f"amd-torch-device-{arch}"
-vision_device_pkg = f"amd-torchvision-device-{arch}"
-
-
-def semver_tuple(v: str) -> tuple[int, ...]:
-    base = v.split("+", 1)[0]
-    return tuple(int(p) for p in re.split(r"[.\-]", base) if p.isdigit())
-
-
-def pip_versions(package: str) -> list[str]:
-    proc = subprocess.run(
-        [
-            sys.executable, "-m", "pip", "index", "versions", package,
-            "--index-url", index, "--json",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        return []
-    return json.loads(proc.stdout)["versions"]
-
-
-def rocm714_only(versions: list[str]) -> list[str]:
-    return [
-        v for v in versions
-        if re.search(r"\+rocm7\.14", v, re.I) and not re.search(r"\+rocm7\.15", v, re.I)
-    ]
-
-
-def resolve_torch_pin(requested: str, available: list[str]) -> str:
-    if requested in available:
-        return requested
-    parts = requested.split("+", 1)[0].split(".")
-    if len(parts) >= 2:
-        prefix = f"{parts[0]}.{parts[1]}."
-        cands = [v for v in available if v.startswith(prefix)]
-        if cands:
-            chosen = max(cands, key=semver_tuple)
-            print(f"NOTE: {requested} not on index; using {chosen}", file=sys.stderr)
-            return chosen
-    print(f"ERROR: {requested} not on {index}", file=sys.stderr)
-    print(
-        "       Stable ships torch==2.12.0+rocm7.14.0 today. To try torch 2.14 nightly:",
-        file=sys.stderr,
-    )
-    print(
-        "         ROCM_CHANNEL=nightly TORCH_NIGHTLY_MINOR=2.14 ./install_fizgig_rocm.sh",
-        file=sys.stderr,
-    )
-    print(
-        "       Example pin (check index for newer builds): "
-        "TORCH_PIN=2.14.0a0+rocm7.14.0a20260625",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
-def vision_for_torch(torch_ver: str) -> str:
-    base = torch_ver.split("+", 1)[0]
-    rocm_tag = torch_ver.split("+", 1)[1] if "+" in torch_ver else ""
-    m = re.match(r"(\d+)\.(\d+)\.(\d+)(.*)$", base)
-    if not m:
-        print(f"ERROR: cannot parse torch version {torch_ver!r}", file=sys.stderr)
-        sys.exit(1)
-    _major, minor, patch, rest = m.groups()
-    vision_base = f"0.{int(minor) + 15}.{patch}{rest}"
-    exact = f"{vision_base}+{rocm_tag}" if rocm_tag else vision_base
-    versions = rocm714_only(pip_versions("torchvision"))
-    if exact in versions:
-        return exact
-    prefix = f"{vision_base}+"
-    cands = [v for v in versions if v.startswith(prefix)]
-    if cands:
-        return max(cands, key=semver_tuple)
-    print(f"ERROR: no torchvision match for torch {torch_ver} on {index}", file=sys.stderr)
-    sys.exit(1)
-
-
-torch_device_vers = rocm714_only(pip_versions(torch_device_pkg))
-vision_device_vers = rocm714_only(pip_versions(vision_device_pkg))
-torch_vers = rocm714_only(pip_versions("torch"))
-if not torch_device_vers or not vision_device_vers:
-    if torch_pin:
-        torch_ver = resolve_torch_pin(torch_pin, torch_vers)
-        print(f"TORCH_VER={torch_ver}")
-        print(f"VISION_VER={vision_for_torch(torch_ver)}")
-    print("STABLE_DEVICE_WHEEL=0")
-    sys.exit(0)
-
-if torch_pin:
-    torch_ver = resolve_torch_pin(torch_pin, torch_vers or torch_device_vers)
-else:
-    torch_ver = max(torch_device_vers, key=semver_tuple)
-vision_ver = vision_for_torch(torch_ver)
-vision_prefix = vision_ver.split("+", 1)[0] + "+"
-if vision_ver not in vision_device_vers and not any(v.startswith(vision_prefix) for v in vision_device_vers):
-    print(f"TORCH_VER={torch_ver}")
-    print(f"VISION_VER={vision_ver}")
-    print("STABLE_DEVICE_WHEEL=0")
-    sys.exit(0)
-
-print(f"TORCH_VER={torch_ver}")
-print(f"VISION_VER={vision_ver}")
-print("STABLE_DEVICE_WHEEL=1")
-PY
-)
-}
+# Device kernels come from torch[device-${ARCH}] / torchvision[device-${ARCH}] extras
+# on AMD's whl-next indexes (stable default, nightly via ROCM_CHANNEL=nightly).
 
 verify_torch_device_wheel() {
     local py
@@ -508,54 +205,32 @@ install_rocm_torch_wheels() {
     local -a uv_pkgs=()
     local py
     py="$(_fizgig_rocm_python)"
+    STABLE_DEVICE_WHEEL=1
 
-    local -a uv_pre=()
-    local -a uv_upgrade=(--reinstall)
-    STABLE_DEVICE_WHEEL=0
-
-    if [[ "$index" == *nightlies* ]]; then
-        _resolve_nightly_stack "$index"
+    if [[ -n "${TORCH_PIN:-}" && -n "${TORCHVISION_PIN:-}" ]]; then
         uv_pkgs=(
-            "rocm[libraries,devel,device-${ARCH}]==${ROCM_META_VER}"
-            "torch[device-${ARCH}]==${TORCH_VER}"
-            "torchvision[device-${ARCH}]==${VISION_VER}"
+            "torch[device-${ARCH}]==${TORCH_PIN}"
+            "torchvision[device-${ARCH}]==${TORCHVISION_PIN}"
         )
-        echo "Installing rocm[libraries,devel,device-${ARCH}]==${ROCM_META_VER} + torch[device-${ARCH}]==${TORCH_VER} + torchvision[device-${ARCH}]==${VISION_VER} (nightly 7.14 pin, uv)..."
-        echo "  Override: TORCH_PIN=… ROCM_META_PIN=… TORCH_NIGHTLY_MINOR=2.12 (default minor when unpinned)"
-        uv_pre=(--prerelease allow)
-        uv_upgrade=(--upgrade --reinstall)
-        STABLE_DEVICE_WHEEL=1
-    else
-        _resolve_stable_stack "$index"
-        if [[ "${STABLE_DEVICE_WHEEL}" == "1" ]]; then
-            uv_pkgs=(
-                "torch==${TORCH_VER}"
-                "torchvision==${VISION_VER}"
-                "amd-torch-device-${ARCH}==${TORCH_VER}"
-                "amd-torchvision-device-${ARCH}==${VISION_VER}"
-                "rocm-sdk-devel==${ROCM_SDK_PIN}"
-            )
-            echo "Installing torch==${TORCH_VER} + torchvision==${VISION_VER} + amd-torch-device-${ARCH} + amd-torchvision-device-${ARCH} + rocm-sdk-devel==${ROCM_SDK_PIN} (uv)..."
-        elif [[ -n "${TORCH_VER:-}" ]]; then
-            uv_pkgs=(
-                "torch==${TORCH_VER}"
-                "torchvision==${VISION_VER}"
-                "rocm-sdk-devel==${ROCM_SDK_PIN}"
-            )
-            echo "Installing torch==${TORCH_VER} + torchvision==${VISION_VER} + rocm-sdk-devel==${ROCM_SDK_PIN} (stable — TORCH_PIN, no device wheel, uv)..."
+        if [[ -n "${ROCM_SDK_PIN:-}" ]]; then
+            uv_pkgs+=("rocm-sdk-devel==${ROCM_SDK_PIN}")
         else
-            uv_pkgs=(
-                "torch"
-                "torchvision"
-                "rocm-sdk-devel==${ROCM_SDK_PIN}"
-            )
-            echo "Installing torch + torchvision + rocm-sdk-devel==${ROCM_SDK_PIN} (stable, unpinned, uv)..."
+            uv_pkgs+=("rocm-sdk-devel")
         fi
+        echo "Installing torch[device-${ARCH}]==${TORCH_PIN} + torchvision[device-${ARCH}]==${TORCHVISION_PIN} + rocm-sdk-devel${ROCM_SDK_PIN:+==${ROCM_SDK_PIN}} (uv)..."
+    else
+        uv_pkgs=(
+            "torch[device-${ARCH}]"
+            "torchvision[device-${ARCH}]"
+            "rocm-sdk-devel"
+        )
+        echo "Installing torch[device-${ARCH}] + torchvision[device-${ARCH}] + rocm-sdk-devel (floating, uv)..."
+        echo "  Override: TORCH_PIN=… TORCHVISION_PIN=… ROCM_SDK_PIN=…"
     fi
 
     echo "Source: ${index}"
     "$py" -m uv pip install --index-strategy unsafe-best-match \
-        "${uv_pre[@]}" "${uv_upgrade[@]}" --index-url "$index" \
+        --prerelease allow --upgrade --reinstall --index-url "$index" \
         "${uv_pkgs[@]}" \
         "${uv_extra[@]}"
 }
@@ -587,13 +262,13 @@ if got is None:
 if got != want:
     print(
         f"ERROR: PyTorch ROCm {got or '?'} != required {want} "
-        f"(stable stack expects libbitsandbytes_rocm714.so / BNB_ROCM_VERSION=714)",
+        f"(ROCM_SDK_PIN={pin})",
         file=sys.stderr,
     )
     print(f"       torch {torch.__version__}", file=sys.stderr)
     sys.exit(1)
 
-print(f"OK  torch ROCm {got} matches stable pin (BNB_ROCM_VERSION=714)")
+print(f"OK  torch ROCm {got} matches pin (ROCM_SDK_PIN={pin})")
 PY
 }
 
@@ -635,8 +310,8 @@ if candidates:
     for p in candidates:
         print(f"        {p.name}", file=sys.stderr)
     print(
-        f"      8-bit optimizers may fail until bitsandbytes ships rocm{suffix} "
-        f"or you use ROCM_CHANNEL=stable (7.14).",
+        f"      8-bit optimizers may fail until bitsandbytes ships rocm{suffix}; "
+        f"write_rocm_env falls back to an available lib when possible.",
         file=sys.stderr,
     )
 else:
@@ -692,10 +367,14 @@ install_rocm_torch_pinned() {
 
     install_rocm_torch_wheels "$index" "$@" || return 1
     _fizgig_export_rocm_runtime_path
-    verify_torch_rocm_pin || return 1
+    _rocm_sdk_init_post_torch || true
+    if [[ -n "${ROCM_SDK_PIN:-}" ]]; then
+        verify_torch_rocm_pin || return 1
+    fi
     verify_torch_device_wheel || return 1
     verify_torch_gpu_kernel || return 1
     verify_torchvision || return 1
+    report_installed_rocm_torch || return 1
     return 0
 }
 
@@ -704,16 +383,69 @@ install_torch_stable() {
 }
 
 install_torch_nightly() {
-    install_rocm_torch_wheels "$ROCM_NIGHTLY_INDEX" || return 1
-    _fizgig_export_rocm_runtime_path
-    _rocm_sdk_init_post_torch || return 1
-    verify_torch_rocm_pin || return 1
-    verify_torch_device_wheel || return 1
-    verify_torch_gpu_kernel || return 1
-    verify_torchvision || return 1
-    report_installed_rocm_torch || return 1
-    return 0
+    install_rocm_torch_pinned "$ROCM_NIGHTLY_INDEX" || return 1
 }
+
+install_sageattention_rdna4() {
+    # This fork's native kernels target gfx1201, not every AMD GPU supported by Fizgig.
+    if [[ "$ARCH" != "gfx1201" ]]; then
+        echo "Skipping SageAttention-RDNA4: ${ARCH} is not gfx1201 (RX 9070 / 9070 XT)."
+        return 0
+    fi
+
+    local py source_dir rocm_home build_jobs
+    local sage_commit="068036781b2061d4ee89277b52749165e3f7a887"
+    py="${FIZGIG_ROOT}/venv/bin/python"
+    rocm_home="${ROCM_HOME:-/opt/rocm/core}"
+    source_dir="${FIZGIG_ROOT}/user_data/src/SageAttention-RDNA4"
+    if ! command -v git >/dev/null 2>&1; then
+        echo "ERROR: git is required to clone SageAttention-RDNA4." >&2
+        return 1
+    fi
+    if [[ ! -d "$rocm_home" ]]; then
+        echo "ERROR: SageAttention-RDNA4 requires the ROCm build toolkit at ${rocm_home} (ROCM_HOME)." >&2
+        return 1
+    fi
+    mkdir -p "$(dirname "$source_dir")" || return 1
+    if [[ -e "$source_dir" ]]; then
+        if [[ ! -d "$source_dir/.git" ]] ||
+           [[ "$(git -C "$source_dir" remote get-url origin)" != "https://github.com/IxMxAMAR/SageAttention-RDNA4.git" ]]; then
+            echo "ERROR: ${source_dir} already exists and is not the expected SageAttention-RDNA4 clone." >&2
+            return 1
+        fi
+        echo "Reusing SageAttention-RDNA4 checkout at ${source_dir} (local changes are kept)."
+    else
+        git clone --no-checkout --depth 1 https://github.com/IxMxAMAR/SageAttention-RDNA4.git "$source_dir" || return 1
+    fi
+
+    # Fetch and build a reviewed revision, never the moving default branch.
+    git -C "$source_dir" fetch --depth 1 origin "$sage_commit" || return 1
+    git -C "$source_dir" checkout --detach "$sage_commit" || return 1
+
+    # Permit source builds on Python 3.13/3.14 as well as 3.12; safe to repeat.
+    sed -i 's/python_requires=">=3.12,<3.13"/python_requires=">=3.12,<3.15"/' "$source_dir/setup.py" || return 1
+
+    build_jobs="${MAX_JOBS:-$(nproc)}" || return 1
+    echo "Building SageAttention-RDNA4 for gfx1201 (MAX_JOBS=${build_jobs})..."
+    (
+        cd "$source_dir" || exit 1
+        export ROCM_HOME="$rocm_home" HIP_PATH="$rocm_home"
+        export PYTORCH_ROCM_ARCH=gfx1201 MAX_JOBS="$build_jobs"
+        # --no-build-isolation requires these in the existing torch environment.
+        "$py" -m pip install "setuptools>=62" wheel "packaging>=21" ninja || exit 1
+        "$py" -m pip install . --no-build-isolation --no-deps || exit 1
+        # Verify the installed package, not the source tree (whose .so may live only in build/).
+        cd "$FIZGIG_ROOT" || exit 1
+        "$py" - <<'PY'
+from sageattention import sageattn
+if not callable(sageattn):
+    raise RuntimeError("SageAttention installed without a callable sageattn")
+print("OK  SageAttention-RDNA4 import (native extension / PyTorch ABI check)")
+PY
+    )
+}
+
+main() {
 
 cd "$FIZGIG_ROOT"
 
@@ -724,18 +456,17 @@ echo "  *** HIGHLY EXPERIMENTAL — Linux AMD is best-effort only ***"
 echo "============================================================"
 echo
 echo "PyTorch / ROCm wheels are from AMD indexes — not built by Fizgig."
-echo "  Channel: ${ROCM_CHANNEL}  (default nightly → ${ROCM_NIGHTLY_INDEX})"
+echo "  Channel: ${ROCM_CHANNEL}  (default stable → ${ROCM_INDEX})"
 if [[ "$ROCM_CHANNEL" == "stable" ]]; then
-    echo "  Stable pin: torch==${TORCH_PIN}  rocm-sdk==${ROCM_SDK_PIN}"
-    echo "  Prefer nightly? Omit ROCM_CHANNEL or use: ROCM_CHANNEL=nightly ./install_fizgig_rocm.sh"
+    echo "  Stable pin: torch==${TORCH_PIN}  torchvision==${TORCHVISION_PIN}  rocm-sdk-devel==${ROCM_SDK_PIN}"
+    echo "  Version override: TORCH_PIN=…  TORCHVISION_PIN=…  ROCM_SDK_PIN=…"
+    echo "  Prefer nightly? ROCM_CHANNEL=nightly ./install_fizgig_rocm.sh"
 else
-    echo "  Nightly pin: ROCm ${ROCM_SDK_PIN} — torch[device-\${ARCH}] minor ${TORCH_NIGHTLY_MINOR} when unpinned"
-    echo "  Stable instead: ROCM_CHANNEL=stable ./install_fizgig_rocm.sh  (torch==2.12.0+rocm7.14.0)"
-    echo "  Try torch 2.14 nightly: TORCH_NIGHTLY_MINOR=2.14  (or TORCH_PIN=2.14.0a0+rocm7.14.0a20260625)"
-    echo "  Override: TORCH_PIN=…  ROCM_META_PIN=…  TORCH_NIGHTLY_MINOR=…"
+    echo "  Nightly index: ${ROCM_NIGHTLY_INDEX} (floating torch[device-\${ARCH}] unless TORCH_PIN is set)"
+    echo "  Index override: ROCM_NIGHTLY_INDEX=…  (default https://nightly.repo.amd.com/rocm/whl-next/)"
+    echo "  Stable instead: omit ROCM_CHANNEL or use ROCM_CHANNEL=stable ./install_fizgig_rocm.sh"
 fi
 echo
-echo "  Stable install: ROCM_CHANNEL=stable ./install_fizgig_rocm.sh"
 echo "  Docs: https://github.com/ROCm/TheRock/blob/main/RELEASES.md"
 echo
 echo "Shared deps come from requirements.txt with CUDA torch/bnb and nvidia-ml-py filtered out."
@@ -767,17 +498,38 @@ echo
 
 _ensure_python_dev_headers "$INSTALL_PYTHON"
 
-if [[ ! -e /usr/lib/x86_64-linux-gnu/libnuma.so ]] && [[ ! -e /lib/x86_64-linux-gnu/libnuma.so ]]; then
-    echo "Installing libnuma-dev (PyTorch rocSHMEM needs unversioned libnuma.so)..."
+# Is the unversioned libnuma.so where the loader finds it? Ask the loader's cache first, then the usual library
+# folders: Debian/Ubuntu keep it in x86_64-linux-gnu, Fedora in lib64, Arch and CachyOS in /usr/lib (#356).
+_have_libnuma() {
+    local ldc out d
+    for ldc in ldconfig /sbin/ldconfig /usr/sbin/ldconfig; do
+        if command -v "$ldc" >/dev/null 2>&1; then
+            out="$("$ldc" -p 2>/dev/null)" || true
+            [[ "$out" == *"libnuma.so ("* ]] && return 0
+            break
+        fi
+    done
+    for d in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib64 /lib64 /usr/lib /lib /usr/local/lib; do
+        [[ -e "$d/libnuma.so" ]] && return 0
+    done
+    return 1
+}
+
+if ! _have_libnuma; then
+    echo "Installing libnuma (PyTorch rocSHMEM needs unversioned libnuma.so)..."
     if command -v apt-get >/dev/null 2>&1; then
         sudo apt-get install -y libnuma-dev
     elif command -v dnf >/dev/null 2>&1; then
         sudo dnf install -y numactl-devel
     elif command -v yum >/dev/null 2>&1; then
         sudo yum install -y numactl-devel
+    elif command -v pacman >/dev/null 2>&1; then
+        sudo pacman -S --needed --noconfirm numactl
+    elif command -v zypper >/dev/null 2>&1; then
+        sudo zypper install -y libnuma-devel
     else
-        echo "ERROR: libnuma.so not found and no supported package manager (apt/dnf/yum)."
-        echo "Install libnuma-dev (Debian/Ubuntu) or numactl-devel (Fedora/RHEL), then re-run."
+        echo "ERROR: libnuma.so not found and no supported package manager (apt/dnf/yum/pacman/zypper)."
+        echo "Install libnuma-dev (Debian/Ubuntu), numactl-devel (Fedora/RHEL), numactl (Arch) or libnuma-devel (openSUSE), then re-run."
         exit 1
     fi
 fi
@@ -811,7 +563,7 @@ fi
 
 if ! ARCH="$(python src/install/detect_gpu_linux.py 2>user_data/gpu_detect_debug.log)"; then
     echo "ERROR: GPU detection failed or unsupported AMD GPU."
-    cat gpu_detect_debug.log 2>/dev/null || true
+    cat user_data/gpu_detect_debug.log >&2 2>/dev/null || true
     exit 1
 fi
 ARCH="${ARCH//$'\r'/}"
@@ -822,25 +574,24 @@ if [[ -z "$ARCH" ]]; then
 fi
 echo "Detected GPU architecture: $ARCH"
 if [[ "$ROCM_CHANNEL" == "stable" ]]; then
-    echo "ROCm SDK pin: ${ROCM_SDK_PIN} (bitsandbytes libbitsandbytes_rocm714.so)"
+    echo "ROCm channel: stable (torch ${TORCH_PIN}, device-${ARCH})"
 else
-    echo "ROCm channel: nightly (pinned to ${ROCM_SDK_PIN} for bitsandbytes 714; device-${ARCH})"
+    echo "ROCm channel: nightly (floating device-${ARCH} unless TORCH_PIN is set)"
 fi
 echo
 
 if [[ "$ROCM_CHANNEL" == "stable" ]]; then
-    echo "Installing ROCm PyTorch ${ROCM_SDK_PIN} (stable multi-arch from repo.amd.com) for ${ARCH}..."
+    echo "Installing ROCm PyTorch ${TORCH_PIN} (stable whl-next) for ${ARCH}..."
     install_torch_stable || {
         echo "ERROR: Stable ROCm PyTorch install failed for ${ARCH}." >&2
         echo "       Try nightly: ROCM_CHANNEL=nightly ./install_fizgig_rocm.sh" >&2
-        echo "       Override: TORCH_PIN=… (must install amd-torch-device-${ARCH})." >&2
+        echo "       Override: TORCH_PIN=… TORCHVISION_PIN=… ROCM_SDK_PIN=…" >&2
         exit 1
     }
 else
-    echo "Installing ROCm PyTorch (nightly multi-arch) for ${ARCH}..."
+    echo "Installing ROCm PyTorch (nightly whl-next) for ${ARCH}..."
     echo "  pip install --index-url ${ROCM_NIGHTLY_INDEX} \\"
-    echo "      \"rocm[libraries,devel,device-${ARCH}]==\${ROCM_META_VER}\" \\"
-    echo "      \"torch[device-${ARCH}]==\${TORCH_VER}\" \"torchvision[device-${ARCH}]==\${VISION_VER}\""
+    echo "      \"torch[device-${ARCH}]\" \"torchvision[device-${ARCH}]\" \"rocm-sdk-devel\""
     install_torch_nightly || {
         echo "ERROR: Nightly ROCm PyTorch install failed for ${ARCH}." >&2
         echo "       See https://github.com/ROCm/TheRock/blob/main/RELEASES.md" >&2
@@ -863,6 +614,14 @@ echo "Installing Qt for Fizgig's app window..."
 # pywebview finds no window engine inside the venv otherwise (the distro's GTK bindings aren't visible there)
 python -m uv pip install "pywebview[qt]>=5,<7" \
     || echo "NOTE: Qt for the app window didn't install; launch_fizgig_amd.sh opens Fizgig in your browser instead."
+# Gizmo is a Tkinter window; the distro's Python has no Tk until its package is installed (pip can't install it)
+if ! python -c "import tkinter; tkinter.Tcl()" 2>/dev/null; then
+    tk_v=$(python -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')
+    echo "NOTE: Gizmo (the clip / voice / music prep app) needs Tk, which this Python doesn't have. Install it with"
+    echo "  Ubuntu / Debian: sudo apt install python3-tk   (or python${tk_v}-tk)"
+    echo "  Fedora: sudo dnf install python3-tkinter    Arch: sudo pacman -S tk"
+    echo "Everything else in Fizgig works without it."
+fi
 
 echo
 echo "Installing bitsandbytes (ROCm — matched to installed torch when possible)..."
@@ -885,7 +644,9 @@ print(f"ROCm: {getattr(torch.version, 'rocm', 'n/a')}")
 if torch.cuda.is_available():
     print(f"Device: {torch.cuda.get_device_name(0)}")
 PY
-verify_torch_rocm_pin || exit 1
+if [[ -n "${ROCM_SDK_PIN:-}" ]]; then
+    verify_torch_rocm_pin || exit 1
+fi
 "$(_fizgig_rocm_python)" - <<'PY'
 import torch
 try:
@@ -914,19 +675,22 @@ else:
     print("     Optional: sudo apt install amdrocm-amdsmi (see README)")
 PY
 
+# SageAttention is optional: keep the required checks and model setup even if it cannot build.
+if ! install_sageattention_rdna4; then
+    echo "WARN: SageAttention-RDNA4 installation failed; continuing Fizgig installation." >&2
+    echo "      Leave Force SageAttention off in Preferences until a compatible build is installed." >&2
+fi
+
 echo
-echo "Downloading InsightFace models (CPU, ~300 MB)..."
-python - <<'PY'
+echo "Downloading the face models (face finder + AdaFace ViT, CPU, ~0.5 GB)..."
+# -P: a script read from stdin puts the current folder first on the path, where Fizgig's own fizgig.py would stand in
+# for the fizgig package (ImportError, and set -e then ended the install before the launcher config below)
+PYTHONPATH="$(pwd)/src" python -P - <<'PY'
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-from insightface.app import FaceAnalysis
-app = FaceAnalysis(
-    name="buffalo_l",
-    allowed_modules=["detection", "genderage", "recognition"],
-    providers=["CPUExecutionProvider"],
-)
-app.prepare(ctx_id=-1)
-print("Models ready.")
+from fizgig.face_utils import ensure_face_models
+ensure_face_models()
+print("Face models ready.")
 PY
 
 echo
@@ -943,3 +707,9 @@ echo "  (launch_fizgig.sh / launch_fizgig_browser.sh are the upstream launchers 
 echo
 echo "  NOTE: Linux AMD ROCm is highly experimental — crashes and GPU resets are common."
 echo "============================================================"
+
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

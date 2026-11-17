@@ -6,7 +6,7 @@ training bucket grid, so a prepped image is exactly what trains (see resize_imag
 'originals' subfolder unless the user chose to replace them; crops are added beside their pictures, which stay.
 
 The Look Filter scores every face against 3 baselines (the mean similarity - one photo would bake its own angle and
-light into every score) with the face embedder Image Prep's face settings pick (ArcFace for people, DINOv2 for furry /
+light into every score) with the face embedder Image Prep's face settings pick (AdaFace for people, DINOv2 for furry /
 anime faces: face_utils), and saves <folder>/fizgig_look_scores.json, which training's "Warm up look outliers" reads:
 keep its format.
 """
@@ -33,10 +33,23 @@ FACE_CROP_PREFIX = "FaceCrop_"     # face close-ups: FaceCrop_001.png
 HIT_MAX_SHARE = 0.60              # a single SAM 3.1 find covering more of the picture than this is ignored
 FIT_ALL_MAX_SHARE = 0.85          # Fit all words in one crop: a crop with SAM 3.1 boxes over this share is skipped
 DETECTOR_KEEP_SHARE = 0.95        # ... one from the detectors alone is kept while it still trims this much off
+# a face narrower than this in the photo gets no close-up (Peter, 15 Nov 2026): a smaller face has too little real
+# detail to be worth cropping, and every such crop is one more picture to cull by hand
+MIN_FACE_PX = 400
+
+
+def face_px(face):
+    """The detected face's width in the photo's own pixels."""
+    x1, _y1, x2, _y2 = face.bbox
+    return int(round(x2 - x1))
 
 
 class _NothingToAdd(Exception):
     """A crop that would add nothing (Fit all words in one crop covering nearly the whole picture)."""
+
+
+class _FaceTooSmall(_NothingToAdd):
+    """The face found is narrower than Min face width (MIN_FACE_PX): no close-up; the summary counts these."""
 
 
 RESIZED_DIR, CROPS_DIR, SKIPPED_DIR = "resized", "crops", "skipped"   # Image Prep's outputs
@@ -287,7 +300,7 @@ def source_stats(folder, max_sample=40):
     return len(files), med[0] * med[1], med
 
 
-def summary(folder, mode, replace, prep_mp, train_mp=None, find="", crops_only=False):
+def summary(folder, mode, replace, prep_mp, train_mp=None, find="", crops_only=False, min_face=MIN_FACE_PX):
     """The 'What will happen' card: {lines, warn (prep below training's megapixels), count}. find: the Find this
     box's words when the Face dropdown is on Other… (else "")."""
     area = target_area(prep_mp)
@@ -308,10 +321,11 @@ def summary(folder, mode, replace, prep_mp, train_mp=None, find="", crops_only=F
                 f"named {CROP_PREFIX}{slug_name}_001.png and on, as the close-ups "
                 f"of Resize + close-up crops are")
     elif mode == "Auto Prep (Face Crops)":
-        what = f"{count} → {sized}, plus one face close-up each{f' (≈{n * 2} files)' if n else ''}"
+        what = (f"{count} → {sized}, plus a face close-up from each photo whose face is at least {min_face} px wide"
+                f"{f' (up to {n * 2} files)' if n else ''}")
     elif mode == "Face Crop Only":
-        what = (f"{count} → a face close-up from each photo, added as PNG named {FACE_CROP_PREFIX}001.png and "
-                f"on, as the close-ups of Resize + close-up crops are")
+        what = (f"{count} → a face close-up from each photo whose face is at least {min_face} px wide, added as PNG "
+                f"named {FACE_CROP_PREFIX}001.png and on, as the close-ups of Resize + close-up crops are")
     elif mode == "Detail Crops (Style)":
         from fizgig.dataset.detail_crops import DIR, side
         s = side(prep_mp)
@@ -563,11 +577,12 @@ class Prep:
 
     # ---- the three modes: the training folder itself is never changed ----
     def run(self, mode, folder, prep_mp, face_label="Largest Face", face_padding=20.0, replace=False,
-            crops_only=False):
+            crops_only=False, min_face=MIN_FACE_PX):
         """Prep never touches the training folder's own files: resized copies go to resized/, close-ups to crops/,
         and pictures the cropping skipped (nothing found / an error) are copied to skipped/ with skipped.txt saying
         why. A re-run empties the folders it writes first; undo = delete the folder. replace is no longer used."""
         self._originals = {}
+        self.min_face = max(0, int(min_face or 0))
         area = target_area(prep_mp)
         face_mode = face_mode_of(face_label)
         if self.captions is not None:                 # what the crops are of stays in their captions (trim never drops it)
@@ -646,6 +661,9 @@ class Prep:
         sel, note = self.select_face(faces, face_mode)
         if note:
             self.log(note)
+        min_face = getattr(self, "min_face", 0)
+        if sel and face_px(sel) < min_face:
+            raise _FaceTooSmall(f"the face is too small for a close-up ({face_px(sel)} px wide, needs {min_face})")
         return [sel] if sel else []
 
     def _sane(self, hits, size):
@@ -736,7 +754,7 @@ class Prep:
         from fizgig.dataset.masks import read_mask
         from fizgig.face_utils import crop_to_face
         rdir, cdir, sdir = dirs.get("resized"), dirs.get("crops"), dirs.get("skipped")
-        resized_n = crops_n = errors = 0
+        resized_n = crops_n = errors = small = 0
         skipped = []
         index = {}
         for filepath in image_files(source):
@@ -779,6 +797,7 @@ class Prep:
                             crops_n += 1
                             crop.close()
                     except _NothingToAdd as e:
+                        small += isinstance(e, _FaceTooSmall)
                         self.log(f"Not cropped: {filename} - {e}\n")
                         self._skip(filepath, sdir, str(e), skipped)
                     except Exception as e:
@@ -814,6 +833,9 @@ class Prep:
             self.log(f"Close-ups made: {crops_n}, with their captions, in {cdir}\n")
             self.log(f"Skipped by the cropping: {len(skipped)}" +
                      (f" - copies and the reasons (skipped.txt) in {sdir}\n" if skipped else "\n"))
+            if small:
+                self.log(f"Face too small: {small} (narrower than {getattr(self, 'min_face', 0)} px: no close-up, "
+                         f"the picture kept whole)\n")
         if errors:
             self.log(f"Errors: {errors}\n")
         self.log("Training uses the resized copies and crops in place of the full-size pictures. "
@@ -821,14 +843,14 @@ class Prep:
 
 
 # ---- Look Consistency Filter ---------------------------------------------------------------------------------
-ARCFACE = {"match": 0.45, "borderline": 0.30, "floor": 0.25}     # face_utils.IDENTITY_THRESHOLDS["arcface"]
+ADAFACE = {"match": 0.42, "borderline": 0.36, "floor": 0.30}     # face_utils.IDENTITY_THRESHOLDS["adaface"]
 
 
 def verdict(sim, thresholds=None):
     """(label, colour, blurb) for a similarity under the embedder's thresholds (face_utils.IDENTITY_THRESHOLDS; the
-    default is ArcFace's - the same person across varied photos usually lands 0.30-0.70, a different person rarely
-    clears 0.25). Scores from different embedders are on different scales."""
-    t = thresholds or ARCFACE
+    default is AdaFace's - the same person across varied photos usually lands 0.45-0.70, a different person rarely
+    clears 0.30). Scores from different embedders are on different scales."""
+    t = thresholds or ADAFACE
     if sim is None:
         return ("no face", "#7F8C8D", "No face detected — can't be scored. Back shots are fine; judge by eye.")
     if sim >= t["match"]:
@@ -846,8 +868,8 @@ def look_files(folder):
                   and not is_mask_file(f))
 
 
-def cutoff(scores, floor=0.25):
-    """The auto-suggest fence: median - 1.5 x IQR of the scored faces, floored at the embedder's floor (ArcFace 0.25);
+def cutoff(scores, floor=0.30):
+    """The auto-suggest fence: median - 1.5 x IQR of the scored faces, floored at the embedder's floor (AdaFace 0.30);
     None under 4 faces. (median, cutoff)."""
     ss = sorted(s for s in scores.values() if s is not None)
     if len(ss) < 4:
@@ -857,7 +879,7 @@ def cutoff(scores, floor=0.25):
     return med, max(med - 1.5 * (q3 - q1), floor)
 
 
-def suggest(scores, baselines, floor=0.25):
+def suggest(scores, baselines, floor=0.30):
     """The drifters auto-suggest marks: below the fence; never a baseline, never a no-face."""
     _, cut = cutoff(scores, floor)
     if cut is None:
@@ -886,8 +908,8 @@ def score(files, baselines, embed, progress=None):
 def save_scores(folder, baselines, scores, embedder=None):
     """<folder>/fizgig_look_scores.json for training's "Warm up look outliers": baselines, the auto-suggest cutoff,
     each image's score by file stem, and the embedder that made them (face_utils.FaceEmbedder: its cache_id and
-    label - a file without one is ArcFace). Keep the format."""
-    floor = embedder.thresholds["floor"] if embedder is not None else ARCFACE["floor"]
+    label - a file without one was ArcFace's). Keep the format."""
+    floor = embedder.thresholds["floor"] if embedder is not None else ADAFACE["floor"]
     payload = {"baselines": [os.path.basename(b) for b in baselines], "cutoff": cutoff(scores, floor)[1],
                "scores": {os.path.splitext(os.path.basename(p))[0]: s for p, s in scores.items()}}
     if embedder is not None:

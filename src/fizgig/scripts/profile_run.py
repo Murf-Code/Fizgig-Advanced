@@ -24,7 +24,7 @@ def _auto_swap():
     try:
         import torch
         if torch.cuda.is_available():
-            gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+            gb = torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / (1024 ** 3)
             return 0 if gb >= 15 else 12 if gb >= 10 else 16
     except Exception:
         pass
@@ -34,7 +34,7 @@ def _auto_swap():
 def _embedder(baselines):
     """(embed_path, embed_pil, label) on one face model: the largest face's embedding (the desktop's
     _ff_embed_cached / _repair_embed_pil). The look match is Image Prep's; with Auto it is decided from the subject
-    photos (ArcFace for a person, DINOv2 for a furry / anime character), the same for every render."""
+    photos (AdaFace for a person, DINOv2 for a furry / anime character), the same for every render."""
     from fizgig.face_utils import decide_look_match
     fe = decide_look_match(baselines).embedder()
     return fe.embed, fe.embed_image, fe.label

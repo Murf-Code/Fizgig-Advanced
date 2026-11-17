@@ -81,15 +81,15 @@ Install a full **Python 3.12** first: the ROCm bitsandbytes wheel is cp312-only,
 - **Recommended** — [Python Install Manager](https://www.python.org/downloads/latest/pymanager) from the [Microsoft Store](https://apps.microsoft.com/detail/9NQ7512CXL7T), then `py install 3.12`.
 - **Alternative** — [python-3.12.10-amd64.exe](https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe); tick **Add python.exe to PATH** and **tcl/tk and IDLE**.
 
-Then double-click `install_fizgig_rocm.bat` (NVIDIA users never run this). It picks 3.12 via `py -3.12` / `python3.12`, not whatever `python` defaults to (e.g. 3.14). It detects the GPU, then installs pinned multi-arch wheels from **AMD ROCm nightlies** (`https://rocm.nightlies.amd.com/whl-multi-arch/`, not built by Fizgig):
+Then double-click `install_fizgig_rocm.bat` (NVIDIA users never run this). It picks 3.12 via `py -3.12` / `python3.12`, not whatever `python` defaults to (e.g. 3.14). It detects the GPU, then installs pinned multi-arch wheels from **AMD's stable index** (`https://stable.repo.amd.com/rocm/whl-next/`, not built by Fizgig):
 
-- `torch==2.12.0+rocm7.15.0a20260728`
-- `torchvision==0.27.0+rocm7.15.0a20260728`
-- `rocm-sdk-devel==7.15.0a20260728`
+- `torch[device-ARCH]==2.14.0+rocm10.1.0`
+- `torchvision[device-ARCH]==0.29.0a0+rocm10.1.0`
+- `rocm-sdk-devel==10.1.0`
 
-Override with `TORCH_PIN` / `TORCHVISION_PIN` / `ROCM_SDK_DEVEL_PIN` if needed. **bitsandbytes** is a pinned community Windows ROCm wheel from [0xDELUXA/bitsandbytes_win_rocm](https://github.com/0xDELUXA/bitsandbytes_win_rocm), built by neither AMD nor Fizgig. Shared deps come from `requirements.txt` with CUDA `torch`/`bitsandbytes` and NVIDIA-only `nvidia-ml-py` filtered out (`filter_requirements_rocm.py`). Launch with `Launch Fizgig AMD.bat`; update with `update_fizgig_rocm.bat` — **not** `update_fizgig.bat`, which installs CUDA torch and would wipe the ROCm stack.
+Override with `TORCH_PIN` / `TORCHVISION_PIN` / `ROCM_SDK_DEVEL_PIN` if needed. **bitsandbytes** stays a pinned community Windows ROCm wheel from [0xDELUXA/bitsandbytes_win_rocm](https://github.com/0xDELUXA/bitsandbytes_win_rocm), built by neither AMD nor Fizgig; when its ROCm DLL set does not match the torch stack, `write_rocm_env.py` falls back as before. Shared deps come from `requirements.txt` with CUDA `torch`/`bitsandbytes` and NVIDIA-only `nvidia-ml-py` filtered out (`filter_requirements_rocm.py`). Launch with `Launch Fizgig AMD.bat`; update with `update_fizgig_rocm.bat` — **not** `update_fizgig.bat`, which installs CUDA torch and would wipe the ROCm stack.
 
-**`--experimental` (unsupported):** `install_fizgig_rocm.bat --experimental` installs unpinned `torch[device-ARCH]` / `torchvision[device-ARCH]` / `rocm-sdk-devel` from AMD's **whl-next** nightlies (`https://nightly.repo.amd.com/rocm/whl-next/`, the index comfyui-rocm uses for floating installs; the pinned TORCH_PIN wheels are not on it) and leaves `BNB_ROCM_VERSION` unset so bitsandbytes auto-selects its highest matching DLL. It is **not** the same as Linux `ROCM_CHANNEL=nightly` (which stays on the constrained 7.14 / bitsandbytes 714 lane), and not the default Windows multi-arch pin index. Local experimentation only. **Do not open GitHub issues for crashes, install failures, or training problems when `--experimental` was used** — those reports are not supported. Use the pinned install (no flag) for anything you expect help with.
+**`--experimental` (unsupported):** `install_fizgig_rocm.bat --experimental` installs floating packages from AMD's **nightly** whl-next by default (`https://nightly.repo.amd.com/rocm/whl-next/`) and leaves `BNB_ROCM_VERSION` unset so bitsandbytes auto-selects its highest matching DLL. Override the index with `ROCM_EXPERIMENTAL_INDEX` (PowerShell: `$env:ROCM_EXPERIMENTAL_INDEX="…"`). Same idea as Linux `ROCM_CHANNEL=nightly`. Local experimentation only. **Do not open GitHub issues for crashes, install failures, or training problems when `--experimental` was used** — those reports are not supported. Use the default stable install (no flag) for anything you expect help with.
 
 ### Linux (AMD ROCm — highly experimental)
 
@@ -101,24 +101,31 @@ chmod +x install_fizgig_rocm.sh
 ./launch_fizgig_amd.sh
 ```
 
-The script detects your gfx target (`detect_gpu_linux.py`). **Nightly is the Linux default**: the [TheRock multi-arch RELEASES.md](https://github.com/ROCm/TheRock/blob/main/RELEASES.md) index plus a `[device-gfx*]` extra for your GPU (e.g. `gfx1201` → `device-gfx1201`). Unpinned nightly resolves the latest **torch 2.12** + **ROCm 7.14.0a\*** stack (matches `libbitsandbytes_rocm714.so`). Override with `TORCH_PIN=…`, `ROCM_META_PIN=…`, or `TORCH_NIGHTLY_MINOR=…`.
+The script detects your gfx target (`detect_gpu_linux.py`). **Stable is the Linux default**: AMD's [stable whl-next](https://stable.repo.amd.com/rocm/whl-next/) index (fixed) plus a `[device-gfx*]` extra for your GPU (e.g. `gfx1201` → `device-gfx1201`), pinned to **`torch==2.14.0+rocm10.1.0`** / **`torchvision==0.29.0a0+rocm10.1.0`** / **`rocm-sdk-devel==10.1.0`**. Override versions with `TORCH_PIN=…`, `TORCHVISION_PIN=…`, or `ROCM_SDK_PIN=…`.
 
-**Stable** (repo.amd.com, no nightly alphas) pins **`torch==2.12.0+rocm7.14.0`** + **`rocm-sdk==7.14.0`** (cp310–cp314):
-
-```bash
-ROCM_CHANNEL=stable ./install_fizgig_rocm.sh
-```
-
-**torch 2.14** is nightly-only and can increase sampling VRAM pressure compared with 2.12:
+**Nightly** (unsupported floating builds from `https://nightly.repo.amd.com/rocm/whl-next/` by default; override the index with `ROCM_NIGHTLY_INDEX`):
 
 ```bash
-ROCM_CHANNEL=nightly TORCH_NIGHTLY_MINOR=2.14 ./install_fizgig_rocm.sh
-# or an explicit pin, e.g.:
-# TORCH_PIN=2.14.0a0+rocm7.14.0a20260625 ROCM_CHANNEL=nightly ./install_fizgig_rocm.sh
-# (paired torchvision ~0.29.0a0+rocm7.14.0a… — installer resolves the match)
+ROCM_CHANNEL=nightly ./install_fizgig_rocm.sh
+# or: ROCM_CHANNEL=nightly ROCM_NIGHTLY_INDEX=https://rocm.nightlies.amd.com/whl-multi-arch/ ./install_fizgig_rocm.sh
 ```
 
 The installer then adds shared deps from `requirements.txt` (filtered) and `bitsandbytes>=0.50.0` for ROCm.
+
+On **RX 9070 / RX 9070 XT (`gfx1201`)**, it optionally builds
+[SageAttention-RDNA4](https://github.com/IxMxAMAR/SageAttention-RDNA4/) at pinned commit
+`068036781b2061d4ee89277b52749165e3f7a887` in `user_data/src/SageAttention-RDNA4`.
+It uses Fizgig's `venv/bin/python -m pip install . --no-build-isolation --no-deps`,
+with `ROCM_HOME=/opt/rocm/core`, `HIP_PATH=/opt/rocm/core`,
+`PYTORCH_ROCM_ARCH=gfx1201` and `MAX_JOBS=$(nproc)`. Set `ROCM_HOME` to use another
+toolkit location, or `MAX_JOBS` to lower compile parallelism. Before building, the
+clone's `setup.py` Python requirement is widened to `>=3.12,<3.15`.
+A failed clone, build or import check prints a warning and installation continues,
+including `ensure_face_models()` for the face finder and AdaFace. The ROCm pin,
+bitsandbytes, GPU kernel and VRAM monitor checks are retained. Other architectures
+skip this optional build. Once installed, enable **Force SageAttention for Krea 2
+image generation** under **Preferences → Inference performance**; leave it off if
+the optional build failed.
 
 Linux ROCm cache scripts import `fizgig.rocm.cache_exit` only when `FIZGIG_GPU_BACKEND=rocm` (set by `launch_fizgig_amd.sh`); NVIDIA and other platforms call `main()` directly. Opt out with `FIZGIG_ROCM_NO_FAST_EXIT=1 ./launch_fizgig_amd.sh`.
 
@@ -212,6 +219,10 @@ The text-encoder slot is open: any Qwen3-VL-4B in the ComfyUI layout loads — f
 
 The file list is in [MINIMAX_H3.md](MINIMAX_H3.md).
 
+### MiniMax H3 Image
+
+Use **Download models for me** in the MiniMax H3 Image section of Preferences: the 21 GB int8 DiT and its 1.2 GB VAE, plus MiniMax H3's 15.7 GB text encoder if you don't already have it. Details in [MINIMAX_IMAGE.md](MINIMAX_IMAGE.md).
+
 ### Qwen Image 2.1
 
 Use the **Download models for me** button in the Qwen Image 2.1 section of the Preferences tab: about 34 GB, plus Krea 2's ~5 GB Qwen3-VL-4B captioner if you don't already have it. Details in [QWEN_IMAGE.md](QWEN_IMAGE.md).
@@ -255,6 +266,10 @@ Auto budgets from your *free* VRAM and the console explains its choice. If a pre
 
 See [MINIMAX_H3.md](MINIMAX_H3.md) for the Auto table and preview limits per card.
 
+### MiniMax H3 Image
+
+Trains on cards down to **12 GB**. Auto picks the int8 base where it fits (22.7 GB peak with the 2048×2048 preview) and 4-bit below that (12.8 GB; 11.2 GB on a 12 GB card). A 16 GB card with 32 GB of RAM trains and runs Studio; Studio on a 12 GB card needs about 48 GB of system RAM for the 32B text encoder. See [MINIMAX_IMAGE.md](MINIMAX_IMAGE.md).
+
 ### Qwen Image 2.1
 
 Trains on cards down to **10 GB**. At the presets' 0.5 MP, Auto picks bf16 on 24 GB+, INT8 with no block swap on 12–16 GB, and 4-bit NF4 on 10 GB. See [QWEN_IMAGE.md](QWEN_IMAGE.md).
@@ -262,6 +277,14 @@ Trains on cards down to **10 GB**. At the presets' 0.5 MP, Auto picks bf16 on 24
 ### 12 GB cards + previews (Windows): leave the paging file system-managed
 
 Each preview parks the training model and optimizer in system RAM while the decoder runs. A fixed small paging file (e.g. 4 GB) can't cover that commit spike, and the run dies with **Windows error 1455** ("paging file is too small"), which says nothing about previews. Set Settings → System → About → Advanced system settings → Performance → Advanced → Virtual memory → *Automatically manage*. Reported and confirmed on a 12 GB RTX 5070 by [@mabseyuk](https://github.com/mabseyuk).
+
+### Training suddenly several times slower? (Windows: shared GPU memory)
+
+If a run that used to be quick is suddenly many times slower with nothing changed in Fizgig, Windows has probably moved part of it into **shared GPU memory** (system RAM over PCIe). It doesn't crash, it just crawls. To check, open Task Manager → Performance → your GPU while it trains: **Shared GPU memory** well above about 0.5 GB means a spill, even if dedicated GPU memory isn't full. A driver update or a Windows update can bring it on.
+
+To fix it, open NVIDIA Control Panel → Manage 3D settings → **Global Settings**, set **CUDA - Sysmem Fallback Policy** to **Prefer No Sysmem Fallback**, and restart Fizgig. Don't add `venv\Scripts\python.exe` under Program settings: on Windows it's only a launcher that starts the Python Fizgig was installed with (the `home` line in `venv\pyvenv.cfg`), so the setting never reaches the process using the GPU. To keep it to Fizgig only, add that Python's `python.exe` under Program settings instead. Restarting the PC and closing apps that use the GPU (browsers, Discord, games) before training also helps. With fallback off, a run that genuinely doesn't fit stops with an out-of-memory error instead of crawling: then swap a few more blocks or pick the next precision down (Memory & Precision, on the Training tab).
+
+On Windows with an NVIDIA card, Fizgig shows these steps when it starts, until you tick **Don't show this again**.
 
 ### Desktop feels juddery while training? (Windows)
 

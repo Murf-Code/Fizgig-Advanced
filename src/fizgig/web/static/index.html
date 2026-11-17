@@ -357,6 +357,12 @@
                   <div class="problems" id="prepTrimNote"></div>
                   <div class="field-hint">A caption already there for a crop is kept.</div>
                 </div>
+                <div class="field-row prep-opts prep-face">
+                  <span class="field-label">Min face width:</span>
+                  <input type="text" id="prepMinFace" class="w-num" value="400">
+                  <span class="field-hint">px in the photo. A smaller face has too little detail to be worth a
+                    close-up, so that photo gets none (0: every face)</span>
+                </div>
                 <details class="tc-box prep-chars" id="prepChars">
                   <summary>Anime/furry/drawn characters</summary>
                   <div class="field-hint">Face close-ups, the Look Filter and likeness scores are made for people's
@@ -811,6 +817,7 @@
           <div class="section-card" id="galleryCard">
             <div class="card-title">Previews so far</div>
             <div class="card-desc" id="galleryInfo">The newest first, from the current run's output folder.</div>
+            <div class="field-hint tc-warn" id="galleryError"></div>
             <div class="card-content">
               <div class="field-row gallery-controls" id="galleryControls" style="display:none">
                 <span class="field-label">Run:</span><select id="galleryRun" class="w-combo"></select>
@@ -826,7 +833,7 @@
               <div class="lik-panel" id="likPanel" style="display:none">
                 <div class="lik-run" id="likRun"></div>
                 <div class="field-hint" id="likPeak"></div>
-                <canvas id="likChart" height="150"></canvas>
+                <canvas id="likChart" height="190"></canvas>
               </div>
               <div class="preview-mode" id="galleryMode" style="display:none"></div>
               <div class="gallery" id="gallery"></div>
@@ -872,6 +879,7 @@
               <div id="runLoss"></div>
               <div class="il-box" id="runImageLoss" style="display:none"></div>
               <div class="tm-box" id="runTrainMaps" style="display:none"></div>
+              <div class="field-hint start-resume" id="startResumeNote" style="display:none"></div>
               <div class="field-row">
                 <button class="btn" id="btnCheck" title="Runs Start's checks without starting: lists anything missing or wrong, else the stages a run would go through">Check settings</button>
                 <button class="btn btn-primary" id="btnStart">Start Training</button>
@@ -936,6 +944,7 @@
               <div class="field-row"><span class="field-label">Model:</span><select id="stFamily" class="w-combo"></select>
                 <span class="field-hint" id="stDitNote"></span></div>
               <div class="field-row" id="stRender" style="display:none"></div>
+              <div id="stOpts" style="display:none"></div>
               <div class="field-row" id="stDitRow"><span class="field-label">Preview with:</span>
                 <label class="radio-label"><input type="radio" name="stDit" value="fast" checked> <span id="stDitFast"></span></label>
                 <label class="radio-label"><input type="radio" name="stDit" value="full"> <span id="stDitFull"></span></label></div>
@@ -1288,7 +1297,7 @@
             </div>
           </div>
           <div class="ry-tabs" id="ryTabs">
-            <button class="ry-tab ry-folder-only" data-ry="epochs">Epochs</button>
+            <button class="ry-tab" data-ry="epochs">Epochs</button>
             <button class="ry-tab" data-ry="seed">Seed travel</button>
             <button class="ry-tab" data-ry="prompt">Prompt travel</button>
             <button class="ry-tab" data-ry="strength">Strength travel</button>
@@ -1305,6 +1314,11 @@
                 <select id="ryMax" class="w-combo st-small-select"><option>All</option><option>6</option><option>8</option>
                   <option>10</option><option selected>12</option><option>16</option><option>20</option></select>
                 <span class="field-hint">how many epochs to render, spread across the run</span></div>
+              <div class="field-row"><span class="field-label">Epochs:</span>
+                <input type="text" id="ryFrom" class="w-num" placeholder="first" title="The first epoch to render. Empty: the start of the run.">
+                <span class="field-hint">to</span>
+                <input type="text" id="ryTo" class="w-num" placeholder="last" title="The last epoch to render. Empty: the end of the run.">
+                <span class="field-hint">render part of the run only, e.g. 75 to 90 around a good epoch; Max renders spreads its picks inside it. Empty: the whole run</span></div>
               <div class="field-row"><button class="btn btn-primary" id="ryRender">Render epochs</button>
                 <button class="btn" id="ryStop" disabled>Stop</button>
                 <button class="btn" id="ryUnload" title="Free the GPU: the model leaves the card (the next render loads it again).">Unload model</button><span class="field-hint" id="ryStatus">Pick a folder, set a
@@ -1832,7 +1846,21 @@
           </div>
           <div class="section-card">
             <div class="card-title"><span>Runs</span><button class="btn btn-sm" id="runsReload">Reload</button></div>
-            <div class="card-content"><div id="runsList" class="runs-list"></div></div>
+            <div class="card-content">
+              <div class="field-row" id="purgeRow">
+                <span class="field-label">Clear out runs that ended more than</span>
+                <input type="number" id="purgeDays" class="w-num" min="1" max="365" step="1" value="14"
+                  title="How far back the run history goes. A run is counted by the date it ended, so a run still training is never caught. 1-365 days.">
+                <span class="field-hint">days ago</span>
+                <label class="checkbox-label" title="Ticked, a purge also deletes what each run saved in its output folder: its LoRA files (the finished LoRA and every epoch's), saved states and previews. Unticked, only its line here goes and nothing on disk is touched. Training pictures are never touched either way."><input
+                  type="checkbox" id="purgeData"> Delete their LoRAs and saved files too</label>
+                <label class="checkbox-label" title="Ticked, a run you paused counts from the moment it paused. Unticked, paused runs stay on the list however long ago they paused."><input
+                  type="checkbox" id="purgePaused"> Include paused runs</label>
+                <button class="btn btn-sm btn-danger" id="purgeBtn">Purge…</button>
+              </div>
+              <div id="purgeSay" style="display:none"></div>
+              <div id="runsList" class="runs-list"></div>
+            </div>
           </div>
           <div class="section-card">
             <div class="card-title"><span>Saved files</span>
@@ -2110,6 +2138,17 @@
     </div>
   </div>
 
+  <div class="modal-backdrop" id="startupModal">
+    <div class="modal-window startup-window">
+      <div class="modal-header"><span id="startupTitle"></span>
+        <button class="btn" id="startupLater" title="Decide later: nothing starts, and the queue stays held">✕</button></div>
+      <div class="modal-body">
+        <div id="startupText"></div>
+        <div class="startup-choices" id="startupChoices"></div>
+        <div class="field-hint" id="startupNote"></div>
+      </div>
+    </div>
+  </div>
   <div class="modal-backdrop" id="cropModal">
     <div class="modal-window crop-window">
       <div class="modal-header"><span id="cropTitle">Crop to the clip's shape</span>
@@ -2194,6 +2233,37 @@
     </div>
   </div>
 
+  <!-- the job the tabs show (app.js jobPillShow): top right, clear of the app window's bar in the top middle -->
+  <div class="job-pill" id="jobPill" style="display:none">
+    <span class="job-pill-grip" id="jobPillGrip" aria-hidden="true" title="Drag to move it; double-click puts it back"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+    <button class="job-pill-text" id="jobPillText" aria-haspopup="true"></button>
+    <div class="job-pill-menu" id="jobPillMenu" role="menu" hidden></div>
+  </div>
+  <div class="job-pill-shade" id="jobPillShade" hidden></div>
+
+  <!-- On Windows with an NVIDIA card: turn off CUDA Sysmem Fallback, once a launch until Don't show this again -->
+  <div class="modal-backdrop" id="sysmemModal">
+    <div class="modal-window sysmem-window">
+      <div class="modal-header"><span>For full training speed on Windows</span>
+        <button class="btn btn-sm" id="sysmemX" title="Close">✕</button></div>
+      <div class="modal-body sysmem-body">
+        <p>NVIDIA's driver can quietly move part of a training run into system RAM when the card fills up. Nothing
+          crashes, but training can run several times slower, and a driver or Windows update can switch it on.</p>
+        <p><b>To turn it off:</b> open <b>NVIDIA Control Panel</b> → <b>Manage 3D settings</b> → <b>Global Settings</b>,
+          set <b>CUDA - Sysmem Fallback Policy</b> to <b>Prefer No Sysmem Fallback</b>, click Apply, and restart
+          Fizgig.</p>
+        <p class="field-hint">Use Global Settings, not Program Settings: Fizgig's Python there is only a launcher, so a
+          per-program setting never reaches it. With it off, a run too big for your card stops with an out-of-memory
+          message instead of slowing down, and Fizgig retries it lighter by itself.
+          <a href="https://github.com/Murf-Code/Fizgig-Advanced/blob/fizgig-advanced/docs/INSTALL.md#training-suddenly-several-times-slower-windows-shared-gpu-memory" target="_blank" rel="noopener">More in the install guide</a></p>
+      </div>
+      <div class="modal-footer">
+        <label class="checkbox-label"><input type="checkbox" id="sysmemNever"> Don't show this again</label>
+        <button class="btn btn-primary" id="sysmemClose">OK</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-backdrop" id="loginModal">
     <div class="modal-window" style="width: 380px;">
       <div class="modal-header"><span>Log in</span></div>
@@ -2217,7 +2287,7 @@
     <button class="btn lightbox-step" id="lightboxPrev" title="Previous (←). On previews: ↑ ↓ the same prompt an epoch earlier or later">‹</button>
     <figure class="lightbox-figure"><div class="lightbox-mode" id="lightboxMode" style="display:none"></div><img id="lightboxImg" alt=""><figcaption id="lightboxName"></figcaption>
       <div class="lightbox-cap" id="lightboxCap" style="display:none">
-        <textarea id="lightboxCapText" rows="3" spellcheck="true"></textarea>
+        <textarea id="lightboxCapText" class="fit-text" rows="3" spellcheck="true"></textarea>
         <div class="lightbox-cap-row"><button class="btn btn-primary btn-sm" id="lightboxCapSave"
           title="Save the caption (Ctrl+Enter)">Save</button>
           <button class="btn btn-sm" id="lightboxCapRecap" title="Write this file's caption again with the model and task on the Captions tab">Re-caption</button>

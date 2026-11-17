@@ -76,14 +76,14 @@ def test_scoring_writes_paired_and_skips_unpaired(tmp_path):
     for name in ("run_e000001_00_1_1.png", "run_e000001_01_1_2.png", "run_e000002_00_1_1.png", "note.png"):
         _img(s / name, 20)
     (s / ".prompts_run.json").write_text(json.dumps({"1": ["a", "b"], "2": ["changed live", "b"]}))
-    gl._write(str(s), ["f1.png", "f2.png", "f3.png"], "live", {"run_e000001_00_1_1.png": 0.5})   # face scores
+    gl._write(str(s), "run", ["f1.png", "f2.png", "f3.png"], "live", {"run_e000001_00_1_1.png": 0.5})   # face scores
     vec = {str(data / "x.png"): np.array([1.0, 0.0])}
     n = sp.score_pass(str(s), embed_fn=lambda p: vec.get(p, np.array([0.6, 0.8])))
     d = gl.read(str(s))
     assert n == 1 and d["paired"] == {"run_e000001_00_1_1.png": {"score": 0.6, "image": "x.png", "index": 0}}
-    assert d["scores"] == {"run_e000001_00_1_1.png": 0.5}                        # the face scores stay
+    assert gl.read(str(s), "run")["scores"] == {"run_e000001_00_1_1.png": 0.5}  # the face scores stay (the run's file)
     assert sp.score_pass(str(s), embed_fn=lambda p: 1 / 0) == 0                 # scored once, not again
-    gl._write(str(s), [], "", {})                                                # the face scorer rewriting...
+    gl._write(str(s), "run", [], "", {})                                         # the face scorer rewriting...
     assert "run_e000001_00_1_1.png" in gl.read(str(s))["paired"]                 # ...keeps the paired section
     os.remove(s / "run_e000001_00_1_1.png")
     gl.merge_paired(str(s), {}, set(os.listdir(s)))
@@ -170,15 +170,15 @@ def test_paired_on_stops_face_scoring_and_keeps_its_scores(tmp_path, monkeypatch
     s.mkdir(), data.mkdir()
     for n in ("f1.png", "f2.png", "f3.png"):
         _img(data / n, 1)
-    gl._write(str(s), ["f1.png", "f2.png", "f3.png"], "live", {"x.png": 0.7})
+    gl._write(str(s), "run", ["f1.png", "f2.png", "f3.png"], "live", {"x.png": 0.7})
     started = []
-    monkeypatch.setattr(gl, "start", lambda *a: started.append(a) or "ok")
-    gl._runs[str(s)] = {"gen": 5, "dataset": str(data)}                         # a face scorer running
-    got = gl.state(str(s), str(data), paired=True)
-    assert str(s) not in gl._runs and not started                               # stood down, not restarted
+    monkeypatch.setattr(gl, "start", lambda *a, **k: started.append(a) or "ok")
+    gl._runs[(str(s), "run")] = {"gen": 5, "dataset": str(data)}                # a face scorer running
+    got = gl.state(str(s), "run", str(data), paired=True)
+    assert (str(s), "run") not in gl._runs and not started                      # stood down, not restarted
     assert got["paired_mode"] is True and got["scores"] == {"x.png": 0.7}       # nothing lost
-    assert gl.read(str(s))["baselines"] == ["f1.png", "f2.png", "f3.png"]
-    got = gl.state(str(s), str(data), paired=False)                              # switch off: it resumes
+    assert gl.read(str(s), "run")["baselines"] == ["f1.png", "f2.png", "f3.png"]
+    got = gl.state(str(s), "run", str(data), paired=False)                       # switch off: it resumes
     assert started and got["paired_mode"] is False and got["scores"] == {"x.png": 0.7}
 
 

@@ -2,9 +2,14 @@
 set's look as a whole - texture, palette, line and medium more than who is in the picture - for a style LoRA, where a
 face likeness says nothing. Each picture's vector is the mean and spread of DINOv2-base's patch tokens (the pinned model
 the anime / furry look match uses, downloaded once, on the CPU); a preview's score is the mean similarity of its 8
-closest training pictures (up to 256 of the set, spread evenly), shown 0-1. On by default; switched off (or on again)
-per samples folder in the gallery; scores and the on/off go to <samples>/style.json, the training pictures' vectors to
-.style_bank.npz beside it."""
+closest training pictures (up to 256 of the set, spread evenly), shown 0-1.
+
+Per run and per training folder (11 Nov 2026), as the likeness: switched on or off in the gallery for a run, and the
+choice remembered with its training folder (<dataset>/fizgig_style.json), so every run of that folder follows it; each
+run's scores go to <samples>/style_<run>.json and cover only its own previews, and the training pictures' vectors to
+<samples>/.style_bank_<set>.npz, one per training set.
+On by default (Fizgig Advanced): a training folder never switched on or off shows the Style score; one switched off
+stays off."""
 
 import hashlib
 import json
@@ -19,29 +24,53 @@ LO, HI = 0.75, 0.95     # raw -> shown, @Murf-Code's calibration (29 Oct 2026, o
                         # pictures ~0.78 raw (0.1 shown), other artists of the same kind ~0.88 (0.64), held-out
                         # pictures of the same artist ~0.93 (0.90)
 _lock = threading.Lock()
-_runs = {}              # samples dir -> generation
+_runs = {}              # (samples dir, run) -> generation
+ON_FILE = "fizgig_style.json"
+DEFAULT_ON = True       # a training folder never switched on or off shows the Style score (switched off: stays off)
 _model = {}
 
 
-def _path(d):
-    return os.path.join(d, "style.json")
+def _path(d, run):
+    return os.path.join(d, f"style_{run}.json")
 
 
-def read(samples_dir):
+def read(samples_dir, run):
     try:
-        with open(_path(samples_dir), encoding="utf-8") as f:
+        with open(_path(samples_dir, run), encoding="utf-8") as f:
             d = json.load(f)
         return d if isinstance(d, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
-def _write(samples_dir, **kw):
-    d = {**read(samples_dir), **kw}
+def _write(samples_dir, run, **kw):
+    d = {**read(samples_dir, run), **kw}
     try:
-        with open(_path(samples_dir) + ".tmp", "w", encoding="utf-8") as f:
+        with open(_path(samples_dir, run) + ".tmp", "w", encoding="utf-8") as f:
             json.dump(d, f)
-        os.replace(_path(samples_dir) + ".tmp", _path(samples_dir))
+        os.replace(_path(samples_dir, run) + ".tmp", _path(samples_dir, run))
+    except OSError:
+        pass
+
+
+def dataset_on(dataset_dir):
+    """The Style score was switched on for a run of this training folder (and not off since); a folder never switched
+    on or off: DEFAULT_ON."""
+    if not os.path.exists(os.path.join(dataset_dir, ON_FILE)):
+        return DEFAULT_ON
+    try:
+        with open(os.path.join(dataset_dir, ON_FILE), encoding="utf-8") as f:
+            return bool(json.load(f).get("on"))
+    except (OSError, ValueError, AttributeError, TypeError):
+        return False
+
+
+def _remember(dataset_dir, on):
+    try:
+        p = os.path.join(dataset_dir, ON_FILE)
+        with open(p + ".tmp", "w", encoding="utf-8") as f:
+            json.dump({"on": bool(on)}, f)
+        os.replace(p + ".tmp", p)
     except OSError:
         pass
 
@@ -86,7 +115,7 @@ def _bank(samples_dir, dataset_dir, say):
     if not imgs:
         return None
     key = hashlib.sha1("\n".join(imgs).encode("utf-8")).hexdigest()
-    path = os.path.join(samples_dir, ".style_bank.npz")
+    path = os.path.join(samples_dir, f".style_bank_{key[:12]}.npz")     # one per training set: runs share it
     try:
         with np.load(path) as z:
             if str(z["key"]) == key:
@@ -111,79 +140,82 @@ def _bank(samples_dir, dataset_dir, say):
     return bank
 
 
-DEFAULT_ON = True       # a samples folder never switched on or off shows the Style score (switched off: stays off)
-
-
-def is_on(d):
-    """style.json's on/off, or the default for a folder where it was never chosen."""
-    return bool(d.get("on")) if "on" in d else DEFAULT_ON
-
-
-def state(samples_dir, dataset_dir):
-    """style.json for the page, resuming the scorer when it is on (switched on, or never chosen) and nothing scores
-    this folder yet."""
-    d = read(samples_dir)
-    on = is_on(d)
+def state(samples_dir, run, dataset_dir):
+    """A run's Style scores for the page. On: the run's own choice, else its training folder's; the scorer resumes
+    when it's on and nothing scores this run in this server yet."""
+    d = read(samples_dir, run) if run else {}
+    # never switched for this run: its training folder's choice (DEFAULT_ON for a folder never switched either)
+    on = bool(d["on"]) if "on" in d else bool(run) and (dataset_on(dataset_dir) if dataset_dir else DEFAULT_ON)
     with _lock:
-        running = samples_dir in _runs
-    if on and not running and dataset_dir and os.path.isdir(dataset_dir) and os.path.isdir(samples_dir):
-        _start(samples_dir, dataset_dir)
+        running = (samples_dir, run) in _runs
+    if on and run and not running and dataset_dir and os.path.isdir(dataset_dir) and os.path.isdir(samples_dir):
+        _start(samples_dir, run, dataset_dir)
     return {"on": on, "status": d.get("status") or "", "scores": d.get("scores") or {}}
 
 
-def switch(samples_dir, dataset_dir, on):
+def switch(samples_dir, run, dataset_dir, on):
+    """On or off for this run, remembered for its training folder (so its other runs follow)."""
+    if not run:
+        raise ValueError("No run picked in the gallery yet.")
     if not on:
         with _lock:
-            _runs.pop(samples_dir, None)
-        _write(samples_dir, on=False, status="")
+            _runs.pop((samples_dir, run), None)
+        _write(samples_dir, run, on=False, status="")
+        if dataset_dir and os.path.isdir(dataset_dir):
+            _remember(dataset_dir, False)
         return {"on": False}
     if not dataset_dir or not os.path.isdir(dataset_dir):
-        raise ValueError("Training image folder not set - set it on the Start tab.")
+        raise ValueError("This run's training folder isn't on record - set the training folder on the Start tab.")
     if not os.path.isdir(samples_dir):
         raise ValueError("No samples folder yet - the run makes it with its first previews.")
-    _write(samples_dir, on=True)
-    _start(samples_dir, dataset_dir)
+    _write(samples_dir, run, on=True)
+    _remember(dataset_dir, True)
+    _start(samples_dir, run, dataset_dir)
     return {"on": True}
 
 
-def _start(samples_dir, dataset_dir):
+def _start(samples_dir, run, dataset_dir):
+    key = (samples_dir, run)
     with _lock:
-        gen = _runs.get(samples_dir, 0) + 1
-        _runs[samples_dir] = gen
-    threading.Thread(target=_worker, args=(samples_dir, dataset_dir, gen), daemon=True, name="gallery-style").start()
+        gen = _runs.get(key, 0) + 1
+        _runs[key] = gen
+    threading.Thread(target=_worker, args=(samples_dir, run, dataset_dir, gen), daemon=True,
+                     name="gallery-style").start()
 
 
-def _live(samples_dir, gen):
+def _live(samples_dir, run, gen):
     with _lock:
-        return _runs.get(samples_dir) == gen
+        return _runs.get((samples_dir, run)) == gen
 
 
-def _worker(samples_dir, dataset_dir, gen):
-    """The bank first (once), then every preview not yet scored, newest first; a look for new ones every ~4 s. A
-    picture written in the last 5 s waits (half-written)."""
+def _worker(samples_dir, run, dataset_dir, gen):
+    """The bank first (once per training set), then every one of the run's previews not yet scored, newest first; a
+    look for new ones every ~4 s. A picture written in the last 5 s waits (half-written)."""
     import numpy as np
-    say = lambda t: _write(samples_dir, status=t)
+    from fizgig.web.gallery_likeness import _run_of
+    key = (samples_dir, run)
+    say = lambda t: _write(samples_dir, run, status=t)
     say("getting DINOv2 (about 350 MB, once)…" if not _cached() else "loading DINOv2…")
     try:
         bank = _bank(samples_dir, dataset_dir, say)
     except Exception as e:
-        _write(samples_dir, status=f"error: the Style score needs DINOv2, which couldn't be loaded ({str(e)[:120]}) - "
-                                   "it tries again when you open the gallery")
+        _write(samples_dir, run, status=f"error: the Style score needs DINOv2, which couldn't be loaded "
+                                        f"({str(e)[:120]}) - it tries again when you open the gallery")
         with _lock:
-            if _runs.get(samples_dir) == gen:
-                _runs.pop(samples_dir, None)
+            if _runs.get(key) == gen:
+                _runs.pop(key, None)
         return
     if bank is None:
         say("error: no training pictures to compare with")
         with _lock:
-            if _runs.get(samples_dir) == gen:
-                _runs.pop(samples_dir, None)
+            if _runs.get(key) == gen:
+                _runs.pop(key, None)
         return
-    scores = dict(read(samples_dir).get("scores") or {})
+    scores = dict(read(samples_dir, run).get("scores") or {})
     last = None
-    while _live(samples_dir, gen):
+    while _live(samples_dir, run, gen):
         try:
-            files = [f for f in os.listdir(samples_dir) if f.lower().endswith(PICS)]
+            files = [f for f in os.listdir(samples_dir) if f.lower().endswith(PICS) and _run_of(f) == run]
         except OSError:
             files = []
         scores = {k: v for k, v in scores.items() if k in set(files)}
@@ -191,7 +223,7 @@ def _worker(samples_dir, dataset_dir, gen):
         todo = [f for f in files if f not in scores and now - _mtime(samples_dir, f) > 5.0]
         todo.sort(key=lambda f: _mtime(samples_dir, f), reverse=True)
         for i, f in enumerate(todo, 1):
-            if not _live(samples_dir, gen):
+            if not _live(samples_dir, run, gen):
                 return
             try:
                 sims = np.sort(bank @ _embed(os.path.join(samples_dir, f)).astype("float32"))[::-1]
@@ -199,13 +231,13 @@ def _worker(samples_dir, dataset_dir, gen):
             except Exception:
                 scores[f] = None
             if i % 4 == 0 or i == len(todo):
-                _write(samples_dir, scores=scores, status=f"scoring… {len(scores)}/{len(files)}")
+                _write(samples_dir, run, scores=scores, status=f"scoring… {len(scores)}/{len(files)}")
         status = f"live - {len(scores)} preview(s) scored: the style % on each, bottom left"
         if todo or status != last:
-            _write(samples_dir, scores=scores, status=status)
+            _write(samples_dir, run, scores=scores, status=status)
             last = status
         for _ in range(16):
-            if not _live(samples_dir, gen):
+            if not _live(samples_dir, run, gen):
                 return
             time.sleep(0.25)
 

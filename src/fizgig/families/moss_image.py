@@ -27,14 +27,16 @@ _NEGATIVE = "worst quality, bad anatomy, watermark, jpeg artifact"
 # 0.05 ArcFace from epoch 9 to 20 on a 53-photo dataset (Peter's test1 / test3, 28 Oct 2026)
 # 8 Nov 2026: reversed to 30 until epoch 7, 60 from epoch 8, then 60 with every 3rd epoch at 30 (half LR) - best with
 # Muon, now every preset's optimizer (Peter)
-_LORA_SHARE = "30:7:60:8:3"
+# 10 Nov 2026: 11 (about the model's own share) until epoch 7, 40 from epoch 8, then 40 with every 3rd epoch at 11
+# (half LR) - starting at 11 stopped the hair darkening late in the run, and the late likeness was the best (Peter)
+_LORA_SHARE = "11:7:40:8:3"
 # a fine-tune's Clean-end share starts on the model's own schedule (about 11%) so the body and the model's knowledge
 # hold, then slides to 30: at 60 a fine-tune's plain "a woman" turned into the subject from epoch 10, even with DOP
 # (Peter, 28 Oct 2026, #223)
 _FT_SHARE = "11:4:30:8:2"
 
 
-def _preset(rank, lr=1e-4, adaptive=None, epochs=30, mp="1.0", slider=False, ft=False):
+def _preset(rank, lr=1e-4, adaptive=None, epochs=30, mp="1.0", slider=False, ft=False, face=False):
     # Not yet trained on MOSS-Image (the driver was built without a GPU): Flux 3's preset shape (Krea 2's values,
     # families/flux3.py), at 1 MP (the last pretraining stage's area), on Muon (Peter, 6 Nov). EMA 0.98, the
     # per-image loss watch off, saved every epoch. adaptive=(min, max) turns Adaptive LR on.
@@ -49,9 +51,13 @@ def _preset(rank, lr=1e-4, adaptive=None, epochs=30, mp="1.0", slider=False, ft=
         "KREA2_LOSS_WATCH": False, "KREA2_PER_IMAGE_LR": False, "KREA2_AUTO_RECAPTION": False,
         "KREA2_WARMUP_LOOK": False, "FAMILY_FT": ft, "FAMILY_EDIT": False, "FAMILY_SLIDER": slider,
         "FAMILY_FAST_ID": False, "FAMILY_SLIDER_GUIDANCE": "3",
-        # the Clean-end share: Slide, 30% until epoch 7, 60% from epoch 8, then 60% with every 3rd at 30% (_LORA_SHARE);
+        # the Clean-end share: Slide, 11% until epoch 7, 40% from epoch 8, then 40% with every 3rd at 11% (_LORA_SHARE);
         # every preset sets it
         "MOSS_LOWNOISE_PCT": _FT_SHARE if ft else _LORA_SHARE,
+        # Boost the face: on in Standard, off where it works against the preset - Style (no one face), Slider,
+        # Fine-tune (Peter, 10 Nov 2026) - and in the 0.25 MP presets (Fast, Turbo Train): Element boost needs 0.75 MP
+        # or more (launch.BOOST_MIN_MP; Peter, 12 Nov 2026: "keep the limit everywhere")
+        "FACE_BOOST": face,
         **({"FAMILY_FT_ROTATIONS": "10"} if ft else {}),
     }
 
@@ -61,6 +67,7 @@ MOSS_IMAGE = FamilyDescription(
     trigger_attention=True,           # training maps' trigger-word map (an experiment)
     start_lr_bands=(("lora", 1.7e-5, 3e-4), ("finetune", 3e-6, 3e-5), ("slider", 7e-5, 6e-4)),
     masked_training=True,
+    element_boost=True,
     batch_training=True,              # Batch size (Other Options): training_loss_batch, exact per picture
     batch_gb=(0.45, 1.35),          # GB each extra picture takes: fixed, per MP (batch 1 vs 3)
     arch_id="mossimage",
@@ -199,6 +206,7 @@ MOSS_IMAGE = FamilyDescription(
     ema_default="0.98",
     compiles=True,                    # driver.compile_targets: the 42 blocks
     compile_boundary="inside",        # the checkpoint inside the compiled block, as Qwen 2.1's and Flux 3's (#221; on torch 2.15 it costs no extra memory)
+    compile_inside_min_torch="2.15",  # on 2.10 inside keeps 7-10 activations a block: outside there (#324)
     # measured 17 Oct 2026, 5090, bf16, 1 MP, one bucket: 1.45 -> 1.07 s/step compiled (-26%), the first epoch
     # 13 s slower (compiling) = paid back in ~35 steps; 200 leaves room for runs with several bucket shapes.
     # INT8 / NF4 not measured yet: bf16's figure, and Klein's NF4 one, so Auto compiles the default INT8 base.
@@ -286,8 +294,8 @@ MOSS_IMAGE = FamilyDescription(
     ),
     preview_speed_lora="MOSS-Image Turbo LoRA",      # used only when its Preferences row is set (empty by default)
     # the orange line under the Training tab's model picker (Peter, 8 Nov 2026)
-    status_note="8 Nov 2026: lots of changes recently. Start from a ✨ preset to train with the new Muon optimiser and the new "
-                "Clean-end share Slide defaults (30% until epoch 7, then 60%) for the best results.",
+    status_note="10 Nov 2026: lots of changes recently. Start from a ✨ preset to train with the new Muon optimiser and the new "
+                "Clean-end share Slide defaults (11% until epoch 7, then 40%) for the best results.",
     preview_small_card_option=768,   # the Faster, smaller previews tick on cards under 20 GB (off: full size, #309)
     samples_turbo_tick=True,          # a Use the Turbo LoRA tick, strength box beside it (Peter, 8 Nov 2026)
     preview_speed_strength=0.6,       # Fizgig's preview recipe: Turbo 0.6, 8 steps, CFG 2, SFT look on (Peter, 8 Nov
@@ -313,7 +321,8 @@ MOSS_IMAGE = FamilyDescription(
     preview_look_hint="For previews on your Base (the SFT tick above off): the SFT look LoRA gives them much of SFT's "
                       "look. Not as good as SFT itself, but a really good indicator, and previews are much quicker "
                       "with no model swap. Previews only, never training. Downloaded for you the first time (about "
-                      "2.1 GB).",
+                      "2.1 GB). It's made for Fizgig's previews: don't load it in ComfyUI, where you run MOSS-Image "
+                      "SFT itself.",
     preview_look_on=True,             # part of the preview recipe (Peter, 8 Nov 2026)
     preview_look_strength=1.5,
     # Studio / Royale / Profiler follow the Samples tab only (SFT while its tick is on): no separate SFT choice
@@ -353,7 +362,7 @@ MOSS_IMAGE = FamilyDescription(
         # #195; Peter's runs agree that 1e-4 suits it). Adaptive LR stays on the Training tab, off by default
         # Fast first, so a first visit applies it (Peter, 27 Oct 2026)
         ("✨ MOSS-Image Fast (rank 16, 0.25 MP)", _preset(16, epochs=70, mp="0.25")),
-        ("✨ MOSS-Image Standard (rank 32, 1e-4)", _preset(32, epochs=70)),
+        ("✨ MOSS-Image Standard (rank 32, 1e-4)", _preset(32, epochs=70, face=True)),
         ("✨ MOSS-Image Style (rank 16, 5e-5)", {**_preset(16, lr=5e-5, epochs=50), "FAMILY_EMA": "Off"}),   # no EMA: a style at 5e-5 is slow enough
         ("✨ MOSS-Image Slider (rank 8, 2e-4)", _preset(8, lr=2e-4, epochs=20, slider=True)),
         # Fast with Adaptive LR (2e-4 to 4e-4) and the per-image loss watch + per-image LR (Peter, 8 Nov 2026); rank 32
@@ -382,14 +391,15 @@ MOSS_IMAGE = FamilyDescription(
                      # epoch 60 (Peter, 20 Oct 2026); 60:7:30:8:3 then led it from epoch 9 (28 Oct 2026)
                      slide=tuple(_LORA_SHARE.split(":")),
                      single="40",             # one value for the whole run: 40 beat 30 (Peter, 20 Oct 2026)
+                     slide_alt=("Earlier settings, slower to train but known to work well: 30 until epoch 7, then 60 "
+                                "from epoch 8, every 3rd epoch at 30.", "30:7:60:8:3"),
                      slide_hint="Slide: one share until an epoch, then sliding a few points an epoch to another by a "
-                                "later epoch. 30 until epoch 7, then 60 from epoch 8 (the default) works best with Muon on datasets of up to "
-                                "about 55 images; with many more, drop from 60 earlier. Ticked: after "
+                                "later epoch. 11 until epoch 7, then 40 from epoch 8 (the default) works best with Muon. Ticked: after "
                                 "the slide, training runs at the higher of the two shares, which keeps likeness from "
                                 "fading on a small dataset, and every Nth epoch at the lower share, at half the "
                                 "learning rate.",
                      warn="Experimental figure.",
-                     warn_link="https://www.reddit.com/r/StableDiffusion/comments/1x9khtm/a_potential_fix_for_moss_training_issues/", summary="clean-end {}%", featured=True),
+                     summary="clean-end {}%", featured=True),
     ),
     workbench=("repair", "profiler", "extract", "royale"),
 

@@ -186,7 +186,7 @@ No, unless you are testing it. The refiner is the model's bridge from the text e
 
 ## Should I use the training adapter on a fine-tune? (H3)
 
-You can. The training adapter (a de-distillation LoRA, Circlestone by default for every H3 LoRA run) is available under Fine-tune with the same contract: it rides frozen at 1.0 for every training step so the gradient is about your subject rather than about undoing H3's distillation, it switches off for previews, and it is never written into the checkpoint — the file you get is a plain H3 fine-tune. It is on by default under Fine-tune as it is for LoRA runs; the LoRA-mode numbers (faster likeness, higher peak, no frying with other Turbo LoRAs, measured with Ostris's adapter; Circlestone's trained sharper LoRAs again in later A/Bs on stills) are the reason, and an A/B on your own dataset — same seed, adapter on versus off — is how to check it for yourself. The file is the same one your LoRA runs use: the **Training adapter** dropdown picks Circlestone (one file for both bases — best for photos), Ostris (fl2va or ref2va file to match the base — best for videos) or Off; for a mixed dataset, choose by whether the photos or the videos are the priority.
+You can. The training adapter (Ostris's de-distillation LoRA, on by default for every H3 LoRA run) is available under Fine-tune with the same contract: it rides frozen at 1.0 for every training step so the gradient is about your subject rather than about undoing H3's distillation, it switches off for previews, and it is never written into the checkpoint — the file you get is a plain H3 fine-tune. It is on by default under Fine-tune as it is for LoRA runs; the LoRA-mode numbers (faster likeness, higher peak, no frying with other Turbo LoRAs, measured with Ostris's adapter) are the reason, and an A/B on your own dataset — same seed, adapter on versus off — is how to check it for yourself. The file is the same one your LoRA runs use: the fl2va or ref2va file to match the base.
 
 ## Do the per-image tools work on a fine-tune? (Krea 2)
 
@@ -288,6 +288,10 @@ VRAM after launch (browsers on hardware acceleration are the classic), clips lon
 your card's tier, or Target Megapixels above the default. And know the Windows quirk:
 when **system RAM** runs out, the error still arrives dressed as "CUDA out of memory"
 with the GPU nearly empty — close other apps and retry before suspecting VRAM.
+
+Runs started from the web UI recover from an out-of-memory error by themselves where they can: from the
+newest save, then a step lighter (more block swap; a lower precision only from Auto), up to three tries —
+see [the queue](WEB_UI.md#the-queue).
 
 ## What model files do I need?
 

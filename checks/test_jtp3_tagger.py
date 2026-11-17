@@ -287,7 +287,7 @@ def test_run_loads_the_chosen_tagger(tmp_path, monkeypatch):
     monkeypatch.setattr(prep_jobs, "faces_available", lambda: True)
     monkeypatch.setattr(prep_jobs, "_face_detector", lambda: _Det([F._face_info(20, 10, 60, 58)]))
     prep_jobs.start(str(data), "Auto Prep (Face Crops)", 4.2, "Largest Face", 20, False, "",
-                    {"copy": True, "trim": True, "tagger": "jtp3", "trigger": "ruaidri"})
+                    {"copy": True, "trim": True, "tagger": "jtp3", "trigger": "ruaidri"}, min_face=0)
     for _ in range(200):
         if prep_jobs.status()["state"] != "running":
             break

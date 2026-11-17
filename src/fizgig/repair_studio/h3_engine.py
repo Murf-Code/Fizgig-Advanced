@@ -378,12 +378,18 @@ class H3RepairEngine(ClipContract):
         canvas = getattr(self, "plan_canvas", None)        # the clip the caller expects to render first
         base_quant, n_swap = self.plan_base(free, getattr(self, "base_mode", "auto"),
                                             self.clip_need_gb(*canvas) if canvas else None)
+        from fizgig.minimax.common import int8_loadable
+        if base_quant == "int8" and not int8_loadable(self.dit_path):
+            base_quant = "nf4"            # the full unpruned file can't take int8 (#357)
         self._plan_free = free
         self._blocks_swapped = int(n_swap)
         self.base_plan = (base_quant, int(n_swap))
         if getattr(self, "base_mode", "auto") != "auto":
             logger.info("[h3-workbench] Base picker: %s -> %s base, %d blocks streamed (%.1f GB free)",
                         self.base_mode, base_quant, n_swap, free)
+        elif n_swap and base_quant != "int8":
+            logger.info("[h3-workbench] %.1f GB free -> %s base (the full unpruned DiT can't take int8), the last %d "
+                        "blocks streamed", free, base_quant, n_swap)
         elif n_swap:
             logger.info("[h3-workbench] %.1f GB free -> int8 base with the last %d blocks streamed "
                         "from CPU per pass (24 GB-class card: the int8 weights, 0.2%% error, "
@@ -1039,23 +1045,12 @@ class H3RepairEngine(ClipContract):
         return "unload"
 
     def _dit_release(self) -> None:
-        """Drop the DiT, the Turbo net and the LoRA networks (paths kept for re-wiring)."""
-        for mod, a, b in (self._turbo_adaln or []):
-            if "forward" in mod.__dict__:
-                del mod.forward
-        self._turbo_adaln, self._primary_adaln, self._donor_adaln = [], [], []
-        self._adaln_installed, self._adaln_bid = None, {}
-        self.primary_network = None
-        self.donor_network = None
-        self._turbo_net = None
-        try:
-            _off = getattr(self.dit, "_h2d_offloader", None)
-            if _off is not None:
-                _off.release()                    # its pinned staging goes with it
-        except Exception:
-            pass
-        self.dit = None
-        self._invalidate_activation_cache()
+        """Drop the DiT, the Turbo net and the LoRA networks (paths kept for re-wiring). Their storages are stripped
+        (_dit_strip), not just dereferenced: the base and its LoRA wrappers point at each other, and one collector
+        pass left 12 of 14.5 GiB on the card (a 24 GB card, 12 Nov 2026) - the text encoder then loaded beside the
+        base it was making room for and ran out of memory."""
+        if self.dit is not None:
+            self._dit_strip()
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

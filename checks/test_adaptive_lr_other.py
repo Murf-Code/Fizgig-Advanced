@@ -24,7 +24,8 @@ def test_rows_are_combos_like_blocks_swap(key):
     if not desc.adaptive_lr:                       # SDXL: no Adaptive LR, so no Min / Max boxes at all
         assert "ADAPTIVE_LR_MIN" not in rows
         return
-    assert rows["BLOCKS_SWAP"]["kind"] == "combo"
+    if "BLOCKS_SWAP" in rows:                       # upstream: only a model that can swap blocks has the row (not Anima)
+        assert rows["BLOCKS_SWAP"]["kind"] == "combo"
     assert rows["ADAPTIVE_LR_MIN"]["kind"] == rows["ADAPTIVE_LR_MAX"]["kind"] == "combo"
     assert rows["ADAPTIVE_LR_MIN"]["choices"] == list(form.ADAPTIVE_MIN)        # the same presets as before
     assert rows["ADAPTIVE_LR_MAX"]["choices"] == list(form.ADAPTIVE_MAX)

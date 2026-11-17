@@ -145,7 +145,7 @@ def test_auto_prep_copies_and_trims(tmp_path):
     tagger = FakeTagger(SEEN)
     caps = C.CropCaptions(ext=".txt", keep=["ruaidri"], tagger=tagger)
     prep.Prep(log.append, _Det([F._face_info(20, 10, 60, 58)]), captions=caps).run(
-        "Auto Prep (Face Crops)", str(tmp_path), 4.2, "Largest Face", 20.0, False)
+        "Auto Prep (Face Crops)", str(tmp_path), 4.2, "Largest Face", 20.0, False, min_face=0)
     assert (tmp_path / "crops" / "FaceCrop_001.txt").read_text() == "ruaidri, wolf, smile"      # crops/ starts afresh
     assert (tmp_path / "crops" / "FaceCrop_002.txt").read_text() == "A wolf standing in a forest. He smiles."
     assert (tmp_path / "crops" / "FaceCrop_003.txt").read_text() == "ruaidri, wolf, smile"
@@ -163,7 +163,7 @@ def test_copy_only_by_default_and_off_switch(tmp_path):
         _pic(d / "a.png", 4)
         (d / "a.txt").write_text(CAP)
         prep.Prep(lambda _t: None, _Det([F._face_info(20, 10, 60, 58)]), captions=caps).run(
-            "Auto Prep (Face Crops)", str(d), 4.2, "Largest Face", 20.0, False)
+            "Auto Prep (Face Crops)", str(d), 4.2, "Largest Face", 20.0, False, min_face=0)
         crop_cap = d / "crops" / "FaceCrop_001.txt"
         assert crop_cap.exists() == (sub == "on")
         if sub == "on":
@@ -175,7 +175,7 @@ def test_crop_only_trims_in_place_and_keeps_the_original(tmp_path):
     (tmp_path / "a.txt").write_text(CAP)
     prep.Prep(lambda _t: None, _Det([F._face_info(20, 10, 60, 58)]),
               captions=C.CropCaptions(keep=["ruaidri"], tagger=FakeTagger(SEEN))).run(
-        "Face Crop Only", str(tmp_path), 4.2, "Largest Face", 20.0, False)
+        "Face Crop Only", str(tmp_path), 4.2, "Largest Face", 20.0, False, min_face=0)
     assert (tmp_path / "crops" / "FaceCrop_001.txt").read_text() == "ruaidri, wolf, smile"     # named like Auto Prep's crops
     assert (tmp_path / "crops" / "FaceCrop_001.png").exists() and (tmp_path / "a.txt").read_text() == CAP   # left as it was
     assert (tmp_path / "a.jpg").exists() and not (tmp_path / "originals").exists()
@@ -186,7 +186,7 @@ def test_crop_only_no_face_leaves_the_caption(tmp_path):
     (tmp_path / "a.txt").write_text(CAP)
     t = FakeTagger(SEEN)
     prep.Prep(lambda _t: None, _Det([]), captions=C.CropCaptions(tagger=t)).run(
-        "Face Crop Only", str(tmp_path), 4.2, "Largest Face", 20.0, False)
+        "Face Crop Only", str(tmp_path), 4.2, "Largest Face", 20.0, False, min_face=0)
     assert (tmp_path / "a.txt").read_text() == CAP and t.seen == []
 
 
@@ -250,7 +250,7 @@ def test_run_frees_the_tagger(tmp_path, monkeypatch):
     monkeypatch.setattr(prep_jobs, "faces_available", lambda: True)
     monkeypatch.setattr(prep_jobs, "_face_detector", lambda: _Det([F._face_info(20, 10, 60, 58)]))
     prep_jobs.start(str(data), "Auto Prep (Face Crops)", 4.2, "Largest Face", 20, False, "",
-                    {"copy": True, "trim": True, "keep_score": "0.35", "trigger": "ruaidri"})
+                    {"copy": True, "trim": True, "keep_score": "0.35", "trigger": "ruaidri"}, min_face=0)
     for _ in range(200):
         if prep_jobs.status()["state"] != "running":
             break

@@ -83,6 +83,18 @@ def last_values(lora, output_dir):
     return None
 
 
+def image_folder_of(lora, output_dir):
+    """The training folder the newest run with this LoRA name and output folder trained on, or "" (a run Fizgig has
+    no record of)."""
+    try:
+        for r in reversed(_read()):
+            if _same_run(r, lora, output_dir):
+                return str(r.get("image_folder") or "")
+    except OSError:
+        pass
+    return ""
+
+
 def start(source, family, lora, output_dir, image_folder, values, resume=False, carry=""):
     """Record a run that is starting; returns its id. A resume carries on the paused run's own record (the newest
     paused one with the same LoRA name and folder, from either app) instead of listing the run twice; Continue on
@@ -125,6 +137,19 @@ def set_values(run_id, changes):
             for r in runs:
                 if r.get("id") == run_id and isinstance(r.get("values"), dict):
                     r["values"].update(changes)
+            _write(runs)
+    except OSError:
+        pass
+
+
+def set_field(run_id, key, value):
+    """One field of a run's record (the out-of-memory recovery's tries, "oom")."""
+    try:
+        with _Lock():
+            runs = _read()
+            for r in runs:
+                if r.get("id") == run_id:
+                    r[key] = value
             _write(runs)
     except OSError:
         pass
@@ -199,6 +224,23 @@ def end(run_id, result, progress=None):
         pass
 
 
+def stop_paused(lora, output_dir):
+    """Stop paused run: the newest paused record with this LoRA name and folder reads stopped (its saves stay, so
+    Continue on its card carries it on). Found by name and folder, as a resume finds it: a pause restored at start-up
+    has no record id."""
+    try:
+        with _Lock():
+            runs = _read()
+            for r in reversed(runs):
+                if _same_run(r, lora, output_dir):
+                    if r.get("result") == "paused":
+                        r["result"] = "stopped"
+                        _write(runs)
+                    break
+    except OSError:
+        pass
+
+
 def remove(run_id):
     """Take a run off the list (Runs & outputs' Delete run; its files are deleted by the caller)."""
     try:
@@ -220,6 +262,9 @@ def _server_alive(pid):
         return False
 
 
+last_orphan = [""]          # the newest run close_orphans closed (the one Fizgig was training when it went away)
+
+
 def close_orphans():
     """At the server's start: a run still recorded as running has nothing behind it now (its server stopped or
     crashed, and the training process went with it), so it is recorded as stopped - unless the server that started it
@@ -232,6 +277,7 @@ def close_orphans():
                 if r.get("result") == "running" and not _server_alive(r.get("server_pid")):
                     r["result"] = "stopped"
                     r["ended_at"] = r.get("ended_at") or time.time()
+                    last_orphan[0] = str(r.get("id") or "")
                     n += 1
             if n:
                 _write(rs)

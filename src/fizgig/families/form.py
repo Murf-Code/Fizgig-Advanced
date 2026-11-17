@@ -35,10 +35,14 @@ EMA = ("Off", "0.98 (recommended)", "0.99 (stronger)", "0.995 (long runs only)")
 EMA_SHORT = "Short run (window = ¼ of the run)"
 EMA_HINT = ("Saves and previews a running average of the LoRA instead of its latest step: smoother, less overbaked. "
             "0.98 averages over roughly the last 50 steps.")
-SIZES = ("512", "640", "768", "1024", "1280", "1536")
+SIZES = ("512", "640", "768", "1024", "1280", "1536", "2048")
 KINDS = (("standard", "Standard LoRA"), ("edit", "Edit (original + edited photo pairs)"),
          ("slider", "Slider (a dial between two looks)"), ("finetune", "Fine-tune the whole model"))
 FT_REG_MULT = ("0.05", "0.1", "0.2", "0.3", "0.5", "0.75", "1.0")
+# the Subjects card's Regularisation dataset (a LoRA's): how much of its folder each epoch uses
+REG_MATCH = "Match my training pictures"
+REG_USES = (REG_MATCH, "10%", "25%", "50%", "75%", "100%")
+REG_FOLD = "Regularisation dataset (optional)"
 CAPTION_DROPOUTS = ("Off", "0.05", "0.10 (strong)")
 # rows that belong together, drawn as one box each on the Training tab (app.js renderSection): the box sits where its
 # first row is, its rows side by side, their hints behind its ?
@@ -48,6 +52,18 @@ ROW_GROUPS = (
     ("length", "Length", ("MAX_TRAIN_EPOCHS", "SEED")),
     ("size", "Picture size", ("DATASET_MEGAPIXELS", "CLIP_MEGAPIXELS", "STAGE_MP", "STAGE_UNTIL")),
     ("context", "Context LoRA", ("CONTEXT_LORA_PATH", "CONTEXT_LORA_STRENGTH")),
+    ("states", "Save state", ("SAVE_STATE", "SAVE_STATE_ON_TRAIN_END", "KEEP_LAST_N_STATES")),
+    ("gradients", "Gradients", ("GRADIENT_ACCUMULATION", "MAX_GRAD_NORM")),
+    ("schedule", "Learning-rate schedule", ("LR_SCHEDULER", "LR_WARMUP_STEPS")),
+    ("buckets", "Buckets", ("ENABLE_BUCKET", "BUCKET_NO_UPSCALE")),
+    ("metadata", "Metadata (saved in the LoRA)", ("METADATA_TITLE", "METADATA_AUTHOR", "METADATA_DESCRIPTION",
+                                                  "METADATA_LICENSE", "METADATA_TAGS", "METADATA_TRIGGER_PHRASE",
+                                                  "METADATA_THUMBNAIL")),
+    ("previewsize", "Preview size", ("SAMPLE_WIDTH", "SAMPLE_HEIGHT", "SAMPLE_STEPS", "SAMPLE_SEED")),
+    ("turbo", "Turbo LoRA", ("FAMILY_TURBO_ON", "FAMILY_TURBO_STRENGTH")),
+    ("rotations", "Rotations", ("FAMILY_FT_ROTATIONS", "FAMILY_FT_SAVE_EVERY", "FAMILY_FT_ROTATE_EVERY")),
+    ("reg", "Regularisation", ("FAMILY_FT_REG_DIR", "FAMILY_FT_REG_MULT")),
+    ("elementboost", "Element boost (experimental)", ("FACE_BOOST", "FACE_BOOST_AREA")),
 )
 STAGE_MPS = ("Off", "0.25", "0.37", "0.5", "0.75")
 STAGE_UNTILS = ("20%", "30%", "50%")
@@ -166,8 +182,9 @@ DEFAULTS = {
     "FAMILY_FT_ROTATIONS": "10", "FAMILY_FT_SAVE_EVERY": "1", "FAMILY_FT_ROTATE_EVERY": "1",
     "FAMILY_FT_FUSED": True, "FAMILY_FT_OPTIMIZER": "Adafactor (recommended)", "FAMILY_FT_REG_DIR": "",
     "FAMILY_FT_REG_MULT": "0.2",
+    "FAMILY_REG_ON": False, "FAMILY_REG_DIR": "", "FAMILY_REG_MULT": "1.0", "FAMILY_REG_USE": REG_MATCH,
     "DATASET_MEGAPIXELS": "0.25", "DATASET_CAPTION_EXT": ".txt", "ENABLE_BUCKET": True, "BUCKET_NO_UPSCALE": True,
-    "ENABLE_CACHE": True, "MASKED_TRAINING": False, "MASK_FLOOR": "0.1 (recommended)", "MASK_PRIOR": "Off",
+    "ENABLE_CACHE": True, "MASKED_TRAINING": False, "MASK_FLOOR": "0.1 (recommended)", "MASK_PRIOR": "Off", "FACE_BOOST": False, "FACE_BOOST_AREA": "Face and hair",
     "TAG_SHUFFLE": False, "TAG_KEEP_FIRST": "1", "TAG_DROPOUT": "0", "CAPTION_DROPOUT": "Off", "TAG_VARIANTS": "4",
     "TAG_VARIANT_CAP": "8",
     "METADATA_TITLE": "", "METADATA_AUTHOR": "", "METADATA_DESCRIPTION": "", "METADATA_LICENSE": "",
@@ -208,7 +225,7 @@ VALIDATION_N_DEFAULT = 500          # How often to check > Every N steps: the bo
 def _optimizers():
     from fizgig.training.optimizers import available_optimizers
     try:
-        return list(available_optimizers())
+        return list(available_optimizers(probe=False))
     except Exception:
         return ["adamw8bit", "adamw"]
 
@@ -240,8 +257,12 @@ def _option_row(opt):
                 **({"labels": list(opt.suggestions)} if kind == "combo" else {}),
                 **({"warn": opt.warn, "warn_link": opt.warn_link} if opt.warn else {}),
                 **({"featured": True} if opt.featured else {}),
+                **({"explain": opt.explain} if opt.explain else {}),
+                **({"renamed": dict(opt.choice_renamed)} if opt.choice_renamed else {}),
+                **({"advanced_of": opt.requires.partition("=")[0]} if opt.advanced and opt.requires else {}),
                 **({"split": list(opt.split), "split_hint": opt.split_hint} if kind == "split" and opt.split else {}),
-                **({"slide": list(opt.slide), "slide_hint": opt.slide_hint} if kind == "split" and opt.slide else {}),
+                **({"slide": list(opt.slide), "slide_hint": opt.slide_hint,
+                    **({"slide_alt": list(opt.slide_alt)} if opt.slide_alt else {})} if kind == "split" and opt.slide else {}),
                 **({"single": opt.single} if kind == "split" and opt.single else {}))
 
 
@@ -340,6 +361,7 @@ SUBJECTS_PEOPLE_HINT = ("For people: up to 4 work well, with 2 or 3 of them in o
 def form(desc):
     opts = [o for o in desc.options if o.kind != "fixed"]
     pictures = bool({"photo", "clip"} & set(desc.media))     # sizes and megapixels only mean something for pictures
+    sizes = SIZES + tuple(str(s) for s in desc.preview_more_sizes)     # a model made for bigger pictures: more (#348)
     by_section = lambda tab, section=None, mode=None: [_option_row(o) for o in opts if o.tab == tab and (
         section is None or o.section == section) and (mode is None or (o.mode == "finetune") == (mode == "finetune"))]
     sections = []
@@ -478,6 +500,19 @@ def form(desc):
                            "LoRA has learned, which it hasn't yet, and where it's changing things it shouldn't, like "
                            "the background or clothes. Open them with the Training maps button on the run card. Adds "
                            "a few seconds an epoch."))
+    if desc.element_boost and desc.masked_training:   # Element boost: stills, with or without masks (a mask trims it)
+        params += [
+            _row("FACE_BOOST", "On", "check",
+                 "Early in the run, the face (or the part you pick below) counts for much more than the rest of "
+                 "the picture, so it's learned faster. For sets of medium and full-length shots, where the face is "
+                 "small in the frame. Needs Target Megapixels 0.75 or more."),
+            _row("FACE_BOOST_AREA", "What it boosts", "choice",
+                 "Face and hair (the default): the face and the hair around it. Face only: just the face, for when "
+                 "the hair changes from picture to picture or shouldn't be learned. These two use the face "
+                 "finder. The rest are the Make masks choices, found by its person finder: the clothes for an "
+                 "outfit LoRA, the background for a place, and so on.",
+                 launch.FACE_AREAS),
+        ]
     params += by_section("training", "", "lora")
     if desc.identity_blocks:
         a, b = desc.identity_blocks[0], desc.identity_blocks[-1]
@@ -536,11 +571,34 @@ def form(desc):
                       "The box shows the word Fizgig found. Type over it only if that is wrong."),
             _row("FAMILY_DOP_CLASS" + ("" if n == 1 else str(n)), f"Subject {n} - what they are",
                  hint="One word: woman, man, girl, boy, dog, cat, car ...\n"
-                      "The box shows what Fizgig found. Type over it only if that is wrong."))],
+                      "Leave the rest of the model alone: it takes the trigger word's place in the captions that keep "
+                      "the model as it was, so the model's own man (or woman ...) is what stays. Empty, the trigger "
+                      "word is just left out of them.\n"
+                      "Fizgig LoRA Isolation: the box shows what Fizgig found. Type over it only if that is wrong."))],
         # how often and how strongly the trigger-free pass runs is the tested recipe (every second step, x2): no control
         # last, under everything that changes them: what training will use, per subject (one of its own captions)
         *[_row(f"_subject{n}_as", f"Subject {n} - what training will use", "note", hint_labels=True)
           for n in ((1, 2, 3, 4) if desc.multi_concept else (1,))],
+        # the card's last part, in a fold of its own (closed until the tick is on), under Check a trigger word: a
+        # regularisation dataset, which sets everything above aside for the run (#332)
+        *([_row("FAMILY_REG_ON", "Train with a regularisation dataset", "check",
+                "For a LoRA that changes too much besides its subject. Alongside your training pictures, Fizgig "
+                "trains on a second folder of ordinary pictures of the same kind of thing (other people for a "
+                "person, other characters for a character, other pictures in the genre for a style). They hold the "
+                "model's idea of that kind of thing in place while your subject trains. It is an alternative to DOP "
+                "and Fizgig LoRA Isolation, so the choices above are set aside while it is on.",
+                fold="lorareg", fold_label=REG_FOLD, fold_on="FAMILY_REG_ON"),
+           _row("FAMILY_REG_DIR", "Regularisation pictures", "folder",
+                "Real pictures, each with a caption file that describes it and does not use your trigger word. Not "
+                "pictures the model made: those teach it its own mistakes. Aim for at least as many as your "
+                "training pictures.", upload=True, start="data", fold="lorareg"),
+           _row("FAMILY_REG_MULT", "Regularisation LR ×", "combo",
+                "The regularisation pictures train at this fraction of the learning rate. 1.0 trains them as firmly "
+                "as your own pictures; lower makes them a lighter anchor.", choices=FT_REG_MULT, fold="lorareg"),
+           _row("FAMILY_REG_USE", "Use each epoch", "choice",
+                "How many of the regularisation pictures each epoch trains on: a different handful each epoch, so "
+                "over a run the whole folder is used.", REG_USES, fold="lorareg")]
+          if desc.lora_regularisation else []),
     ]
     if desc.training_adapter:
         params.append(_row("FAMILY_TRAINING_ADAPTER", "Training adapter (recommended)", "check",
@@ -742,7 +800,7 @@ def form(desc):
     labels = {**launch.PRECISION_LABELS, **dict(desc.precision_labels or ())}
     add("memory", "Memory & Precision", "training", [
         _row("BLOCKS_SWAP", "Blocks Swap", "combo", "Auto plans the fewest swapped blocks that fit your free VRAM.",
-             SWAP),
+             SWAP) if launch.swaps_blocks(desc) else None,       # SDXL, Anima, ACE-Step: no block swap to set
         _row("FAMILY_PRECISION", desc.precision_label or "Base precision", "choice", desc.precision_hint,
              [labels[p] for p in precisions], default=labels["auto"]) if len(desc.precisions) > 1 else None,
         _row("INT8_ROTATED_BACKWARD", "Rotated INT8 backward (experimental)", "check",
@@ -902,8 +960,8 @@ def form(desc):
              upload=True, start="data") if desc.reference_kind else None,
         # a picture size only for a model that makes pictures (ACE-Step's previews are songs: the launcher then
         # uses the description's own preview size)
-        _row("SAMPLE_WIDTH", "Width", "choice", choices=SIZES, default=str(desc.preview_width)) if pictures else None,
-        _row("SAMPLE_HEIGHT", "Height", "choice", choices=SIZES, default=str(desc.preview_height)) if pictures else None,
+        _row("SAMPLE_WIDTH", "Width", "choice", choices=sizes, default=str(desc.preview_width)) if pictures else None,
+        _row("SAMPLE_HEIGHT", "Height", "choice", choices=sizes, default=str(desc.preview_height)) if pictures else None,
         _row("SAMPLE_STEPS", "Steps", default=str(desc.preview_steps)),
         _row("SAMPLE_SEED", "Seed", hint="0 = random"),
         *by_section("samples"),
@@ -1164,6 +1222,44 @@ CONCEPT_ROWS = (("FAMILY_CONCEPT_DIR", "FAMILY_DOP_TRIGGER2", "FAMILY_DOP_CLASS2
 DOP_EXTRA_ROWS = {k for _d, t, c in CONCEPT_ROWS for k in (t, c)}
 
 
+REG_KEYS = ("FAMILY_REG_ON", "FAMILY_REG_DIR", "FAMILY_REG_MULT", "FAMILY_REG_USE")
+REG_GREYED = "Greyed out: a regularisation dataset is on (at the bottom of this card). Untick it to use these."
+_SUBJECT_KEYS = {}
+
+
+def _subject_keys(desc):
+    """The Subjects card's own settings, every one above its Regularisation dataset fold: what turning that on greys.
+    Read from the card (form()), so a row added to it later is greyed too."""
+    if desc.key not in _SUBJECT_KEYS:
+        sec = next((s for s in form(desc)["sections"] if s["id"] == "subjects"), {"rows": []})
+        _SUBJECT_KEYS[desc.key] = tuple(r["key"] for r in sec["rows"]
+                                        if r["kind"] not in ("note", "shown") and not r.get("fold"))
+    return _SUBJECT_KEYS[desc.key]
+
+
+def reg_ticked(desc, values):
+    """The Subjects card's Regularisation dataset is ticked and applies (a family with it, a Standard LoRA or LoKR)."""
+    return bool(getattr(desc, "lora_regularisation", False)) and _kind(desc, values) == "standard" \
+        and bool(values.get("FAMILY_REG_ON"))
+
+
+def _reg_budget_note(desc, values, image_folder):
+    """The figure beside Use each epoch: how many regularisation pictures an epoch takes, and what that does to an
+    epoch's length (launch.lora_reg_budget: the number the trainer is given)."""
+    st = {**values, "image_folder": image_folder, "subfolders": bool(values.get("TRAIN_SUBFOLDERS")),
+          "FAMILY_FT": False, "FAMILY_SLIDER": False, "FAMILY_EDIT": False}
+    if not launch.lora_reg_dir(desc, st):
+        return "Pick the folder to see how many that is."
+    per, have, train = launch.lora_reg_budget(desc, st)
+    if not have:
+        return "That folder has no pictures yet."
+    said = (f"all {have} pictures, every epoch" if per >= have else
+            f"{per} of {have} pictures, a different {per} each epoch" +
+            (" (as many as your training pictures)" if not str(values.get("FAMILY_REG_USE") or "").strip()[:1].isdigit()
+             else ""))
+    return said[0].upper() + said[1:] + (f". Each epoch goes from {train} pictures to {train + per}." if train else ".")
+
+
 def concept_count(values):
     """Subjects in a Multi Concept run, the training folder included (2-4)."""
     v = str(values.get("FAMILY_CONCEPT_COUNT") or CONCEPT_COUNTS[0])
@@ -1181,8 +1277,10 @@ def batch_blockers(desc, values):
     if not desc.batch_training:
         return ["this model trains one picture a step"]
     kind = _kind(desc, values)
+    reg = reg_ticked(desc, values)          # a regularisation dataset sets DOP and Isolation aside (greyed, kept)
     out = [w for on, w in ((kind == "edit", "an edit"), (kind == "slider", "a slider"),
-                           (values.get("FAMILY_DOP"), "DOP"), (values.get("FAMILY_MULTI_PERSON"), "Fizgig LoRA Isolation"),
+                           (values.get("FAMILY_DOP") and not reg, "DOP"),
+                           (values.get("FAMILY_MULTI_PERSON") and not reg, "Fizgig LoRA Isolation"),
                            (str(values.get("STAGE_MP") or "Off") != "Off", "Start at a smaller size"),
                            (values.get("MASKED_TRAINING") and str(values.get("MASK_PRIOR") or "Off") != "Off",
                             "keeping the model's own picture outside the mask")) if on]
@@ -1213,6 +1311,7 @@ def subfolders_note(desc, values, image_folder):
         return "", None
     # the form's values name the kind of training (a label), not FAMILY_FT: a fine-tune's regularisation folder
     reg = _str(values.get("FAMILY_FT_REG_DIR")) if desc.finetune and _kind(desc, values) == "finetune" else ""
+    reg = reg or (_str(values.get("FAMILY_REG_DIR")) if reg_ticked(desc, values) else "")   # or a LoRA's (#332)
     own = []                     # Fizgig's own folders (originals...): never trained, named when the tick is on
     subs = launch.subfolders(image_folder, (_str(values.get("LORA_OUTPUT_DIR")), reg), own)
     left_out = (f" Left out (Fizgig's own): {', '.join(own[:4])}{' …' if len(own) > 4 else ''}."
@@ -1322,20 +1421,31 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
     if rw.get("model"):
         notes["KREA2_AUTO_RECAPTION"] = f"Captions with {rw['model']} (picked on the Captions tab)."
     kind = _kind(desc, values)
+    # a regularisation dataset (the Subjects card's last fold, #332): the rest of the card is set aside for the run -
+    # greyed, its values kept - so nothing it would switch on elsewhere (Isolation's loss watch off) applies either
+    reg = reg_ticked(desc, values)
     # Include sub-folders: a plain LoRA or a fine-tune (Subjects 2-4, DOP and Isolation keep one folder per
     # subject; an edit or a slider pairs files)
-    if kind in ("edit", "slider") or values.get("FAMILY_MULTICONCEPT") or values.get("FAMILY_DOP")             or values.get("FAMILY_MULTI_PERSON"):
+    if kind in ("edit", "slider") or (not reg and (values.get("FAMILY_MULTICONCEPT") or values.get("FAMILY_DOP")
+                                                   or values.get("FAMILY_MULTI_PERSON"))):
         hidden.add("TRAIN_SUBFOLDERS")
     else:
         notes["TRAIN_SUBFOLDERS"], act = subfolders_note(desc, values, image_folder)
         if act:
             actions["TRAIN_SUBFOLDERS"] = act
+    if not values.get("FACE_BOOST"):
+        hidden.add("FACE_BOOST_AREA")
+    if desc.element_boost and launch.boost_too_small(desc, values):    # too few pixels in a small face: greyed, kept
+        disabled.add("FACE_BOOST")
+        hidden.add("FACE_BOOST_AREA")
+        notes["FACE_BOOST"] = launch.BOOST_TOO_SMALL.format(mp=launch.BOOST_MIN_MP)
     if desc.masked_training:
         prompt_slider = kind == "slider" and launch.slider_on(desc, {"FAMILY_SLIDER": True, "FAMILY_SLIDER_SOURCE": (
             "prompts" if values.get("FAMILY_SLIDER_SOURCE") == "Prompts" else "pairs")}, "prompts")
         media = launch.dataset_media(image_folder) if image_folder else {"photo"}
         if prompt_slider or (media and "photo" not in media):
             hidden.add("masks")             # a prompt slider makes its own pictures; a folder of clips has none to mask
+            hidden |= {"FACE_BOOST", "FACE_BOOST_AREA"}   # nor anything for Element boost to find
         elif not values.get("MASKED_TRAINING"):
             hidden |= {"MASK_FLOOR", "MASK_PRIOR"}
         else:
@@ -1383,7 +1493,16 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
             cleaned_args = strip_prodigy_args(cleaned_args)
         if opt != "muon":
             cleaned_args = strip_muon_args(cleaned_args)
-    if opt in ("automagic3", "automagic4"):
+    # with DOP (Leave the rest of the model alone, or Fizgig LoRA Isolation) Automagic can't train, so the run trains
+    # with AdamW (launch.dop_automagic, #364): its rate is the Learning Rate box's, or Adaptive LR's - none greyed
+    dop_swap = (opt in ("automagic3", "automagic4") and kind == "standard" and desc.subject_isolation
+                and bool(values.get("FAMILY_DOP") or values.get("FAMILY_MULTI_PERSON")))
+    if dop_swap:
+        notes["OPTIMIZER_TYPE"] = (f"With the Subjects card's {PEOPLE_MODES[2] if values.get('FAMILY_MULTI_PERSON') else PEOPLE_MODES[1]}, "
+                                   f"this run trains with AdamW instead: {opt} lowers its own rate until training "
+                                   "stops when the model is also being kept as it was. The Learning Rate box sets "
+                                   "AdamW's rate (2e-4 when it holds Automagic's tiny starting value), or Adaptive LR.")
+    elif opt in ("automagic3", "automagic4"):
         disabled |= {"ADAPTIVE_LR", "KREA2_PER_IMAGE_LR", "KREA2_WARMUP_LOOK"}
         force.update({k: False for k in ("ADAPTIVE_LR", "KREA2_PER_IMAGE_LR", "KREA2_WARMUP_LOOK") if values.get(k)})
         if values.get("ADAPTIVE_LR"):            # turned off now: as it shows with Adaptive LR off
@@ -1442,7 +1561,8 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
     # Fizgig LoRA Isolation needs two or more subjects (its recipe teaches a face to belong to one trigger, against
     # a second one): with one, Off and Leave the rest of the model alone stay, Isolation is greyed, and a saved
     # one-subject form on Isolation moves to Leave the rest of the model alone (the nearest: it keeps the DOP pass)
-    one_sub = kind == "standard" and (concept_count(values) if values.get("FAMILY_MULTICONCEPT") else 1) == 1
+    one_sub = kind == "standard" and not reg and \
+        (concept_count(values) if values.get("FAMILY_MULTICONCEPT") else 1) == 1
     if one_sub:
         disabled_choices["FAMILY_PEOPLE_MODE"] = {PEOPLE_MODES[2]: "Needs two or more subjects: add one under Who or "
                                                                    "what is this LoRA of?"}
@@ -1456,7 +1576,7 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
                                            "subjects. Pick 2 subjects above to use it.")
     if kind != "standard":                            # multi-person mode: a LoRA (its LR boost is per step)
         hidden.add("FAMILY_MULTI_PERSON")
-    elif values.get("FAMILY_MULTI_PERSON"):           # it runs on DOP
+    elif values.get("FAMILY_MULTI_PERSON") and not reg:     # it runs on DOP
         force["FAMILY_DOP"] = True
         disabled.add("FAMILY_DOP")
         if desc.loss_watch:             # a new AI caption would be encoded with the trigger unfused
@@ -1500,13 +1620,28 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
     if not (kind == "standard" and values.get("FAMILY_MULTI_PERSON")):
         hidden |= {"FAMILY_MP_MANUAL", "FAMILY_MP_FACECROPS_FIRST"}
         hidden |= set(KIND_ROWS)            # what a subject is only changes the group-picture recipe
-    if not (dop and values.get("FAMILY_SUBJECT_FIX")):
-        hidden |= {"FAMILY_DOP_TRIGGER", "FAMILY_DOP_CLASS"} | DOP_EXTRA_ROWS
-    if not (kind == "standard" and values.get("FAMILY_MULTI_PERSON")):   # "what they are" is the joined word's
+    iso = kind == "standard" and values.get("FAMILY_MULTI_PERSON")
+    fix = dop and values.get("FAMILY_SUBJECT_FIX")
+    if not fix:
+        hidden |= {"FAMILY_DOP_TRIGGER"} | {t for _d, t, _c in CONCEPT_ROWS}
+    # "what they are": Isolation's joined word (a correction, so with Correct ticked); with DOP alone, what the trigger
+    # word becomes in the captions that keep the model as it was - Fizgig can't read that, so it's always shown (#365)
+    if not ((iso and fix) or (dop and not iso)):
         hidden |= {"FAMILY_DOP_CLASS"} | {c for _d, _t, c in CONCEPT_ROWS}
     for i, (d, t, c) in enumerate(CONCEPT_ROWS, start=2):     # subject i's folder, line and words, up to the count
         if i > n_sub:
             hidden |= {d, t, c, f"_subject{i}_as", KIND_ROWS[i - 1]}
+    # the Regularisation dataset fold: a family with it, a Standard LoRA or LoKR (a fine-tune has its own folder)
+    if not getattr(desc, "lora_regularisation", False) or kind != "standard":
+        hidden |= set(REG_KEYS)
+    elif reg:
+        disabled |= set(_subject_keys(desc))
+        for k in ("FAMILY_SUBJECTS", "FAMILY_PEOPLE_MODE"):
+            notes[k] = REG_GREYED
+        hidden |= {f"_subject{i}_as" for i in (2, 3, 4)}       # one subject trains: the training folder
+        notes["FAMILY_REG_USE"] = _reg_budget_note(desc, values, image_folder)
+    else:
+        disabled |= {"FAMILY_REG_DIR", "FAMILY_REG_MULT", "FAMILY_REG_USE"}
     
     kn = _kind_notes(desc)
     if len(kinds(desc)) > 1:
@@ -1684,8 +1819,8 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
             elif state == "done":
                 notes["FAMILY_PREVIEW_LOOK"] = "Downloaded: previews use it from the next one."
     if desc.batch_training:
-        one_a_step = kind in ("edit", "slider") or values.get("FAMILY_DOP") or \
-            values.get("FAMILY_MULTI_PERSON")
+        one_a_step = kind in ("edit", "slider") or (not reg and (values.get("FAMILY_DOP") or
+                                                                  values.get("FAMILY_MULTI_PERSON")))
         if one_a_step:
             disabled.add("BATCH_SIZE")
             notes["BATCH_SIZE"] = ("Greyed out: sliders, edits, DOP and Fizgig LoRA Isolation train one picture a "
@@ -1959,7 +2094,7 @@ def inputs(desc, values, *, models, python, repo_dir, image_folder, cache_root, 
         FAMILY_TURBO_PACE=s("FAMILY_TURBO_PACE"), FAMILY_PREVIEW_LOOK=b("FAMILY_PREVIEW_LOOK"), FAMILY_PREVIEW_SMALL=b("FAMILY_PREVIEW_SMALL"),
         CAPTION_DROPOUT=caption_dropout_share(s("CAPTION_DROPOUT")) if desc.caption_dropout else 0.0,
         MASKED_TRAINING=b("MASKED_TRAINING") and desc.masked_training, MASK_FLOOR=s("MASK_FLOOR"),
-        MASK_PRIOR=s("MASK_PRIOR"),
+        MASK_PRIOR=s("MASK_PRIOR"), FACE_BOOST=b("FACE_BOOST") and desc.element_boost, FACE_BOOST_AREA=s("FACE_BOOST_AREA"),
         python=python, repo_dir=repo_dir, models=models, image_folder=image_folder,
         caption_ext=s("DATASET_CAPTION_EXT") or ".txt", batch_size=1,
         megapixels=s("DATASET_MEGAPIXELS"),
@@ -1994,6 +2129,8 @@ def inputs(desc, values, *, models, python, repo_dir, image_folder, cache_root, 
         FAMILY_OPTIONS=_option_values(desc, v),
         vram_reclaim=dict(vram_reclaim or {}),           # Preferences > Training memory (launch.reclaim_flags)
     )
+    if launch.lora_reg_on(desc, d):        # a regularisation dataset: the rest of the Subjects card gives way (#332)
+        d.update(multiconcept=False, extra_folders=[], FAMILY_DOP=False, FAMILY_MULTI_PERSON=False)
     return d
 
 

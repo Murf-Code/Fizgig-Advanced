@@ -106,7 +106,7 @@ def test_face_is_the_target_of_face_crops(tmp_path):
     (tmp_path / "p0.txt").write_text("ruaidri, face, wolf, full body")
     caps = C.CropCaptions(keep=["ruaidri"], tagger=FakeTagger({"wolf": 0.8, "face": 0.0}), closeup=False)
     prep.Prep(lambda _t: None, _Det([F._face_info(60, 60, 140, 140)]), captions=caps).run(
-        "Face Crop Only", str(tmp_path), 0.05, "Largest Face", 20.0, False)
+        "Face Crop Only", str(tmp_path), 0.05, "Largest Face", 20.0, False, min_face=0)
     assert (tmp_path / "crops" / "FaceCrop_001.txt").read_text() == "ruaidri, face, wolf"
 
 

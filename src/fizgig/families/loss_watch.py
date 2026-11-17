@@ -17,7 +17,28 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-_IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+def _picture_exts():
+    from fizgig.dataset.image_dataset import IMAGE_EXTENSIONS      # every format the training set reads
+    return tuple(dict.fromkeys(e.lower() for e in IMAGE_EXTENSIONS))
+
+
+def _picture(folder, name, listings):
+    """The training picture called `name` (its key's file name, no extension) in `folder`, matched as the dataset does:
+    the extension in any case (IMG_0001.JPG: on Linux pods names are case-sensitive, and a lowercase guess missed
+    it) and in every format training reads (.avif). listings: {folder: its file names}, filled on first use."""
+    if folder not in listings:
+        try:
+            listings[folder] = sorted(os.listdir(folder))
+        except OSError:
+            listings[folder] = []
+    have = {}
+    for n in listings[folder]:
+        stem, ext = os.path.splitext(n)
+        have.setdefault((stem, ext.lower()), n)
+    for ext in _picture_exts():
+        if (name, ext) in have:
+            return os.path.join(folder, have[(name, ext)])
+    return ""
 
 
 def _find_key(d, key):
@@ -63,9 +84,12 @@ def _tag_settings(group):
 
 
 def _items(group):
-    """item_key -> ItemInfo over every training bucket."""
+    """item_key -> ItemInfo over every watched training bucket (not the regularisation set's: its pictures are an
+    anchor at their own fixed LR, never judged, throttled, excluded or recaptioned)."""
     out = {}
     for ds in group.datasets:
+        if getattr(ds, "is_reg", False):
+            continue
         bm = getattr(ds, "batch_manager", None)
         if bm is not None:
             for bucket in bm.buckets.values():
@@ -77,10 +101,19 @@ def _items(group):
 def second_try_min(min_score):
     """A tagger's second-try min score: 25% lower, but never more than 0.1 below the first try's."""
     return round(max(min_score * 0.75, min_score - 0.1), 3)
+def _reg_keys(group):
+    """The item keys of the run's regularisation set (dataset blocks marked is_reg)."""
+    out = set()
+    for ds in getattr(group, "datasets", None) or []:
+        if getattr(ds, "is_reg", False) and getattr(ds, "batch_manager", None) is not None:
+            for bucket in ds.batch_manager.buckets.values():
+                out.update(str(it.item_key) for it in bucket)
+    return out
 
 
 class Watch:
     """The run's loss watch and the state around it. `watch` is None when every toggle is off."""
+    reg = frozenset()                       # the regularisation set's keys (set per run in __init__)
 
     def __init__(self, output_dir, group, user_config, driver, *, log=False, per_image_lr=False, auto_recaption=False,
                  warmup_look=False, resume=False, start_epoch=0, te_path=None, trigger_word=None,
@@ -96,6 +129,7 @@ class Watch:
         # auto-recaption always uses Qwen3-VL (--captioner); the Captions tab's other models never load in a run
         self.recap = dict(recaption_with or {})
         self.watch = None
+        self.reg = _reg_keys(group)         # the regularisation set's pictures: never recorded or judged
         if not resume:
             _cleanup(output_dir)
         if auto_recaption and not (captioner_path and os.path.isfile(captioner_path)):
@@ -182,18 +216,24 @@ class Watch:
     def excluded(self, batch):
         """The step is skipped: its picture is excluded (a batch's: every one of them)."""
         keys = batch.get("item_keys")
-        if self.watch is None:
+        if self.watch is None or self._reg_only(keys):
             return False
         if isinstance(keys, (list, tuple)) and len(keys) > 1:
             return all(self.watch.is_excluded([str(k)]) for k in keys)
         return self.watch.is_excluded(keys)
 
     def multiplier(self, batch):
-        return self.watch.multiplier(batch.get("item_keys")) if self.watch is not None else 1.0
+        keys = batch.get("item_keys")
+        return self.watch.multiplier(keys) if self.watch is not None and not self._reg_only(keys) else 1.0
 
     def observe(self, epoch, step, batch, t, loss):
-        if self.watch is not None:
+        if self.watch is not None and not self._reg_only(batch.get("item_keys")):
             self.watch.observe(epoch=epoch, step=step, item_keys=batch.get("item_keys"), timestep=t, loss=loss)
+
+    def _reg_only(self, keys):
+        """Every picture of the step is a regularisation one (the watch leaves those alone)."""
+        keys = [str(k) for k in (keys if isinstance(keys, (list, tuple)) else [keys]) if k is not None]
+        return bool(self.reg) and bool(keys) and all(k in self.reg for k in keys)
 
     # ---- Batch Size above 1: each picture its own weight and record, as its own step would have them (the driver
     # hands back each picture's loss, info["per"] - the idea from @Murf-Code's Fizgig Advanced) ------------------
@@ -206,7 +246,7 @@ class Watch:
         if per is None or len(keys) < 2 or int(per.shape[0]) != len(keys):
             return None
         raw = info.get("per_raw") or [float(x) for x in per.detach().float().cpu()]
-        out = [self.watch is not None and self.watch.is_excluded([k]) for k in keys]
+        out = [self.watch is not None and k not in self.reg and self.watch.is_excluded([k]) for k in keys]
         kept = [i for i, o in enumerate(out) if not o]
         mult = [0.0 if out[i] else float(reg_mult) if reg_keys and k in reg_keys else
                 (self.watch.multiplier([k]) if self.watch is not None else 1.0) for i, k in enumerate(keys)]
@@ -221,6 +261,8 @@ class Watch:
         if self.watch is None:
             return
         for i in kept:
+            if str(keys[i]) in self.reg:     # a regularisation picture: not recorded
+                continue
             self.watch.observe(epoch=epoch, step=step, item_keys=[str(keys[i])], timestep=float(ts[i]),
                                loss=float(raw[i]))
 
@@ -248,15 +290,14 @@ class Watch:
                 return
         auto = []
         if self.auto_recaption and self.watch is not None and self.image_dir:
+            listings = {}
             for k in sorted(k for k, v in self.watch.verdicts.items() if v == "stuck"):
                 if k in updates or self.recaptioned.get(k, 0) >= 2:
                     continue
                 _p, folder, name = self.watch.where(k)
-                for ext in (_IMG_EXTS if folder else ()):
-                    p = os.path.join(folder, name + ext)
-                    if os.path.exists(p):
-                        auto.append((k, p, self.recaptioned.get(k, 0) + 1))
-                        break
+                p = _picture(folder, name, listings) if folder else ""
+                if p:
+                    auto.append((k, p, self.recaptioned.get(k, 0) + 1))
         if not updates and not auto:
             _remove(processing)
             return

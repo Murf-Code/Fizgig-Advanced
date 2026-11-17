@@ -53,7 +53,7 @@ def _run(d, mode, kind, log=None, fit_all=False, hits=None):
                                   list((hits or {"paw": 0}).keys()), fit_all=fit_all)
         prep.Prep(log.append, None, finder).run(mode, str(d), 0.05, prep.OTHER_TARGET, 20.0, False)
     else:
-        prep.Prep(log.append, _Det(FACE) if kind else None).run(mode, str(d), 0.05, "Largest Face", 20.0, False)
+        prep.Prep(log.append, _Det(FACE) if kind else None).run(mode, str(d), 0.05, "Largest Face", 20.0, False, min_face=0)
     return "".join(log)
 
 

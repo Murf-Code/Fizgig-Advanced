@@ -219,3 +219,18 @@ def test_how_often_to_check_launch(tmp_path):
         return c[c.index("--validation_every_steps") + 1]
 
     assert every(None) == "0" and every("0") == "0" and every("500") == "500" and every("-5") == "0"
+
+
+def test_thinning_keeps_every_learning_rate(tmp_path):
+    """A long run is drawn every k-th step; the learning rate (recorded every 20th step) must survive the thinning, or
+    the graph's LR line vanishes once a run passes max_points steps (it did, at stride 2, 11 Nov 2026)."""
+    p = tmp_path / "loss.jsonl"
+    with open(p, "w", encoding="utf-8") as f:
+        for s in range(1, 4701):
+            rec = {"s": s, "e": 1 + (s - 1) // 94, "l": 0.3}
+            if s % 20 == 0:
+                rec["lr"] = 2.8e-4
+            f.write(json.dumps(rec) + "\n")
+    d = read(str(p), max_points=4000)
+    assert d["stride"] == 2
+    assert sum(1 for pt in d["points"] if pt[3] is not None) == 4700 // 20

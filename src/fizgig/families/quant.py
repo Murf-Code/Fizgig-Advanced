@@ -219,6 +219,75 @@ def _peak(entry, megapixels):
 TIGHT_MARGIN_GB = 0.5      # nf4 with no swap beats a swapped int8 base down to this much headroom
 MODEST_SWAP_SHARE = 0.25   # int8 with up to this share of the blocks swapped beats nf4 (quality; a small speed cost)
 
+# Optimizer state per trainable parameter, in bytes (fp32 adapter weights): 8-bit moments are a byte each, fp32 ones
+# four; AdEMAMix keeps three moments, Lion and Muon one; Prodigy four fp32 buffers. Unlisted: fp32 Adam's 8.
+_STATE_BYTES = {"adamw8bit": 2, "pagedadamw8bit": 2, "ademamix8bit": 3, "pagedademamix8bit": 3, "lion8bit": 1,
+                "adamw": 8, "adafactor": 1, "muon": 4, "prodigy": 16, "automagic3": 4, "automagic4": 4}
+# What the description's train_memory figures already carry: a rank-16 LoRA on adamw8bit with EMA on (the form's
+# default), so a run that size or smaller adds nothing
+_FIGURE_RANK, _FIGURE_STATE, _FIGURE_EMA = 16, 2, True
+
+
+def _adapter_bytes(state_bytes, ema):
+    """Bytes per trainable parameter for the whole run: fp32 weight + fp32 gradient + optimizer state + fp32 EMA."""
+    return 4 + 4 + state_bytes + (4 if ema else 0)
+
+
+def _target_shapes(driver, dit_path):
+    """(out, in) of every Linear the driver's LoRA wraps, read from the model file's header (no weights loaded), or []
+    when the file can't be read or its names don't line up with the block map's."""
+    import json
+    import struct
+    try:
+        names = [m for g in driver.block_map(None) for b in g.blocks for m in b.modules]
+        with open(dit_path, "rb") as f:
+            hdr = json.loads(f.read(struct.unpack("<Q", f.read(8))[0]))
+    except Exception:
+        return []
+    keys = [k for k in hdr if k.endswith(".weight") and len(hdr[k].get("shape") or []) == 2]
+    prefix = next((k[:-len(n) - 7] for n in names[:1] for k in keys if k.endswith("." + n + ".weight") or
+                   k == n + ".weight"), None)
+    if prefix is None:
+        return []
+    return [tuple(int(d) for d in hdr[prefix + n + ".weight"]["shape"]) for n in names
+            if prefix + n + ".weight" in hdr and len(hdr[prefix + n + ".weight"].get("shape") or []) == 2]
+
+
+def adapter_ema(run: dict) -> bool:
+    """Whether the run keeps an EMA copy of the adapter (ema_decay above 0)."""
+    try:
+        return float(run.get("ema_decay") or 0) > 0
+    except (TypeError, ValueError):
+        return bool(run.get("ema_decay"))
+
+
+def adapter_extra_gb(driver, run: dict) -> float:
+    """GB this run's trainable adapter holds beyond what the description's train_memory figures already include
+    (a rank-16 LoRA on adamw8bit with EMA): weights, gradients, optimizer state and the EMA copy, all fp32. Not a
+    rounding error: LoKR factor 8 on Krea 2 is 200M parameters, ~3 GB with AdEMAMix and EMA against a rank-16 LoRA's
+    ~0.5 GB, and planning without it put a 16 GB card's nf4 run past its memory (#337). run: dit_path, network_type,
+    network_dim, lokr_factor, optimizer_type, ema_decay (as train.py hands driver.plan_run). 0 when the file can't
+    be read."""
+    shapes = _target_shapes(driver, run.get("dit_path") or "")
+    if not shapes:
+        return 0.0
+    from fizgig.networks.lora import factorization
+    lokr = str(run.get("network_type") or "").lower() == "lokr"
+    f = int(run.get("lokr_factor") or 8)
+
+    def params(out_f, in_f):
+        if lokr:
+            a, c = factorization(out_f, f)
+            b, d = factorization(in_f, f)
+            return a * b + c * d
+        return int(run.get("network_dim") or 16) * (in_f + out_f)
+
+    n = sum(params(o, i) for o, i in shapes)
+    base = sum(_FIGURE_RANK * (i + o) for o, i in shapes)
+    ema = adapter_ema(run)
+    state = _STATE_BYTES.get(str(run.get("optimizer_type") or "adamw8bit").lower(), 8)
+    return max(0.0, (n * _adapter_bytes(state, ema) - base * _adapter_bytes(_FIGURE_STATE, _FIGURE_EMA)) / 1e9)
+
 
 def small_card_figures(desc) -> bool:
     """Whether the Auto plan reads desc.train_memory_small: the family has small-card figures and this card gets the
@@ -230,7 +299,7 @@ def small_card_figures(desc) -> bool:
 
 
 def plan(desc, driver, precision="auto", blocks_to_swap=-1, free_gb=None, margin_gb=1.5, megapixels=1.0, pictures=1,
-         extra_gb=0.0):
+         extra_gb=0.0, adapter_gb=0.0, dit_path=None):
     """Resolve 'auto' precision and/or block swap (-1) from free VRAM and the description's measured training
     memory (desc.train_memory: {precision: (peak GB at no swap, GB saved per swapped block)}).
 
@@ -240,14 +309,17 @@ def plan(desc, driver, precision="auto", blocks_to_swap=-1, free_gb=None, margin
     2026) - but INT8 with only a few blocks swapped (MODEST_SWAP_SHARE of them) still goes before NF4. Only then does
     it swap (int8, the smaller swappable base). When nothing fits with the margin, the most-swapped base goes before
     NF4 unless NF4 needs less: NF4 can't swap, so an NF4 that doesn't fit has nothing left to give (Krea 2 and Fibo 2
-    at 12 GB, rank 64, issue #2). An explicit precision with auto swap
+    at 12 GB, rank 64, issue #2); failing that, a 4-bit base that streams (desc.streams_blocks) takes the blocks it
+    needs. An explicit precision with auto swap
     gets the fewest blocks that fit. pictures: a batched step's (Batch size), each past the first adding
     desc.batch_gb's figure at megapixels. extra_gb: GB on top of every figure (a number, or {precision: GB}) - this
     run's LoRA rank and optimizer state past the figures' recipe, and what past runs measured
-    (families/vram_plan.py). Returns (precision, blocks_to_swap, reason)."""
+    (families/vram_plan.py). adapter_gb: what the run's trainable adapter holds beyond the figures'
+    (adapter_extra_gb). dit_path: Auto leaves out a precision that file can't load at (driver.precision_problem:
+    MiniMax H3's int8 of its full unpruned file, #357). Returns (precision, blocks_to_swap, reason)."""
     if free_gb is None:
         free_gb = free_vram_gb()
-    extra = batch_extra(desc, megapixels, pictures)
+    extra = batch_extra(desc, megapixels, pictures) + max(0.0, float(adapter_gb or 0))
     small = small_card_figures(desc)
     table = desc.train_memory_small if small else desc.train_memory
     add = (lambda p: float(extra_gb.get(p, 0.0))) if isinstance(extra_gb, dict) else (lambda p: float(extra_gb or 0))
@@ -256,11 +328,15 @@ def plan(desc, driver, precision="auto", blocks_to_swap=-1, free_gb=None, margin
     order = (getattr(desc, "auto_precisions_small", ()) if small else ()) or getattr(desc, "auto_precisions", ())
     if precision == "auto" and order:
         offered = [p for p in order if p in desc.precisions]
+    if precision == "auto" and dit_path:
+        offered = [p for p in offered if not driver.precision_problem(p, dit_path)] or offered
     cap = driver.max_blocks_to_swap()
     budget = free_gb - margin_gb
 
+    streams = getattr(desc, "streams_blocks", None) or (lambda p: p != "nf4")
+
     def swap_for(p):
-        if p not in mem or p == "nf4":
+        if p not in mem or not streams(p):
             return 0
         need, per_block = mem[p]
         if need <= budget or per_block <= 0 or cap <= 0:
@@ -301,12 +377,21 @@ def plan(desc, driver, precision="auto", blocks_to_swap=-1, free_gb=None, margin
             # nothing fits with the margin: NF4 can't swap, so it only goes first when it needs less than the most
             # swapped base does (an NF4 that doesn't fit runs out of memory with nothing left to give)
             left = mem[p][0] - cap * mem[p][1]
-            nf4 = mem["nf4"][0] if ("nf4" in offered and "nf4" in mem) else float("inf")
+            # a 4-bit base that streams (desc.streams_blocks: MiniMax H3 Image's NF4 ring) counts with its own swap
+            nf4 = (mem["nf4"][0] - swap_for("nf4") * mem["nf4"][1]) if ("nf4" in offered and "nf4" in mem) \
+                else float("inf")
             if left < nf4:
                 return p, keep(cap), (f"nothing fits {free_gb:.1f} GB comfortably: {p} with the most blocks swapped "
                                       f"({cap}) needs the least")
         p = "nf4" if "nf4" in offered else offered[-1]
-        return p, 0, f"nothing fits {free_gb:.1f} GB comfortably: {p}, the smallest base"
+        # a 4-bit base that streams (MiniMax H3 Image's NF4 ring) takes the blocks it needs: with none, a 12 GB card
+        # planned 12.8 GB, spilled into system memory on Windows and trained at 40 s/step; 16 swapped ran 4.1 (#354)
+        n = swap_for(p)
+        if n and mem[p][0] - n * mem[p][1] <= budget:
+            return p, n if blocks_to_swap < 0 else blocks_to_swap, f"{p} + {n} swapped blocks fit {free_gb:.1f} GB"
+        return (p, n if blocks_to_swap < 0 else (blocks_to_swap if n else 0),
+                f"nothing fits {free_gb:.1f} GB comfortably: {p}, the smallest base"
+                + (f", {n} blocks swapped (the most)" if n else ""))
     if precision not in offered:
         raise ValueError(f"{desc.display_name} offers {offered}, not {precision!r}")
     if blocks_to_swap < 0:
@@ -369,7 +454,7 @@ def card_gb():
         return float(sim)
     if not torch.cuda.is_available():
         return 0.0
-    return torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+    return torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / 1024 ** 3
 
 
 def auto_batch(desc, megapixels):
@@ -456,7 +541,7 @@ def apply_vram_cap():
     sim = os.environ.get("FIZGIG_SIM_VRAM_GB", "").strip()
     if not sim or not torch.cuda.is_available():
         return
-    total = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+    total = torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / 1024 ** 3
     torch.cuda.set_per_process_memory_fraction(min(1.0, (float(sim) - _SIM_OTHERS_GB) / total))
     logger.info(f"[sim] behaving like a {float(sim):g} GB card ({float(sim) - _SIM_OTHERS_GB:.1f} GB for Fizgig)")
 

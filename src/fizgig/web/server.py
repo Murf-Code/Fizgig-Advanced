@@ -34,13 +34,14 @@ from urllib.parse import parse_qs, urlparse
 from fizgig.dataset.masks import is_mask_file, mask_for_stem
 from fizgig.families import form, launch
 from fizgig.families.registry import get as get_family, training_families
-from fizgig.web import captions, history
+from fizgig.web import captions, history, oom
 from fizgig.web import queue as webqueue
 from fizgig.web import prep_jobs
 from fizgig.families import refmod
 from fizgig.web import studio
 from fizgig.web.port import PORT_DEFAULT, PORT_WALK, listening, on_pod, on_runpod, on_vast, saved_port
 from fizgig.web.schema import get_schema
+from fizgig.krea2.generation_attention import preference_available as sageattention_option
 
 logger = logging.getLogger("fizgig.web")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -104,6 +105,15 @@ _stats = {"vram": [0, 0], "ram": [0, 0], "vram_peak": 0, "ram_peak": 0, "device_
 _NO_WINDOW = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
 
+def _min_face(v):
+    """Image Prep's Min face width (px): a number 0 or more, else the default."""
+    from fizgig.dataset.prep import MIN_FACE_PX
+    try:
+        return max(0, int(float(v)))
+    except (TypeError, ValueError):
+        return MIN_FACE_PX
+
+
 # ---- hardware meters (as the desktop status bar) ---------------------------------------------------------------
 def _rocm_launch() -> bool:
     """True only on the AMD launcher path. NVIDIA Launch Fizgig.bat must never enter the AMD VRAM reader."""
@@ -127,6 +137,15 @@ def _amd_gpu_row():
                 "uuid": "", "util": None, "temp": None, "power": None, "power_limit": None}
     except Exception:
         return None
+
+
+def _has_nvidia():
+    """An NVIDIA card on this machine (nvidia-smi lists one; ROCm's AMD fallback rows don't count)."""
+    try:
+        return any("nvidia" in str(g.get("name") or "").lower() or str(g.get("uuid") or "").startswith("GPU-")
+                   for g in list_gpus())
+    except Exception:
+        return False
 
 
 def list_gpus():
@@ -260,7 +279,10 @@ def _side_extras() -> dict:
     try:
         c = captions.status()
         if c["state"] in ("loading", "running", "translating"):
-            jobs.append({"what": "Translating captions" if c["state"] == "translating" else "Captioning",
+            jobs.append({"what": "Translating captions" if c["state"] == "translating" else
+                         f"Downloading {c.get('model') or 'the caption model'}" if c["state"] == "loading"
+                         and c.get("phase") == "downloading" else
+                         f"Loading {c.get('model') or 'the caption model'}" if c["state"] == "loading" else "Captioning",
                          "done": c.get("done") or 0, "total": c.get("total") or 0, "tab": "captions"})
         if c.get("loaded"):
             loaded.append({"what": "Caption model", "name": c.get("model") or "", "tab": "captions"})
@@ -375,7 +397,7 @@ def _write_json(path, data):
 # the desktop's DEFAULT_PREFS that aren't empty: a web-only install starts where the desktop app would
 PREF_DEFAULTS = {"lora_output_dir": "output_loras", "profiles_dir": "user_data/profiles", "cache_dir": "user_data/cache",
                  "runpod_stop_when_done": "0", "inference_blocks_to_swap": "Auto (detect from GPU)",
-                 "inference_int8": "1", "lan_discovery": "1", "update_check": "1", **launch.RECLAIM_PREF_DEFAULTS}
+                 "inference_int8": "1", "inference_sageattention": "0", "lan_discovery": "1", "update_check": "1", **launch.RECLAIM_PREF_DEFAULTS}
 
 
 LAST_USED_FILE = user_data.LAST_USED_FILE           # the training folder, each folder's trigger word
@@ -437,7 +459,7 @@ def set_folder_trigger(folder, word):
 
 # the Preferences settings Reset to defaults puts back (the model files are never reset)
 SETTING_PREFS = ("lora_output_dir", "profiles_dir", "cache_dir", "input_lora_dir", "input_ref_dir",
-                 "inference_blocks_to_swap", "inference_int8", "lan_discovery", "update_check") + tuple(launch.RECLAIM_PREF_DEFAULTS)
+                 "inference_blocks_to_swap", "inference_int8", "inference_sageattention", "lan_discovery", "update_check") + tuple(launch.RECLAIM_PREF_DEFAULTS)
 
 
 def load_prefs() -> dict:
@@ -849,7 +871,8 @@ def _studio_post(what, b):
         ps = None
         if desc.workbench_follows_samples and "negative" in b:
             ps = studio.plan(desc, load_prefs(), pref_path, samples=_studio_samples(desc), negative=b.get("negative"))[1]
-        studio.settings(turbo=b.get("turbo"), preview_settings=ps)
+        ro = studio.studio_tokens(desc, load_prefs()) if b.get("options") else None    # Studio's own sampler pick
+        studio.settings(turbo=b.get("turbo"), preview_settings=ps, render_options=ro)
         return {"ok": True}
     if what == "save":
         out = str(b.get("out") or "").strip()
@@ -1033,8 +1056,8 @@ def _multi_person_notes(vals, image_folder, multi_person=True):
         auto_trig = subject_trigger(folder, ext)
         if auto_trig:
             found[tkey] = auto_trig
-            got, _w = mp.subject(folder, auto_trig, "", ext)
-            if got:
+            got, _w = mp.subject(folder, auto_trig, "", ext) if multi_person else (None, "")
+            if got:              # Isolation reads it from the captions; DOP alone uses only what's typed (#365)
                 found[ckey] = got["phrase"].split()[-1]
         cap = mp.sample_caption(folder, trig.split(",")[0].strip() if trig else "", ext)
         lines = [f"Trigger word: {trig}" if trig else "Trigger word: none found in this folder's captions",
@@ -1042,7 +1065,7 @@ def _multi_person_notes(vals, image_folder, multi_person=True):
         if not multi_person:
             if dop and cap and trig:
                 pairs = list(zip([t.strip() for t in trig.split(",") if t.strip()],
-                                 [c.strip() for c in cls.split(",")] * 8))
+                                 [mp.class_phrase(c) for c in cls.split(",")] * 8))
                 kept = mp.dop_caption(cap, pairs)
                 lines += [f"Trains on: {cap}", f"And keeps as the model made it: {kept}" if kept else
                           "And keeps as the model made it: nothing - this caption has no trigger word"]
@@ -1209,6 +1232,11 @@ def _size_changed(lora, out_dir, values):
         except ValueError:
             return str(v or "").strip()
     return any(num(old.get(k, "")) != num(values.get(k, "")) for k in _SIZE_KEYS)
+
+
+def _rebuilding_cache(plan):
+    """Whether a plan is making the cache it will train on: its settings aren't proven until that pass finishes."""
+    return any(s.name.startswith(n) for s in plan.stages for n in ("Cache Preparation", "Text Encoder Caching"))
 
 
 def _ref_strength(v):
@@ -1498,6 +1526,11 @@ def delete_run(run_id, confirm=False) -> dict:
         os.remove(step_log.loss_path(folder, name))
     except OSError:
         pass
+    for left in (f"likeness_{name}.json", f"style_{name}.json", f"gallery_{name}.owner"):   # its gallery scores
+        try:
+            os.remove(os.path.join(folder, "sample", left))
+        except OSError:
+            pass
     try:                                       # a pause record for this run would offer a Resume that can't work
         side = os.path.join(folder, ".fizgig_paused.json")
         with open(side, encoding="utf-8") as f:
@@ -1513,6 +1546,71 @@ def delete_run(run_id, confirm=False) -> dict:
     return {"ok": True}
 
 
+def purge_runs(days, delete_data=False, include_paused=False, confirm=False, ids=None) -> dict:
+    """Purge older than X days on Runs & outputs. With confirm False it only says which runs are past the cut-off,
+    read off the history list alone: no folder is opened and nothing is sized, so a very long history previews
+    instantly. With confirm True it takes them out. The cut-off counts from a run's end date, so a run still training
+    - which has no end date at all - is never past it and is left alone; a paused run counts only when
+    include_paused asks. delete_data off takes the runs off the list and touches nothing on disk; on, each one goes
+    through delete_run exactly as the single Delete run does."""
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        return {"error": "Enter a number of days."}
+    if not 1 <= days <= 365:
+        return {"error": "Between 1 and 365 days."}
+    cut = time.time() - days * 86400
+    past, held = [], 0
+    every = history.runs()
+    for r in every:
+        ended = r.get("ended_at")
+        if not ended or float(ended) > cut:
+            continue                        # no end date: still training, or a run nothing ever closed
+        if not str(r.get("id") or ""):
+            continue                        # no id: nothing to delete it by, so it isn't a purge candidate
+        if str(r.get("result") or "") == "paused" and not include_paused:
+            held += 1                       # past the cut-off, but a paused run only counts when asked
+            continue
+        past.append(r)
+    if not confirm:
+        listed = []
+        for r in past:
+            prog = r.get("progress") if isinstance(r.get("progress"), dict) else {}
+            listed.append({"id": r.get("id"), "name": str(r.get("lora") or "run"),
+                           "date": float(r.get("ended_at") or 0),
+                           # how far the run got, off its own last figures: the epoch it reached and the number it was
+                           # set to. Nothing is looked for on disk - a run that reported nothing simply shows no epoch.
+                           "epoch": prog.get("epoch"), "total_epochs": prog.get("total_epochs")})
+        return {"ok": True, "days": days, "count": len(past), "held": held, "runs": listed}
+    if ids is not None:                     # only what the preview showed: a run that came past the cut-off since stays
+        keep = {str(i) for i in ids}
+        past = [r for r in past if str(r.get("id")) in keep]
+    if not past:
+        return {"error": f"Nothing ended more than {days} days ago."}
+    # Files are found by output folder + LoRA name, so a run that shares both with a run staying on the list (two
+    # starts under one name before names were made unique) would delete that run's files: those only leave the list
+    going = {str(r.get("id")) for r in past}
+    norm = lambda r: (os.path.normcase(os.path.abspath(str(r.get("output_dir") or "."))), str(r.get("lora") or "").lower())
+    staying = {norm(r) for r in every if str(r.get("id")) not in going}
+    purged, failed, shared = 0, [], 0
+    for r in past:
+        rid = str(r.get("id"))
+        if delete_data and norm(r) in staying:
+            history.remove(rid)
+            purged += 1
+            shared += 1
+            continue
+        if delete_data:
+            out = delete_run(rid, confirm=True)
+            if out.get("error"):            # this run's own files are stuck; the others still go
+                failed.append(f"{r.get('lora') or 'run'}: {out['error']}")
+                continue
+        else:
+            history.remove(rid)
+        purged += 1
+    return {"ok": True, "days": days, "purged": purged, "failed": failed, "shared": shared}
+
+
 PAUSED_FILE = ".fizgig_paused.json"       # in the run's output folder, as the desktop writes it
 
 
@@ -1524,7 +1622,8 @@ def _record_pause(out_dir):
         fam, values, folder, name = _run["family"], dict(_run["values"]), _run["image_folder"], _run["lora"]
     desc = get_family(fam)
     ft = bool(desc is not None and desc.finetune and form._kind(desc, values) == "finetune")
-    path = launch.latest_ft_checkpoint(out_dir, name) if ft else launch.latest_state(out_dir, name)
+    began = (history.get(_run.get("history_id")) or {}).get("started_at") or 0     # an earlier run's states don't count
+    path = launch.latest_ft_checkpoint(out_dir, name) if ft else launch.latest_state(out_dir, name, began)
     if not path:
         return False
     side = {"mode": "ft" if ft else "state", "state_path": path, "output_name": name,
@@ -1587,7 +1686,7 @@ def _continue_point(rec):
                                                   values.get("FAMILY_FT_ROTATE_EVERY"))
         return {"kind": "ft", "path": path, "done": done, "of": done + left, "key": "FAMILY_FT_ROTATIONS",
                 "unit": "rotation"}
-    path = launch.latest_state(out, name)
+    path = launch.latest_state(out, name, rec.get("started_at") or 0)     # not an earlier run's, same name and folder
     m = re.search(r"-(\d{6})-state$", path)
     if not m:
         return None
@@ -1613,16 +1712,81 @@ def state_epochs_done(path, named):
     return named
 
 
-def _oom_note(run_id):
-    """What to do after a run ran out of GPU memory: Continue from its newest save (fresh memory - memory that
-    fragments over hours is the usual cause late in a run), or, with nothing saved yet, a lighter setup."""
-    pt = _continue_point(history.get(run_id))
-    if pt:
-        return (f"\nThe GPU ran out of memory. The run is saved at {pt['unit']} {pt['done']}: press Continue on its "
-                f"card in Runs & outputs to carry on from there, with fresh memory. Closing other programs that use "
-                f"the GPU (a browser, a game) helps too.\n")
-    return ("\nThe GPU ran out of memory before the run saved anything. Try a smaller picture size or more block "
-            "swap (Memory & Precision, on the Training tab), and close other programs that use the GPU.\n")
+OOM_WAIT_S = 15                 # before an automatic retry: the failed process's memory is given back first
+
+
+def _oom_recover(kind, stage_name, plan):
+    """A run ran out of memory (oom.classify's kind): carry it on by itself when web/oom.py says so - a Continue from
+    its newest save, or a fresh restart a step lighter - logged plainly and kept on its record. False when it
+    stops here (the advice and what was tried are in the log); the caller then lets the queue move on."""
+    rid = _run.get("history_id")
+    rec = history.get(rid) or {}
+    tries = [t for t in (rec.get("oom") or []) if isinstance(t, dict)]
+    pt = _continue_point(rec)
+    try:            # only a save this run made: an earlier run with the same name and folder leaves its own behind
+        started = float(rec.get("started_at") or 0)        # the record's first start (a Continue keeps it)
+        if pt and os.path.getmtime(pt["path"]) < started - 5:
+            pt = None
+    except (OSError, TypeError, ValueError):
+        pass
+    desc = get_family(rec.get("family") or "")
+    values = {k: v for k, v in (rec.get("values") or {}).items() if not str(k).startswith("__")}
+    prog = rec.get("progress") or _run.get("progress") or {}
+    step = prog.get("step")
+    try:
+        per_epoch = int(prog.get("total_steps") or 0) // max(1, int(prog.get("total_epochs") or 1))
+    except (TypeError, ValueError):
+        per_epoch = 0
+    finetune = bool(desc is not None and desc.finetune and form._kind(desc, values) == "finetune")
+    done = f"{pt['unit']} {pt['done']}" if pt else ""
+
+    def lighter():
+        try:
+            max_swap = int(desc.load_driver().max_blocks_to_swap() or 0)
+        except Exception:
+            max_swap = 0
+        return oom.step_down(desc, values, plan, max_swap, launch.precision_key,
+                             {**launch.PRECISION_LABELS, **getattr(desc, "precision_labels", {})})
+
+    if stage_name != "Training" or desc is None or rec.get("source") != "web":
+        d = {"do": "stop", "why": ""}            # a cache stage, or a run this server didn't start: advice only
+    else:
+        d = oom.decide(kind, tries, pt is not None, step, per_epoch, finetune, lighter)
+    new_values, change = values, "same settings"
+    if d["do"] != "stop" and d.get("lighter"):
+        new_values, change = lighter()
+        if new_values is None:
+            d = {"do": "stop", "why": f"it can't go lighter ({change})"}
+    if d["do"] == "stop":
+        append_log(oom.summary(tries) + (f"Automatic recovery stopped: {d['why']}.\n" if tries and d["why"] else "")
+                   + oom.advice(kind, pt is not None, done))
+        return False
+    tries.append({"kind": kind, "step": step, "at": time.time(),
+                  "action": f"{'Continue from the newest save' if d['do'] == 'continue' else 'started again'} "
+                            f"({change})"})
+    history.set_field(rid, "oom", tries)
+    append_log(f"\n↻ Out-of-memory recovery ({len(tries)} of {oom.MAX_TRIES}): {d['why']} - "
+               f"{tries[-1]['action']}, in {OOM_WAIT_S} s.\n")
+    t = threading.Timer(OOM_WAIT_S, _oom_go, args=(rid, d["do"], new_values, tries))
+    t.daemon = True
+    t.start()
+    return True
+
+
+def _oom_go(rid, do, values, tries):
+    """The automatic Continue / restart _oom_recover scheduled; a run started meanwhile (Start, the queue) wins, and
+    the queue then carries on."""
+    rec = history.get(rid) or {}
+    if do == "continue":
+        r = _continue_run(rid, queue_ok=False, values=values)
+    else:
+        r = _start(rec.get("family") or "", values, rec.get("image_folder") or "")
+        if isinstance(r, dict) and not r.get("error") and not r.get("problems") and _run.get("history_id"):
+            history.set_field(_run["history_id"], "oom", tries)       # the new record carries the count on
+    if not isinstance(r, dict) or r.get("error") or r.get("problems"):
+        why = (r or {}).get("error") or "; ".join((r or {}).get("problems") or []) if isinstance(r, dict) else str(r)
+        append_log(f"\nOut-of-memory recovery couldn't start the run again: {why}\n")
+        webqueue.on_run_ended("failed", rec.get("lora"), _queue_starter)
 
 
 def _run_form(rec, values=None):
@@ -1688,6 +1852,110 @@ def _continue_run(run_id, more="", queue_ok=True, values=None):
         if not f.get("error"):
             r = {**r, "form": f}
     return r
+
+
+# The run Fizgig was training when it was closed (or stopped, or crashed), offered again at the next start: carry it
+# on, start the next queued run, or clear the queue. STATE_FILE's "interrupted" holds its history id until a choice is
+# made or any run starts
+_startup = {"offer": None}
+
+
+def _startup_offer():
+    """What the page asks at start-up, or None: {id, lora, can_continue, done, of, unit, queued}."""
+    rid = str(load_state().get("interrupted") or "")
+    rec = history.get(rid) if rid else None
+    # a run that came here by a move belongs to the computer it came from, which follows it and brings it home
+    if rec is None or rec.get("result") != "stopped" or (rec.get("values") or {}).get("__moved_in"):
+        if rid:
+            save_state({"interrupted": ""})
+        return None
+    pt = _continue_point(rec)
+    queued = len(webqueue.status()["items"])
+    can = bool(pt and (not pt["of"] or pt["done"] < pt["of"]))
+    if not can and not queued:
+        save_state({"interrupted": ""})
+        return None
+    return {"id": rid, "lora": str(rec.get("lora") or ""), "can_continue": can, "done": pt["done"] if pt else 0,
+            "of": pt["of"] if pt else 0, "unit": pt["unit"] if pt else "epoch", "queued": queued}
+
+
+def _startup_done():
+    _startup["offer"] = None
+    save_state({"interrupted": ""})
+
+
+def startup_choice(choice) -> dict:
+    """The start-up question answered: "continue" (the interrupted run, from its last save; the queue follows it),
+    "queue" (the next queued run starts; the interrupted one stays on Runs & outputs) or "fresh" (the queue emptied)."""
+    offer = _startup["offer"]
+    if not offer:
+        return {"error": "Nothing is waiting to be decided."}
+    if choice == "continue":
+        if not offer.get("can_continue"):
+            return {"error": "That run has no saved state to carry on from."}
+        webqueue.unhold()
+        r = _continue_run(offer["id"], queue_ok=False)
+        if not isinstance(r, dict) or r.get("error") or r.get("problems"):
+            webqueue.hold("The run before couldn't be carried on. Press Start queue to carry on with the next.")
+            return r if isinstance(r, dict) else {"error": "It couldn't be carried on."}
+        _startup_done()
+        return {"ok": True, **{k: v for k, v in r.items() if k == "form"}}
+    if choice == "queue":
+        _startup_done()
+        webqueue.release(_queue_starter)
+        return {"ok": True}
+    if choice == "fresh":
+        for i in list(webqueue.status()["items"]):
+            webqueue.remove(i["id"])
+        _startup_done()
+        return {"ok": True}
+    return {"error": "Not a choice."}
+
+
+def name_taken(values, inputs) -> str:
+    """Why a new run can't take this name ("" = it can): a run of that name already has files in the same output
+    folder - its LoRAs, saved states or previews. Two runs sharing a name share those files, so one would write over
+    the other and Delete run on either would take both's. A run carrying that same run on is not a new one: the
+    Resume Training box, Continue, a fine-tune's continuation. A run that made nothing (it failed before its first
+    save) leaves the name free."""
+    values = values or {}
+    if str(values.get("RESUME_TRAINING") or "").strip() or values.get("__continue") or values.get("FAMILY_FT_CONTINUE"):
+        return ""
+    out, name = str(inputs.get("LORA_OUTPUT_DIR") or ""), str(inputs.get("LORA_NAME") or "")
+    if not out or not name:
+        return ""
+    found = run_outputs(out, name)
+    if not (found["checkpoints"] or found["states"] or found["previews"]):
+        return ""
+    return (f"A run named {name} already has files in {out}. Give this one another LoRA name ({next_run_name(name, out)} "
+            f"is free), or delete that run on Runs & outputs first. To train that run further, use Continue on Runs & "
+            f"outputs.")
+
+
+def next_run_name(name, out_dir=""):
+    """A name for another run of the same thing: name_2, then _3 and on, past every name in use - the run training,
+    the queued runs, the runs in the history, and anything of that name in the output folder (a LoRA, its epochs, its
+    saved states, a folder)."""
+    name = str(name or "").strip() or "my_lora"
+    used = {str(r.get("lora") or "").lower() for r in history.runs()}
+    used |= {str(i.get("lora") or "").lower() for i in webqueue.status()["items"]}
+    with _lock:
+        used.add(str(_run.get("lora") or "").lower())
+    out = str(out_dir or "").strip() or default_output_dir()
+    try:
+        there = [e.lower() for e in os.listdir(out)]
+    except OSError:
+        there = []
+
+    def taken(n):
+        low = n.lower()
+        return low in used or any(e == low or e.startswith(low + ".") or e.startswith(low + "-") for e in there)
+    for _ in range(10000):
+        m = re.fullmatch(r"(.*)_(\d+)", name)
+        name = f"{m.group(1)}_{int(m.group(2)) + 1}" if m else f"{name}_2"
+        if not taken(name):
+            break
+    return name
 
 
 LOG_CLEAR = "\x00clear\n"      # in the log where a run starts: the page's console begins again from there
@@ -1773,13 +2041,19 @@ def _start_one(family_key, values, image_folder, resume, ft_continue, note, mode
             os.remove(os.path.join(out_dir, f))      # an Apply while it loads waits for its first epoch, not deleted
         except OSError:
             pass
+    resuming = bool(resume or ft_continue)
+    # a resume that is rebuilding its cache hasn't trained at these settings yet: the record keeps what the last
+    # completed pass proved, and takes the new ones when the Training stage starts (in _run_stages)
+    recaching = resuming and _rebuilding_cache(plan)
     with _lock:
         _run.update(state="starting", stage="", lora=inputs["LORA_NAME"], output_dir=out_dir, family=family_key,
                     values=dict(values), image_folder=image_folder, pause=False, save_stop=False, save_stop_note="", early_stop="",
-                    resume="", resume_mode="")
+                    resume="", resume_mode="", recaching=recaching)
     save_state({"last_run": {"family": family_key, "values": values, "image_folder": image_folder}})
-    hid = history.start("web", family_key, inputs["LORA_NAME"], out_dir, image_folder, dict(values),
-                        resume=bool(resume or ft_continue), carry=carry)
+    if _startup["offer"] or load_state().get("interrupted"):
+        _startup_done()                              # a run is starting: the start-up question is answered
+    hid = history.start("web", family_key, inputs["LORA_NAME"], out_dir, image_folder,
+                        None if recaching else dict(values), resume=resuming, carry=carry)
     with _lock:
         _run["history_id"] = hid
     append_log(LOG_CLEAR)                    # this run's log on a clean console
@@ -1888,6 +2162,9 @@ def _run_stages(stages, out_dir):
             _run["stage"] = stage.name
             if stage.name == "Training" and not _run.get("training_at"):
                 _run["training_at"] = time.time()
+                if _run.get("recaching"):
+                    # the cache stages all exited 0: this run trains at what it asked for, so its record can say so
+                    history.set_values(_run.get("history_id"), _run.get("values") or {})
             if str((_run.get("progress") or {}).get("note") or "").startswith("Caching"):
                 _run["progress"] = None          # the last stage's cache count isn't this stage's
         append_log(f"\n▶ {stage.name}\n")
@@ -1902,14 +2179,14 @@ def _run_stages(stages, out_dir):
             return
         with _lock:
             _run["proc"] = proc
-        oom = False
+        mem = oom.Watch()                       # GPU / system-RAM messages, and the Auto plan the trainer chose
         for line in proc.stdout:
             append_log(line)
             _es = early_stop_note(line)
             if _es:
                 with _lock:
                     _run["early_stop"] = _es
-            oom = oom or "out of memory" in line.lower()
+            mem.feed(line)
             try:
                 upd = tracker.consume(line)
             except Exception:
@@ -1939,12 +2216,14 @@ def _run_stages(stages, out_dir):
             webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
             return
         if ret != 0:
-            append_log(f"\n✖ {stage.name} failed (exit code {ret}).\n" + _log_where())
+            kind = oom.classify(ret, mem)
+            what = {"gpu": " - the GPU ran out of memory", "ram": " - system memory (RAM) ran out"}.get(kind, "")
+            append_log(f"\n✖ {stage.name} failed (exit code {ret}){what}.\n" + _log_where())
             with _lock:
                 _run.update(state="failed", proc=None, ended_at=time.time())
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
-            if oom:
-                append_log(_oom_note(_run.get("history_id")))
+            if kind and _oom_recover(kind, stage.name, mem.plan):
+                return                           # it carries on by itself: the queue waits for that run
             webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
             return
     paused = ((os.path.exists(os.path.join(out_dir, ".pause_requested")) or _run["pause"])
@@ -2062,6 +2341,24 @@ def _stop():
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         except OSError:
             proc.terminate()
+    return True
+
+
+def _stop_paused():
+    """Stop paused run (#348): the paused run ends here, so the queue can start. Its saves stay, and its record reads
+    stopped, so Continue on its card in Runs & outputs carries it on later. False if no run is paused."""
+    with _lock:
+        if _run["state"] != "paused" or _run["proc"] is not None or not _run.get("resume"):
+            return False
+        lora, out_dir = _run.get("lora") or "", _run.get("output_dir") or ""
+        _run.update(state="stopped", resume="", resume_mode="", ended_at=time.time())
+    try:
+        os.remove(os.path.join(out_dir, PAUSED_FILE))
+    except OSError:
+        pass
+    history.stop_paused(lora, out_dir)
+    append_log("\n■ Paused run stopped. Its saves are kept: Continue on its card in Runs & outputs carries it on.\n")
+    webqueue.on_run_ended("stopped", lora, _queue_starter)
     return True
 
 
@@ -2798,7 +3095,8 @@ def _start_fetch(family, token="", optional=False, choices=None):
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
                             encoding="utf-8", errors="replace", env=env, cwd=BASE_DIR, **kw)
     with _lock:
-        _fetch.update(proc=proc, state="running", family=family, file="", done=0, total=0, lines=[], then_start=None)
+        _fetch.update(proc=proc, state="running", family=family, file="", done=0, total=0, lines=[], then_start=None,
+                      rate=0.0, eta=None, said=-1)
     threading.Thread(target=_fetch_watch, args=(proc,), daemon=True).start()
 
 
@@ -2862,18 +3160,50 @@ def _look_fetch(desc, values, path):
     return state, ((_on_use_gb(look), look.size_gb) if state == "running" else None)
 
 
+def _fmt_left(s):
+    s = int(max(0, s))
+    return f"about {s // 3600} h {s % 3600 // 60} min" if s >= 3600 else \
+        f"about {max(1, round(s / 60))} min" if s >= 90 else f"about {max(1, s)} s"
+
+
+def _fetch_progress(done, total, file, now):
+    """A [progress] line: the file's bytes, its speed (bytes/s since it started) and time left, and - while Start
+    waits on it (#327) - a line in the run's log as each file starts and at every tenth, so the log says what's
+    happening too. Under _lock, so it returns those lines for the caller to log once the lock is let go."""
+    say = []
+    if file != _fetch.get("file") or done < _fetch.get("done", 0):          # a new file
+        _fetch.update(file_t0=now, file_d0=done, rate=0.0, eta=None, said=-1)
+        if _fetch["then_start"] and total:
+            say.append(f"Downloading {file} ({total / 1024 ** 3:.1f} GB)…\n")
+    _fetch.update(done=done, total=total, file=file)
+    took = now - _fetch.get("file_t0", now)
+    if took >= 3 and done > _fetch.get("file_d0", 0):
+        rate = (done - _fetch["file_d0"]) / took
+        _fetch.update(rate=rate, eta=(total - done) / rate if total else None)
+    tenth = int(10 * done / total) if total else -1
+    if _fetch["then_start"] and total and 0 < tenth < 10 and tenth > _fetch.get("said", -1):
+        _fetch["said"] = tenth
+        speed = f", {_fetch['rate'] / 1024 ** 2:.0f} MB/s, {_fmt_left(_fetch['eta'])} left" \
+            if _fetch.get("rate") and _fetch.get("eta") is not None else ""
+        say.append(f"  {file}: {done / 1024 ** 3:.1f} of {total / 1024 ** 3:.1f} GB ({10 * tenth}%){speed}\n")
+    return say
+
+
 def _fetch_watch(proc):
     for line in proc.stdout:
         line = line.rstrip()
         if not line:
             continue
         m = re.match(r"\s*\[progress\] (\d+) (\d+) (.+)$", line)
+        say = []
         with _lock:
             if m:
-                _fetch.update(done=int(m.group(1)), total=int(m.group(2)), file=m.group(3))
+                say = _fetch_progress(int(m.group(1)), int(m.group(2)), m.group(3), time.time())
             else:
                 _fetch["lines"].append(line)
                 del _fetch["lines"][:-200]
+        for text in say:                  # the run's log (append_log takes _lock itself)
+            append_log(text)
     code = proc.wait()
     with _lock:
         if _fetch["state"] == "running":
@@ -3146,6 +3476,7 @@ class Handler(BaseHTTPRequestHandler):
                                          for k in form.model_keys(d)},
                               "cache_dir": str(p.get("cache_dir") or ""),
                               "settings": {k: str(p.get(k) or "") for k in SETTING_PREFS},
+                              "sageattention_option": sageattention_option(),
                               "captioning": {"main": pref_path(p, "krea2_text_encoder"),
                                              "main_ok": bool(pref_path(p, "krea2_text_encoder")
                                                              and os.path.isfile(pref_path(p, "krea2_text_encoder"))),
@@ -3160,6 +3491,13 @@ class Handler(BaseHTTPRequestHandler):
                               "password_on": bool(self.password),
                               "password_saved": bool(str(p.get("web_password") or "").strip()),
                               "welcome_hidden": str(p.get("welcome_v8_hidden") or "") == "1",
+                              # the launch tip to turn off CUDA Sysmem Fallback: Windows with an NVIDIA card (nvidia-smi
+                              # answers), until Don't show this again
+                              "sysmem_tip": sys.platform == "win32" and str(p.get("sysmem_tip_hidden") or "") != "1"
+                              and _has_nvidia(),
+                              "qt_disable_gpu": str(p.get("qt_disable_gpu") or "") == "1",
+                              # the app window's GPU switch: Linux's (Qt WebEngine) and Windows' (WebView2) windows
+                              "qt_gpu_option": sys.platform.startswith("linux") or sys.platform == "win32",
                               "password_env": bool(os.environ.get("FIZGIG_PASSWORD")) or getattr(self, "password_arg", False),
                               "lan_ip": __import__("fizgig.web.port", fromlist=["x"]).lan_ip(),
                               "cuda_device": str(p.get("cuda_device") or ""), "gpus": list_gpus(),
@@ -3242,6 +3580,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.json({"builtin": built, "user": [n for n in user_presets(desc) if n not in built]})
         if path == "/api/prompt_sets":           # the Samples tab's saved prompt sets
             return self.json({"sets": prompt_sets()})
+        if path == "/api/runs/next_name":           # the next free name for another run of the same thing (name_2)
+            return self.json({"name": next_run_name((qs.get("name") or [""])[0], (qs.get("dir") or [""])[0])})
         if path == "/api/studio/families":
             return self.json({"families": [{"key": d.key, "name": d.display_name} for d in studio.families()]})
         if path == "/api/studio/layout":
@@ -3470,7 +3810,7 @@ class Handler(BaseHTTPRequestHandler):
             face, find = _prep.migrate_target(g("face"), g("find"))   # an older build's "YOLO class: penis": Other…
             find = ", ".join(sammask_words(find)) if _prep.is_other(face) else ""
             r = _prep.summary(folder, g("mode", _prep.MODES[0]), g("replace") == "1", mp, train, find,
-                              g("crops_only") == "1")
+                              g("crops_only") == "1", _min_face(g("min_face")))
             try:
                 names = os.listdir(folder)
             except OSError:
@@ -3617,6 +3957,7 @@ class Handler(BaseHTTPRequestHandler):
             _bd = get_family(r.get("family") or "")         # Move to...'s batch tick: why a batch can't go (or [])
             r["move_batch"] = form.batch_blockers(_bd, r.get("values") or {}) if _bd is not None else ["no run"]
             r["web_queue"] = webqueue.status()
+            r["startup"] = _startup["offer"]
             from fizgig.web import pod_stop
             r["pod_stop"] = pod_stop.status()
             r["slider_live"] = _slider_live_status(r) if r["running"] else None
@@ -3635,10 +3976,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._samples((qs.get("dir") or [""])[0], (qs.get("run") or [""])[0])
         if path == "/api/style":                    # the gallery's Style score (resumes the scorer when on)
             from fizgig.web import gallery_style
-            return self.json(gallery_style.state((qs.get("dir") or [""])[0], (qs.get("dataset") or [""])[0]))
+            return self.json(gallery_style.state((qs.get("dir") or [""])[0], (qs.get("run") or [""])[0],
+                                                 (qs.get("dataset") or [""])[0]))
         if path == "/api/likeness":                 # the gallery's likeness scores (resumes the scorer)
             from fizgig.web import gallery_likeness
-            return self.json(gallery_likeness.state((qs.get("dir") or [""])[0], (qs.get("dataset") or [""])[0],
+            return self.json(gallery_likeness.state((qs.get("dir") or [""])[0], (qs.get("run") or [""])[0],
+                                                    (qs.get("dataset") or [""])[0],
                                                     paired=(qs.get("paired") or [""])[0] == "1"))
         if path == "/api/thumb":
             p = (qs.get("path") or [""])[0]
@@ -3781,6 +4124,10 @@ class Handler(BaseHTTPRequestHandler):
         if run:
             items = [e for e in items if infos[e.name].get("run") == run]
         out = pair_songs([(e.name, e.path, {"time": e.stat().st_mtime, **infos[e.name]}) for e in items[:1500]])
+        from fizgig.web import stars
+        starred = stars.read(folder)
+        for it in out:
+            it["starred"] = it["name"] in starred
         by_epoch = epoch_prompts(folder, run) if run else {}
         rounds = round_prompts(folder, run) if run else []
         for it in out:                       # each picture's own prompt, as its round recorded it before rendering
@@ -3793,7 +4140,10 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError):
             mode = None
         newest = by_epoch[max(by_epoch, key=int)] if by_epoch else None
+        out_dir = os.path.dirname(folder.rstrip("\\/"))
         return self.json({"items": out[:1000] if run else out[:300], "runs": runs, "epoch_prompts": by_epoch,
+                          # the run's own training folder (its record): its likeness photos and Style score use it
+                          "dataset": history.image_folder_of(run, out_dir) if run else "",
                           "loras": self._epoch_loras(os.path.dirname(folder.rstrip("\\/")), run, infos) if run else {},
                           "preview_mode": mode if isinstance(mode, dict) else None,
                           "preview_labels": preview_labels(mode),
@@ -3833,8 +4183,13 @@ class Handler(BaseHTTPRequestHandler):
                 stats.append((e, st))
         stats.sort(key=lambda x: x[1].st_mtime, reverse=True)
         base = lambda n: (lambda m: m.group(1) if m else n)(_CKPT.match(n[:-len(".safetensors")]))
-        return self.json({"items": [{"name": e.name, "path": e.path, "size": st.st_size, "time": st.st_mtime,
-                                     "kind": _checkpoint_kind(e.path), "run": base(e.name)} for e, st in stats]})
+        out = [{"name": e.name, "path": e.path, "size": st.st_size, "time": st.st_mtime,
+                "kind": _checkpoint_kind(e.path), "run": base(e.name)} for e, st in stats]
+        from fizgig.web import stars                  # a star on the epoch's own preview (stars.starred_checkpoints)
+        starred = stars.starred_checkpoints(folder, out, sample_info)
+        for it in out:
+            it["starred"] = it["name"] in starred
+        return self.json({"items": out})
 
     def _captions(self, folder, ext, family="", subs=False, skip=()):
         """The folder's items with their captions. subs: the training sub-folders too (Include sub-folders: the
@@ -3931,7 +4286,29 @@ class Handler(BaseHTTPRequestHandler):
                 busy = _run["proc"] is not None and _run["proc"].poll() is None
                 lora = _run.get("lora") or ""
             if path == "/api/app/busy":
-                return self.json({"training": busy, "lora": lora})
+                # for the window's question on quitting: where the run is saved, and what waits behind it
+                saved, of, queued = 0, 0, len(webqueue.status()["items"])
+                if busy:
+                    with _lock:
+                        out, vals, began = _run.get("output_dir") or "", dict(_run.get("values") or {}), \
+                            _run.get("started_at") or 0
+                    rec = history.get(_run.get("history_id")) or {}
+                    fdesc = get_family(_run.get("family") or "")
+                    if fdesc is not None and fdesc.finetune and form._kind(fdesc, vals) == "finetune":
+                        # a fine-tune saves checkpoints, not states: its newest one's epoch
+                        m = re.search(r"-(\d{6})\.safetensors$", launch.latest_ft_checkpoint(out, lora))
+                    else:
+                        m = re.search(r"-(\d{6})-state$", launch.latest_state(out, lora, rec.get("started_at") or began))
+                    saved = int(m.group(1)) if m else 0
+                    try:
+                        of = int(str(vals.get("MAX_TRAIN_EPOCHS") or "0").strip())
+                    except ValueError:
+                        of = 0
+                return self.json({"training": busy, "lora": lora, "saved": saved, "of": of, "queued": queued})
+            if busy:                              # cut off by quitting: offered again at the next start
+                with _lock:
+                    cut = str(_run.get("history_id") or "")
+                save_state({"interrupted": cut})
             return self.json({"stopped": _stop_and_wait()})
         if path == "/api/login":
             if self.headers.get("X-Fizgig-Token") != TOKEN:
@@ -4234,6 +4611,10 @@ class Handler(BaseHTTPRequestHandler):
                 if plan.problems:
                     return self.json({"problems": plan.problems})
                 out_dir, lora = inputs["LORA_OUTPUT_DIR"], inputs["LORA_NAME"]
+                was_cont = bool(editing and ((webqueue.get(editing) or {}).get("values") or {}).get("__continue"))
+                taken = "" if was_cont else name_taken(vals, inputs)
+                if taken:
+                    return self.json({"problems": [taken]})
                 n = webqueue.clashes(out_dir, lora, skip=editing)
                 with _lock:
                     live_clash = (_run["proc"] is not None and _run["proc"].poll() is None
@@ -4282,6 +4663,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/runs/notes":
                 history.set_notes(str(b.get("id") or ""), str(b.get("text") or ""))
                 return self.json({"ok": True})
+            if path == "/api/startup":                  # the start-up question's answer
+                r = startup_choice(str(b.get("choice") or ""))
+                return self.json(r, 400 if r.get("error") else 200)
             if path == "/api/queue/remove":
                 webqueue.remove(str(b.get("id") or ""))
                 return self.json({"ok": True})
@@ -4296,8 +4680,8 @@ class Handler(BaseHTTPRequestHandler):
                 with _lock:
                     paused = _run["state"] == "paused"
                 if paused:                              # as the desktop's Start next now: it would leave the run
-                    return self.json({"error": "A run is paused. Resume it first: the queue carries on after it "
-                                               "finishes."}, 400)
+                    return self.json({"error": "A run is paused. Resume it (the queue carries on after it finishes), "
+                                               "or press Stop paused run to set it aside."}, 400)
                 webqueue.release(_queue_starter)
                 return self.json({"ok": True})
             if path == "/api/queue/hold":
@@ -4305,6 +4689,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json({"ok": True})
             if path == "/api/runs/delete":              # Delete run: asks first (confirm false = what it'd delete)
                 r = delete_run(str(b.get("id") or ""), confirm=bool(b.get("confirm")))
+                return self.json(r, 400 if r.get("error") else 200)
+            if path == "/api/runs/purge":               # Purge older than X days: preview first, then the purge
+                r = purge_runs(b.get("days"), delete_data=bool(b.get("data")),
+                               include_paused=bool(b.get("paused")), confirm=bool(b.get("confirm")),
+                               ids=b.get("ids") if isinstance(b.get("ids"), list) else None)
                 return self.json(r, 400 if r.get("error") else 200)
             if path == "/api/runs/continue":            # Continue: on from the run's newest save
                 from fizgig.web import helpers as _helpers
@@ -4317,6 +4706,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(r, 400 if r.get("error") else 200)
             if path == "/api/plan":
                 desc, inputs, plan = _plan(b.get("family", ""), b.get("values") or {}, b.get("image_folder") or "")
+                taken = name_taken(b.get("values") or {}, inputs) if desc is not None and not plan.problems else ""
+                if taken:
+                    plan.problems.append(taken)
                 warn = []
                 if desc is not None and isinstance(inputs, dict) and inputs.get("VALIDATION_LOSS") \
                         and str(inputs.get("VALIDATION_LOSS")).lower() not in ("false", "0", "off"):
@@ -4332,8 +4724,12 @@ class Handler(BaseHTTPRequestHandler):
                                   "dataset_toml": plan.dataset_toml})
             if path == "/api/start":
                 fam, vals, folder = b.get("family", ""), b.get("values") or {}, b.get("image_folder") or ""
+                _d0, _in0, _p0 = _plan(fam, vals, folder)
+                taken = name_taken(vals, _in0) if _d0 is not None else ""
+                if taken:                        # a name already used in that output folder: never a second run of it
+                    return self.json({"problems": [taken]})
                 if not b.get("anyway"):          # the Start checks first: warnings come back, nothing starts
-                    desc, inputs, plan = _plan(fam, vals, folder)
+                    desc, inputs, plan = _d0, _in0, _p0
                     fetch = desc is not None and _only_downloads(desc, plan.problems)
                     warn = launch.start_checks(desc, inputs, folder) \
                         if desc is not None and (not plan.problems or fetch) else []
@@ -4412,6 +4808,13 @@ class Handler(BaseHTTPRequestHandler):
                     fam = _run["family"]
                 if not out:
                     return self.json({"error": "Nothing is training right now."}, 400)
+                form_now = b.get("form") if isinstance(b.get("form"), dict) else {}
+                if form_now:                     # the run's Samples values as changed: what a look at the run shows
+                    ok_keys = {k: v for k, v in form_now.items()
+                               if str(k).startswith("SAMPLE_") or k in ("FAMILY_TURBO_STRENGTH", "FAMILY_TURBO_ON",
+                                                                         "FAMILY_PREVIEW_LOOK", "__SAMPLE_LIVE")}
+                    with _lock:
+                        _run["values"] = {**(_run.get("values") or {}), **ok_keys}
                 side = os.path.join(out, ".sample_override.json")
                 prompts = [ln.strip() for ln in str(b.get("prompts") or "").splitlines() if ln.strip()]
                 if not b.get("on") or not prompts:
@@ -4486,7 +4889,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/fetch/cancel":
                 return self.json({"ok": _cancel_fetch()})
             if path == "/api/stop":
-                return self.json({"ok": _stop()})
+                return self.json({"ok": _stop() or _stop_paused()})
             if path == "/api/logout":                     # this device: its login cookie goes
                 return self.json({"ok": True}, extra=[("Set-Cookie", "fizgig_session=; Path=/; Max-Age=0; HttpOnly; "
                                                                      "SameSite=Strict")])
@@ -4498,16 +4901,21 @@ class Handler(BaseHTTPRequestHandler):
                 # the workbench's render choice per model that offers it (description.workbench_render_choice)
                 render_keys = {f"workbench_render_{d.key}" for d in training_families()
                                if getattr(d, "workbench_render_choice", False)}
+                # Studio's own pick of a Samples-tab choice it also offers (FamilyOption.studio): one of its labels
+                studio_keys = {f"studio_opt_{o.key}": set(o.choice_labels()) for d in training_families()
+                               for o in d.options if getattr(o, "studio", False)}
                 allowed = {k for d in training_families() for k in form.model_keys(d)} | set(SETTING_PREFS) | {
-                    "input_dataset_dir", "welcome_v8_hidden", captions.SECONDARY_PREF} | render_keys
+                    "input_dataset_dir", "welcome_v8_hidden", "sysmem_tip_hidden", "qt_disable_gpu",
+                    captions.SECONDARY_PREF} | render_keys | set(studio_keys)
                 ch = b.get("changes") or {}
-                ch = {k: v for k, v in ch.items() if k not in render_keys or v in ("checkpoint", "samples")}
+                ch = {k: v for k, v in ch.items() if (k not in render_keys or v in ("checkpoint", "samples"))
+                      and (k not in studio_keys or v in studio_keys[k])}
                 if b.get("reset"):                      # Reset to defaults: the settings, never the model files
                     ch = {**{k: "" for k in SETTING_PREFS}, **{k: v for k, v in PREF_DEFAULTS.items()
                                                                   if k in SETTING_PREFS}}
                 if "inference_int8" in ch:
                     ch["inference_int8"] = "1" if ch["inference_int8"] in (True, "1", 1) else "0"
-                for k in ("lan_discovery", "update_check"):
+                for k in ("lan_discovery", "update_check", "qt_disable_gpu", "inference_sageattention"):
                     if k in ch:
                         ch[k] = "1" if ch[k] in (True, "1", 1) else "0"
                 ch = launch.clean_reclaim_prefs(ch)     # Training memory: "1"/"0", numbers above 0, blank = default
@@ -4628,10 +5036,9 @@ class Handler(BaseHTTPRequestHandler):
                 script = os.path.join(BASE_DIR, "src", "gizmo", "gizmo.pyw" if os.name == "nt" else "gizmo.py")
                 if not os.path.isfile(script):
                     return self.json({"error": "Gizmo is missing from your Fizgig folder - update Fizgig."}, 400)
-                exe = sys.executable
-                if os.name == "nt" and os.path.basename(exe).lower() == "python.exe":
-                    exe = os.path.join(os.path.dirname(exe), "pythonw.exe")    # no console window beside it
-                subprocess.Popen([exe, script], cwd=BASE_DIR, **({"creationflags": 0x08000000} if os.name == "nt" else {}))
+                err = _gizmo_start(script)
+                if err:
+                    return self.json({"error": err}, 400)
                 return self.json({"ok": True})
             if path == "/api/lan/firewall":          # Allow on my network: Windows asks for an administrator's OK
                 from fizgig.web import lan
@@ -4672,9 +5079,18 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/style":               # the gallery's Style score on or off for a samples folder
                 from fizgig.web import gallery_style
                 try:
-                    return self.json(gallery_style.switch(str(b.get("dir") or ""), str(b.get("dataset") or ""),
-                                                          bool(b.get("on"))))
+                    return self.json(gallery_style.switch(str(b.get("dir") or ""), str(b.get("run") or ""),
+                                                          str(b.get("dataset") or ""), bool(b.get("on"))))
                 except ValueError as e:
+                    return self.json({"error": str(e)}, 400)
+            if path == "/api/stars":               # star / unstar one preview (web/stars.py)
+                from fizgig.web import stars
+                p = str(b.get("path") or "")
+                if os.path.splitext(p)[1].lower() not in MEDIA or                         os.path.basename(os.path.dirname(os.path.abspath(p))).lower() != "sample":
+                    return self.json({"error": "not a preview"}, 400)
+                try:
+                    return self.json({"starred": stars.toggle(p, bool(b.get("on")))})
+                except (ValueError, OSError) as e:
                     return self.json({"error": str(e)}, 400)
             if path == "/api/likeness":            # three dataset photos to score the samples against; [] clears
                 from fizgig.web import gallery_likeness
@@ -4682,7 +5098,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": "Face likeness is off while Paired likeness is on (Samples tab)."}, 400)
                 try:
                     return self.json({"ok": True, "msg": gallery_likeness.start(
-                        str(b.get("dir") or ""), str(b.get("dataset") or ""), b.get("baselines") or [])})
+                        str(b.get("dir") or ""), str(b.get("run") or ""), str(b.get("dataset") or ""),
+                        b.get("baselines") or [])})
                 except ValueError as e:
                     return self.json({"error": str(e)}, 400)
             if path == "/api/prep/tagger_fetch":    # a Trim tags tagger (WD 1.2 GB / JTP-3 1.0 GB, once)
@@ -4838,7 +5255,8 @@ class Handler(BaseHTTPRequestHandler):
                                                          b.get("padding") or 20, bool(b.get("replace")),
                                                          str(b.get("find") or ""), b.get("captions"),
                                                          b.get("fitAll") is not False,    # on unless turned off
-                                                         bool(b.get("separate")), bool(b.get("crops_only"))))
+                                                         bool(b.get("separate")), bool(b.get("crops_only")),
+                                                         _min_face(b.get("min_face"))))
                     if path == "/api/look/scan":
                         captions.unload()
                         return self.json(prep_jobs.look_scan(folder, b.get("baselines") or []))
@@ -4943,7 +5361,7 @@ class Handler(BaseHTTPRequestHandler):
                 from fizgig.web import royale
                 fams = {d.key: d for d in royale.families()}
                 scan = royale.scan(str(b.get("folder") or "").strip())
-                items = royale.pick(scan["items"], b.get("max") or "12")
+                items = royale.pick(scan["items"], b.get("max") or "12", b.get("from"), b.get("to"))
                 if not items:
                     raise ValueError("No checkpoints found - pick a folder with trained LoRAs.")
                 prompt = str(b.get("prompt") or "").strip()
@@ -5222,6 +5640,49 @@ class Handler(BaseHTTPRequestHandler):
         return self.json({"error": "not found"}, 404)
 
 
+def _tk_help() -> str:
+    """What to install when this Python has no Tk (Gizmo is a Tkinter window)."""
+    if sys.platform == "darwin":
+        return "In a terminal: brew install python-tk, then click Open Gizmo again."
+    if os.name == "nt":
+        return "Run the Fizgig installer again (repair), then click Open Gizmo again."
+    v = f"{sys.version_info.major}.{sys.version_info.minor}"
+    return (f"In a terminal: sudo apt install python3-tk (or python{v}-tk) on Ubuntu / Debian, "
+            "sudo dnf install python3-tkinter on Fedora, sudo pacman -S tk on Arch. Then click Open Gizmo again.")
+
+
+def _gizmo_start(script: str) -> str:
+    """Start Gizmo; '' when it's opening, else what went wrong and what to do (shown under the button)."""
+    exe = sys.executable
+    try:
+        probe = subprocess.run([exe, "-c", "import tkinter; tkinter.Tcl()"], capture_output=True, text=True,
+                               timeout=60, **({"creationflags": 0x08000000} if os.name == "nt" else {}))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"Gizmo couldn't start: {e}"
+    if probe.returncode:
+        return "Gizmo needs Tk, which Fizgig's Python doesn't have. " + _tk_help()
+    if os.name == "nt" and os.path.basename(exe).lower() == "python.exe":
+        exe = os.path.join(os.path.dirname(exe), "pythonw.exe")    # no console window beside it
+    log = user_file("gizmo.log")
+    with open(log, "w", encoding="utf-8", errors="replace") as fh:
+        proc = subprocess.Popen([exe, script], cwd=BASE_DIR, stdout=fh, stderr=subprocess.STDOUT,
+                                **({"creationflags": 0x08000000} if os.name == "nt" else {}))
+    try:                                   # a start-up failure (no display, a missing package) ends at once
+        code = proc.wait(timeout=4)
+    except subprocess.TimeoutExpired:
+        return ""
+    if code == 0:
+        return ""
+    try:
+        lines = [ln.strip() for ln in open(log, encoding="utf-8", errors="replace") if ln.strip()]
+    except OSError:
+        lines = []
+    last = lines[-1] if lines else f"it stopped with code {code}"
+    if "display" in last.lower():
+        return f"Gizmo couldn't open a window ({last}). It needs a desktop session on this computer."
+    return f"Gizmo couldn't start: {last}. The full message is in {log}."
+
+
 class _Server(ThreadingHTTPServer):
     # Windows' SO_REUSEADDR lets a second program bind a port another is already serving on, so a taken port would
     # look free there; only POSIX needs it (a quick restart rebinding a port still in TIME_WAIT).
@@ -5322,7 +5783,10 @@ def run_server(host, port=None, password=None, password_arg=False, open_browser=
     _SRV[0] = srv
     if history.close_orphans():                        # a run left "running" by a stopped or crashed server
         logger.info("A run from before was still recorded as running: it is recorded as stopped now")
+        if history.last_orphan[0]:
+            save_state({"interrupted": history.last_orphan[0]})
     webqueue.load()                                    # held if it holds anything: a restart never launches a run
+    _startup["offer"] = _startup_offer()               # the run that was cut off: the page asks what to do
     _restore_pause()                                   # a run paused before the restart can still be resumed
     __import__("fizgig.web.helpers", fromlist=["x"]).ensure_home()   # pods' checkpoints still coming home
     __import__("fizgig.web.helpers", fromlist=["x"]).local_restore()  # this computer's other GPU, as a helper

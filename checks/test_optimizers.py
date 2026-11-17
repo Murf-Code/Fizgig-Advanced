@@ -28,13 +28,66 @@ from fizgig.training.optimizers import (  # noqa: E402
 )
 from fizgig.training.prodigy import Prodigy as VendoredProdigy  # noqa: E402
 
-
 NEW = ("prodigy", "muon", "automagic4")
+
+
+def test_new_optimizers_listed():
+    import importlib.util
+    opts = available_optimizers()
+    # adamw8bit needs bitsandbytes, which the public CPU checks don't install (it's listed only where it loads)
+    want = NEW + ("automagic3", "adamw") + (("adamw8bit",) if importlib.util.find_spec("bitsandbytes") else ())
+    for name in want:
+        assert name in opts
+
+
+def test_ui_lists_installed_optimizers_without_importing_native_packages(monkeypatch, tmp_path):
+    # A package can exist even when importing its native library is expensive or
+    # broken. Building all families' forms must never execute its __init__.
+    package = tmp_path / "bitsandbytes"
+    package.mkdir()
+    marker = tmp_path / "imported"
+    (package / "__init__.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).touch()\n"
+        "raise RuntimeError('native runtime loaded')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "bitsandbytes", raising=False)
+    for desc in registry.training_families():
+        form.form(desc)
+    assert "adamw8bit" in form._optimizers()
+    assert "bitsandbytes" not in sys.modules
+    assert not marker.exists()
+
+
+def test_ui_omits_missing_dependencies_and_keeps_builtin_optimizers(monkeypatch):
+    from fizgig.training import optimizers
+    monkeypatch.setattr(optimizers.importlib.util, "find_spec", lambda name: None)
+    opts = form._optimizers()
+    assert "adamw8bit" not in opts and "adafactor" not in opts
+    assert all(name in opts for name in (*NEW, "adamw", "automagic3"))
+
+
+def test_runtime_discovery_still_probes_native_imports(monkeypatch):
+    from fizgig.training import optimizers
+    calls = []
+
+    def load(name):
+        calls.append(name)
+        if name == "bitsandbytes":
+            raise ImportError("no usable GPU binary")
+
+    monkeypatch.setattr(optimizers.importlib, "import_module", load)
+    opts = available_optimizers()
+    assert "bitsandbytes" in calls and "transformers" in calls
+    assert "adamw8bit" not in opts and "adafactor" in opts
+
+
 # presets that pick a new optimizer by decision (Peter, 6 Nov 2026 - Muon's source-matching detail)
 CHOSEN = {k: "muon" for k in ("qwen_image21", "krea2", "moss_image", "vimoo", "zimage", "zimage_base",
                                     "klein", "sdxl", "flux3", "anima", "fibo2")}
 from fizgig.training.step_log import StepLog, read as read_steplog  # noqa: E402
 
+# single presets chosen on a new optimizer (Peter, 12 Nov 2026: H3 Image Standard on Automagic v4 at its 2.5e-4 ceiling)
+PRESET_CHOSEN = {("minimax_image", "✨ MiniMax H3 Image Standard (rank 32, full model)"): "automagic4"}
 
 def test_prodigy_and_muon_in_available_optimizers():
     opts = available_optimizers()
@@ -83,6 +136,8 @@ def test_no_preset_picks_a_new_optimizer():
             opt = str(p.get("OPTIMIZER_TYPE") or "").lower()
             if p.get("FAMILY_FT"):
                 assert opt == "adafactor", (desc.key, name)
+            elif (desc.key, name) in PRESET_CHOSEN:
+                assert opt == PRESET_CHOSEN[(desc.key, name)], (desc.key, name)
             elif desc.key in CHOSEN:
                 assert opt == CHOSEN[desc.key], (desc.key, name)
                 if opt == "muon":
@@ -183,6 +238,24 @@ def test_muon_creation_step_and_fallback():
     opt_fb.step()
     assert not torch.equal(p_conv[0], before_conv)
 
+
+def test_automagic4_owns_its_rate():
+    opt, _ = create_optimizer("automagic4", [nn.Parameter(torch.randn(8, 8))], 1e-6)
+    assert owns_its_rate(opt)
+
+
+def test_automagic4_ceiling():
+    """v4's rate stops at 2.5e-4 (a start above it is clamped too); max_lr= in Optimizer Args overrides it."""
+    opt, _ = create_optimizer("automagic4", [nn.Parameter(torch.randn(8, 8))], 1e-6)
+    assert opt.param_groups[0]["max_lr"] == 2.5e-4
+    opt, _ = create_optimizer("automagic4", [nn.Parameter(torch.randn(8, 8))], 1e-6, "max_lr=5e-4")
+    assert opt.param_groups[0]["max_lr"] == 5e-4
+
+
+def test_new_optimizers_never_fall_back_to_adamw():
+    for name in NEW:
+        with pytest.raises(ValueError):
+            create_optimizer(name, [nn.Parameter(torch.randn(4, 4))], 1.0, "no_such_arg=1")
 
 def test_prodigy_steps_adapt_d_and_steplog_records_effective_lr(tmp_path):
     torch.manual_seed(42)
@@ -378,6 +451,7 @@ const refreshStateSoon = () => {};
 const saveStateSoon = () => {};
 const sampleLiveSoon = () => {};
 const saveTriggerSoon = () => {};
+const ctxIsLiveRun = () => false;   // upstream 9.7: the form is not the live run here
 const $ = () => ({value: ""});
 
 eval(snippet + "\nglobalThis.onValue = onValue; globalThis.PRODIGY_DEFAULT_ARGS = PRODIGY_DEFAULT_ARGS; globalThis.MUON_DEFAULT_ARGS = MUON_DEFAULT_ARGS;");

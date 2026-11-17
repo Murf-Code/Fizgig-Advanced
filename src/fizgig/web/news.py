@@ -5,6 +5,171 @@ _ARTICLE = "https://github.com/Murf-Code/Fizgig-Advanced/blob/fizgig-advanced/do
 
 NEWS = [
     {
+        "date": "17 Nov 2026",
+        "title": "LoRA Isolation learns on MiniMax H3 video, Royale renders part of a run, and Gizmo's crop box follows the mouse",
+        "body": (
+            "Fizgig LoRA Isolation and Leave the rest of the model alone learned nothing with Automagic (every MiniMax "
+            "H3 and H3 Image preset); such a run now trains with AdamW, at the Learning Rate box's rate or Adaptive "
+            "LR's.\n\n"
+            "LoRA Royale renders part of a run (Epochs from ... to ...), and Gizmo's crop box is drawn, moved and "
+            "resized as you drag."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#17-nov-2026-lora-isolation-learns-on-minimax-h3-video-royale-renders-part-of-a-run-and-gizmos-crop-box-follows-the-mouse"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.7.6"}],
+    },
+    {
+        "date": "16 Nov 2026",
+        "title": "MiniMax H3 at int8 on any pruned file, and H3 Image on 12 GB cards",
+        "body": (
+            "A pruned bf16 or fp8 MiniMax H3 or H3 Image file is converted to int8 as it loads, so Auto trains it at "
+            "int8 instead of stopping at load. The full unpruned checkpoint stays 4-bit.\n\n"
+            "H3 Image's Auto swaps blocks for its 4-bit base on 12 GB cards instead of spilling into system memory, "
+            "and the Linux AMD installer works on Arch and CachyOS."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#16-nov-2026-minimax-h3-at-int8-on-any-pruned-file-and-h3-image-on-12-gb-cards"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.7.5"}],
+    },
+    {
+        "date": "15 Nov 2026",
+        "title": "Gizmo's crop box reworked, AMD fixes, and Automagic v4's real rate",
+        "body": (
+            "Gizmo's crop box drags from any corner, keeps a locked shape smoothly, reaches every edge of the frame "
+            "and can be moved, typed, placed and saved.\n\n"
+            "An AMD PC with built-in graphics now trains on its graphics card, and Krea 2 LoKR fits 16 GB AMD cards "
+            "better. Automagic v4 shows the rate it really moves the weights at, on the run card, the chart and the log."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#15-nov-2026-gizmos-crop-box-reworked-amd-fixes-and-automagic-v4s-real-rate"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.7.4"}],
+    },
+    {
+        "date": "15 Nov 2026",
+        "title": "Cleaner H3 Image pictures with LCM, and Stop for a paused run",
+        "body": (
+            "MiniMax H3 Image now renders with LCM by default, on the Samples tab and in Studio: much cleaner skin, "
+            "hands and faces on text-to-image, the epoch 0 previews included, in the same 6 steps. Euler is still "
+            "there, and the info button gives the ComfyUI settings for each.\n\n"
+            "H3 Image previews go up to 4096 px, and Studio starts at 1280. A paused run no longer holds the queue: "
+            "Stop paused run ends the pause, and Continue carries it on later."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#15-nov-2026-cleaner-h3-image-pictures-with-lcm-and-stop-for-a-paused-run"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.7.3"}],
+    },
+    {
+        "date": "15 Nov 2026",
+        "title": "A regularisation set for LoRAs, AMD fixes, and Gizmo prepares a whole folder",
+        "body": (
+            "Train a LoRA against a regularisation dataset from the Subjects card, for the cases that need it: in our "
+            "testing DOP and Fizgig LoRA Isolation still do better for most people.\n\n"
+            "Gizmo's Prepare a folder makes a whole folder of videos trainable in one go, into a new folder, with a "
+            "Longest clip choice for 16 GB cards, and clips with 48 kHz sound now train as they are. On AMD, Krea 2 "
+            "renders above 512 px and LoKR training are fixed, and the Linux installer works again. ACE-Step caches "
+            "long songs on 16 GB cards."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#15-nov-2026-a-regularisation-set-for-loras-amd-fixes-and-gizmo-prepares-a-whole-folder"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.7.2"}],
+    },
+    {
+        "date": "14 Nov 2026",
+        "title": "Every job keeps its own view",
+        "body": (
+            "A pill at the top right (bottom right on a phone) says what the tabs are showing. Press it to switch "
+            "between the run training now, the runs in your queue and a clean start: the Start, Image Prep, Captions, "
+            "Samples and Training tabs all change to that job's folder, captions, prompts, settings and previews.\n\n"
+            "Likeness and Style scores now belong to each run, with your three reference photos remembered per training "
+            "folder. You can star the previews you like, and a run cut off when Fizgig closed is offered again at the "
+            "next start."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#14-nov-2026-every-job-keeps-its-own-view"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.7.1"}],
+    },
+    {
+        "date": "12 Nov 2026",
+        "title": "Top-end likeness for MiniMax H3 Image",
+        "body": (
+            "MiniMax H3 Image now trains likeness at the very top end: on our hardest test dataset the best previews "
+            "look more like the person than all but two of their own 45 photos, and that held on two more datasets. "
+            "Load the Standard preset (0.25 MP) and train with its settings as they are.\n\n"
+            "Likeness scores now come from AdaFace ViT instead of ArcFace, and the Samples gallery's chart shows your "
+            "own photos' range: the realistic top, since real photos never score 100%."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#12-nov-2026-top-end-likeness-for-minimax-h3-image"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.7.0"}],
+    },
+    {
+        "date": "11 Nov 2026",
+        "title": "Likeness optimization for MiniMax H3 Image",
+        "body": (
+            "MiniMax H3 Image has a new Likeness optimization, and in our tests it improves likeness dramatically. It's on "
+            "in the Standard preset: load it to pick it up. It replaces H3 Image's Clean-end share box.\n\n"
+            "It will be updated over the coming days with more ways to customise it."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#11-nov-2026-likeness-optimization-for-minimax-h3-image"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.6.4"}],
+    },
+    {
+        "date": "11 Nov 2026",
+        "title": "Training suddenly slow on Windows? Turn off Sysmem Fallback",
+        "body": (
+            "If training is suddenly several times slower, especially after a driver or Windows update, NVIDIA's driver "
+            "is probably spilling part of the run into system RAM.\n\n"
+            "NVIDIA Control Panel > Manage 3D settings > Global Settings: set CUDA - Sysmem Fallback Policy to Prefer No "
+            "Sysmem Fallback, Apply, and restart Fizgig. Use Global Settings, not Program Settings."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#11-nov-2026-training-suddenly-slow-on-windows-turn-off-sysmem-fallback"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.6.3"}],
+    },
+    {
+        "date": "11 Nov 2026",
+        "title": "MiniMax H3 Image presets start at 2.8e-4",
+        "body": (
+            "Based on early user feedback, MiniMax H3 Image's presets now start Automagic v3 at 2.8e-4 (was 2e-4): better "
+            "previews at the presets' 0.5 MP. Load a preset to pick it up.\n\n"
+            "Element boost works best on pictures of 1 MP or more where the boosted part is small in the frame; on small "
+            "pictures it can teach the LoRA pixelation."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#11-nov-2026-minimax-h3-image-presets-start-at-28e-4"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.6.2"}],
+    },
+    {
+        "date": "11 Nov 2026",
+        "title": "MiniMax H3 Image presets, and Element boost to try",
+        "body": (
+            "MiniMax H3 Image's presets now train at 0.5 MP and start Automagic v3 at 2e-4: the model seems to prefer "
+            "0.5 MP or more, and Automagic was climbing to about 1.8e-4 from a 1e-4 start anyway. Load a preset to pick "
+            "these up.\n\n"
+            "Element boost is on H3 Image too, under Training Parameters, off in every preset: tick On to try it."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#11-nov-2026-minimax-h3-image-presets-and-element-boost-to-try"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.6.1"}],
+    },
+    {
+        "date": "11 Nov 2026",
+        "title": "MiniMax H3 Image, and out-of-memory recovery",
+        "body": (
+            "A new model, MiniMax H3 Image: train LoRAs, LoKRs, edit LoRAs and slider LoRAs from photo pairs, with "
+            "Fizgig's training adapter on by default for photographic skin and likeness. Press Download models for me "
+            "in Preferences.\n\n"
+            "For every model: a run that runs out of memory carries on by itself where it can, and a failed run no "
+            "longer holds the queue (from @Murf-Code's Fizgig Advanced). AMD installs use AMD's stable PyTorch "
+            "(thanks @scryptio)."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#11-nov-2026-minimax-h3-image-and-out-of-memory-recovery"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.6.0"}],
+    },
+    {
+        "date": "10 Nov 2026",
+        "title": "Element boost, and new MOSS-Image settings",
+        "body": (
+            "Element boost for MOSS-Image, under Training Parameters: early in a run, the face and hair (or another part you pick) "
+            "count much more than the rest, so likeness comes in faster. It works with or without masks, and it's on "
+            "in MOSS-Image's Fast, Standard and Turbo Train presets.\n\n"
+            "MOSS-Image's Clean-end share now starts at 11 (11:7:40:8:3): with Muon the sweet spot moved, and it was "
+            "tuned with Element boost on. Load a preset to pick it up."
+        ),
+        "links": [{"text": "Read more", "href": _ARTICLE + "#10-nov-2026-element-boost-and-new-moss-image-settings"},
+                  {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.5.1"}],
+    },
+    {
         "date": "10 Nov 2026",
         "title": "JoyCaption and booru tags on the Captions tab",
         "body": (

@@ -14,6 +14,11 @@ if /I "%~1"=="browser" (
     set "AMD_MODE=browser"
     shift
 )
+REM "check": the AMD diagnostic (src\fizgig\scripts\amd_check.py) in exactly the environment Fizgig gets (#342)
+if /I "%~1"=="check" (
+    set "AMD_MODE=check"
+    shift
+)
 :amd_collect_args
 if "%~1"=="" goto amd_args_done
 set "AMD_ARGS=!AMD_ARGS! %1"
@@ -52,15 +57,18 @@ if not defined HIP_PATH set "HIP_PATH=%ROCM_PATH%"
 
 REM bitsandbytes cuda_specs runs "hipinfo" on Windows - lives under the pip ROCm SDK bin/ and venv\Scripts.
 if defined ROCM_PATH if exist "%ROCM_PATH%\bin" set "PATH=%ROCM_PATH%\bin;%PATH%"
+REM the ROCm SDK libraries that bitsandbytes' newer ROCm DLLs load (#316)
+if exist "%~dp0venv\Lib\site-packages\_rocm_sdk_libraries\bin" set "PATH=%~dp0venv\Lib\site-packages\_rocm_sdk_libraries\bin;%PATH%"
 if exist "%~dp0venv\Lib\site-packages\_rocm_sdk_devel\bin" set "PATH=%~dp0venv\Lib\site-packages\_rocm_sdk_devel\bin;%PATH%"
 if exist "%~dp0venv\Scripts" set "PATH=%~dp0venv\Scripts;%PATH%"
 
 REM Detect gfx for legacy RDNA1/2 overrides and MIOpen/rocBLAS DB paths.
-REM Prefer install-time FIZGIG_AMD_GFX from rocm_env.bat (detect_gpu often fails in for /f).
+REM Prefer install-time FIZGIG_AMD_GFX from rocm_env.bat. "call" in each for /f below: without it cmd strips the
+REM command's first and last quote marks and the command fails (#342).
 set "GPU_ARCH="
 if defined FIZGIG_AMD_GFX set "GPU_ARCH=!FIZGIG_AMD_GFX!"
 if not defined GPU_ARCH if exist "%~dp0src\install\detect_gpu.py" (
-    for /f "delims=" %%A in ('"%~dp0venv\Scripts\python.exe" "%~dp0src\install\detect_gpu.py" 2^>nul') do set "GPU_ARCH=%%A"
+    for /f "delims=" %%A in ('call "%~dp0venv\Scripts\python.exe" "%~dp0src\install\detect_gpu.py" 2^>nul') do set "GPU_ARCH=%%A"
 )
 set "IS_LEGACY_GPU=0"
 if defined GPU_ARCH (
@@ -102,10 +110,15 @@ if defined BNB_ROCM_VERSION (
 REM A PC with built-in graphics as well as a graphics card can list the built-in one first: train on the card
 REM (the one with the most VRAM) unless HIP_VISIBLE_DEVICES is already set.
 if not defined HIP_VISIBLE_DEVICES if exist "%~dp0venv\Scripts\python.exe" (
-    for /f "delims=" %%G in ('"%~dp0venv\Scripts\python.exe" "%~dp0src\install\pick_gpu.py"') do set "HIP_VISIBLE_DEVICES=%%G"
+    for /f "delims=" %%G in ('call "%~dp0venv\Scripts\python.exe" "%~dp0src\install\pick_gpu.py"') do set "HIP_VISIBLE_DEVICES=%%G"
 )
 if defined HIP_VISIBLE_DEVICES echo [AMD-ROCm] HIP_VISIBLE_DEVICES=!HIP_VISIBLE_DEVICES!
 
+if /I "!AMD_MODE!"=="check" (
+    "%~dp0venv\Scripts\python.exe" "%~dp0src\fizgig\scripts\amd_check.py" !AMD_ARGS!
+    pause
+    exit /b
+)
 if /I "!AMD_MODE!"=="browser" (
     "%~dp0venv\Scripts\python.exe" "%~dp0fizgig.py" --web --open !AMD_ARGS!
     pause

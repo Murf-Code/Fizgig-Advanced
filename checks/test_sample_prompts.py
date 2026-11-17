@@ -80,7 +80,7 @@ def test_gallery_uses_the_pictures_prompt_and_redraws_when_records_land():
     assert "JSON.stringify(g.epoch_prompts || {})" in src
     if not shutil.which("node"):
         pytest.skip("node not installed")
-    js = ("const el=(t,a,...k)=>({t,a,k});const withMode=(f)=>f;const mediaFor=()=>null;const previewLabel=()=>'';\n"
+    js = ("const el=(t,a,...k)=>({t,a,k});const withMode=(f)=>f;const mediaFor=()=>null;const previewLabel=()=>'';const starButton=()=>null;\n"
           + fig + "\nconst cap=(f)=>f.k[1].k[1];"
           "console.log(JSON.stringify([cap(previewFigure({idx:0,epoch:41,prompt:'mine'},['run'],null,{'41':['ep']})).a.text,"
           "cap(previewFigure({idx:0,epoch:41},['run'],null,{'41':['ep']})).a.text,"
