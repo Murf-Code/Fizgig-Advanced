@@ -60,6 +60,33 @@ LOOK = "preview_look"         # a LoRA for previews only (MOSS-Image's SFT look 
 TRAINABLE_PREVIEW = "epoch_lora"         # the epoch's LoRA, frozen on a preview checkpoint
 
 
+def folder_weight_map(group):
+    """item_key -> folder loss_weight for every picture whose folder is not at 1.0."""
+    out = {}
+    for ds in getattr(group, "datasets", []) or []:
+        try:
+            w = float(getattr(ds, "loss_weight", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            w = 1.0
+        if w == 1.0 or not getattr(ds, "batch_manager", None):
+            continue
+        for bucket in ds.batch_manager.buckets.values():
+            for it in bucket:
+                out[str(it.item_key)] = w
+    return out
+
+
+def folder_loss_mult(item_keys, weights):
+    """The folder loss_weight for this step (1.0 if none). A batch is always one folder."""
+    if not weights or not item_keys:
+        return 1.0
+    key = item_keys[0] if isinstance(item_keys, (list, tuple)) else item_keys
+    try:
+        return float(weights.get(str(key), 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+
+
 class _Collator:
     def __init__(self, shared_epoch, dataset):
         self.shared_epoch = shared_epoch
@@ -1329,6 +1356,63 @@ def _reg_limit(group, per_epoch, say=False):
                             f"{min(int(per_epoch), have)} of them, a different handful each epoch")
     group.cumulative_sizes = group.cumsum(group.datasets)
 
+def resolve_krea2_training_method(driver, family_options=None, train_blocks=None, *,
+                                  network_type="lora", finetune=False,
+                                  slider_pairs=False, slider_prompts=None):
+    """Apply Krea 2's training_method family option.
+
+    Text fusion only forces the four text-fusion block ids. A dropped test-build method
+    trains Standard, with a log note. An unknown name raises, so it never silently trains
+    all 264 Linears. Returns the train_blocks list to use (or None for every block).
+    """
+    from fizgig.krea2.driver import (
+        DROPPED_TRAINING_METHODS, TEXT_FUSION_BLOCK_IDS, TEXT_FUSION_METHODS,
+    )
+
+    method = str((family_options or {}).get("training_method", "") or
+                 getattr(driver, "options", {}).get("training_method", "") or "").strip()
+    key = method.lower()
+    fusion_ids = list(TEXT_FUSION_BLOCK_IDS)
+    asked = list(train_blocks) if train_blocks else None
+
+    if key in TEXT_FUSION_METHODS or getattr(driver, "text_fusion_only", False):
+        if getattr(driver, "global_replay", False):
+            raise RuntimeError("Krea 2 Text fusion only can't be combined with Global replay.")
+        unsupported = []
+        if str(network_type or "lora").lower() != "lora":
+            unsupported.append("Network Type must be standard LoRA (not LoKR)")
+        if finetune:
+            unsupported.append("fine-tuning")
+        if slider_pairs or slider_prompts:
+            unsupported.append("slider training")
+        if unsupported:
+            raise RuntimeError("Krea 2 Text fusion only needs a plain standard LoRA; unsupported: "
+                               + ", ".join(unsupported) + ".")
+        if asked and set(asked) != set(fusion_ids):
+            raise RuntimeError("Krea 2 Text fusion only trains the four text-fusion blocks "
+                               "(txt_lw_0, txt_lw_1, txt_rf_0, txt_rf_1); a different --train_blocks "
+                               "selection is not supported.")
+        return fusion_ids
+
+    if getattr(driver, "global_replay", False):
+        if asked and set(asked) == set(fusion_ids):
+            raise RuntimeError("Krea 2 Text fusion only can't be combined with Global replay.")
+        return asked
+
+    if not key:
+        return asked
+
+    if key in DROPPED_TRAINING_METHODS:
+        # a method from the test build that was not kept (Blockwise flow, Residual-path hybrid): train Standard
+        logger.warning(f"[selective-replay] training method {method!r} is no longer offered; training with "
+                       "Standard instead.")
+        if getattr(driver, "options", None) is not None:
+            driver.options.pop("training_method", None)
+        return asked
+
+    raise RuntimeError(f"Unknown Krea 2 training method {method!r}. "
+                       "Use Standard, Global replay, or Text fusion only.")
+
 
 def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, network_dim=32, network_alpha=32,
                  preview_small_card_cap=0,
@@ -1399,10 +1483,46 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                            "itself, so the two don't combine. Drop --context_lora_path.")
     driver = desc.load_driver()
     driver.set_options(dict(family_options or {}))      # before the data: an option may shape the dataset
+    if desc.key == "krea2":
+        train_blocks = resolve_krea2_training_method(
+            driver, family_options, train_blocks,
+            network_type=network_type, finetune=finetune,
+            slider_pairs=slider_pairs, slider_prompts=slider_prompts)
+    global_replay = bool(desc.key == "krea2" and getattr(driver, "global_replay", False))
+    selective_global_replay = bool(global_replay and getattr(driver, "selective_global_replay", False))
+    if global_replay:
+        unsupported = []
+        if str(optimizer_type or "").lower() == "polora":
+            unsupported.append("PoLoRA (its paired optimizer needs every A/B gradient on every step)")
+        if str(network_type or "lora").lower() != "lora":
+            unsupported.append("Network Type must be standard LoRA (not LoKR)")
+        if finetune:
+            unsupported.append("fine-tuning")
+        if slider_pairs or slider_prompts:
+            unsupported.append("slider training")
+        if dop:
+            unsupported.append("DOP")
+        if masked_training or float(mask_prior or 0.0) > 0.0:
+            unsupported.append("masked training / mask prior")
+        if int8_rotated_backward:
+            unsupported.append("rotated INT8 backward")
+        if training_maps:
+            unsupported.append("training attention maps")
+        if share_worker is not None:
+            unsupported.append("shared/helper training")
+        if unsupported:
+            raise RuntimeError("Krea 2 Global replay needs a plain batch-1 LoRA run; unsupported: "
+                               + ", ".join(unsupported) + ".")
+        if compile_blocks not in (None, "", "off", "Off"):
+            logger.info("[global-replay] torch.compile is off: this method replays individual blocks.")
+        if gradient_checkpointing not in (False, "off", "Off", "0"):
+            logger.info("[global-replay] gradient checkpointing is off: block replay already bounds live "
+                        "activations.")
     _check_timestep_spread(desc, driver)
     if train_blocks:
         train_blocks = driver.expand_train_blocks(train_blocks)
     arch = desc.arch_id
+    state_arch = f"{arch}:selective-global-replay-v1" if global_replay else arch   # the test build's tag: its states resume
     speed_desc = desc.preview_speed() if speed_lora else None
     if speed_lora and speed_desc is None:
         logger.warning(f"[sample] {desc.display_name} declares no preview speed LoRA - ignoring --speed_lora")
@@ -1694,6 +1814,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     if slider:
         driver.slider_setup(group)           # e.g. H3: still previews unless the pairs are clips
     bsz = max((int(getattr(ds, "batch_size", 1) or 1) for ds in group.datasets), default=1)   # a prompt slider has none
+    if global_replay and bsz != 1:
+        raise RuntimeError("Krea 2 Global replay needs Batch Size = 1. Use gradient accumulation "
+                           "for an effective batch instead.")
     if bsz != 1 and not desc.batch_training:
         raise RuntimeError("Fizgig trains one image at a time: set batch_size = 1 in the dataset config. For a "
                            "larger effective batch use --gradient_accumulation_steps (the same averaged "
@@ -1804,6 +1927,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         elif not finetune and (int(reg_per_epoch or 0) or len(reg_keys)) > subject:
             logger.warning("[reg] each epoch trains on more regularisation pictures than subject pictures: most of "
                            "what the LoRA sees is the regularisation set, so it learns your subject more slowly")
+    folder_weights = folder_weight_map(group)
+    if folder_weights:
+        logger.info(f"[folders] {len(folder_weights)} training item(s) use a folder loss weight; it scales the "
+                    f"backward step only, not the loss in the log or the validation check")
 
     # ---- Auto precision / swap: planned on an empty card (the description's figures include the preview VAE)
     auto_precision = precision == "auto"
@@ -1898,7 +2025,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     # checkpoint where it fits at the largest bucket.
     do_compile = False
     cb = str(compile_blocks or "off").lower()
-    if desc.compiles and cb != "off":
+    if desc.compiles and cb != "off" and not global_replay:
         try:
             mp_max = max(k[-2] * k[-1] / 1e6 for ds in group.datasets for k in ds.batch_manager.bucket_resos)
         except Exception:
@@ -1922,7 +2049,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     # LoKR without checkpointing measured 3-16 GB over a LoRA at 1 MP, Qwen edit pairs ~26 GB; fine-tunes, sliders, edit pairs and
     # the mid-run captioner carry memory the figures don't cover)
     gc_off_blocks = 0
-    if gradient_checkpointing == "auto":
+    if global_replay:
+        gradient_checkpointing = False
+    elif gradient_checkpointing == "auto":
         paired = any(d.get("control_directory") for d in user_config.get("datasets", []))
         if (quant.card_gb() < quant.NOGC_MIN_CARD_GB or finetune or slider or paired or auto_recaption
                 or str(network_type).lower() != "lora"
@@ -2099,8 +2228,15 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     logger.info(f"Loading {desc.display_name} DiT ({precision}) from {dit_path}")
     _res = user_config.get("general", {}).get("resolution") or [1024, 1024]
     _mp = (_res[0] * _res[1] if isinstance(_res, (list, tuple)) else _res * _res) / 1e6
-    send_only = send_only_plan(send_only_swap, blocks_to_swap, precision, gradient_checkpointing, gc_off_blocks,
-                               finetune, wont_help="" if send_only_force else send_only_wont_help(blocks_to_swap, _mp))
+    if global_replay:
+        # the H2D-only block swap: each block is replayed and backpropagated before its ring slot is reused
+        send_only = bool(blocks_to_swap)
+        if blocks_to_swap:
+            logger.info("[block-local] H2D-only block swap explicitly selected; the same manual global-loss replay "
+                        "is retained. Each block is replayed and backpropagated before its ring slot can be reused.")
+    else:
+        send_only = send_only_plan(send_only_swap, blocks_to_swap, precision, gradient_checkpointing, gc_off_blocks,
+                                   finetune, wont_help="" if send_only_force else send_only_wont_help(blocks_to_swap, _mp))
     dit, swapped = quant.load_base(driver, dit_path, device, precision, blocks_to_swap, send_only=send_only)
     if int8_rotated_backward:            # experimental, opt-in (modules/int8_train.py): an INT8 backward too
         from fizgig.modules import int8_train as _i8
@@ -2198,7 +2334,18 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             swapped = 1          # blocks stream: previews and caption re-encodes must not park + restore the whole DiT
     else:
         blocks = None
-        if train_blocks:
+        if global_replay:
+            main_blocks = {b.id for b in driver.block_map(dit)[0].blocks}
+            if train_blocks and set(train_blocks) != main_blocks:
+                from fizgig.krea2.driver import TEXT_FUSION_BLOCK_IDS
+                if set(train_blocks) == set(TEXT_FUSION_BLOCK_IDS):
+                    raise RuntimeError("Krea 2 Text fusion only can't be combined with Global replay.")
+                raise RuntimeError("Krea 2 Global replay trains all 28 main transformer blocks; "
+                                   "custom --train_blocks selections are not supported.")
+            blocks = main_blocks
+            logger.info("[global-replay] LoRA targets: all 28 main transformer blocks only; text-fusion and I/O "
+                        "adapters remain frozen.")
+        elif train_blocks:
             known = {b.id for g in driver.block_map(dit) for b in g.blocks}
             unknown = sorted(set(train_blocks) - known)
             if unknown:
@@ -2206,6 +2353,14 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             blocks = set(train_blocks)
             logger.info(f"[blocks] the LoRA trains {len(blocks)} of {len(known)} blocks only: {', '.join(train_blocks)}")
         net.add_trainable(network_dim, network_alpha, blocks=blocks, kind=network_type, factor=lokr_factor)
+        if selective_global_replay:
+            driver.configure_selective_global_replay(dit, net, warmup_updates=8, reactivate_every=8, score_decay=0.5)
+            logger.info("[selective-replay] all blocks train for the first 8 optimizer updates; then each block's "
+                        "displacement since its last probe is scored against the fresh global-loss gradient. Uphill "
+                        "blocks skip LoRA-factor gradients; all blocks are reactivated for one probe update every 8 "
+                        "steps. Block input gradients still propagate through every transformer block.")
+        elif global_replay:
+            logger.info("[global-replay] Selective block check off: all 28 blocks train on every update.")
     def render_bank():
         """The practice bank: the base model's own renders of the neutral prompt (adapter at 0, training adapter
         off, the speed LoRA on when it is loaded), decoded and re-encoded into training latents."""
@@ -2359,7 +2514,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     es = None                        # early stopping on the validation loss (training/early_stop.py)
     if resume_state_dir:
         _fresh_lrs = [g["lr"] for g in optimizer.param_groups] if optimizer is not None else []
-        start_epoch, global_step, meta = _load_state(resume_state_dir, net, optimizer, device, arch,
+        start_epoch, global_step, meta = _load_state(resume_state_dir, net, optimizer, device, state_arch,
                                                      untagged_own=desc.resumes_untagged_states, driver=driver)
         if global_step is None:
             global_step = start_epoch * steps_per_epoch
@@ -2390,6 +2545,13 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         logger.info(f"[resume] from {resume_state_dir}: continuing at epoch {start_epoch + 1}/{max_train_epochs}"
                     + (f", after the {len(resume_mid.get('batches') or [])} of its steps trained before Save & stop"
                        if resume_mid else ""))
+        if selective_global_replay and meta.get("selective_global_replay") is None:
+            logger.info("[selective-replay] the resume state has no block-check scores (the check was off): "
+                        "starting the checks fresh.")
+        elif selective_global_replay:
+            driver.load_selective_state_dict(meta.get("selective_global_replay"))
+            logger.info("[selective-replay] restored block activity and descent scores from the resume state: "
+                        f"{len(driver.selective_active_blocks())}/{len(dit.blocks)} blocks active.")
     from fizgig.families.loss_watch import Watch
     watch = Watch(output_dir, group, user_config, driver, log=log_per_image_loss, per_image_lr=per_image_lr,
                   auto_recaption=auto_recaption, warmup_look=warmup_look_outliers,
@@ -2914,12 +3076,14 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         for attempt in (1, 2):
             try:
                 _save_state(output_dir, output_name, net, optimizer, epoch=epoch, global_step=global_step,
-                            arch_id=arch, ema=ema, folder_epoch=None if mid is None else epoch + 1,
+                            arch_id=state_arch, ema=ema, folder_epoch=None if mid is None else epoch + 1,
                             extra={"learning_rate": box_learning_rate,
                                    **({"adaptive_lr_state": adaptive.state_dict()} if adaptive else {}),
                                    **({"mid_epoch": mid} if mid is not None else {}),
                                    **({"early_stop": es.state_dict()} if es is not None else {}),
                                    **({"batch_size": bsz} if bsz > 1 else {}),
+                                   **({"selective_global_replay": driver.selective_state_dict()}
+                                      if selective_global_replay else {}),
                                    # the pictures set aside for validation: a resume holds out the same ones
                                    **({"validation_holdout": {"paths": holdout_list["paths"],
                                                               "names": holdout_list.get("names") or []}}
@@ -3148,7 +3312,19 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             held = [g["lr"] for g in optimizer.param_groups]        # Adam is invariant to a constant on the gradient)
             for g in optimizer.param_groups:
                 g["lr"] = g["lr"] * m
+        selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
         optimizer.step()
+        if selective_global_replay:
+            selective_status = driver.finish_selective_optimizer_step(selective_snapshot)
+            if selective_status is not None:
+                if selective_status["kind"] == "probe":
+                    skipped = selective_status["total"] - selective_status["active"]
+                    logger.info(f"[selective-replay] probe {driver.selective_state_dict()['optimizer_steps']}: "
+                                f"{selective_status['active']}/{selective_status['total']} blocks active; "
+                                f"{skipped} uphill/neutral blocks skip adapter-gradient computation until rechecked.")
+                else:
+                    logger.info(f"[selective-replay] periodic reactivation: all "
+                                f"{selective_status['total']} blocks are active for the next probe update.")
         if m != 1.0:
             for g, lr in zip(optimizer.param_groups, held):
                 g["lr"] = lr
@@ -3720,14 +3896,18 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     lr_acc[-1] *= _info["lr_mult"]     # where the step landed (the H3 noise-band LR)
                 if pending == 0 and optimizer is not None:
                     optimizer.zero_grad(set_to_none=True)
+                _fw = folder_loss_mult(batch.get("item_keys"), folder_weights)
                 _wb = watch.weigh(_info, batch.get("item_keys"), reg_keys, reg_lr_multiplier) if _many else None
                 if _wb is not None:                # a batch: each picture at its own weight (loss_watch.Watch.weigh)
                     _scaled, loss, _kept = _wb
+                    if _fw != 1.0:
+                        _scaled = _scaled * _fw      # folder weight: recorded loss stays the unweighted mean
+                    mult = _fw
                 else:
                     if reg_keys and all(str(k) in reg_keys for k in batch.get("item_keys") or [None]):
-                        mult = reg_lr_multiplier       # a regularisation image: a fixed nudge, never the watch's
+                        mult = reg_lr_multiplier * _fw  # a regularisation image: a fixed nudge, never the watch's
                     else:
-                        mult = watch.multiplier(batch)  # per-image LR: the raw loss is still what's recorded
+                        mult = watch.multiplier(batch) * _fw  # per-image LR: the raw loss is still what's recorded
                     _scaled = loss * mult if mult != 1.0 else loss
                 _dc = dop_cond_for(batch, cond) if dop_cond and global_step % dop_every == 0 else None
                 _dk = str((batch.get("item_te_paths") or [None])[0])
@@ -3741,7 +3921,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     _dc = None
                 if ftr is not None and ftr.fused is not None:
                     ftr.fused.scale = lr_acc[-1] if lr_acc else 1.0   # each weight steps in this backward's hooks
-                (_scaled / accum if accum > 1 else _scaled).backward()
+                if getattr(driver, "manual_loss_backward", False):
+                    if _wb is not None:
+                        raise RuntimeError("Global replay does not support batched loss weighting.")
+                    driver.backward_training_loss(float(mult) / (accum if accum > 1 else 1))
+                else:
+                    (_scaled / accum if accum > 1 else _scaled).backward()
                 if _dc is not None and ftr is None:
                     dop_sum[0] += _dop_step(driver, dit, net, latents, _dc, gen, weight=dop_weight,
                                             min_t=min_timestep, max_t=max_timestep, accum=accum,

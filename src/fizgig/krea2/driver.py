@@ -25,6 +25,16 @@ from fizgig.krea2.generation_attention import configured_generation
 DTYPE = torch.bfloat16
 _BLOCK_MODULES = ("attn.wq", "attn.wk", "attn.wv", "attn.gate", "attn.wo", "mlp.gate", "mlp.up", "mlp.down")
 _IO = ("first", "tmlp.0", "tmlp.2", "txtmlp.1", "txtmlp.3", "tproj.1", "last.linear")
+# Text fusion only trains these four blocks (8 Linears each: attn + mlp).
+TEXT_FUSION_BLOCK_IDS = ("txt_lw_0", "txt_lw_1", "txt_rf_0", "txt_rf_1")
+TEXT_FUSION_METHODS = frozenset({"text_fusion", "text_fusion_only"})
+GLOBAL_REPLAY_METHODS = frozenset({"global_replay", "selective_global_replay", "selective_global_replay_h2d"})
+# Test-build methods that were dropped: they now train Standard, with a log note.
+DROPPED_TRAINING_METHODS = frozenset({
+    "block_local", "block_local_h2d",
+    "residual_path_hybrid", "residual_path_hybrid_h2d",
+    "residual_path_hybrid_h2d_selective_a",
+})
 
 
 def _mu(num_img_tokens):
@@ -202,6 +212,313 @@ class Krea2Driver(FamilyDriver):
         with torch.autocast(device_type=device.type, dtype=DTYPE):
             return dit(img=img, context=txt, t=t.to(DTYPE), pos=pos, mask=mask)
 
+    @property
+    def global_replay(self):
+        """Krea 2 Global replay: a no-grad forward, then the exact global-loss gradient replayed one main block at a
+        time (H2D-only block swap when blocks swap). The test build's "selective_global_replay(_h2d)" names are
+        this method with the Selective block check on."""
+        method = str(getattr(self, "options", {}).get("training_method", "") or "").lower()
+        return method in GLOBAL_REPLAY_METHODS
+
+    @property
+    def selective_global_replay(self):
+        """Global replay with the Selective block check (skip blocks whose recent updates overshot)."""
+        options = getattr(self, "options", {})
+        method = str(options.get("training_method", "") or "").lower()
+        if method in ("selective_global_replay", "selective_global_replay_h2d"):
+            return True
+        return method == "global_replay" and str(options.get("selective_block_check", "") or "").lower() in (
+            "1", "true", "on", "yes")
+
+    @property
+    def text_fusion_only(self):
+        """Krea 2 Text fusion only: a standard LoRA on the four text-fusion blocks; the DiT stays frozen."""
+        method = str(getattr(self, "options", {}).get("training_method", "") or "").lower()
+        return method in TEXT_FUSION_METHODS
+
+    @property
+    def manual_loss_backward(self):
+        """The generic trainer must call backward_training_loss after applying its per-image scale."""
+        return self.global_replay
+
+    def configure_selective_global_replay(self, dit, net, *, warmup_updates=8, reactivate_every=8, score_decay=0.5):
+        """Track the direction of each block's actual optimizer update and selectively compute adapter gradients.
+
+        All blocks participate in the initial probe window. At each later probe update, all blocks are briefly
+        reactivated and each block's displacement since its previous probe is scored against the fresh global-loss
+        gradient at the probe, before the probe's own step: cos(-g_now, theta_now - theta_last_probe). A negative
+        score means the block's recent updates carried it past where the loss now wants it (uphill); such blocks
+        are skipped between probes. (Scoring a step against the gradient that produced it is always positive for
+        SGD, Adam or Muon, so it can never find an uphill block.) The frozen block's input gradient is still
+        propagated during replay, preserving the exact chain rule for earlier blocks.
+        """
+        from fizgig.families.lora import TRAINABLE
+
+        if not self.selective_global_replay:
+            raise RuntimeError("Selective replay can only be configured for Selective global replay training.")
+        n = len(dit.blocks)
+        by_block = {i: [] for i in range(n)}
+        for full, wrapped in net.wrapped.items():
+            if TRAINABLE not in wrapped.adapters:
+                continue
+            name = str(full)
+            if not name.startswith("blocks."):
+                continue
+            parts = name.split(".", 2)
+            if len(parts) < 3 or not parts[1].isdigit():
+                continue
+            index = int(parts[1])
+            if index in by_block:
+                by_block[index].extend(list(wrapped.adapters[TRAINABLE].parameters()))
+        missing = [i for i, values in by_block.items() if not values]
+        if missing:
+            raise RuntimeError("Selective global replay could not find trainable LoRA parameters in transformer "
+                               f"blocks: {missing}.")
+
+        self._selective_params_by_block = by_block
+        self._selective_block_count = n
+        self._selective_warmup_updates = max(1, int(warmup_updates))
+        self._selective_reactivate_every = max(1, int(reactivate_every))
+        self._selective_score_decay = min(0.99, max(0.0, float(score_decay)))
+        self._selective_optimizer_steps = 0
+        self._selective_scores = [None] * n
+        self._selective_active = set(range(n))
+        # each block's weights at its last probe (CPU), the start of the displacement the next probe scores
+        self._selective_anchor = {i: self._selective_flat(by_block[i]) for i in range(n)}
+        self._set_selective_active_parameters()
+
+    @staticmethod
+    def _selective_flat(params):
+        return torch.cat([p.detach().float().reshape(-1) for p in params]).cpu()
+
+    def _set_selective_active_parameters(self):
+        active = getattr(self, "_selective_active", set())
+        for index, parameters in getattr(self, "_selective_params_by_block", {}).items():
+            enabled = index in active
+            for parameter in parameters:
+                parameter.requires_grad_(enabled)
+
+    @property
+    def selective_probe_due(self):
+        """Whether the optimizer update about to happen is a full-block probe that should be scored."""
+        if not self.selective_global_replay or not hasattr(self, "_selective_optimizer_steps"):
+            return False
+        upcoming = self._selective_optimizer_steps + 1
+        warmup = self._selective_warmup_updates
+        if upcoming < warmup:
+            return False
+        return upcoming == warmup or (upcoming > warmup
+                                      and (upcoming - warmup) % self._selective_reactivate_every == 0)
+
+    def selective_snapshot_before_step(self):
+        """At a probe, score each block's displacement since its last probe against this probe's fresh gradient
+        (before the step), on CPU so the check does not increase VRAM use. Then re-anchor at the current weights."""
+        if not self.selective_probe_due:
+            return None
+        cosines = {}
+        for index in range(self._selective_block_count):
+            block_params = self._selective_params_by_block[index]
+            if not all(p.requires_grad and p.grad is not None for p in block_params):
+                continue
+            now = self._selective_flat(block_params)
+            grad = torch.cat([p.grad.detach().float().reshape(-1) for p in block_params]).cpu()
+            anchor = self._selective_anchor.get(index)
+            self._selective_anchor[index] = now
+            if anchor is None or anchor.shape != now.shape:
+                continue                     # just resumed: this probe only sets the anchor
+            delta = now - anchor
+            denom = grad.norm() * delta.norm()
+            if not torch.isfinite(denom) or float(denom) <= 1e-20:
+                continue
+            cosine = float((-torch.dot(grad, delta) / denom).clamp(-1.0, 1.0))
+            if np.isfinite(cosine):
+                cosines[index] = cosine
+        return {"cosines": cosines}
+
+    def finish_selective_optimizer_step(self, snapshot):
+        """Score a probe and choose active blocks for the next optimizer window. Returns a status for logging."""
+        if not self.selective_global_replay:
+            return None
+        self._selective_optimizer_steps += 1
+        step = self._selective_optimizer_steps
+        if snapshot is not None:
+            for index, cosine in snapshot.get("cosines", {}).items():
+                old = self._selective_scores[index]
+                decay = self._selective_score_decay
+                self._selective_scores[index] = cosine if old is None else decay * old + (1.0 - decay) * cosine
+            # Keep unknown blocks active; only a measured uphill direction is eligible to be skipped. If every
+            # measured score is uphill, keep the least harmful block alive.
+            active = {i for i, score in enumerate(self._selective_scores) if score is None or score > 0.0}
+            if not active and self._selective_scores:
+                known = [(score, i) for i, score in enumerate(self._selective_scores) if score is not None]
+                active = {max(known)[1]} if known else set(range(self._selective_block_count))
+            self._selective_active = active or set(range(self._selective_block_count))
+            self._set_selective_active_parameters()
+            return {"kind": "probe", "active": len(self._selective_active), "total": self._selective_block_count,
+                    "scores": list(self._selective_scores)}
+
+        # Wake every block for the next update immediately before a scheduled probe. That probe then refreshes
+        # the scores and selects the following window.
+        if (step > self._selective_warmup_updates
+                and (step - self._selective_warmup_updates) % self._selective_reactivate_every
+                == self._selective_reactivate_every - 1):
+            self._selective_active = set(range(self._selective_block_count))
+            self._set_selective_active_parameters()
+            return {"kind": "reactivation", "active": self._selective_block_count,
+                    "total": self._selective_block_count, "scores": list(self._selective_scores)}
+        return None
+
+    def selective_state_dict(self):
+        if not self.selective_global_replay or not hasattr(self, "_selective_optimizer_steps"):
+            return None
+        return {"version": 1, "optimizer_steps": self._selective_optimizer_steps,
+                "warmup_updates": self._selective_warmup_updates,
+                "reactivate_every": self._selective_reactivate_every,
+                "score_decay": self._selective_score_decay,
+                "scores": list(self._selective_scores), "active_blocks": sorted(self._selective_active)}
+
+    def load_selective_state_dict(self, state):
+        if not self.selective_global_replay or not isinstance(state, dict) or state.get("version") != 1:
+            raise RuntimeError("The saved Selective global replay state is missing or unsupported.")
+        if (int(state.get("warmup_updates", -1)) != self._selective_warmup_updates
+                or int(state.get("reactivate_every", -1)) != self._selective_reactivate_every
+                or float(state.get("score_decay", -1)) != self._selective_score_decay):
+            raise RuntimeError("Selective global replay settings differ from the saved run state.")
+        scores = state.get("scores")
+        if not isinstance(scores, list) or len(scores) != self._selective_block_count:
+            raise RuntimeError("The saved Selective global replay scores do not match the Krea 2 block count.")
+        active = {int(i) for i in state.get("active_blocks", []) if 0 <= int(i) < self._selective_block_count}
+        if not active:
+            raise RuntimeError("The saved Selective global replay state has no active blocks.")
+        self._selective_scores = [None if v is None else float(v) for v in scores]
+        self._selective_active = active
+        self._selective_optimizer_steps = max(0, int(state.get("optimizer_steps", 0)))
+        # the anchors were taken before the resumed weights loaded: the first probe after a resume re-anchors only
+        self._selective_anchor = {i: None for i in range(self._selective_block_count)}
+        self._set_selective_active_parameters()
+
+    def selective_active_blocks(self):
+        return sorted(getattr(self, "_selective_active", set()))
+
+    def _block_local_training_loss(self, dit, latents, noise, t, cond):
+        """Run a no-grad Krea 2 forward and save CPU activations for one-block-at-a-time backward replay.
+
+        The returned loss is the ordinary full-model Krea 2 flow-matching loss from ``dit.last``;
+        backward_training_loss then computes its exact gradient by replaying the transformer blocks in reverse.
+        """
+        from fizgig.krea2.attention import AttentionParams
+        from fizgig.krea2.model import temb
+        from fizgig.krea2.sampling import patchify_block, prepare
+
+        if getattr(self, "_pending_block_local", None) is not None:
+            raise RuntimeError("A previous block-local loss has not been backpropagated.")
+
+        device = latents.device
+        patch = dit.config.patch
+        latent = latents.to(dtype=DTYPE)
+        noise = noise.to(device=device, dtype=DTYPE)
+        t = t.to(device)
+        t_ = t.view(-1, 1, 1, 1).to(DTYPE)
+        noised = (1.0 - t_) * latent + t_ * noise
+        target, _, _ = patchify_block(noise - latent, patch)
+        txt, txtmask = self._text(cond, device)
+        img, pos, mask = prepare(noised, txt.shape[1], patch, txtmask)
+
+        block_inputs = []
+        with torch.no_grad(), torch.autocast(device_type=device.type, dtype=DTYPE):
+            img = dit.first(img)
+            # Match _forward / SingleStreamDiT.forward exactly: Krea 2 casts t to BF16 before temb.
+            # Building temb from the FP32 sampler value changes t_emb/tvec and every block's activations.
+            t_emb = dit.tmlp(temb(t.to(DTYPE), dit.config.tdim, device=img.device, dtype=img.dtype))
+            tvec = dit.tproj(t_emb)
+            imglen = img.shape[1]
+            txtmask = mask[:, imglen:]
+            txt_attn_params_nomask = AttentionParams.create_attention_params_from_mask(
+                dit.attn_mode, dit.split_attn, 0, None)
+            txt_attn_params = AttentionParams.create_attention_params_from_mask(
+                dit.attn_mode, dit.split_attn, 0, txtmask)
+            context = dit.txtfusion(txt, txt_attn_params_nomask, txt_attn_params)
+            context = dit.txtmlp(context)
+            combined = torch.cat((img, context), dim=1)
+            fulllen = combined.shape[1]
+            padlen = (-fulllen) % 256
+            if padlen:
+                combined = F.pad(combined, (0, 0, 0, padlen))
+                pos = F.pad(pos, (0, 0, 0, padlen))
+                txtmask = F.pad(txtmask, (0, padlen), value=False)
+            attn_params = AttentionParams.create_attention_params_from_mask(
+                dit.attn_mode, dit.split_attn, imglen, txtmask)
+            freqs = dit.posemb(pos)
+
+            for index, block in enumerate(dit.blocks):
+                if dit.blocks_to_swap:
+                    dit.offloader.wait_for_block(index)
+                block_inputs.append(combined.detach().to("cpu").contiguous())
+                # Keep grad mode enabled for the block's forward so attention chooses the same kernels as the
+                # ordinary LoRA training forward. Immediately detach the output: the next block gets the exact
+                # activation but no cross-block graph is retained in VRAM.
+                with torch.enable_grad():
+                    combined = block(combined.detach(), tvec, freqs, attn_params).detach()
+                if dit.blocks_to_swap:
+                    dit.offloader.submit_move_blocks_forward(dit.blocks, index)
+
+            # This is the exact readout used by normal training, validation, and sampling.
+            pred = dit.last(combined, t_emb)[:, :imglen, :]
+            loss = F.mse_loss(pred.float(), target.float()).detach()
+            final_hidden = combined.detach().to("cpu").contiguous()
+
+        self._pending_block_local = {
+            "dit": dit,
+            "block_inputs": block_inputs,
+            "final_hidden": final_hidden,
+            "tvec": tvec.detach(),
+            "t_emb": t_emb.detach(),
+            "freqs": freqs.detach(),
+            "attn_params": attn_params,
+            "target": target.detach(),
+            "imglen": imglen,
+            "device": device,
+        }
+        return loss
+
+    def backward_training_loss(self, scale=1.0):
+        """Exact global-loss gradient, replayed one transformer block at a time in reverse."""
+        state = getattr(self, "_pending_block_local", None)
+        if state is None:
+            raise RuntimeError("No pending block-local flow loss is available for backward.")
+        dit = state["dit"]
+        n = len(dit.blocks)
+        try:
+            inputs = state["block_inputs"]
+            if n == 0 or len(inputs) != n or state["final_hidden"] is None:
+                raise RuntimeError("Global block-replay state does not match the Krea 2 block count.")
+
+            # Start at the actual frozen Krea 2 readout. Its input requires grad, so autograd computes the exact
+            # gradient that must enter the final transformer block, without retaining the model's full graph.
+            final_hidden = state["final_hidden"].to(state["device"], non_blocking=True).detach().requires_grad_(True)
+            with torch.autocast(device_type=state["device"].type, dtype=DTYPE):
+                pred = dit.last(final_hidden, state["t_emb"])[:, :state["imglen"], :]
+                global_loss = F.mse_loss(pred.float(), state["target"].float())
+            (global_loss * float(scale)).backward()
+            grad = final_hidden.grad
+            if grad is None:
+                raise RuntimeError("Krea 2 final readout did not produce a gradient for its input.")
+
+            # Recompute one block at a time in reverse order. Each replay receives the downstream gradient, so the
+            # LoRA gradients are the same chain-rule gradients as an ordinary full-model backward pass.
+            for index in range(n - 1, -1, -1):
+                if dit.blocks_to_swap:
+                    dit.offloader.wait_for_block(index)
+                x = inputs[index].to(state["device"], non_blocking=True).detach().requires_grad_(True)
+                with torch.autocast(device_type=state["device"].type, dtype=DTYPE):
+                    hidden = dit.blocks[index](x, state["tvec"], state["freqs"], state["attn_params"])
+                torch.autograd.backward(hidden, grad)
+                grad = x.grad
+                if grad is None:
+                    raise RuntimeError(f"Krea 2 block {index} did not propagate a gradient to its input.")
+        finally:
+            self._pending_block_local = None
+
     def loss_at(self, dit, latents, noise, t, cond, *, diff_ref=None, diff_weight=0.0, loss_mask=None, prior=None,
                 per=False):
         """The training loss for a given latent, noise and t - the original compute_loss's arithmetic, in the same
@@ -246,6 +563,13 @@ class Krea2Driver(FamilyDriver):
         n_tokens = (latents.shape[-2] // patch) * (latents.shape[-1] // patch)
         noise = torch.randn(latents.shape, generator=generator)
         t = self._sample_t(n_tokens, generator, min_t, max_t, self.timestep_spread)
+        if self.global_replay and torch.is_grad_enabled():
+            if diff_ref is not None or diff_weight:
+                raise RuntimeError("Global replay does not support paired/difference loss yet.")
+            if loss_mask is not None or prior is not None:
+                raise RuntimeError("Global replay does not support masked/prior loss yet.")
+            loss = self._block_local_training_loss(dit, latents, noise, t, cond)
+            return loss, {"t": float(t.mean()), "block_local": True, "block_local_phase": "global_replay"}
         loss = self.loss_at(dit, latents, noise, t, cond, diff_ref=diff_ref, diff_weight=diff_weight,
                             loss_mask=loss_mask, prior=prior)
         return loss, {"t": float(t.mean())}

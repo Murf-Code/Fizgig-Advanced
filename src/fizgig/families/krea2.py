@@ -6,7 +6,7 @@ Facts are the original trainer's (src/fizgig/krea2/trainer.py - removed with the
 from fizgig.training.optimizers import MUON_DEFAULT_ARGS
 from fizgig.families.description import (
     GENERAL_NEGATIVE,
-    FamilyDescription, LoRAFormat, ModelFile, SamplingSettings, SpeedLoRA, TextEncoderBuild,
+    FamilyDescription, FamilyOption, LoRAFormat, ModelFile, SamplingSettings, SpeedLoRA, TextEncoderBuild,
 )
 from fizgig.training import timestep_spread
 
@@ -33,6 +33,39 @@ def _preset(rank, lr=1e-4, adaptive=None, epochs=30, slider=False, mp="0.25"):
 
 KREA2 = FamilyDescription(
     key="krea2",
+    options=(FamilyOption(
+        key="KREA2_TRAINING_METHOD",
+        label="Training method",
+        choices=(("Standard", ""),
+                 ("Global replay", "training_method=global_replay"),
+                 ("Text fusion only", "training_method=text_fusion")),
+        # the test build's label for the method its runs used; its other labels land on Standard
+        choice_values=("", "Selective global replay H2D (experimental)"),
+        default="Standard",
+        section="other",
+        mode="lora",
+        hint="Normal training. Works with every option.",
+        choice_notes=(("Standard", "Normal training. Works with every option."),
+                      ("Global replay", "First runs the whole model once to get the real loss, then replays it one "
+                       "block at a time to work out each block's update. Only one block's working memory is held at "
+                       "once, so it's faster and lighter on VRAM when blocks are swapped, and nothing is "
+                       "approximated. Needs batch 1 and a standard LoRA."),
+                      ("Text fusion only", "Trains only the four text-fusion blocks as a standard LoRA. The main "
+                       "image model stays frozen, so the file is small. Rank 64 is a good starting point; alpha "
+                       "follows rank as usual. Works with every option except Global replay.")),
+        summary="{}",
+    ), FamilyOption(
+        key="KREA2_SELECTIVE_BLOCK_CHECK",
+        label="Selective block check",
+        kind="check",
+        tokens="selective_block_check=1",
+        default="1",
+        section="other",
+        mode="lora",
+        requires="KREA2_TRAINING_METHOD=Global replay",
+        hint="Every 8 steps, pauses blocks that are making the loss worse.",
+        summary="Selective block check",
+    )),
     trigger_attention=True,           # training maps' trigger-word map (an experiment)
     start_lr_bands=(("lora", 3e-5, 3e-4), ("slider", 7e-5, 6e-4)),
     masked_training=True,

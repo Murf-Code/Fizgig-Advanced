@@ -14,8 +14,11 @@ the next Start before anything reads it. A resume holds out the same pictures as
 list (training_state.json), and Resume reads it from there.
 
 Which pictures: the ones picked in Image Validation (Your images to check), or - none picked - about a tenth of the
-pictures (at least 1, at most Images to check), spread over the run's folders in proportion and, inside each, evenly
-through its pictures sorted by shape, so every aspect is represented. Never every picture; a set under MIN_POOL
+pictures sitting directly in the main training folder (at least 1, at most Images to check), evenly through those
+pictures sorted by shape, so every aspect is represented. Subfolders (crops, close-ups, and any folder included
+with Include sub-folders) are left out of the automatic pick. If the main folder has nothing to pick from (Image
+Prep trains those pictures from resized/, or everything lives in subfolders), resized/ is used next, then the
+other training folders, still leaving crops/ out; the log says so. Never every picture; a set under MIN_POOL
 pictures holds none. The same dataset always gives the same pick. No torch here (the web form and Start use it)."""
 import json
 import os
@@ -114,8 +117,48 @@ def candidates(toml_text):
     return out
 
 
+def _folder_key(prefix):
+    """An item_prefix -> a lower-case folder name, no slash ('', 'resized', 'crops', 'poses/close')."""
+    return str(prefix or "").replace("\\", "/").strip("/").lower()
+
+
+def _auto_folders(cands):
+    """The folders the automatic pick may draw from, and a short note when it could not use the main folder.
+
+    Pictures sitting directly in the main training folder (no item_prefix) are preferred, so close-ups in
+    crops/ and other subfolders are left out. If the main folder has nothing to pick from (Image Prep
+    trains those pictures from resized/, or everything lives in subfolders), resized/ is used next -
+    the same pictures, just resized. If that's empty too, the other training folders are used, still
+    leaving crops/ out.
+    """
+    def of(*names):
+        want = set(names)
+        return [(p, pics) for p, pics in cands if _folder_key(p) in want]
+
+    def except_crops():
+        return [(p, pics) for p, pics in cands
+                if _folder_key(p) != "crops" and not _folder_key(p).startswith("crops/")]
+
+    def enough(groups):
+        return sum(len(pics) for _p, pics in groups) >= 2
+
+    main = of("")
+    if enough(main):
+        return main, ""
+    resized = of("resized")
+    if enough(resized):
+        return resized, "no pictures in the main folder to pick from, so they were taken from resized/"
+    rest = except_crops()
+    if enough(rest):
+        return rest, ("no pictures in the main folder to pick from, so they were spread over the other "
+                      "training folders (crops left out)")
+    return [], "no pictures in the main folder to pick from"
+
+
 def choose(cands, cap=4, picked=()):
-    """(paths, names, how, why): the pictures to hold out. how: "picked" / "auto" / "" (none, why says so)."""
+    """(paths, names, how, why): the pictures to hold out. how: "picked" / "auto" / "" (none, why says so).
+    The automatic pick uses the main training folder only (see _auto_folders); hand-picked pictures can
+    come from any folder."""
     from fizgig.training.val_pick import picked_list, resolve_picked
     flat = [(prefix + os.path.basename(p), p) for prefix, pics in cands for p in pics]
     n = len(flat)
@@ -125,22 +168,26 @@ def choose(cands, cap=4, picked=()):
         if found and len(found) >= n:
             return [], [], "", "you picked every picture - at least one has to train, so nothing is held out"
         if found:
-            why = f"; not found: {', '.join(missing)}" if missing else ""
+            why = f"not found: {', '.join(missing)}" if missing else ""
             return [keys[k] for k in found], found, "picked", why
     if n < MIN_POOL:
         return [], [], "", f"only {n} picture(s) - a hold-out needs at least {MIN_POOL}"
+    auto, note = _auto_folders(cands)
+    n = sum(len(pics) for _p, pics in auto)
+    if n < 2:
+        return [], [], "", note or f"only {n} picture(s) in the main folder to pick from"
     k = min(max(1, int(cap or 1)), max(1, round(n * SHARE)), n - 1)
-    sizes = [len(pics) for _p, pics in cands]
+    sizes = [len(pics) for _p, pics in auto]
     quota = [k * s // n for s in sizes]                  # each folder its share, the rest to the largest remainders
     for i in sorted(range(len(sizes)), key=lambda i: (-(k * sizes[i] % n), i))[:k - sum(quota)]:
         quota[i] += 1
     paths, names = [], []
-    for (prefix, pics), q in zip(cands, quota):
+    for (prefix, pics), q in zip(auto, quota):
         for j in range(q):
             p = pics[int((j + 0.5) * len(pics) / q)]     # evenly through the folder's shapes
             paths.append(p)
             names.append(prefix + os.path.basename(p))
-    return paths, names, "auto", ""
+    return paths, names, "auto", note
 
 
 def from_state(state_dir):

@@ -47,6 +47,22 @@ def pick_keys(keys, n):
     return [keys[round(i * (len(keys) - 1) / (n - 1))] for i in range(n)]
 
 
+def auto_pick_keys(keys, n):
+    """Like pick_keys, but prefers pictures in the main training folder (no sub-folder in the key).
+    Used when you haven't picked images yourself. If every key already belongs to the set being
+    checked (a hold-out list), the keys are kept as they are. If the main folder has none, crops/
+    are still left out when anything else is available."""
+    keys = [str(k) for k in keys]
+    n = max(0, int(n))
+    if n >= len(set(keys)):
+        return pick_keys(keys, n)
+    main = [k for k in keys if "/" not in k.replace("\\", "/").lstrip("/")]
+    if main:
+        return pick_keys(main, n)
+    rest = [k for k in keys if not k.replace("\\", "/").lstrip("/").lower().startswith("crops/")]
+    return pick_keys(rest or keys, n)
+
+
 def _cpu(v):
     if torch.is_tensor(v):
         return v.detach().to("cpu", copy=True)
@@ -81,7 +97,7 @@ class FixedValidation:
             logger.warning(f"[validation] picked image {m!r} is not in this run's dataset (or its cache) - skipped")
         if picked_list(picked) and not self.picked:
             logger.warning("[validation] none of the picked images are in the dataset - using the automatic pick")
-        self.wanted = self.picked or pick_keys(keys, images)
+        self.wanted = self.picked or auto_pick_keys(keys, images)
         self.ts = fixed_timesteps(timesteps)
         self.seed = int(seed)
         self.every_steps = max(0, int(every_steps or 0))
