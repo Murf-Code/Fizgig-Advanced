@@ -2722,7 +2722,7 @@ function showProgress(p, state, name, extraNote) {
   if (p) {
     tile("Epoch", p.epoch ? `${p.epoch} / ${p.total_epochs}` : "");
     tile("Step", p.total_steps ? `${p.step} / ${p.total_steps}` : "");
-    tile("Epoch steps left", epochStepsLeft(p),
+    tile("Steps left", epochStepsLeft(p),
       "Steps left in this epoch, out of the epoch's length. It keeps counting when a run goes past its planned total.");
     tile("Speed", p.speed);
     tile("Loss", p.loss);
