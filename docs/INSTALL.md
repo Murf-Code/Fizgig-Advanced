@@ -121,7 +121,7 @@ with `ROCM_HOME=/opt/rocm/core`, `HIP_PATH=/opt/rocm/core`,
 toolkit location, or `MAX_JOBS` to lower compile parallelism. Before building, the
 clone's `setup.py` Python requirement is widened to `>=3.12,<3.15`.
 A failed clone, build or import check prints a warning and installation continues,
-including `ensure_face_models()` for the face finder and AdaFace. The ROCm pin,
+including the InsightFace model download. The ROCm pin,
 bitsandbytes, GPU kernel and VRAM monitor checks are retained. Other architectures
 skip this optional build. Once installed, enable **Force SageAttention for Krea 2
 image generation** under **Preferences → Inference performance**; leave it off if

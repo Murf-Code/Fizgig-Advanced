@@ -558,8 +558,6 @@ def start_checks(desc, st, image_folder):
             out.append(f"{len(lack)} detail crop caption{'s' if len(lack) != 1 else ''} in {rel} don't contain the "
                        f"trigger word '{trig}': those crops train without it.")
     out += lora_reg_warnings(desc, st)
-    if dop_automagic(desc, st):
-        out.append(dop_automagic_line(desc, st))
     # the presets' LR bands are AdamW numbers: Prodigy, Muon, Automagic and the rest run at very different LRs
     if not st.get("ADAPTIVE_LR") and "adamw" in (_s(st.get("OPTIMIZER_TYPE")) or "adamw8bit").lower():
         kind = "finetune" if ft_on(desc, st) else "slider" if slider_on(desc, st) else "lora"
@@ -2061,37 +2059,6 @@ def automagic(inputs):
     return _s(inputs.get("OPTIMIZER_TYPE")).lower() in ("automagic3", "automagic4")
 
 
-DOP_OPTIMIZER = ("adamw", "2e-4")     # what a DOP / Isolation run trains with in Automagic's place (H3's Slider recipe)
-
-
-def dop_automagic(desc, st):
-    """Automagic (v3 or v4) picked for a run with Leave the rest of the model alone or Fizgig LoRA Isolation. DOP's
-    pass runs on every second step and pulls the LoRA back, so each weight's update flips direction step to step;
-    Automagic reads that as overshooting and lowers its rate to its floor within two epochs, and nothing more is
-    learned (#364: H3 Isolation 5e-6 after epoch 1, 1e-8 from epoch 2; the same subject alone held 4e-4). Such a run
-    trains with full-precision AdamW instead (plan), at dop_adamw_rate or Adaptive LR's."""
-    return automagic(st) and not ft_on(desc, st) and (dop_on(desc, st) or multi_person_on(desc, st))
-
-
-def dop_adamw_rate(st):
-    """AdamW's rate for such a run: the Learning Rate box when it holds an AdamW rate (1e-5 to 1e-3: H3 Image's
-    presets start Automagic at 2.5e-4 / 2.8e-4), else 2e-4 - Automagic's own tiny starting value (1e-6 on H3's
-    presets) would leave AdamW learning next to nothing. Adaptive LR, when ticked, sets the rate instead (plan)."""
-    try:
-        lr = float(_s(st.get("LEARNING_RATE")))
-    except ValueError:
-        lr = 0.0
-    return _s(st.get("LEARNING_RATE")) if 1e-5 <= lr <= 1e-3 else DOP_OPTIMIZER[1]
-
-
-def dop_automagic_line(desc, st):
-    mode = "Fizgig LoRA Isolation" if multi_person_on(desc, st) else "Leave the rest of the model alone"
-    adaptive = st.get("ADAPTIVE_LR") and desc.adaptive_lr      # a model without Adaptive LR (H3) ignores the tick
-    rate = "with Adaptive LR setting its rate" if adaptive else f"at {dop_adamw_rate(st)}"
-    return (f"{mode} trains with AdamW {rate} instead of Automagic: Automagic lowers its own rate until training "
-            "stops when the model is also being kept as it was.")
-
-
 def prodigy(inputs):
     return _s(inputs.get("OPTIMIZER_TYPE")).lower() == "prodigy"
 
@@ -2482,11 +2449,6 @@ def plan(desc, inputs):
     if folder and not os.path.isabs(folder):
         inputs["image_folder"] = os.path.abspath(folder)     # the subprocesses run from the Fizgig folder
     inputs["LORA_NAME"] = tidy_name(_s(inputs.get("LORA_NAME")))[0]
-    dop_swap = dop_automagic(desc, inputs)
-    if dop_swap:                     # Automagic can't train with DOP (#364): the run's optimizer is AdamW, at the box's
-        inputs["LEARNING_RATE"] = dop_adamw_rate(inputs)       # rate (or Adaptive LR's - left as ticked)
-        inputs["OPTIMIZER_TYPE"] = DOP_OPTIMIZER[0]
-        inputs["OPTIMIZER_ARGS"] = ""    # an Automagic setting isn't AdamW's
     if automagic(inputs) or prodigy(inputs):   # it owns the rate: Adaptive LR and the look warm-up are off
         inputs["ADAPTIVE_LR"] = False
         off = {"warmup": False} if prodigy(inputs) else {"per_image_lr": False, "warmup": False}
@@ -2511,8 +2473,6 @@ def plan(desc, inputs):
     else:
         inputs["OPTIMIZER_ARGS"] = raw_oargs
     p = LaunchPlan(problems=start_problems(desc, inputs))
-    if dop_swap:
-        p.console.append(f"[optimizer] {dop_automagic_line(desc, inputs)}\n")
     _cp = detail_crops_problem(desc, inputs) if not p.problems else ""
     if _cp:
         p.problems.append(_cp)

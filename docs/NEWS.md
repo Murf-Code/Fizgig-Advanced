@@ -1,8 +1,6 @@
 # Fizgig news
 
-## 17 Nov 2026: LoRA Isolation learns on MiniMax H3 video, Royale renders part of a run, and Gizmo's crop box follows the mouse
-
-**LoRA Isolation with Automagic.** Fizgig LoRA Isolation and Leave the rest of the model alone learned nothing with Automagic (every MiniMax H3 and H3 Image preset). Such a run now trains with AdamW, at the Learning Rate box's rate or Adaptive LR's.
+## 17 Nov 2026: Royale renders part of a run, and Gizmo's crop box follows the mouse
 
 **LoRA Royale renders part of a run.** **Epochs from ... to ...** renders the stretch around an epoch you liked, and a finished run's folder lists its epochs again.
 
@@ -28,7 +26,7 @@
 
 **AMD.** A PC with built-in graphics as well as an AMD card now trains on the card (it stopped with "invalid kernel file" before), and `Launch Fizgig AMD.bat check` gives a diagnostic to paste into an issue. Krea 2 LoKR runs at 0.5 MP fit 16 GB AMD cards better: on Linux through expandable memory segments, and on Windows a run that only just fits warns to turn EMA off.
 
-**Automagic v4's real rate.** The run card, the loss chart and the log show the rate Automagic v4 really moves the weights at, not its flat 2.5e-4 cap.
+**Automagic v4's real rate.** The run card, the loss chart and the log show the rate Automagic v4 really moves the weights at, not the flat line its start rate would draw.
 
 **Smaller things.** Resume Training catches a folder mix-up before the run starts, Image Prep skips face close-ups when the face is under 400 px wide, and Continue on a finished run says it keeps your checkpoints.
 
@@ -66,7 +64,7 @@
 
 **MiniMax H3 Image now trains likeness at the very top end.** On our hardest test dataset, the best previews look more like the person than all but two of their own 45 photos do, and that held on two more datasets, one harder still. Load **✨ MiniMax H3 Image Standard** (0.25 MP) and train with its settings as they are: a new Likeness optimization schedule (its controls under Advanced), Automagic v4 starting at 2.5e-4 (the most any weight can move, as it steps each one down from there: not comparable to an AdamW rate), and 30 epochs. The presets are back at 0.25 MP: the schedule and the optimizer were what held likeness back, not the picture size.
 
-**Likeness scores now come from AdaFace ViT instead of ArcFace**: its best epochs matched the ones we picked by eye every time. The Samples gallery also shows **your photos**: your own training photos scored against the same reference photos, as a green band on the likeness chart, the realistic top (real photos never score 100%). **Element boost** now needs Target Megapixels 0.75 or more.
+The Samples gallery also shows **your photos**: your own training photos scored against the same reference photos, as a green band on the likeness chart, the realistic top (real photos never score 100%). **Element boost** now needs Target Megapixels 0.75 or more.
 
 [Fizgig v9.7.0 release notes](https://github.com/shootthesound/Fizgig/releases/tag/v9.7.0)
 

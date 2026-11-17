@@ -90,8 +90,6 @@ def strip_polora_args(raw: str, to: str = "") -> str:
     return _strip_keys(raw, "", tuple(k for k in POLORA_ONLY_KEYS if k not in keep))
 
 
-AUTOMAGIC4_MAX_LR = 2.5e-4    # Automagic v4's rate never climbs past this unless Optimizer Args sets max_lr
-
 # they never fall back to AdamW (#292)
 NEW_OPTIMIZERS = ("prodigy", "muon", "automagic4", "polora", "soap", "lora_tsd")
 PAIR_OPTIMIZERS = ("polora", "lora_tsd")     # trained as (down, up) pairs: polora_pairs(net), plain LoRA only
@@ -131,8 +129,7 @@ _CATALOG = {
     # sensitive weights and a rate controller that settles instead of annealing to zero.
     "automagic4":         (None,           "Automagic v4 (Ostris) — like v3, sets its own learning rate, and evens "
                                             "out how hard each weight is pushed; the LR box is its start, 1e-6 "
-                                            "recommended; it never climbs past 2.5e-4 (max_lr= in "
-                                            "Optimizer Args changes that)"),
+                                            "recommended"),
     "prodigy":            (None,           "Prodigy — estimates the learning rate itself; the Learning Rate box is "
                                             "locked to 1.0 (a multiplier)"),
     "muon":               (None,           "Muon — orthogonalized momentum, step size matched to AdamW's, so AdamW's "
@@ -548,10 +545,6 @@ def create_optimizer(name: str, params, lr: float, args_str: str = "",
         elif key == "automagic4":
             from fizgig.training.automagic4 import Automagic4
             kwargs.setdefault("fused", False)     # same reason as v3
-            # a ceiling: upstream's max_lr default (1e3) is only an overflow guard, and v4's controller doesn't
-            # anneal, so it can climb far past what trains cleanly (Peter, 12 Nov 2026). max_lr= in Optimizer
-            # Args overrides it.
-            kwargs.setdefault("max_lr", AUTOMAGIC4_MAX_LR)
             opt = Automagic4(params_list, lr=lr, **kwargs)
         elif "." in name:
             module_path, cls_name = name.rsplit(".", 1)

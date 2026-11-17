@@ -6,15 +6,12 @@ _ARTICLE = "https://github.com/Murf-Code/Fizgig-Advanced/blob/fizgig-advanced/do
 NEWS = [
     {
         "date": "17 Nov 2026",
-        "title": "LoRA Isolation learns on MiniMax H3 video, Royale renders part of a run, and Gizmo's crop box follows the mouse",
+        "title": "Royale renders part of a run, and Gizmo's crop box follows the mouse",
         "body": (
-            "Fizgig LoRA Isolation and Leave the rest of the model alone learned nothing with Automagic (every MiniMax "
-            "H3 and H3 Image preset); such a run now trains with AdamW, at the Learning Rate box's rate or Adaptive "
-            "LR's.\n\n"
             "LoRA Royale renders part of a run (Epochs from ... to ...), and Gizmo's crop box is drawn, moved and "
             "resized as you drag."
         ),
-        "links": [{"text": "Read more", "href": _ARTICLE + "#17-nov-2026-lora-isolation-learns-on-minimax-h3-video-royale-renders-part-of-a-run-and-gizmos-crop-box-follows-the-mouse"},
+        "links": [{"text": "Read more", "href": _ARTICLE + "#17-nov-2026-royale-renders-part-of-a-run-and-gizmos-crop-box-follows-the-mouse"},
                   {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.7.6"}],
     },
     {
@@ -89,8 +86,8 @@ NEWS = [
             "MiniMax H3 Image now trains likeness at the very top end: on our hardest test dataset the best previews "
             "look more like the person than all but two of their own 45 photos, and that held on two more datasets. "
             "Load the Standard preset (0.25 MP) and train with its settings as they are.\n\n"
-            "Likeness scores now come from AdaFace ViT instead of ArcFace, and the Samples gallery's chart shows your "
-            "own photos' range: the realistic top, since real photos never score 100%."
+            "The Samples gallery's likeness chart now shows your own photos' range: the realistic top, since real "
+            "photos never score 100%."
         ),
         "links": [{"text": "Read more", "href": _ARTICLE + "#12-nov-2026-top-end-likeness-for-minimax-h3-image"},
                   {"text": "Release notes", "href": "https://github.com/shootthesound/Fizgig/releases/tag/v9.7.0"}],

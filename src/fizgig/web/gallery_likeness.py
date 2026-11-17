@@ -1,6 +1,6 @@
 """The Samples gallery's likeness scoring: each of a run's preview pictures, its largest face against three photos of
 the subject from the run's training folder (on the CPU - training keeps the GPU), the mean of the three similarities.
-The face embedder is Image Prep's look match; with Auto it is decided from the three photos (AdaFace for a person,
+The face embedder is Image Prep's look match; with Auto it is decided from the three photos (ArcFace for a person,
 DINOv2 for a furry / anime character), and the scores file records which one made the scores, so a change rescores.
 
 Per run and per training folder (11 Nov 2026): a run's scores go to <samples>/likeness_<run>.json, and the three photos
@@ -351,7 +351,7 @@ def _worker(samples_dir, run, gen, baselines):
             threading.Thread(target=measure, daemon=True).start()
         if "real_sig" in meta and not wrote_real:
             wrote_real, last = True, None                  # written below, with the measure
-        status = f"live - {len(scores)} sample(s) scored" + ("" if emb.name == "adaface" else f" ({emb.label})")
+        status = f"live - {len(scores)} sample(s) scored" + ("" if emb.name == "arcface" else f" ({emb.label})")
         if more:
             continue                                       # straight on with the next batch, the folder looked at again
         if todo or status != last:

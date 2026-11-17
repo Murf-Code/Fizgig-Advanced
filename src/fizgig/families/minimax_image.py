@@ -21,7 +21,7 @@ _PDD_SIGMAS = (1.0, 0.9675236940383911, 0.8875485062599182, 0.75, 0.532773911952
 # Likeness optimization's schedule (Peter, 12 Nov 2026: "this number 6 setup is the exact setup"): won a day of runs on
 # the Nicola set (Automagic v4, 0.25 MP) - the Before share starts at the model's own (1 in 6) and climbs to 50 by the
 # hinge at epoch 6, alternating with 75; 75 held after. Its face shape came earliest, it scored highest at matched
-# framing (AdaFace ViT 0.689, above all but 2 of her 45 photos) and kept the backgrounds clean. The boxes hold these
+# framing (a face-match score of 0.689, above all but 2 of her 45 photos) and kept the backgrounds clean. The boxes hold these
 # numbers behind the row's Advanced toggle; minimax_image/driver.py's defaults are the same.
 LIKENESS_DEFAULTS = {"BEFORE": "16.67", "BEFORE_END": "50", "HINGE": "6", "SLIDE": "0", "AFTER": "75",
                      "ALTERNATE": "The first share"}

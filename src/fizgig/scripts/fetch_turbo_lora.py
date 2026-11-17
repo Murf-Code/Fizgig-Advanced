@@ -240,18 +240,6 @@ def ensure_moss_previews(repo_dir: str = REPO_DIR, log=print):
         return None
 
 
-def ensure_face_models(log=print):
-    """The face models (InsightFace's finder files + AdaFace ViT, which replaced ArcFace on 12 Nov 2026) for an
-    updating install, so its first likeness score doesn't stop to download 0.5 GB. Fetches only what's missing, like
-    the other models here. Never raises; without a connection they download on first use."""
-    try:
-        from fizgig.face_utils import ensure_face_models as _ensure
-        return _ensure(log=log)
-    except Exception as e:
-        log(f"Face models (AdaFace): skipped, they'll download on first use ({type(e).__name__}: {e})")
-        return None
-
-
 def ensure_mask_segmenter(log=print):
     """Make masks' person segmenter (~20 MB, hash-checked) for an updating install. Only an early fetch: Make masks
     still downloads it on first use if it's missing (automask.ensure_model). Never raises."""
@@ -304,7 +292,6 @@ if __name__ == "__main__":
     ensure_all()
     ensure_taeh3()
     ensure_moss_previews()
-    ensure_face_models()
     ensure_mask_segmenter()
     ensure_text_helpers()
     qwen_turbo_dit_hint()

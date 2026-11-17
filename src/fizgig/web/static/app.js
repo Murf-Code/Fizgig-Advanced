@@ -1894,15 +1894,14 @@ function sysmemTipShow(pr) {
   let seen = false;
   try { seen = sessionStorage.getItem("fizgig.sysmemSeen") === "1"; } catch (e) { /* no storage */ }
   if (!pr.sysmem_tip || seen || S.onPod || pageIsElsewhere()) return;
-  const m = $("sysmemModal");
+  const m = $("sysmemCard");                 // an inline card on the page, not a pop-up
   const close = () => {
-    m.classList.remove("active");
+    m.style.display = "none";
     try { sessionStorage.setItem("fizgig.sysmemSeen", "1"); } catch (e) { /* no storage */ }
     if ($("sysmemNever").checked) api("/api/prefs", {changes: {sysmem_tip_hidden: "1"}}).catch(() => {});
   };
-  $("sysmemClose").onclick = close; $("sysmemX").onclick = close;
-  m.onclick = (e) => { if (e.target === m) close(); };
-  m.classList.add("active");
+  $("sysmemClose").onclick = close;
+  m.style.display = "";
 }
 
 function welcomeShow(pr) {
@@ -3285,7 +3284,7 @@ function jobPillMenu(open) {
 // held, as it always is after a restart)
 function startupOffer() {
   const o = S.run && S.run.startup;
-  if (!o) { if (S.startupSeen) $("startupModal").classList.remove("active"); return; }
+  if (!o) { if (S.startupSeen) $("startupCard").style.display = "none"; return; }
   if (S.startupSeen === o.id) return;
   S.startupSeen = o.id;
   const name = o.lora || "A run", n = o.queued;
@@ -3294,8 +3293,25 @@ function startupOffer() {
     (o.can_continue ? `It is saved at ${o.unit} ${o.done}` + (o.of ? ` of ${o.of}` : "") + `: carrying on starts from there, and anything it trained after that save is gone. `
       : "It had not saved anything yet, so it can't be carried on. ") +
     (n ? `${n} run${n === 1 ? " is" : "s are"} waiting in the queue.` : "");
-  const pick = (cls, title, text, choice) => el("button", {class: "startup-choice" + cls, type: "button",
-    onclick: () => startupChoose(choice)}, el("b", {text: title}), el("span", {text}));
+  // each choice asks twice, like Stop: the first click turns it into "Click again to confirm" for 30 s
+  const pick = (cls, title, text, choice) => {
+    const head = el("b", {text: title});
+    const btn = el("button", {class: "startup-choice" + cls, type: "button"}, head, el("span", {text}));
+    let timer = null;
+    const reset = () => { clearTimeout(timer); timer = null; delete btn.dataset.sure; head.textContent = title; };
+    btn.addEventListener("click", () => {
+      if (btn.dataset.sure !== "1") {
+        for (const o of $("startupChoices").querySelectorAll("button")) if (o !== btn && o._reset) o._reset();
+        btn.dataset.sure = "1"; head.textContent = "Click again to confirm: " + title;
+        timer = setTimeout(reset, 30000);
+        return;
+      }
+      reset();
+      startupChoose(choice);
+    });
+    btn._reset = reset;
+    return btn;
+  };
   const rows = [];
   if (o.can_continue) rows.push(pick(" main", `Carry on with ${name}`,
     `From ${o.unit} ${o.done}, with its own settings.` + (n ? " The queue follows after it." : ""), "continue"));
@@ -3306,13 +3322,13 @@ function startupOffer() {
     `${name} and what it saved stay on Runs & outputs.`, "fresh"));
   $("startupChoices").replaceChildren(...rows);
   $("startupNote").textContent = "Nothing starts until you choose.";
-  $("startupModal").classList.add("active");
+  $("startupCard").style.display = "";
 }
 async function startupChoose(choice) {
   for (const b of $("startupChoices").querySelectorAll("button")) b.disabled = true;
   try {
     const r = await api("/api/startup", {choice});
-    $("startupModal").classList.remove("active");
+    $("startupCard").style.display = "none";
     // whichever was chosen, the form is left as a clean start (no training folder, the model's defaults, no name):
     // what it held came from the session before, and is neither the run now going nor anything queued
     if (choice === "fresh") await ctxNormal();
@@ -3420,12 +3436,11 @@ function viewJob(job) {
 S.lik = {dir: "", picked: []};
 let LIK_TITLE = "";
 const LIK_PICS = /\.(png|jpe?g|webp)$/i;
-// AdaFace never reaches 100%: two photos of the same person score about 70% against each other (measured 12 Nov 2026
-// on 6 people's datasets: a photo vs one of the set's own, 75th percentile 0.69). Shown wherever AdaFace scores are (a
-// scorer label that isn't AdaFace's means another embedder, on its own scale).
-const ADA_PEAK = "Peak AdaFace is about 70%: that's what two photos of the same person score against each other, " +
+// ArcFace never reaches 100%: two photos of the same person score about 72% against each other. Shown wherever ArcFace
+// scores are (a scorer label that isn't ArcFace's means another embedder, on its own scale; none recorded = ArcFace).
+const ARC_PEAK = "Peak ArcFace is about 72%: that's what two photos of the same person score against each other, " +
   "so no picture reaches 100%.";
-function adaPeak(label) { return label && String(label).startsWith("AdaFace") ? ADA_PEAK : ""; }
+function arcPeak(label) { return !label || String(label).startsWith("ArcFace") ? ARC_PEAK : ""; }
 
 // the gallery's Style score (web/gallery_style.py): each preview against the training pictures' look as a whole
 async function styleShow(dir, items, run) {
@@ -3481,7 +3496,7 @@ async function likenessShow(dir, items, run, view) {
     const it = pics.find((p) => p.name === fig.title);
     if (!on || !it) continue;
     const s = d.scores[it.name];
-    const t = d.thresholds || {match: 0.42, borderline: 0.36};     // the embedder's own bands (AdaFace / DINOv2)
+    const t = d.thresholds || {match: 0.45, borderline: 0.30};     // the embedder's own bands (ArcFace / DINOv2 / CLIP)
     const cls = s === undefined || s === null ? "na" : s >= t.match ? "good" : s >= t.borderline ? "mid" : "bad";
     fig.append(el("span", {class: `lik-badge ${cls}${it.epoch === bestEpoch && bestEpoch != null ? " best" : ""}`,
       text: s === undefined ? "…" : s === null ? "no face" : `${Math.round(s * 100)}%`}));
@@ -3510,7 +3525,7 @@ async function likenessShow(dir, items, run, view) {
   $("likPeak").textContent = real ?
     `Your ${real.n} training photos score ${pc(real.median)} against the 3 reference photos (most between ` +
     `${pc(real.p25)} and ${pc(real.p75)}). A preview there looks as much like the person as a real photo does - ` +
-    `nothing reaches 100%, real photos don't either.` : adaPeak(d.embedder);
+    `nothing reaches 100%, real photos don't either.` : arcPeak(d.embedder);
   // the best epoch, and the mean over every trained epoch so far (epoch 0 - the model before training - left out)
   const trained = avgs.filter((v, i) => epochs[i] > 0);
   const mean = trained.length ? trained.reduce((a, b) => a + b, 0) / trained.length : null;
@@ -5287,8 +5302,8 @@ async function royaleScore() {
     $("ryBest").disabled = false;
     $("ryLikeStatus").textContent = `Best: ${ryLabel(r.best).toLowerCase()} (${r.scores[r.best].toFixed(3)})` +
       (r.no_face ? `  (${r.no_face} no-face)` : "") +
-      (r.embedder && !r.embedder.startsWith("AdaFace") ? `  · ${r.embedder}` : "");     // named when it isn't the usual one
-    $("ryLikePeak").textContent = adaPeak(r.embedder).replace("70%", "0.70 (70%)");
+      (r.embedder && !r.embedder.startsWith("ArcFace") ? `  · ${r.embedder}` : "");     // named when it isn't the usual one
+    $("ryLikePeak").textContent = arcPeak(r.embedder).replace("72%", "0.72 (72%)");
     royaleBest();
   } catch (e) { $("ryLikeStatus").textContent = e.message; }
 }
@@ -7759,7 +7774,7 @@ async function prepRun() {
 }
 
 // Image Prep's "Anime/furry/drawn characters" (fizgig/face_utils.py, prefs.json face_*): saved as soon as they
-// change. InsightFace's finder + AdaFace are the defaults; the section opens by itself when something else is chosen.
+// change. InsightFace + ArcFace are the defaults; the section opens by itself when something else is chosen.
 const FACE_HINTS = {
   insightface: "For people. It can tell men from women, for Largest Male / Female Face. It doesn't see anime, furry " +
     "or drawn faces.",
@@ -7767,7 +7782,7 @@ const FACE_HINTS = {
     "Male / Female Face use the largest face.",
   auto: "For a set with both people and characters in it. Both finders look at every picture, so it's a little slower."};
 const LOOK_HINTS = {
-  adaface: "For people's faces. For anime, furry or drawn characters, pick Anime/furry/drawn.",
+  arcface: "For people's faces. For anime, furry or drawn characters, pick Anime/furry/drawn.",
   dinov2: "For anime, furry or drawn characters, and fursuits; it works on people too. Its scores run higher than the people setting's, and " +
     "the colours follow.",
   auto: "Fizgig looks at some of the pictures each time it scores: People (the default) for a set of people, " +
@@ -7880,7 +7895,7 @@ function faceSettingsWire() {
   $("prepDetector").addEventListener("change", () => {
     const det = $("prepDetector").value, f = S.prep.face || {};
     // a YOLO face finder with the people-only look match would score nothing: the look match follows, said aloud
-    if (det !== "insightface" && f.identity === "adaface") {
+    if (det !== "insightface" && f.identity === "arcface") {
       const ident = det === "yolo" ? "dinov2" : "auto";
       return faceSettingsSave({detector: det, identity: ident}, `Look match changed to ${ident === "dinov2" ?
         "Anime/furry/drawn" : "Auto (Decide for each set)"}, so characters' faces get scored too.`);
@@ -7994,7 +8009,7 @@ async function lookPoll() {
   $("lookScan").disabled = S.prep.lookRunning || S.prep.bases.length !== 3;
   $("lookPick").disabled = S.prep.lookRunning;
   $("lookDecision").textContent = r.decision ? r.decision.replace("[faces] ", "") : "";
-  $("lookPeak").textContent = r.state === "done" && r.rows && r.rows.length ? adaPeak(r.embedder) : "";
+  $("lookPeak").textContent = r.state === "done" && r.rows && r.rows.length ? arcPeak(r.embedder) : "";
   const mine = r.folder === S.imageFolder;        // the last scan may be of another folder
   if (r.state === "running") {
     $("lookStatus").textContent = r.progress[0] ? `Scoring faces… ${r.progress[0]}/${r.progress[1]}` :
@@ -13129,7 +13144,7 @@ function wire() {
     jobPillMenu($("jobPillMenu").hidden);
   });
   $("jobPillShade").addEventListener("click", () => jobPillMenu(false));
-  $("startupLater").addEventListener("click", () => $("startupModal").classList.remove("active"));
+  $("startupLater").addEventListener("click", () => { $("startupCard").style.display = "none"; });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") jobPillMenu(false); });
   $("styBtn").addEventListener("click", async () => {       // the Style score on or off for the shown run's folder
     const dir = S.lik && S.lik.dir;

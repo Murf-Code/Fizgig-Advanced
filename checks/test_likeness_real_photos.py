@@ -20,7 +20,7 @@ def _folder(tmp_path, n=8):
     return str(tmp_path)
 
 
-def _emb(name="adaface"):
+def _emb(name="arcface"):
     return types.SimpleNamespace(cache_id=name, name=name)
 
 
@@ -44,7 +44,7 @@ def test_scores_the_photos_not_the_references(tmp_path, monkeypatch):
 
 def test_reuses_a_look_filter_scan_with_the_same_photos_and_model(tmp_path, monkeypatch):
     d = _folder(tmp_path)
-    look = {"baselines": list(reversed(REFS)), "embedder": "adaface",
+    look = {"baselines": list(reversed(REFS)), "embedder": "arcface",
             "scores": {**{f"p{i}": 0.6 for i in range(8)}, "r1": 0.99, "gone": 0.1, "noface": None}}
     (tmp_path / "fizgig_look_scores.json").write_text(json.dumps(look))
     monkeypatch.setattr(prep_jobs, "_embed", lambda *a, **k: 1 / 0)       # never embeds: the scan answers

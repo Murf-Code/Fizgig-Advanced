@@ -244,10 +244,10 @@ def test_automagic4_owns_its_rate():
     assert owns_its_rate(opt)
 
 
-def test_automagic4_ceiling():
-    """v4's rate stops at 2.5e-4 (a start above it is clamped too); max_lr= in Optimizer Args overrides it."""
+def test_automagic4_max_lr_is_the_optimizers_own_unless_set():
+    """No ceiling of Fizgig's: v4 keeps its own max_lr (an overflow guard) unless Optimizer Args sets max_lr=."""
     opt, _ = create_optimizer("automagic4", [nn.Parameter(torch.randn(8, 8))], 1e-6)
-    assert opt.param_groups[0]["max_lr"] == 2.5e-4
+    assert opt.param_groups[0]["max_lr"] > 1e-2
     opt, _ = create_optimizer("automagic4", [nn.Parameter(torch.randn(8, 8))], 1e-6, "max_lr=5e-4")
     assert opt.param_groups[0]["max_lr"] == 5e-4
 
