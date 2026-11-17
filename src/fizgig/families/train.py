@@ -2209,7 +2209,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if selective_global_replay:
             driver.configure_selective_global_replay(dit, net, warmup_updates=8, reactivate_every=8, score_decay=0.5)
             logger.info("[selective-replay] all blocks train for the first 8 optimizer updates; then each block's "
-                        "actual optimizer displacement is scored against its global-loss gradient. Uphill blocks "
+                        "displacement since its last probe is scored against the fresh global-loss gradient. Uphill blocks "
                         "skip LoRA-factor gradients; all blocks are reactivated for one probe update every 8 steps. "
                         "Block input gradients still propagate through every transformer block.")
 
@@ -2278,7 +2278,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         logger.info((f"LoKR factor {lokr_factor}" if network_type == "lokr" else
                      f"LoRA rank {network_dim} alpha {network_alpha:g}") +
                     f": {len(net.trainable_modules())} modules, {sum(p.numel() for p in lora_params) / 1e6:.1f}M "
-                    f"LoRA parameters")
+                    f"trainable params")
         if share_worker is None:         # a round's LoRA in bf16, for a training share's estimate before its first round
             try:
                 with open(os.path.join(output_dir, SHARE_DIR, "setup.json"), encoding="utf-8") as f:

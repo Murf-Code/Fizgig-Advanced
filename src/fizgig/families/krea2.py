@@ -36,7 +36,7 @@ KREA2 = FamilyDescription(
     options=(FamilyOption(
         key="KREA2_TRAINING_METHOD",
         label="Training method",
-        choices=(("Standard backprop", ""),
+        choices=(("Standard", ""),
                  ("Blockwise flow (experimental)", "training_method=block_local"),
                  ("Selective global replay (experimental)", "training_method=selective_global_replay"),
                  ("Blockwise flow H2D (experimental)", "training_method=block_local_h2d"),
@@ -48,12 +48,13 @@ KREA2 = FamilyDescription(
         choice_values=("", "Block-local flow matching (experimental)", "selective_global_replay",
                        "block_local_h2d", "selective_global_replay_h2d", "residual_path_hybrid",
                        "residual_path_hybrid_h2d", "residual_path_hybrid_h2d_selective_a"),
-        default="Standard backprop",
+        default="Standard",
         section="other",
         mode="lora",
-        hint=("Blockwise flow replays the exact global Krea 2 loss one transformer block at a time. Selective global "
-              "replay uses that same replay and global loss, adding adaptive block selection: it measures each block's "
-              "actual optimizer-step direction, skips LoRA adapter-gradient computation for blocks whose recent "
+        hint=("Standard is normal training with no global replay (the default; earlier runs trained this way). "
+              "Blockwise flow replays the exact global Krea 2 loss one transformer block at a time. Selective global "
+              "replay uses that same replay and global loss, adding adaptive block selection: it checks whether each block's "
+              "recent movement went past where the loss now points, skips LoRA adapter-gradient computation for blocks whose recent "
               "updates point uphill, and periodically reactivates all blocks to reassess them. The H2D choices run "
               "the same respective algorithms but explicitly use Fizgig's H2D-only block offloader (host-to-device "
               "streaming after a one-time CPU-master setup, with no per-step device-to-host swaps; they do not change the replay order or training objective. "
@@ -65,7 +66,7 @@ KREA2 = FamilyDescription(
               "RAM. All experimental choices require batch 1 and standard LoRA; "
               "only the 28 main transformer blocks train, while text-fusion and I/O adapters remain frozen. H2D may "
               "fall back to classic swapping if the selected weights cannot be streamed safely."),
-        summary="{} (experimental)",
+        summary="{}",
     ), FamilyOption(
         key="KREA2_BLOCK_LOCAL_HEAD_WARMUP_STEPS",
         label="Blockwise head-only warm-up",

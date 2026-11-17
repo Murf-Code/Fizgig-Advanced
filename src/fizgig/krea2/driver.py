@@ -508,10 +508,12 @@ class Krea2Driver(FamilyDriver):
         """Track the direction of each block's actual optimizer update and selectively compute adapter gradients.
 
         All blocks participate in the initial probe window. At each later probe update, all blocks are briefly
-        reactivated and their per-block directional cosine is measured from g dot delta_theta. Blocks whose recent
-        optimizer displacement points uphill against their own global-loss gradient are skipped between probes.
-        The frozen block's input gradient is still propagated during replay, preserving the exact chain rule for
-        earlier blocks.
+        reactivated and each block's displacement since its previous probe is scored against the fresh global-loss
+        gradient at the probe, before the probe's own step: cos(-g_now, theta_now - theta_last_probe). A negative
+        score means the block's recent updates carried it past where the loss now wants it (uphill); such blocks
+        are skipped between probes. (Scoring a step against the gradient that produced it is always positive for
+        SGD, Adam or Muon, so it can never find an uphill block.) The frozen block's input gradient is still
+        propagated during replay, preserving the exact chain rule for earlier blocks.
         """
         from fizgig.families.lora import TRAINABLE
 
@@ -544,7 +546,13 @@ class Krea2Driver(FamilyDriver):
         self._selective_optimizer_steps = 0
         self._selective_scores = [None] * n
         self._selective_active = set(range(n))
+        # each block's weights at its last probe (CPU), the start of the displacement the next probe scores
+        self._selective_anchor = {i: self._selective_flat(by_block[i]) for i in range(n)}
         self._set_selective_active_parameters()
+
+    @staticmethod
+    def _selective_flat(params):
+        return torch.cat([p.detach().float().reshape(-1) for p in params]).cpu()
 
     def _set_selective_active_parameters(self):
         active = getattr(self, "_selective_active", set())
@@ -566,20 +574,29 @@ class Krea2Driver(FamilyDriver):
                                       and (upcoming - warmup) % self._selective_reactivate_every == 0)
 
     def selective_snapshot_before_step(self):
-        """Capture probe-step gradients and weights on CPU so the direction check does not increase VRAM use."""
+        """At a probe, score each block's displacement since its last probe against this probe's fresh gradient
+        (before the step), on CPU so the check does not increase VRAM use. Then re-anchor at the current weights."""
         if not self.selective_probe_due:
             return None
-        blocks = {}
+        cosines = {}
         for index in range(self._selective_block_count):
-            block_params = [p for p in self._selective_params_by_block[index]
-                            if p.requires_grad and p.grad is not None]
-            if not block_params:
+            block_params = self._selective_params_by_block[index]
+            if not all(p.requires_grad and p.grad is not None for p in block_params):
                 continue
-            # Krea's block-sized CPU snapshots cap the temporary GPU tensor at one block rather than the whole LoRA.
-            before = torch.cat([p.detach().float().reshape(-1) for p in block_params]).cpu()
+            now = self._selective_flat(block_params)
             grad = torch.cat([p.grad.detach().float().reshape(-1) for p in block_params]).cpu()
-            blocks[index] = {"params": block_params, "before": before, "grad": grad}
-        return {"blocks": blocks}
+            anchor = self._selective_anchor.get(index)
+            self._selective_anchor[index] = now
+            if anchor is None or anchor.shape != now.shape:
+                continue                     # just resumed: this probe only sets the anchor
+            delta = now - anchor
+            denom = grad.norm() * delta.norm()
+            if not torch.isfinite(denom) or float(denom) <= 1e-20:
+                continue
+            cosine = float((-torch.dot(grad, delta) / denom).clamp(-1.0, 1.0))
+            if np.isfinite(cosine):
+                cosines[index] = cosine
+        return {"cosines": cosines}
 
     def finish_selective_optimizer_step(self, snapshot):
         """Score a probe and choose active blocks for the next optimizer window. Returns a status for logging."""
@@ -588,22 +605,12 @@ class Krea2Driver(FamilyDriver):
         self._selective_optimizer_steps += 1
         step = self._selective_optimizer_steps
         if snapshot is not None:
-            for index, values in snapshot.get("blocks", {}).items():
-                params = values["params"]
-                after = torch.cat([p.detach().float().reshape(-1) for p in params]).cpu()
-                delta = after - values["before"]
-                grad = values["grad"]
-                denom = grad.norm() * delta.norm()
-                if not torch.isfinite(denom) or float(denom) <= 1e-20:
-                    continue
-                cosine = float((-torch.dot(grad, delta) / denom).clamp(-1.0, 1.0))
-                if not np.isfinite(cosine):
-                    continue
+            for index, cosine in snapshot.get("cosines", {}).items():
                 old = self._selective_scores[index]
                 decay = self._selective_score_decay
                 self._selective_scores[index] = cosine if old is None else decay * old + (1.0 - decay) * cosine
-            # A probe follows a full-block update. Keep unknown blocks active; only a measured uphill direction is
-            # eligible to be skipped. If every measured score is uphill, keep the least harmful block alive.
+            # Keep unknown blocks active; only a measured uphill direction is eligible to be skipped. If every
+            # measured score is uphill, keep the least harmful block alive.
             active = {i for i, score in enumerate(self._selective_scores) if score is None or score > 0.0}
             if not active and self._selective_scores:
                 known = [(score, i) for i, score in enumerate(self._selective_scores) if score is not None]
@@ -649,6 +656,8 @@ class Krea2Driver(FamilyDriver):
         self._selective_scores = [None if v is None else float(v) for v in scores]
         self._selective_active = active
         self._selective_optimizer_steps = max(0, int(state.get("optimizer_steps", 0)))
+        # the anchors were taken before the resumed weights loaded: the first probe after a resume re-anchors only
+        self._selective_anchor = {i: None for i in range(self._selective_block_count)}
         self._set_selective_active_parameters()
 
     def selective_active_blocks(self):

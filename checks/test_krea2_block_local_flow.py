@@ -629,18 +629,19 @@ def test_selective_global_replay_scores_actual_optimizer_direction_and_reactivat
     driver.configure_selective_global_replay(dit, net, warmup_updates=1, reactivate_every=2, score_decay=0.5)
 
     block_params = driver._selective_params_by_block
-    for values in block_params.values():
-        for parameter in values:
-            parameter.grad = torch.ones_like(parameter)
-
-    snapshot = driver.selective_snapshot_before_step()
-    assert snapshot is not None and set(snapshot["blocks"]) == {0, 1}
-    # With g = +1, block 0's parameter displacement is downhill; block 1's is uphill.
+    # Displacement since the last probe (here: since configure), then the fresh probe gradient g = +1:
+    # block 0 moved against g (downhill); block 1 moved along it (uphill).
     with torch.no_grad():
         for parameter in block_params[0]:
             parameter.add_(-0.1)
         for parameter in block_params[1]:
             parameter.add_(0.1)
+    for values in block_params.values():
+        for parameter in values:
+            parameter.grad = torch.ones_like(parameter)
+
+    snapshot = driver.selective_snapshot_before_step()
+    assert snapshot is not None and set(snapshot["cosines"]) == {0, 1}
     status = driver.finish_selective_optimizer_step(snapshot)
 
     assert status["kind"] == "probe"
@@ -687,7 +688,7 @@ def test_krea2_training_method_options_include_selective_global_replay_and_legac
 
     desc = get_family("krea2")
     options = next(option for option in desc.options if option.key == "KREA2_TRAINING_METHOD")
-    assert options.choice_labels() == ["Standard backprop", "Blockwise flow (experimental)",
+    assert options.choice_labels() == ["Standard", "Blockwise flow (experimental)",
                                        "Selective global replay (experimental)",
                                        "Blockwise flow H2D (experimental)",
                                        "Selective global replay H2D (experimental)",
@@ -695,6 +696,11 @@ def test_krea2_training_method_options_include_selective_global_replay_and_legac
                                        "Residual-path hybrid H2D (experimental)",
                                        "Residual-path hybrid H2D — selective A (experimental)"]
     assert options.pick("Block-local flow matching (experimental)") == "Blockwise flow (experimental)"
+    # Standard is the default; a saved "Standard backprop" (the test build's label) or nothing at all lands on it
+    assert options.default == "Standard"
+    assert options.pick("Standard backprop") == "Standard" and options.pick("") == "Standard"
+    args, _ = option_tokens(desc, {"FAMILY_OPTIONS": {}})
+    assert "training_method" not in " ".join(args)
 
     args, _ = option_tokens(desc, {"FAMILY_OPTIONS": {
         "KREA2_TRAINING_METHOD": "Selective global replay (experimental)"}})
@@ -828,3 +834,53 @@ def test_h2d_replay_matches_global_loss_and_active_lora_gradients(method, active
                 assert torch.allclose(actual.grad, expected.grad, rtol=2e-2, atol=2e-3), f"gradient mismatch at block {index}"
         else:
             assert all(parameter.grad is None for parameter in replay_params), f"inactive block {index} received a gradient"
+
+
+def _run_selective_with_real_optimizer(driver, block_params, targets, curvature, lr, updates):
+    """Drive the selective scorer with a real SGD optimizer on a per-block quadratic loss. A block whose
+    curvature * lr > 1 overshoots its minimum on every step, so its loss climbs: it is genuinely uphill."""
+    params = [p for values in block_params.values() for p in values]
+    optimizer = torch.optim.SGD(params, lr=lr)
+    statuses = []
+    for _ in range(updates):
+        optimizer.zero_grad(set_to_none=True)
+        loss = 0.0
+        for index, values in block_params.items():
+            for parameter, target in zip(values, targets[index]):
+                if parameter.requires_grad:
+                    loss = loss + 0.5 * curvature[index] * ((parameter - target) ** 2).sum()
+        loss.backward()
+        snapshot = driver.selective_snapshot_before_step()
+        optimizer.step()
+        statuses.append(driver.finish_selective_optimizer_step(snapshot))
+    return statuses
+
+
+def test_selective_global_replay_drops_a_block_whose_real_optimizer_steps_go_uphill():
+    torch.manual_seed(3)
+    dit, net = _selective_tiny_dit(layers=2)
+    driver = Krea2Driver()
+    driver.set_options({"training_method": "selective_global_replay"})
+    driver.configure_selective_global_replay(dit, net, warmup_updates=4, reactivate_every=4, score_decay=0.5)
+    block_params = driver._selective_params_by_block
+    targets = {i: [torch.randn_like(p) for p in values] for i, values in block_params.items()}
+    # lr 0.1: block 0 (curvature 1) descends smoothly; block 1 (curvature 15, lr*curvature = 1.5) overshoots.
+    statuses = _run_selective_with_real_optimizer(driver, block_params, targets, {0: 1.0, 1: 15.0}, 0.1, 4)
+
+    assert statuses[-1]["kind"] == "probe"
+    assert driver._selective_scores[0] > 0
+    assert driver._selective_scores[1] < 0
+    assert driver.selective_active_blocks() == [0]
+    assert all(not p.requires_grad for p in block_params[1])
+
+
+def test_selective_global_replay_keeps_every_block_that_descends():
+    torch.manual_seed(4)
+    dit, net = _selective_tiny_dit(layers=2)
+    driver = Krea2Driver()
+    driver.set_options({"training_method": "selective_global_replay"})
+    driver.configure_selective_global_replay(dit, net, warmup_updates=4, reactivate_every=4, score_decay=0.5)
+    block_params = driver._selective_params_by_block
+    targets = {i: [torch.randn_like(p) for p in values] for i, values in block_params.items()}
+    _run_selective_with_real_optimizer(driver, block_params, targets, {0: 1.0, 1: 2.0}, 0.1, 12)
+    assert driver.selective_active_blocks() == [0, 1]
