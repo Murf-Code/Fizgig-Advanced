@@ -378,7 +378,11 @@ function renderRow(r) {
     input = box;
   } else {
     if (r.kind === "choice") {
-      input = el("select", {id: "f_" + r.key, onchange: (e) => set(e.target.value)});
+      input = el("select", {id: "f_" + r.key, onchange: (e) => {
+        set(e.target.value);
+        // a per-choice description replaces the hint while that choice is picked
+        if (r.choice_notes) { const h = wrap.querySelector(".row-hint, .choice-note"); if (h) h.textContent = r.choice_notes[e.target.value] || r.hint || ""; }
+      }});
       // a saved value in another case is the same choice ("auto" saved before the box read "Auto")
       // an older name of a choice ("Default", saved before Timestep focus read "Model default") is that choice
       const same = v != null && (choiceAlias(r, v) || r.choices.find((c) => c.toLowerCase() === String(v).toLowerCase()));
@@ -470,7 +474,8 @@ function renderRow(r) {
     // a row with a hover tip already has the longer explanation there, so the short line under it
     // is shown in full (no two-line clamp, no click to expand)
     const clamp = !r.tip;
-    const h = el("div", {class: "field-hint" + (clamp ? " row-hint" : ""), text: r.hint,
+    const shown = (r.choice_notes && r.choice_notes[String(S.values[r.key] ?? r.default)]) || r.hint;
+    const h = el("div", {class: "field-hint" + (clamp ? " row-hint" : "") + (r.choice_notes ? " choice-note" : ""), text: shown,
       ...(clamp ? {title: "Click to read it all", onclick: () => h.classList.toggle("open")} : {})});
     if (r.hint.includes("\n")) h.style.whiteSpace = "pre-line";
     wrap.append(h);

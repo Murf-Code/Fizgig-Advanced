@@ -242,7 +242,8 @@ def _option_row(opt):
                 **({"featured": True} if opt.featured else {}),
                 **({"split": list(opt.split), "split_hint": opt.split_hint} if kind == "split" and opt.split else {}),
                 **({"slide": list(opt.slide), "slide_hint": opt.slide_hint} if kind == "split" and opt.slide else {}),
-                **({"single": opt.single} if kind == "split" and opt.single else {}))
+                **({"single": opt.single} if kind == "split" and opt.single else {}),
+                **({"choice_notes": dict(opt.choice_notes)} if opt.kind == "choice" and opt.choice_notes else {}))
 
 
 def model_keys(desc):

@@ -43,10 +43,12 @@ KREA2 = FamilyDescription(
         default="Standard",
         section="other",
         mode="lora",
-        hint=("Standard is normal training (the default). Global replay runs a no-grad forward, then replays the "
-              "exact global loss one transformer block at a time, using the H2D-only block swap when blocks swap: "
-              "lower VRAM and faster with block swap. It needs batch 1 and standard LoRA; only the 28 main "
-              "transformer blocks train, while text-fusion and I/O adapters stay frozen."),
+        hint="Normal training. Works with every option.",
+        choice_notes=(("Standard", "Normal training. Works with every option."),
+                      ("Global replay", "First runs the whole model once to get the real loss, then replays it one "
+                       "block at a time to work out each block's update. Only one block's working memory is held at "
+                       "once, so it's faster and lighter on VRAM when blocks are swapped, and nothing is "
+                       "approximated. Needs batch 1 and a standard LoRA.")),
         summary="{}",
     ), FamilyOption(
         key="KREA2_SELECTIVE_BLOCK_CHECK",
@@ -57,8 +59,7 @@ KREA2 = FamilyDescription(
         section="other",
         mode="lora",
         requires="KREA2_TRAINING_METHOD=Global replay",
-        hint=("Every 8 optimizer updates, check each block and skip the LoRA gradients of blocks whose recent "
-              "updates overshot, until the next check. Off: every block trains on every update, with no checks."),
+        hint="Every 8 steps, pauses blocks that are making the loss worse.",
         summary="Selective block check",
     )),
     trigger_attention=True,           # training maps' trigger-word map (an experiment)
