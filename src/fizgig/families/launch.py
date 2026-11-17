@@ -385,6 +385,9 @@ def _training_items(desc, st):
     if subfolders_on(desc, st):
         n += sum(_media_count(f) for _r, f in subfolders(folder, (_s(st.get("LORA_OUTPUT_DIR")),
                                                                    _s(st.get("cache_root")), reg_folder(desc, st))))
+        # the Start tab's per-folder Repeats (Balance folders too): a folder trained N times an epoch is N times its
+        # pictures, the epoch the regularisation share is matched to (the trainer's own count includes them)
+        n += sum(i["count"] * (i["repeats"] - 1) for i in folder_schedule(desc, st).values() if i["repeats"] > 1)
     if detail_crops_on(desc, st):
         from fizgig.dataset import detail_crops
         try:
@@ -2378,6 +2381,18 @@ def dop_problems(desc, v):
     return out
 
 
+def krea2_method_problems(desc, inputs):
+    """Krea 2's Global replay replays the model one block at a time, so the Samples tab's Training maps (which read
+    the whole backward) can't follow it: refused at Start, with the way out, rather than failing as the run begins."""
+    if desc.key != "krea2" or not inputs.get("TRAINING_MAPS"):
+        return []
+    method = str((inputs.get("FAMILY_OPTIONS") or {}).get("KREA2_TRAINING_METHOD", "")).strip().lower()
+    if "global replay" in method:
+        return ["Training maps can't be used with Krea 2's Global replay: it works one block at a time. Untick "
+                "Training maps (Samples tab), or set Training method to Standard or Text fusion only."]
+    return []
+
+
 def start_problems(desc, inputs):
     """Everything Start refuses, in the order the desktop app lists it: the shared checks (fizgig.families.checks)
     with the family's own (problems) in their place. The dataset TOML is written by the plan itself, so only its
@@ -2402,6 +2417,7 @@ def start_problems(desc, inputs):
     out += dop_problems(desc, v)
     out += multi_person_problems(desc, v)
     out += tag_problems(desc, v)
+    out += krea2_method_problems(desc, v)
     if automagic(v) and not v.get("ADAPTIVE_LR") and not ft_on(desc, v):
         try:
             lr = float(v.get("LEARNING_RATE"))

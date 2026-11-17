@@ -3179,7 +3179,7 @@ function ctxLock() {
   const parts = [$("trainingForm"), $("datasetsCard"), $("imageFolder").closest(".section-card"),
     ...document.querySelectorAll(".preset-row"), ...[...document.querySelectorAll(".family-pick")].map((x) => x.parentElement)];
   for (const p of parts) if (p) p.inert = on;
-  for (const id of ["btnQueue", "btnCheck"]) $(id).disabled = on;
+  $("btnQueue").disabled = on;        // (the Check settings button is gone from the Start tab)
   document.body.classList.toggle("ctx-view", ctxKind() !== "draft");
 }
 
