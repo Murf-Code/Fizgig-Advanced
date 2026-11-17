@@ -881,12 +881,7 @@ def option_applies(opt, media, values=None, options=(), finetune=None):
         have = values.get(key, "")
         if eq:
             o = next((x for x in options if x.key == key), None)
-            # Choice requirements may accept several labels, separated by |. This lets sibling modes expose
-            # the same dependent controls without duplicating their option definitions.
-            wants = [part.strip() for part in want.split("|") if part.strip()]
-            picked_have = o.pick(have) if o is not None else have
-            picked_wants = [o.pick(part) if o is not None else part for part in wants]
-            if picked_have not in picked_wants:
+            if (o.pick(have) if o is not None else have) != (o.pick(want) if o is not None else want):
                 return False
         elif str(have) not in ("1", "True", "true"):
             return False

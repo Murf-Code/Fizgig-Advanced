@@ -11,7 +11,6 @@ trains Krea 2 the way src/fizgig/krea2/trainer.py does:
 * LoRA: every Linear in the DiT (264: the 28 blocks, the text-fusion stack, the input / timestep / output layers);
   quantisation (INT8 / NF4) covers the blocks' Linears only, as the original's fp8 / int8 / NF4 paths
 """
-import math
 import re
 
 import numpy as np
@@ -203,306 +202,27 @@ class Krea2Driver(FamilyDriver):
             return dit(img=img, context=txt, t=t.to(DTYPE), pos=pos, mask=mask)
 
     @property
+    def global_replay(self):
+        """Krea 2 Global replay: a no-grad forward, then the exact global-loss gradient replayed one main block at a
+        time (H2D-only block swap when blocks swap). The test build's "selective_global_replay(_h2d)" names are
+        this method with the Selective block check on."""
+        method = str(getattr(self, "options", {}).get("training_method", "") or "").lower()
+        return method in ("global_replay", "selective_global_replay", "selective_global_replay_h2d")
+
+    @property
     def selective_global_replay(self):
-        method = str(getattr(self, "options", {}).get("training_method", "") or "").lower()
-        return method in ("selective_global_replay", "selective_global_replay_h2d")
-
-    @property
-    def residual_path_hybrid(self):
-        method = str(getattr(self, "options", {}).get("training_method", "") or "").lower()
-        return method in ("residual_path_hybrid", "residual_path_hybrid_h2d",
-                          "residual_path_hybrid_h2d_selective_a")
-
-    @property
-    def residual_path_selective_a(self):
-        """Whether this hybrid variant periodically includes approximate LoRA A-factor gradients."""
-        method = str(getattr(self, "options", {}).get("training_method", "") or "").lower()
-        return method == "residual_path_hybrid_h2d_selective_a"
-
-    @property
-    def h2d_block_swap(self):
-        """The H2D-labelled choices use the existing host-to-device-only Krea 2 block offloader."""
-        method = str(getattr(self, "options", {}).get("training_method", "") or "").lower()
-        return method in ("block_local_h2d", "selective_global_replay_h2d", "residual_path_hybrid_h2d",
-                          "residual_path_hybrid_h2d_selective_a")
-
-    @property
-    def block_local_flow(self):
-        """Experimental Krea 2 modes that train only the main blocks with a manual backward path."""
-        method = str(getattr(self, "options", {}).get("training_method", "") or "").lower()
-        return method in ("block_local", "selective_global_replay",
-                          "block_local_h2d", "selective_global_replay_h2d",
-                          "residual_path_hybrid", "residual_path_hybrid_h2d",
-                          "residual_path_hybrid_h2d_selective_a")
+        """Global replay with the Selective block check (skip blocks whose recent updates overshot)."""
+        options = getattr(self, "options", {})
+        method = str(options.get("training_method", "") or "").lower()
+        if method in ("selective_global_replay", "selective_global_replay_h2d"):
+            return True
+        return method == "global_replay" and str(options.get("selective_block_check", "") or "").lower() in (
+            "1", "true", "on", "yes")
 
     @property
     def manual_loss_backward(self):
         """The generic trainer must call backward_training_loss after applying its per-image scale."""
-        return self.block_local_flow
-
-    def configure_residual_path_hybrid(self, dit, net, *, exact_every=8, approx_lr_multiplier=2.0):
-        """Configure identity-path credit for Krea 2's residual output projections.
-
-        Approximate updates train the LoRA B factors on attn.wo and mlp.down. In the selective-A variant,
-        original inputs are additionally staged to pinned host RAM every fourth approximate update and used to
-        calculate A-factor gradients. A readout-only gradient is passed along residual identity paths, gated at
-        each residual branch. Every ``exact_every``-th optimizer update uses exact global-loss replay.
-        """
-        from fizgig.families.lora import LoRALinear, TRAINABLE
-
-        if not self.residual_path_hybrid:
-            raise RuntimeError("Residual-path hybrid can only be configured for Residual-path hybrid training.")
-        exact_every = int(exact_every)
-        if exact_every < 2:
-            raise ValueError("Residual-path hybrid exact calibration interval must be at least 2 optimizer updates.")
-        approx_lr_multiplier = float(approx_lr_multiplier)
-        if not math.isfinite(approx_lr_multiplier) or approx_lr_multiplier <= 0.0:
-            raise ValueError("Residual-path approximate-update LR multiplier must be a finite number greater than zero.")
-
-        by_block = {}
-        for index, block in enumerate(dit.blocks):
-            values = {}
-            for suffix in ("attn.wo", "mlp.down"):
-                module = block
-                for part in suffix.split("."):
-                    module = getattr(module, part)
-                if not isinstance(module, LoRALinear) or TRAINABLE not in module.adapters:
-                    raise RuntimeError("Residual-path hybrid needs a trainable standard LoRA on every block's "
-                                       f"{suffix} projection; missing blocks.{index}.{suffix}.")
-                adapter = module.adapters[TRAINABLE]
-                if not isinstance(adapter, torch.nn.Sequential) or len(adapter) != 2:
-                    raise RuntimeError("Residual-path hybrid currently supports standard two-factor LoRA only; "
-                                       f"unsupported adapter at blocks.{index}.{suffix}.")
-                values[suffix] = module
-            by_block[index] = values
-
-        self._residual_path_modules = by_block
-        self._residual_path_exact_every = exact_every
-        self._residual_path_approx_lr_multiplier = approx_lr_multiplier
-        self._residual_path_optimizer_steps = 0
-        self._residual_path_approx_steps = 0
-        self._residual_path_a_every = 4 if self.residual_path_selective_a else 0
-        self._residual_path_last_step_exact = False
-        self._residual_path_d2h_stream = None
-
-    @property
-    def residual_path_exact_due(self):
-        """Whether the next optimizer update is the scheduled exact-gradient calibration update."""
-        if not self.residual_path_hybrid or not hasattr(self, "_residual_path_optimizer_steps"):
-            return False
-        return (self._residual_path_optimizer_steps + 1) % self._residual_path_exact_every == 0
-
-    @property
-    def residual_path_update_lr_multiplier(self):
-        """LR multiplier for the next update: approximate-only; exact calibration always uses 1.0."""
-        if not self.residual_path_hybrid or not hasattr(self, "_residual_path_approx_lr_multiplier"):
-            return 1.0
-        return 1.0 if self.residual_path_exact_due else self._residual_path_approx_lr_multiplier
-
-    @property
-    def residual_path_a_update_due(self):
-        """True on every fourth approximate update in the selective-A variant (exact updates do not count)."""
-        return bool(self.residual_path_selective_a and self._residual_path_a_every > 0
-                    and not self.residual_path_exact_due
-                    and (self._residual_path_approx_steps + 1) % self._residual_path_a_every == 0)
-
-    def finish_residual_path_optimizer_step(self):
-        """Advance the optimizer and approximate-update counters after a real optimizer update."""
-        if not self.residual_path_hybrid or not hasattr(self, "_residual_path_optimizer_steps"):
-            return None
-        if not self._residual_path_last_step_exact:
-            self._residual_path_approx_steps += 1
-        self._residual_path_optimizer_steps += 1
-        upcoming = self._residual_path_optimizer_steps + 1
-        upcoming_exact = upcoming % self._residual_path_exact_every == 0
-        upcoming_a = (self.residual_path_selective_a and not upcoming_exact
-                      and (self._residual_path_approx_steps + 1) % max(1, self._residual_path_a_every) == 0)
-        return {"optimizer_steps": self._residual_path_optimizer_steps,
-                "approximate_steps": self._residual_path_approx_steps,
-                "next_exact": upcoming_exact, "next_a_update": upcoming_a,
-                "exact_every": self._residual_path_exact_every}
-
-    def residual_path_state_dict(self):
-        if not self.residual_path_hybrid or not hasattr(self, "_residual_path_optimizer_steps"):
-            return None
-        return {"version": 3, "exact_every": self._residual_path_exact_every,
-                "approx_lr_multiplier": self._residual_path_approx_lr_multiplier,
-                "optimizer_steps": self._residual_path_optimizer_steps,
-                "approximate_steps": self._residual_path_approx_steps,
-                "selective_a_every": self._residual_path_a_every}
-
-    def load_residual_path_state_dict(self, state):
-        # v1 predates the LR multiplier; v2 predates selective A updates. Both remain resumable.
-        if not self.residual_path_hybrid or not isinstance(state, dict) or state.get("version") not in (1, 2, 3):
-            raise RuntimeError("The saved Residual-path hybrid state is missing or unsupported.")
-        if int(state.get("exact_every", -1)) != self._residual_path_exact_every:
-            raise RuntimeError("Residual-path hybrid exact-calibration settings differ from the saved run state.")
-        saved_multiplier = state.get("approx_lr_multiplier")
-        if saved_multiplier is not None and not math.isclose(
-                float(saved_multiplier), self._residual_path_approx_lr_multiplier, rel_tol=1e-9, abs_tol=1e-12):
-            raise RuntimeError("Residual-path hybrid approximate-update LR multiplier differs from the saved run state.")
-        saved_a_every = state.get("selective_a_every")
-        if saved_a_every is not None and int(saved_a_every) != self._residual_path_a_every:
-            raise RuntimeError("Residual-path hybrid selective-A cadence differs from the saved run state.")
-        self._residual_path_optimizer_steps = max(0, int(state.get("optimizer_steps", 0)))
-        if "approximate_steps" in state:
-            self._residual_path_approx_steps = max(0, int(state.get("approximate_steps", 0)))
-        else:
-            # Every Nth optimizer update is exact; older states did not track approximate updates separately.
-            steps = self._residual_path_optimizer_steps
-            self._residual_path_approx_steps = max(0, steps - (steps // self._residual_path_exact_every))
-
-    def _residual_path_training_loss(self, dit, latents, noise, t, cond):
-        """One no-graph transformer forward with low-rank captures for identity-path credit assignment.
-
-        The only autograd operation is the small final readout derivative with respect to its input. No
-        transformer block is recorded or replayed on these updates.
-        """
-        from fizgig.krea2.attention import AttentionParams
-        from fizgig.krea2.model import temb
-        from fizgig.krea2.sampling import patchify_block, prepare
-        from fizgig.families.lora import TRAINABLE
-
-        if getattr(self, "_pending_block_local", None) is not None:
-            raise RuntimeError("A previous residual-path training loss has not been backpropagated.")
-        if not hasattr(self, "_residual_path_modules"):
-            raise RuntimeError("Residual-path hybrid was not configured before training.")
-
-        device = latents.device
-        patch = dit.config.patch
-        latent = latents.to(dtype=DTYPE)
-        noise = noise.to(device=device, dtype=DTYPE)
-        t = t.to(device)
-        t_ = t.view(-1, 1, 1, 1).to(DTYPE)
-        noised = (1.0 - t_) * latent + t_ * noise
-        target, _, _ = patchify_block(noise - latent, patch)
-        txt, txtmask = self._text(cond, device)
-        img, pos, mask = prepare(noised, txt.shape[1], patch, txtmask)
-
-        captures = {}
-        update_a = self.residual_path_a_update_due
-        self._residual_path_last_step_exact = False
-        hook_handles = []
-        offloader = getattr(dit, "offloader", None) if dit.blocks_to_swap else None
-        h2d_stream = False
-        if offloader is not None and hasattr(offloader, "set_forward_only"):
-            from fizgig.krea2.offloading import LoRAStreamOffloader
-            h2d_stream = isinstance(offloader, LoRAStreamOffloader)
-            # No backward hooks run on these approximate updates. Switch the swapper to its forward-only
-            # rotation so the ring is wrapped back to the first blocks for the next training step.
-            offloader.set_forward_only(True)
-        with torch.no_grad(), torch.autocast(device_type=device.type, dtype=DTYPE):
-            img = dit.first(img)
-            t_emb = dit.tmlp(temb(t.to(DTYPE), dit.config.tdim, device=img.device, dtype=img.dtype))
-            tvec = dit.tproj(t_emb)
-            imglen = img.shape[1]
-            txtmask = mask[:, imglen:]
-            txt_attn_params_nomask = AttentionParams.create_attention_params_from_mask(
-                dit.attn_mode, dit.split_attn, 0, None)
-            txt_attn_params = AttentionParams.create_attention_params_from_mask(
-                dit.attn_mode, dit.split_attn, 0, txtmask)
-            context = dit.txtfusion(txt, txt_attn_params_nomask, txt_attn_params)
-            context = dit.txtmlp(context)
-            combined = torch.cat((img, context), dim=1)
-            fulllen = combined.shape[1]
-            padlen = (-fulllen) % 256
-            if padlen:
-                combined = F.pad(combined, (0, 0, 0, padlen))
-                pos = F.pad(pos, (0, 0, 0, padlen))
-                txtmask = F.pad(txtmask, (0, padlen), value=False)
-            attn_params = AttentionParams.create_attention_params_from_mask(
-                dit.attn_mode, dit.split_attn, imglen, txtmask)
-            freqs = dit.posemb(pos)
-
-            try:
-                for index, block in enumerate(dit.blocks):
-                    if dit.blocks_to_swap:
-                        dit.offloader.wait_for_block(index)
-
-                    _, _, pre_gate, _, _, post_gate = block.mod(tvec)
-                    captures[index] = {
-                        "attn_gate": pre_gate.detach(),
-                        "mlp_gate": post_gate.detach(),
-                        "projections": {},
-                    }
-
-                    for suffix, module in self._residual_path_modules[index].items():
-                        def _capture_input(layer, inputs, *, _index=index, _suffix=suffix):
-                            x = inputs[0].detach()
-                            adapter = layer.adapters[TRAINABLE]
-                            a, b = adapter[0], adapter[1]
-                            # Match LoRALinear's low-precision forward: both factor matmuls use x's dtype.
-                            ax = F.linear(x, a.weight.to(dtype=x.dtype))
-                            projection_capture = {
-                                "ax": ax.detach(), "a": a, "b": b,
-                                "scale": float(layer.scales.get(TRAINABLE, 0.0)),
-                            }
-                            if update_a:
-                                # Full-width inputs are too expensive to retain on the GPU across all 28 blocks.
-                                # Stage them asynchronously into pinned host RAM, then bring one back at a time
-                                # for the A-gradient GEMM after the final readout credit is known.
-                                if x.device.type == "cuda":
-                                    stream = getattr(self, "_residual_path_d2h_stream", None)
-                                    if stream is None:
-                                        stream = torch.cuda.Stream(device=x.device)
-                                        self._residual_path_d2h_stream = stream
-                                    ready = torch.cuda.Event()
-                                    ready.record(torch.cuda.current_stream(x.device))
-                                    try:
-                                        x_host = torch.empty(x.shape, dtype=x.dtype, device="cpu", pin_memory=True)
-                                    except RuntimeError:
-                                        # Some Windows/PyTorch setups impose a pinned-host-memory quota. Fall back
-                                        # to a synchronous pageable copy rather than failing the training run.
-                                        stream.synchronize()
-                                        x_host = x.to("cpu")
-                                        self._residual_path_pin_fallback = True
-                                    else:
-                                        with torch.cuda.stream(stream):
-                                            stream.wait_event(ready)
-                                            x_host.copy_(x, non_blocking=True)
-                                        x.record_stream(stream)
-                                    projection_capture["x_host"] = x_host
-                                else:
-                                    projection_capture["x_host"] = x.detach().to("cpu")
-                            captures[_index]["projections"][_suffix] = projection_capture
-                        hook_handles.append(module.register_forward_pre_hook(_capture_input))
-
-                    combined = block(combined, tvec, freqs, attn_params).detach()
-                    # The next block's hooks are installed only for its own forward.
-                    for handle in hook_handles[-2:]:
-                        handle.remove()
-                    if dit.blocks_to_swap:
-                        dit.offloader.submit_move_blocks_forward(dit.blocks, index)
-            finally:
-                for handle in hook_handles:
-                    handle.remove()
-                if offloader is not None and hasattr(offloader, "set_forward_only"):
-                    offloader.set_forward_only(False)
-                    # The H2D ring explicitly preloads its first window at the end of a forward-only pass.
-                    # The classic offloader instead needs its ordinary device layout restored here.
-                    if not h2d_stream:
-                        dit.prepare_block_swap_before_forward()
-
-        if len(captures) != len(dit.blocks) or any(len(v["projections"]) != 2 for v in captures.values()):
-            raise RuntimeError("Residual-path hybrid did not capture both output projections for every Krea 2 block.")
-
-        # The final readout's input derivative is exact, but the transformer-wide derivative is not computed.
-        # It is then copied through the residual identity paths as the approximate block credit signal.
-        final_hidden = combined.detach().requires_grad_(True)
-        with torch.enable_grad(), torch.autocast(device_type=device.type, dtype=DTYPE):
-            pred = dit.last(final_hidden, t_emb)[:, :imglen, :]
-            loss = F.mse_loss(pred.float(), target.float())
-            readout_grad = torch.autograd.grad(loss, final_hidden, retain_graph=False, create_graph=False)[0]
-
-        self._pending_block_local = {
-            "dit": dit,
-            "phase": "residual_path_approx",
-            "captures": captures,
-            "update_a": update_a,
-            "readout_grad": readout_grad.detach(),
-            "device": device,
-        }
-        return loss.detach()
+        return self.global_replay
 
     def configure_selective_global_replay(self, dit, net, *, warmup_updates=8, reactivate_every=8, score_decay=0.5):
         """Track the direction of each block's actual optimizer update and selectively compute adapter gradients.
@@ -663,55 +383,16 @@ class Krea2Driver(FamilyDriver):
     def selective_active_blocks(self):
         return sorted(getattr(self, "_selective_active", set()))
 
-    def make_block_local_heads(self, dit, device):
-        """Create temporary per-block velocity readouts used only during the optional head warm-up.
-
-        They are not attached to the DiT or FamilyLoRA and are never exported. After the warm-up, they are frozen
-        and the LoRA is trained against the real Krea 2 final readout with exact blockwise gradient replay.
-        """
-        import copy
-        from fizgig.families.lora import LoRALinear
-
-        heads = []
-        for _ in dit.blocks:
-            head = copy.deepcopy(dit.last)
-            # Strip adapters from the copied readout. Frozen context/speed adapters must not be duplicated into
-            # temporary heads or accidentally made trainable with the heads.
-            for module in head.modules():
-                if isinstance(module, LoRALinear):
-                    module.adapters = torch.nn.ModuleDict()
-                    module.scales = {}
-            heads.append(head.float())
-        heads = torch.nn.ModuleList(heads).to(device)
-        heads.requires_grad_(True)
-        self._block_local_heads = heads
-        self._block_local_head_only = True
-        self._pending_block_local = None
-        return heads
-
-    def set_block_local_head_only(self, enabled):
-        """Select the auxiliary-head calibration phase or the real global-loss replay phase."""
-        enabled = bool(enabled)
-        self._block_local_head_only = enabled
-        heads = getattr(self, "_block_local_heads", None)
-        if heads is not None:
-            heads.requires_grad_(enabled)
-
     def _block_local_training_loss(self, dit, latents, noise, t, cond):
         """Run a no-grad Krea 2 forward and save CPU activations for one-block-at-a-time backward replay.
 
-        During the optional head-only warm-up, each temporary readout is calibrated from that block's output.
-        After warm-up, the returned loss is the ordinary full-model Krea 2 flow-matching loss from ``dit.last``;
+        The returned loss is the ordinary full-model Krea 2 flow-matching loss from ``dit.last``;
         backward_training_loss then computes its exact gradient by replaying the transformer blocks in reverse.
         """
         from fizgig.krea2.attention import AttentionParams
         from fizgig.krea2.model import temb
         from fizgig.krea2.sampling import patchify_block, prepare
 
-        head_only = bool(getattr(self, "_block_local_head_only", False))
-        heads = getattr(self, "_block_local_heads", None)
-        if head_only and heads is None:
-            raise RuntimeError("Block-local head warm-up was requested but temporary heads were not initialized.")
         if getattr(self, "_pending_block_local", None) is not None:
             raise RuntimeError("A previous block-local loss has not been backpropagated.")
 
@@ -726,7 +407,7 @@ class Krea2Driver(FamilyDriver):
         txt, txtmask = self._text(cond, device)
         img, pos, mask = prepare(noised, txt.shape[1], patch, txtmask)
 
-        block_inputs, block_outputs, local_losses = [], [], []
+        block_inputs = []
         with torch.no_grad(), torch.autocast(device_type=device.type, dtype=DTYPE):
             img = dit.first(img)
             # Match _forward / SingleStreamDiT.forward exactly: Krea 2 casts t to BF16 before temb.
@@ -755,37 +436,23 @@ class Krea2Driver(FamilyDriver):
             for index, block in enumerate(dit.blocks):
                 if dit.blocks_to_swap:
                     dit.offloader.wait_for_block(index)
-                if head_only:
-                    # Warm-up backward only needs block outputs. Saving these avoids a second transformer pass and
-                    # avoids relying on autograd block-swap hooks while every LoRA adapter is frozen.
-                    combined = block(combined, tvec, freqs, attn_params)
-                    block_outputs.append(combined.detach().to("cpu").contiguous())
-                    pred = heads[index](combined, t_emb)[:, :imglen, :]
-                    local_losses.append(F.mse_loss(pred.float(), target.float()))
-                else:
-                    block_inputs.append(combined.detach().to("cpu").contiguous())
-                    # Keep grad mode enabled for the block's forward so attention chooses the same kernels as the
-                    # ordinary LoRA training forward. Immediately detach the output: the next block gets the exact
-                    # activation but no cross-block graph is retained in VRAM.
-                    with torch.enable_grad():
-                        combined = block(combined.detach(), tvec, freqs, attn_params).detach()
+                block_inputs.append(combined.detach().to("cpu").contiguous())
+                # Keep grad mode enabled for the block's forward so attention chooses the same kernels as the
+                # ordinary LoRA training forward. Immediately detach the output: the next block gets the exact
+                # activation but no cross-block graph is retained in VRAM.
+                with torch.enable_grad():
+                    combined = block(combined.detach(), tvec, freqs, attn_params).detach()
                 if dit.blocks_to_swap:
                     dit.offloader.submit_move_blocks_forward(dit.blocks, index)
 
-            if head_only:
-                loss = torch.stack(local_losses).mean().detach()
-                final_hidden = None
-            else:
-                # This is the exact readout used by normal training, validation, and sampling.
-                pred = dit.last(combined, t_emb)[:, :imglen, :]
-                loss = F.mse_loss(pred.float(), target.float()).detach()
-                final_hidden = combined.detach().to("cpu").contiguous()
+            # This is the exact readout used by normal training, validation, and sampling.
+            pred = dit.last(combined, t_emb)[:, :imglen, :]
+            loss = F.mse_loss(pred.float(), target.float()).detach()
+            final_hidden = combined.detach().to("cpu").contiguous()
 
         self._pending_block_local = {
             "dit": dit,
-            "phase": "head_warmup" if head_only else "global_replay",
             "block_inputs": block_inputs,
-            "block_outputs": block_outputs,
             "final_hidden": final_hidden,
             "tvec": tvec.detach(),
             "t_emb": t_emb.detach(),
@@ -798,72 +465,13 @@ class Krea2Driver(FamilyDriver):
         return loss
 
     def backward_training_loss(self, scale=1.0):
-        """Apply local identity-path credit, warm-up gradients, or exact global-loss block replay."""
+        """Exact global-loss gradient, replayed one transformer block at a time in reverse."""
         state = getattr(self, "_pending_block_local", None)
         if state is None:
             raise RuntimeError("No pending block-local flow loss is available for backward.")
         dit = state["dit"]
         n = len(dit.blocks)
         try:
-            if state["phase"] == "residual_path_approx":
-                # B is updated on every approximate step. The selective-A variant also computes dL/dA
-                # every fourth approximate update, from the cached full-width input and current B factor.
-                credit = state["readout_grad"] * float(scale)
-                if state.get("update_a") and getattr(self, "_residual_path_d2h_stream", None) is not None:
-                    # D2H activation copies are submitted during the forward; wait once after readout work
-                    # has had an opportunity to overlap them.
-                    self._residual_path_d2h_stream.synchronize()
-                for index, values in state["captures"].items():
-                    for suffix, projection in values["projections"].items():
-                        gate = values["attn_gate"] if suffix == "attn.wo" else values["mlp_gate"]
-                        ax = projection["ax"]
-                        a = projection["a"]
-                        b = projection["b"]
-                        local_grad = credit * gate.unsqueeze(1)
-                        # Match _LoraLowp.backward's activation precision and scale placement.
-                        g2 = (local_grad.to(dtype=ax.dtype) * projection["scale"]).reshape(-1, local_grad.shape[-1])
-                        ax2 = ax.reshape(-1, ax.shape[-1])
-                        grad_b = (g2.transpose(0, 1) @ ax2).to(dtype=b.weight.dtype)
-                        if b.weight.grad is None:
-                            b.weight.grad = grad_b
-                        else:
-                            b.weight.grad.add_(grad_b)
-
-                        if state.get("update_a"):
-                            x_host = projection["x_host"]
-                            x = x_host.to(device=b.weight.device, dtype=ax.dtype,
-                                          non_blocking=bool(getattr(x_host, "is_pinned", lambda: False)()))
-                            x2 = x.reshape(-1, x.shape[-1])
-                            grad_hidden = g2 @ b.weight.to(dtype=x.dtype)
-                            grad_a = (grad_hidden.transpose(0, 1) @ x2).to(dtype=a.weight.dtype)
-                            if a.weight.grad is None:
-                                a.weight.grad = grad_a
-                            else:
-                                a.weight.grad.add_(grad_a)
-                return
-
-            if state["phase"] == "head_warmup":
-                heads = getattr(self, "_block_local_heads", None)
-                outputs = state["block_outputs"]
-                if heads is None or len(outputs) != n or len(heads) != n:
-                    raise RuntimeError("Block-local warm-up state does not match the Krea 2 block count.")
-                # Every head is independent. The frozen transformer is not replayed during this phase.
-                for index, output in enumerate(outputs):
-                    hidden = output.to(state["device"], non_blocking=True)
-                    with torch.autocast(device_type=state["device"].type, dtype=DTYPE):
-                        pred = heads[index](hidden, state["t_emb"])[:, :state["imglen"], :]
-                        local_loss = F.mse_loss(pred.float(), state["target"].float())
-                    # Match the reported mean over blocks: each independent head contributes 1/N of the total
-                    # warm-up objective. Without this factor, the manual replay would apply N times the gradient
-                    # implied by the scalar loss (28x on Krea 2's full transformer).
-                    (local_loss * (float(scale) / n)).backward()
-                # Frozen block weights do not build an autograd graph, so the offloader's normal backward hooks
-                # cannot rotate its residency window during head-only calibration. Restore the forward layout here
-                # so the next training batch starts with the expected resident/offloaded blocks.
-                if dit.blocks_to_swap:
-                    dit.prepare_block_swap_before_forward()
-                return
-
             inputs = state["block_inputs"]
             if n == 0 or len(inputs) != n or state["final_hidden"] is None:
                 raise RuntimeError("Global block-replay state does not match the Krea 2 block count.")
@@ -938,25 +546,13 @@ class Krea2Driver(FamilyDriver):
         n_tokens = (latents.shape[-2] // patch) * (latents.shape[-1] // patch)
         noise = torch.randn(latents.shape, generator=generator)
         t = self._sample_t(n_tokens, generator, min_t, max_t, self.timestep_spread)
-        if self.block_local_flow and torch.is_grad_enabled():
+        if self.global_replay and torch.is_grad_enabled():
             if diff_ref is not None or diff_weight:
-                raise RuntimeError("Block-local flow matching does not support paired/difference loss yet.")
+                raise RuntimeError("Global replay does not support paired/difference loss yet.")
             if loss_mask is not None or prior is not None:
-                raise RuntimeError("Block-local flow matching does not support masked/prior loss yet.")
-            if self.residual_path_hybrid:
-                exact = self.residual_path_exact_due
-                self._residual_path_last_step_exact = exact
-                if exact:
-                    loss = self._block_local_training_loss(dit, latents, noise, t, cond)
-                    phase = "exact_calibration"
-                else:
-                    loss = self._residual_path_training_loss(dit, latents, noise, t, cond)
-                    phase = "identity_credit"
-                return loss, {"t": float(t.mean()), "block_local": True, "block_local_phase": phase,
-                              "residual_path_hybrid": True}
+                raise RuntimeError("Global replay does not support masked/prior loss yet.")
             loss = self._block_local_training_loss(dit, latents, noise, t, cond)
-            phase = "head_warmup" if bool(getattr(self, "_block_local_head_only", False)) else "global_replay"
-            return loss, {"t": float(t.mean()), "block_local": True, "block_local_phase": phase}
+            return loss, {"t": float(t.mean()), "block_local": True, "block_local_phase": "global_replay"}
         loss = self.loss_at(dit, latents, noise, t, cond, diff_ref=diff_ref, diff_weight=diff_weight,
                             loss_mask=loss_mask, prior=prior)
         return loss, {"t": float(t.mean())}
