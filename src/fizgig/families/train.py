@@ -1305,6 +1305,65 @@ def _give_back_holdout(dataset_config):
         logger.debug("[validation] could not empty the hold-out list", exc_info=True)
 
 
+
+def resolve_krea2_training_method(driver, family_options=None, train_blocks=None, *,
+                                  network_type="lora", finetune=False,
+                                  slider_pairs=False, slider_prompts=None):
+    """Apply Krea 2's training_method family option.
+
+    Text fusion only forces the four text-fusion block ids. A dropped test-build method
+    trains Standard, with a log note. An unknown name raises, so it never silently trains
+    all 264 Linears. Returns the train_blocks list to use (or None for every block).
+    """
+    from fizgig.krea2.driver import (
+        DROPPED_TRAINING_METHODS, TEXT_FUSION_BLOCK_IDS, TEXT_FUSION_METHODS,
+    )
+
+    method = str((family_options or {}).get("training_method", "") or
+                 getattr(driver, "options", {}).get("training_method", "") or "").strip()
+    key = method.lower()
+    fusion_ids = list(TEXT_FUSION_BLOCK_IDS)
+    asked = list(train_blocks) if train_blocks else None
+
+    if key in TEXT_FUSION_METHODS or getattr(driver, "text_fusion_only", False):
+        if getattr(driver, "global_replay", False):
+            raise RuntimeError("Krea 2 Text fusion only can't be combined with Global replay.")
+        unsupported = []
+        if str(network_type or "lora").lower() != "lora":
+            unsupported.append("Network Type must be standard LoRA (not LoKR)")
+        if finetune:
+            unsupported.append("fine-tuning")
+        if slider_pairs or slider_prompts:
+            unsupported.append("slider training")
+        if unsupported:
+            raise RuntimeError("Krea 2 Text fusion only needs a plain standard LoRA; unsupported: "
+                               + ", ".join(unsupported) + ".")
+        if asked and set(asked) != set(fusion_ids):
+            raise RuntimeError("Krea 2 Text fusion only trains the four text-fusion blocks "
+                               "(txt_lw_0, txt_lw_1, txt_rf_0, txt_rf_1); a different --train_blocks "
+                               "selection is not supported.")
+        return fusion_ids
+
+    if getattr(driver, "global_replay", False):
+        if asked and set(asked) == set(fusion_ids):
+            raise RuntimeError("Krea 2 Text fusion only can't be combined with Global replay.")
+        return asked
+
+    if not key:
+        return asked
+
+    if key in DROPPED_TRAINING_METHODS:
+        # a method from the test build that was not kept (Blockwise flow, Residual-path hybrid): train Standard
+        logger.warning(f"[selective-replay] training method {method!r} is no longer offered; training with "
+                       "Standard instead.")
+        if getattr(driver, "options", None) is not None:
+            driver.options.pop("training_method", None)
+        return asked
+
+    raise RuntimeError(f"Unknown Krea 2 training method {method!r}. "
+                       "Use Standard, Global replay, or Text fusion only.")
+
+
 def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, network_dim=32, network_alpha=32,
                  preview_small_card_cap=0,
                  learning_rate=1e-4, max_train_epochs=16, save_every_n_epochs=1, save_until_epoch=0,
@@ -1373,12 +1432,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                            "itself, so the two don't combine. Drop --context_lora_path.")
     driver = desc.load_driver()
     driver.set_options(dict(family_options or {}))      # before the data: an option may shape the dataset
-    _method = str((family_options or {}).get("training_method", "") or "").strip()
-    if desc.key == "krea2" and _method and not getattr(driver, "global_replay", False):
-        # a method from the test build that was not kept (Blockwise flow, Residual-path hybrid): train Standard
-        logger.warning(f"[selective-replay] training method {_method!r} is no longer offered; training with "
-                       "Standard instead.")
-        driver.options.pop("training_method", None)
+    if desc.key == "krea2":
+        train_blocks = resolve_krea2_training_method(
+            driver, family_options, train_blocks,
+            network_type=network_type, finetune=finetune,
+            slider_pairs=slider_pairs, slider_prompts=slider_prompts)
     global_replay = bool(desc.key == "krea2" and getattr(driver, "global_replay", False))
     selective_global_replay = bool(global_replay and getattr(driver, "selective_global_replay", False))
     if global_replay:
@@ -2164,6 +2222,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if global_replay:
             main_blocks = {b.id for b in driver.block_map(dit)[0].blocks}
             if train_blocks and set(train_blocks) != main_blocks:
+                from fizgig.krea2.driver import TEXT_FUSION_BLOCK_IDS
+                if set(train_blocks) == set(TEXT_FUSION_BLOCK_IDS):
+                    raise RuntimeError("Krea 2 Text fusion only can't be combined with Global replay.")
                 raise RuntimeError("Krea 2 Global replay trains all 28 main transformer blocks; "
                                    "custom --train_blocks selections are not supported.")
             blocks = main_blocks

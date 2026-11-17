@@ -201,7 +201,7 @@ def test_krea2_training_method_is_standard_or_global_replay_with_a_block_check_t
     desc = get_family("krea2")
     assert [option.key for option in desc.options] == ["KREA2_TRAINING_METHOD", "KREA2_SELECTIVE_BLOCK_CHECK"]
     method, check = desc.options
-    assert method.choice_labels() == ["Standard", "Global replay"] and method.default == "Standard"
+    assert method.choice_labels() == ["Standard", "Global replay", "Text fusion only"] and method.default == "Standard"
     assert check.kind == "check" and check.default == "1"
 
     def tokens(values):
@@ -214,6 +214,9 @@ def test_krea2_training_method_is_standard_or_global_replay_with_a_block_check_t
         "--family_option", "training_method=global_replay", "--family_option", "selective_block_check=1"]
     assert tokens({"KREA2_TRAINING_METHOD": "Global replay", "KREA2_SELECTIVE_BLOCK_CHECK": ""}) == [
         "--family_option", "training_method=global_replay"]
+    # Text fusion only sends its method; the Selective check stays with Global replay and is not sent
+    assert tokens({"KREA2_TRAINING_METHOD": "Text fusion only", "KREA2_SELECTIVE_BLOCK_CHECK": "1"}) == [
+        "--family_option", "training_method=text_fusion"]
     # the test build's SGR label lands on Global replay; its dropped methods land on Standard
     assert method.pick("Selective global replay H2D (experimental)") == "Global replay"
     for gone in ("Standard backprop", "Blockwise flow (experimental)", "Blockwise flow H2D (experimental)",
@@ -234,9 +237,13 @@ def test_driver_method_names_toggle_and_dropped_methods():
     assert off.global_replay and not off.selective_global_replay and off.manual_loss_backward
     for old in ("selective_global_replay", "selective_global_replay_h2d"):    # the test build's names: check on
         assert driver_for({"training_method": old}).selective_global_replay is True
+    fusion = driver_for({"training_method": "text_fusion"})
+    assert fusion.text_fusion_only and not fusion.global_replay and not fusion.selective_global_replay
+    assert driver_for({"training_method": "text_fusion_only"}).text_fusion_only
     for gone in ("", "block_local", "block_local_h2d", "residual_path_hybrid", "residual_path_hybrid_h2d_selective_a"):
         driver = driver_for({"training_method": gone})
         assert not driver.global_replay and not driver.selective_global_replay and not driver.manual_loss_backward
+        assert not driver.text_fusion_only
     with pytest.raises(RuntimeError):
         dit, net = _selective_tiny_dit(layers=2)
         off.configure_selective_global_replay(dit, net)
