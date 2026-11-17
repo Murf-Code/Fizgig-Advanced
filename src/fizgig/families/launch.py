@@ -2241,8 +2241,8 @@ def clip_problems(desc, folder):
     return out
 
 
-_HOW = {"picked": "your validation pictures", "auto": "picked by Fizgig: about a tenth, spread over your folders "
-         "and picture shapes", "resume": "the same ones as before the pause"}
+_HOW = {"picked": "your validation pictures", "auto": "picked by Fizgig: about a tenth of the pictures in the "
+         "main folder, spread over picture shapes", "resume": "the same ones as before the pause"}
 
 
 def holdout_on(st):
@@ -2335,8 +2335,11 @@ def plan(desc, inputs):
             inputs["_holdout_file"] = hpath
             p.dataset_toml = dataset_toml(desc, inputs)
             shown = ", ".join(names[:6]) + (f" and {len(names) - 6} more" if len(names) > 6 else "")
+            how_txt = _HOW.get(how, how)
+            if why:
+                how_txt = f"{how_txt}; {why.lstrip('; ').rstrip()}"
             p.console.append(f"[validation] Hold-out: {len(paths)} picture(s) set aside for validation for the whole "
-                             f"run, never cached or trained as training pictures ({_HOW.get(how, how)}): {shown}\n")
+                             f"run, never cached or trained as training pictures ({how_txt}): {shown}\n")
         elif why:
             p.console.append(f"[validation] Hold-out off for this run: {why}\n")
     missing = [k for k in ("python", "repo_dir", "DATASET_CONFIG", "LORA_OUTPUT_DIR", "NETWORK_DIM", "NETWORK_ALPHA",

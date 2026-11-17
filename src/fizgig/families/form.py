@@ -938,16 +938,19 @@ def form(desc):
              "the LoRA does. It goes down while the LoRA learns and turns back up when it starts to overcook. It "
              "uses no extra memory and adds a few seconds a check. Off by default.", full=True),
         _row("VALIDATION_PICKED", "Your images to check (optional)", "valpick", "Pick the training images to "
-             "check from your dataset, one at a time. None picked: Fizgig spreads its own pick evenly through the "
-             "folder (Images to check). With the hold-out on (below), these are the pictures set aside.", default=[]),
-        _row("VALIDATION_IMAGES", "Images to check", hint="Used when you haven't picked any: picked evenly from your "
-             "training images, the same ones every check (and every run of this dataset). With the hold-out on, "
-             "Fizgig sets aside about a tenth of your pictures, up to this many."),
+             "check from your dataset, one at a time. None picked: Fizgig picks evenly from pictures in the main "
+             "training folder, not from subfolders (Images to check). With the hold-out on (below), these are the "
+             "pictures set aside.", default=[]),
+        _row("VALIDATION_IMAGES", "Images to check", hint="Used when you haven't picked any: picked evenly from "
+             "pictures in the main training folder (not subfolders), the same ones every check (and every run of "
+             "this dataset). With the hold-out on, Fizgig sets aside about a tenth of those pictures, up to this "
+             "many."),
         _row("VALIDATION_HOLDOUT", "Hold the validation images out of training", "check",
              "On (default): a few pictures are set aside before the cache is made and never train, so validation "
              "measures pictures the LoRA hasn't seen - it turns up when the LoRA starts to overcook instead of just "
-             "memorising. Your picked images are the ones set aside; none picked, Fizgig picks about a tenth (none "
-             "for under 5 pictures). They come back to the dataset when the run stops, pauses or ends, and a resume "
+             "memorising. Your picked images are the ones set aside; none picked, Fizgig picks about a tenth from "
+             "the main training folder, not from subfolders (none for under 5 pictures). They come back to the "
+             "dataset when the run stops, pauses or ends, and a resume "
              "sets aside the same ones. Works with or without Fixed validation loss. Off: every picture trains.",
              full=True),
         _row("VALIDATION_TIMESTEPS", "Noise levels per image", hint="Evenly spaced from low to high noise "

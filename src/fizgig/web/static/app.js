@@ -3234,7 +3234,7 @@ function valPickRow(r, wrap) {
       el("span", {class: "pair-name", text: n}),
       el("button", {class: "btn btn-sm pair-x", text: "✕", title: "Don't check this image",
         onclick: () => save(valPicked(r).filter((x) => x !== n))}))));
-    if (!names.length) list.append(el("span", {class: "field-hint", text: "None picked - Fizgig picks evenly (Images to check)."}));
+    if (!names.length) list.append(el("span", {class: "field-hint", text: "None picked - Fizgig picks evenly from the main folder (Images to check)."}));
     clear.style.display = names.length ? "" : "none";
   };
   function save(names) { onValue(r, names); draw(); }
