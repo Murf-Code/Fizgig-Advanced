@@ -55,7 +55,7 @@ KREA2 = FamilyDescription(
         label="Selective block check",
         kind="check",
         tokens="selective_block_check=1",
-        default="1",
+        default="",                     # off by default: every block trains on every update
         section="other",
         mode="lora",
         requires="KREA2_TRAINING_METHOD=Global replay",

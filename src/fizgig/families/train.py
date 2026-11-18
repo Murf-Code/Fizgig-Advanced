@@ -1445,8 +1445,6 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     selective_global_replay = bool(global_replay and getattr(driver, "selective_global_replay", False))
     if global_replay:
         unsupported = []
-        if str(optimizer_type or "").lower() == "polora":
-            unsupported.append("PoLoRA (its paired optimizer needs every A/B gradient on every step)")
         if str(network_type or "lora").lower() != "lora":
             unsupported.append("Network Type must be standard LoRA (not LoKR)")
         if finetune:

@@ -7,7 +7,7 @@ An opt-in Krea 2 LoRA training path. It keeps the **same global flow-matching ob
 In Other Options, set **Training method** to:
 
 - **Standard** (default): normal training, exactly as before.
-- **Global replay**: the method below. A **Selective block check** tick (on by default) appears under it.
+- **Global replay**: the method below. A **Selective block check** tick (off by default) appears under it.
 
 On the command line:
 
@@ -15,7 +15,7 @@ On the command line:
 --family_option training_method=global_replay --family_option selective_block_check=1
 ```
 
-Leave out `selective_block_check=1` for the check off. The test build's `training_method=selective_global_replay` and `selective_global_replay_h2d` still work and mean Global replay with the check on. Its other methods (Blockwise flow, Residual-path hybrid) are no longer offered: a run naming one logs a note and trains Standard.
+Leave out `selective_block_check=1` for the check off (the default). The test build's `training_method=selective_global_replay` and `selective_global_replay_h2d` still work and mean Global replay with the check on. Its other methods (Blockwise flow, Residual-path hybrid) are no longer offered: a run naming one logs a note and trains Standard.
 
 ## What it does
 
@@ -29,7 +29,7 @@ When blocks swap, it uses the H2D-only (send-only) block swap: each block is rep
 
 ## Selective block check
 
-With the tick on:
+The check is off by default. With the tick on:
 
 1. All blocks train for the first 8 optimizer updates.
 2. At each check (update 8, then every 8), with all blocks active, Fizgig scores each block's movement since its previous check against the fresh global-loss gradient at the check, before that update's step: `cos(-g_now, theta_now - theta_last_check)`. Negative means the block's recent updates carried it past where the loss now points.
@@ -46,8 +46,16 @@ With the tick off: every block trains on every update, with no checks and no sco
 
 - Krea 2, standard LoRA, batch size 1 (use gradient accumulation for a bigger effective batch).
 - Trains all 28 main transformer blocks; text-fusion and input/timestep/output adapters stay frozen. Custom block subsets are rejected.
-- Rejected: PoLoRA, fine-tuning, LoKR, sliders, DOP, masked/prior loss, rotated INT8 backward, training attention maps, shared/helper training.
+- Rejected: fine-tuning, LoKR, sliders, DOP, masked/prior loss, rotated INT8 backward, training attention maps, shared/helper training.
 - Saved block inputs live in CPU RAM; at larger sizes that can be several GB.
+
+## PoLoRA
+
+PoLoRA works with Global replay. Global replay gives every LoRA pair the same gradient Standard training does, which is all PoLoRA needs.
+
+- **Check off (default):** all 28 blocks get their gradients on every update, and PoLoRA steps every down/up pair as it does under Standard.
+- **Check on:** a skipped block's pairs have no gradients for that update. PoLoRA leaves those pairs out of the step entirely: their weights, momentum, Q/P curvature diagonals and sigma_max warm starts stay exactly as they were, with no momentum decay. The pairs that did get gradients get the same update they would get if every pair had trained. A pair with only one of its two gradients is an error, because PoLoRA's two sides are coupled.
+- A block that wakes after being skipped resumes with the momentum it had when it was paused. The check's scores were tuned on Muon runs, so it may rank blocks differently under PoLoRA.
 
 ## Results so far
 

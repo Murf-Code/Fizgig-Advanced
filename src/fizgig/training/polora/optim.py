@@ -26,6 +26,8 @@ non-PEFT use is supported via ``Polora(pairs=[(A, B), ...], lr=...)``.
 # stacking and copying back), the factor updates and grad zeroing are written back with foreach ops, and the four
 # sigma_max power iterations of a group run as two batched calls (compiled with the other kernels when compile=True).
 # The update itself is unchanged (checks/test_polora_stacked.py runs it against the per-pair step it replaced).
+# A pair with no gradients this step (both None: its block sat the step out, as Krea 2 Global replay's Selective
+# block check does) is skipped whole - weights, momentum, Q / P and warm starts untouched (checks/test_polora_skip.py).
 from __future__ import annotations
 
 import logging
@@ -315,8 +317,15 @@ class Polora(Optimizer):
     def step(self, closure=None):
         """Applies one Polora update to every LoRA pair, then zeros their grads.
 
-        Gradients on all ``(A, B)`` factors must already be populated; raises
-        ``ValueError`` otherwise. See the module docstring for the update.
+        A pair whose ``A.grad`` and ``B.grad`` are both None sat this step out
+        (its block was frozen for the step, e.g. Krea 2 Global replay's
+        Selective block check): it is skipped whole - its weights, momentum,
+        ``Q`` / ``P`` and sigma_max warm-start vectors stay exactly as they
+        were. Every other pair gets the same update as when all pairs have
+        gradients. Raises ``ValueError`` when no pair has gradients, or when a
+        pair has one factor's gradient but not the other's (the two sides of
+        the update are coupled, so half a pair is a wiring fault, not a skip).
+        See the module docstring for the update.
 
         Args:
             closure: Callable that re-evaluates the model and returns the loss
@@ -331,21 +340,105 @@ class Polora(Optimizer):
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
+        active = []
         for A, B in self.pairs:
-            if A.grad is None or B.grad is None:
-                raise ValueError("Gradients are required for Polora update.")
+            has_a, has_b = A.grad is not None, B.grad is not None
+            if has_a != has_b:
+                raise ValueError("Polora needs both gradients of a LoRA pair, or neither (a pair with no gradients "
+                                 "is skipped this step); this pair has only its "
+                                 f"{'A (down)' if has_a else 'B (up)'} gradient.")
+            active.append(has_a)
+        if not any(active):
+            raise ValueError("Gradients are required for Polora update.")
         layout = self._layout_now()
         if layout != self._layout:
             self._build_groups(layout)
         with torch.no_grad():
-            self._update()
+            self._update(None if all(active) else active)
         return loss
 
-    def _update(self):
-        lr = self.param_groups[0]["lr"]
+    def _update_group(self, As, Bs, f32_group, M_A, M_B, Q, P, vA, vB, lr, magnitude, want_sigmas):
+        """One shape group's batched update over the pairs ``As`` / ``Bs``, their stacked state ``M_A`` / ``M_B`` /
+        ``Q`` / ``P`` / ``vA`` / ``vB`` updated in place (``vA`` = the A's warm starts over the D_A's). Returns the
+        pairs' ``(sigma_A, sigma_B)`` when ``want_sigmas``, else ``(None, None)``."""
         cb = self.curvature_beta
         b1, eps = self.beta1, self.epsilon
         f32 = torch.float32
+        n = len(As)
+        gA, gB = [A.grad for A in As], [B.grad for B in Bs]
+        G_A = torch.stack(gA) if f32_group else torch.stack(gA).float()
+        G_B = torch.stack(gB) if f32_group else torch.stack(gB).float()
+        # A over D_A (and B over D_B) in one tensor: their sigma_max run as one batched call
+        WA = torch.empty((2 * n, *M_A.shape[1:]), dtype=f32, device=G_A.device)
+        WB = torch.empty((2 * n, *M_B.shape[1:]), dtype=f32, device=G_B.device)
+        Aw, Bw = WA[:n], WB[:n]
+        if f32_group:
+            torch.stack(As, out=Aw)
+            torch.stack(Bs, out=Bw)
+        else:
+            Aw.copy_(torch.stack(As))
+            Bw.copy_(torch.stack(Bs))
+        M_A = M_A.mul_(b1).add_(G_A, alpha=1.0 - b1)
+        M_B = M_B.mul_(b1).add_(G_B, alpha=1.0 - b1)
+
+        Q_isqrt = self._rdinv(Q)
+        P_isqrt = self._rdinv(P)
+        Q_dmp = (Q_isqrt * Q_isqrt).reciprocal()
+        P_dmp = (P_isqrt * P_isqrt).reciprocal()
+        # Curvature factors, rebuilt each step (not stored).
+        C_B = Bw.transpose(-2, -1) @ (P_dmp.unsqueeze(-1) * Bw)
+        C_A = (Aw * Q_dmp.unsqueeze(1)) @ Aw.transpose(-2, -1)
+        C_B_isqrt = self._kernel("_invsqrt_fn", self._sym(C_B), nsteps=self.higham_iters,
+                                 eps=self.delta, eps_relative=True, floor=self.epsilon)
+        C_A_isqrt = self._kernel("_invsqrt_fn", self._sym(C_A), nsteps=self.higham_iters,
+                                 eps=self.delta, eps_relative=True, floor=self.epsilon)
+        C_B_inv = C_B_isqrt @ C_B_isqrt
+        C_A_inv = C_A_isqrt @ C_A_isqrt
+
+        # Nesterov look-ahead.
+        M_hat_A = M_A.mul(b1).add(G_A, alpha=1.0 - b1)
+        M_hat_B = M_B.mul(b1).add(G_B, alpha=1.0 - b1)
+
+        # Whiten -> polar -> unwhiten (D_A / D_B written under A / B for the sigma_max call).
+        zA = (C_B_isqrt @ M_hat_A) * Q_isqrt.unsqueeze(1)
+        zB = (M_hat_B @ C_A_isqrt) * P_isqrt.unsqueeze(-1)
+        zA = self._polar_batched(zA)
+        zB = self._polar_batched(zB)
+        D_A = torch.mul(C_B_isqrt @ zA, Q_isqrt.unsqueeze(1), out=WA[n:])
+        D_B = torch.mul(zB @ C_A_isqrt, P_isqrt.unsqueeze(-1), out=WB[n:])
+
+        sWA, vA_new, sWB, vB_new = self._kernel("_smax_fn", WA, vA, WB, vB)
+        vA.copy_(vA_new)
+        vB.copy_(vB_new)
+        sigma_A, sigma_DA = sWA[:n], sWA[n:]
+        sigma_B, sigma_DB = sWB[:n], sWB[n:]
+        # Magnitude scale + optional timestep scale + optional decay
+        rho = lr / (sigma_B + sigma_A)
+        rho = rho * magnitude * self._timestep_scale * self._decay_factor()
+        dA = -(rho / sigma_DA.clamp_min(eps)).view(-1, 1, 1) * D_A
+        dB = -(rho / sigma_DB.clamp_min(eps)).view(-1, 1, 1) * D_B
+
+        # Preconditioner update: each diagonal accumulates the gradient
+        # whitened by the inverse of the other side's r x r matrix.
+        r = G_A.shape[1]
+        Q.mul_(cb).add_((G_A * (C_B_inv @ G_A)).sum(dim=1), alpha=(1.0 - cb) / r)
+        P.mul_(cb).add_((G_B * (G_B @ C_A_inv)).sum(dim=2), alpha=(1.0 - cb) / r)
+
+        # write back: every pair of the group at once, then its grads zeroed
+        if not f32_group:
+            dA, dB = dA.to(As[0].dtype), dB.to(Bs[0].dtype)
+        torch._foreach_add_(As, dA.unbind(0))
+        torch._foreach_add_(Bs, dB.unbind(0))
+        torch._foreach_zero_(gA + gB)
+        if want_sigmas:
+            return sigma_A.reshape(-1), sigma_B.reshape(-1)
+        return None, None
+
+    def _update(self, active=None):
+        """One update over every shape group. ``active`` (None = every pair) is a per-pair list of whether that
+        pair has gradients this step; a group's skipped pairs are left out of its batch, so their params and state
+        are not touched and the rest get exactly the update they would get alone (the batched maths is per pair)."""
+        lr = self.param_groups[0]["lr"]
         log_now = bool(self.log_norms_every) and self._step_count % self.log_norms_every == 0
         record_now = bool(self.record_every) and self._step_count % self.record_every == 0
         magnitude = self.effective_magnitude()
@@ -353,76 +446,33 @@ class Polora(Optimizer):
         sig_A, sig_B = [], []
         # One batched bmm / Newton-Schulz / sigma_max per (r, d_in, d_out, device, dtype) shape group.
         for g in self._groups:
-            n = len(g.idxs)
-            gA, gB = [A.grad for A in g.As], [B.grad for B in g.Bs]
-            G_A = torch.stack(gA) if g.f32 else torch.stack(gA).float()
-            G_B = torch.stack(gB) if g.f32 else torch.stack(gB).float()
-            # A over D_A (and B over D_B) in one tensor: their sigma_max run as one batched call
-            WA = torch.empty((2 * n, *g.M_A.shape[1:]), dtype=f32, device=G_A.device)
-            WB = torch.empty((2 * n, *g.M_B.shape[1:]), dtype=f32, device=G_B.device)
-            Aw, Bw = WA[:n], WB[:n]
-            if g.f32:
-                torch.stack(g.As, out=Aw)
-                torch.stack(g.Bs, out=Bw)
+            on = None if active is None else [j for j, i in enumerate(g.idxs) if active[i]]
+            if on is not None and len(on) == len(g.idxs):
+                on = None                   # the whole group trains: its stacked state is updated in place
+            if on is None:
+                sA, sB = self._update_group(g.As, g.Bs, g.f32, g.M_A, g.M_B, g.Q, g.P, g.vA, g.vB,
+                                            lr, magnitude, log_now or record_now)
+            elif not on:
+                continue                    # every pair of this group sat the step out
             else:
-                Aw.copy_(torch.stack(g.As))
-                Bw.copy_(torch.stack(g.Bs))
-            M_A = g.M_A.mul_(b1).add_(G_A, alpha=1.0 - b1)
-            M_B = g.M_B.mul_(b1).add_(G_B, alpha=1.0 - b1)
-            Q, P = g.Q, g.P                                  # d_in / d_out metric diagonals
-
-            Q_isqrt = self._rdinv(Q)
-            P_isqrt = self._rdinv(P)
-            Q_dmp = (Q_isqrt * Q_isqrt).reciprocal()
-            P_dmp = (P_isqrt * P_isqrt).reciprocal()
-            # Curvature factors, rebuilt each step (not stored).
-            C_B = Bw.transpose(-2, -1) @ (P_dmp.unsqueeze(-1) * Bw)
-            C_A = (Aw * Q_dmp.unsqueeze(1)) @ Aw.transpose(-2, -1)
-            C_B_isqrt = self._kernel("_invsqrt_fn", self._sym(C_B), nsteps=self.higham_iters,
-                                     eps=self.delta, eps_relative=True, floor=self.epsilon)
-            C_A_isqrt = self._kernel("_invsqrt_fn", self._sym(C_A), nsteps=self.higham_iters,
-                                     eps=self.delta, eps_relative=True, floor=self.epsilon)
-            C_B_inv = C_B_isqrt @ C_B_isqrt
-            C_A_inv = C_A_isqrt @ C_A_isqrt
-
-            # Nesterov look-ahead.
-            M_hat_A = M_A.mul(b1).add(G_A, alpha=1.0 - b1)
-            M_hat_B = M_B.mul(b1).add(G_B, alpha=1.0 - b1)
-
-            # Whiten -> polar -> unwhiten (D_A / D_B written under A / B for the sigma_max call).
-            zA = (C_B_isqrt @ M_hat_A) * Q_isqrt.unsqueeze(1)
-            zB = (M_hat_B @ C_A_isqrt) * P_isqrt.unsqueeze(-1)
-            zA = self._polar_batched(zA)
-            zB = self._polar_batched(zB)
-            D_A = torch.mul(C_B_isqrt @ zA, Q_isqrt.unsqueeze(1), out=WA[n:])
-            D_B = torch.mul(zB @ C_A_isqrt, P_isqrt.unsqueeze(-1), out=WB[n:])
-
-            sWA, vA, sWB, vB = self._kernel("_smax_fn", WA, g.vA, WB, g.vB)
-            g.vA.copy_(vA)
-            g.vB.copy_(vB)
-            sigma_A, sigma_DA = sWA[:n], sWA[n:]
-            sigma_B, sigma_DB = sWB[:n], sWB[n:]
-            # Magnitude scale + optional timestep scale + optional decay
-            rho = lr / (sigma_B + sigma_A)
-            rho = rho * magnitude * self._timestep_scale * self._decay_factor()
-            if log_now or record_now:
-                sig_A.append(sigma_A.reshape(-1))
-                sig_B.append(sigma_B.reshape(-1))
-            dA = -(rho / sigma_DA.clamp_min(eps)).view(-1, 1, 1) * D_A
-            dB = -(rho / sigma_DB.clamp_min(eps)).view(-1, 1, 1) * D_B
-
-            # Preconditioner update: each diagonal accumulates the gradient
-            # whitened by the inverse of the other side's r x r matrix.
-            r = G_A.shape[1]
-            Q.mul_(cb).add_((G_A * (C_B_inv @ G_A)).sum(dim=1), alpha=(1.0 - cb) / r)
-            P.mul_(cb).add_((G_B * (G_B @ C_A_inv)).sum(dim=2), alpha=(1.0 - cb) / r)
-
-            # write back: every pair of the group at once, then its grads zeroed
-            if not g.f32:
-                dA, dB = dA.to(g.As[0].dtype), dB.to(g.Bs[0].dtype)
-            torch._foreach_add_(g.As, dA.unbind(0))
-            torch._foreach_add_(g.Bs, dB.unbind(0))
-            torch._foreach_zero_(gA + gB)
+                # the trained pairs' rows, updated as a smaller batch, then written back; the others are untouched
+                n = len(g.idxs)
+                idx = torch.tensor(on, dtype=torch.long, device=g.M_A.device)
+                vidx = torch.cat([idx, idx + n])
+                M_A, M_B = g.M_A.index_select(0, idx), g.M_B.index_select(0, idx)
+                Q, P = g.Q.index_select(0, idx), g.P.index_select(0, idx)
+                vA, vB = g.vA.index_select(0, vidx), g.vB.index_select(0, vidx)
+                sA, sB = self._update_group([g.As[j] for j in on], [g.Bs[j] for j in on], g.f32,
+                                            M_A, M_B, Q, P, vA, vB, lr, magnitude, log_now or record_now)
+                g.M_A.index_copy_(0, idx, M_A)
+                g.M_B.index_copy_(0, idx, M_B)
+                g.Q.index_copy_(0, idx, Q)
+                g.P.index_copy_(0, idx, P)
+                g.vA.index_copy_(0, vidx, vA)
+                g.vB.index_copy_(0, vidx, vB)
+            if sA is not None:
+                sig_A.append(sA)
+                sig_B.append(sB)
 
         if log_now or record_now:       # one sync for both averages
             sa, sb = torch.stack([torch.cat(sig_A).float().mean(), torch.cat(sig_B).float().mean()]).tolist()

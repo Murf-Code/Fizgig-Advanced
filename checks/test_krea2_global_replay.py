@@ -202,7 +202,7 @@ def test_krea2_training_method_is_standard_or_global_replay_with_a_block_check_t
     assert [option.key for option in desc.options] == ["KREA2_TRAINING_METHOD", "KREA2_SELECTIVE_BLOCK_CHECK"]
     method, check = desc.options
     assert method.choice_labels() == ["Standard", "Global replay"] and method.default == "Standard"
-    assert check.kind == "check" and check.default == "1"
+    assert check.kind == "check" and check.default == ""      # off by default: every block trains every update
 
     def tokens(values):
         return option_tokens(desc, {"FAMILY_OPTIONS": values})[0]
@@ -214,6 +214,8 @@ def test_krea2_training_method_is_standard_or_global_replay_with_a_block_check_t
         "--family_option", "training_method=global_replay", "--family_option", "selective_block_check=1"]
     assert tokens({"KREA2_TRAINING_METHOD": "Global replay", "KREA2_SELECTIVE_BLOCK_CHECK": ""}) == [
         "--family_option", "training_method=global_replay"]
+    # the tick left at its default sends no check: Global replay with every block training
+    assert tokens({"KREA2_TRAINING_METHOD": "Global replay"}) == ["--family_option", "training_method=global_replay"]
     # the test build's SGR label lands on Global replay; its dropped methods land on Standard
     assert method.pick("Selective global replay H2D (experimental)") == "Global replay"
     for gone in ("Standard backprop", "Blockwise flow (experimental)", "Blockwise flow H2D (experimental)",
@@ -399,3 +401,106 @@ def test_selective_global_replay_keeps_every_block_that_descends():
     targets = {i: [torch.randn_like(p) for p in values] for i, values in block_params.items()}
     _run_selective_with_real_optimizer(driver, block_params, targets, {0: 1.0, 1: 2.0}, 0.1, 12)
     assert driver.selective_active_blocks() == [0, 1]
+
+
+def _polora_lora_dit(layers=4, seed=9102):
+    from fizgig.families.lora import LoRALinear, TRAINABLE
+
+    torch.manual_seed(seed)
+    dit = _tiny_dit(layers=layers)
+    wrapped = {}
+    for index, block in enumerate(dit.blocks):
+        base = block.mlp.gate
+        base.weight.requires_grad_(False)
+        layer = LoRALinear(base)
+        layer.add(TRAINABLE, rank=2, alpha=2, trainable=True)
+        torch.nn.init.normal_(layer.adapters[TRAINABLE][1].weight, std=0.02)
+        block.mlp.gate = layer
+        wrapped[f"blocks.{index}.mlp.gate"] = layer
+    return dit, type("FakeLoRANet", (), {"wrapped": wrapped})()
+
+
+def _replay_inputs():
+    return torch.randn(1, 2, 4, 4), {"hidden_states": torch.randn(1, 3, 1, 16),
+                                     "attention_mask": torch.tensor([[True, True, True]])}
+
+
+def test_trainer_no_longer_rejects_polora_with_global_replay():
+    import inspect
+    from fizgig.families import train
+
+    src = inspect.getsource(train._train_family)
+    assert "PoLoRA (its paired optimizer" not in src
+    assert 'unsupported.append("Network Type must be standard LoRA (not LoKR)")' in src   # the other refusals stay
+
+
+def test_polora_with_global_replay_and_the_check_off_steps_every_pair():
+    # (that the replay's gradients are Standard's is the job of the checks above; this one runs PoLoRA on them)
+    from fizgig.training.optimizers import polora_pairs
+    from fizgig.training.polora import Polora
+
+    dit, net = _polora_lora_dit()
+    driver = Krea2Driver()
+    driver.set_options({"training_method": "global_replay"})          # the check at its default: off
+    assert driver.global_replay and not driver.selective_global_replay
+    pairs = polora_pairs(net)
+    assert len(pairs) == 4
+    opt = Polora(pairs=pairs, lr=2e-2, compile=False)
+    torch.manual_seed(11)
+    for step in range(4):
+        latents, cond = _replay_inputs()
+        before = [(A.detach().clone(), B.detach().clone()) for A, B in pairs]
+        opt.zero_grad(set_to_none=True)
+        _, info = driver.training_loss(dit, latents, cond, torch.Generator().manual_seed(100 + step))
+        assert info["block_local_phase"] == "global_replay"
+        driver.backward_training_loss()
+        assert driver.selective_snapshot_before_step() is None
+        assert all(A.grad is not None and B.grad is not None for A, B in pairs)   # every block, every update
+        opt.step()
+        assert driver.finish_selective_optimizer_step(None) is None
+        for (A, B), (A0, B0) in zip(pairs, before):
+            assert not torch.equal(A, A0) and not torch.equal(B, B0)
+            assert torch.isfinite(A).all() and torch.isfinite(B).all()
+    assert opt._step_count == 4
+
+
+def test_polora_with_the_selective_block_check_leaves_paused_blocks_alone():
+    from fizgig.training.optimizers import polora_pairs
+    from fizgig.training.polora import Polora
+
+    dit, net = _polora_lora_dit()
+    driver = Krea2Driver()
+    driver.set_options({"training_method": "global_replay", "selective_block_check": "1"})
+    driver.configure_selective_global_replay(dit, net, warmup_updates=1, reactivate_every=2)
+    pairs = polora_pairs(net)                                       # built with every block active, as in train.py
+    opt = Polora(pairs=pairs, lr=2e-2, compile=False)
+    by_block = [pairs[i] for i in range(4)]
+
+    def update(active=None):
+        if active is not None:
+            driver._selective_active = set(active)
+            driver._set_selective_active_parameters()
+        opt.zero_grad(set_to_none=True)
+        latents, cond = _replay_inputs()
+        driver.training_loss(dit, latents, cond, torch.Generator().manual_seed(7))
+        driver.backward_training_loss()
+        snapshot = driver.selective_snapshot_before_step()
+        opt.step()
+        return driver.finish_selective_optimizer_step(snapshot)
+
+    torch.manual_seed(5)
+    update()                                                         # every block trains first
+    weights = [(A.detach().clone(), B.detach().clone()) for A, B in by_block]
+    state = {i: {k: v.clone() for k, v in opt.pair_state[i].items()} for i in range(4)}
+    update(active={0, 2})                                            # blocks 1 and 3 paused for this update
+    for i, (A, B) in enumerate(by_block):
+        moved = not torch.equal(A, weights[i][0])
+        if i in (1, 3):
+            assert not moved and torch.equal(B, weights[i][1]), f"paused block {i} moved"
+            assert all(torch.equal(v, state[i][k]) for k, v in opt.pair_state[i].items()), f"block {i} state changed"
+        else:
+            assert moved, f"active block {i} did not step"
+    # the check's own probes and wake-ups run beside PoLoRA without a refused step
+    for _ in range(6):
+        update()
+    assert all(torch.isfinite(A).all() and torch.isfinite(B).all() for A, B in pairs)
