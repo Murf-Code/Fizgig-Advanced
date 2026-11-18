@@ -25,16 +25,6 @@ from fizgig.krea2.generation_attention import configured_generation
 DTYPE = torch.bfloat16
 _BLOCK_MODULES = ("attn.wq", "attn.wk", "attn.wv", "attn.gate", "attn.wo", "mlp.gate", "mlp.up", "mlp.down")
 _IO = ("first", "tmlp.0", "tmlp.2", "txtmlp.1", "txtmlp.3", "tproj.1", "last.linear")
-# Text fusion only trains these four blocks (8 Linears each: attn + mlp).
-TEXT_FUSION_BLOCK_IDS = ("txt_lw_0", "txt_lw_1", "txt_rf_0", "txt_rf_1")
-TEXT_FUSION_METHODS = frozenset({"text_fusion", "text_fusion_only"})
-GLOBAL_REPLAY_METHODS = frozenset({"global_replay", "selective_global_replay", "selective_global_replay_h2d"})
-# Test-build methods that were dropped: they now train Standard, with a log note.
-DROPPED_TRAINING_METHODS = frozenset({
-    "block_local", "block_local_h2d",
-    "residual_path_hybrid", "residual_path_hybrid_h2d",
-    "residual_path_hybrid_h2d_selective_a",
-})
 
 
 def _mu(num_img_tokens):
@@ -218,7 +208,7 @@ class Krea2Driver(FamilyDriver):
         time (H2D-only block swap when blocks swap). The test build's "selective_global_replay(_h2d)" names are
         this method with the Selective block check on."""
         method = str(getattr(self, "options", {}).get("training_method", "") or "").lower()
-        return method in GLOBAL_REPLAY_METHODS
+        return method in ("global_replay", "selective_global_replay", "selective_global_replay_h2d")
 
     @property
     def selective_global_replay(self):
@@ -229,12 +219,6 @@ class Krea2Driver(FamilyDriver):
             return True
         return method == "global_replay" and str(options.get("selective_block_check", "") or "").lower() in (
             "1", "true", "on", "yes")
-
-    @property
-    def text_fusion_only(self):
-        """Krea 2 Text fusion only: a standard LoRA on the four text-fusion blocks; the DiT stays frozen."""
-        method = str(getattr(self, "options", {}).get("training_method", "") or "").lower()
-        return method in TEXT_FUSION_METHODS
 
     @property
     def manual_loss_backward(self):

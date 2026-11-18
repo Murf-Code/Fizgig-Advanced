@@ -2390,7 +2390,7 @@ def krea2_method_problems(desc, inputs):
     method = str((inputs.get("FAMILY_OPTIONS") or {}).get("KREA2_TRAINING_METHOD", "")).strip().lower()
     if "global replay" in method:
         return ["Training maps can't be used with Krea 2's Global replay: it works one block at a time. Untick "
-                "Training maps (Samples tab), or set Training method to Standard or Text fusion only."]
+                "Training maps (Samples tab), or set Training method to Standard."]
     return []
 
 

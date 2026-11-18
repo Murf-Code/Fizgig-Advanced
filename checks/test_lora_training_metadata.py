@@ -26,7 +26,7 @@ def _md(tmp_path):
         num_images=75, scheduler="cosine", warmup_steps=10, resolution=[1024, 1024],
         buckets=M.bucket_resolutions(dss), base_precision="int8",
         base_model="H:\\Stable_Diffusion\\models\\krea2_dev.safetensors", datasets=dss,
-        training_method="text_fusion", selective_block_check=False, validation_groups=3, best_epoch=3,
+        training_method="global_replay", selective_block_check=False, validation_groups=3, best_epoch=3,
         best_val_loss=0.1234, current_lr=1e-4, started_at=1000.0, now=1600.0) , (main, sub, reg)
 
 
@@ -43,7 +43,7 @@ def test_kohya_keys_and_training_config(tmp_path):
     assert dirs == {"zebra subject": {"n_repeats": 2, "img_count": 20}, "Close ups": {"n_repeats": 3, "img_count": 5}}
     assert json.loads(md["ss_reg_dataset_dirs"]) == {"reg": {"n_repeats": 1, "img_count": 10}}
     cfg = json.loads(md[M.TRAINING_CONFIG_KEY])
-    assert cfg["training_method"] == "text_fusion" and cfg["selective_block_check"] is False
+    assert cfg["training_method"] == "global_replay" and cfg["selective_block_check"] is False
     assert cfg["folders"]["zebra subject"] == {"weight": 0.5, "repeats": 2}
     assert cfg["validation_groups"] == 3 and cfg["epoch"] == 4 and cfg["best_epoch"] == 3
     assert cfg["best_val_loss"] == 0.1234 and cfg["current_lr"] == 1e-4 and cfg["training_seconds"] == 600.0

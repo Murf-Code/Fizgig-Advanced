@@ -1,7 +1,7 @@
 """The upstream regularisation dataset (Subjects card, --reg_per_epoch) beside the Start tab's per-folder
 Weight / Repeats / Balance table: the reg set is its own dataset block, never in the table, never given a folder
-weight or repeats; the per-epoch share counts the table's repeats; and Krea 2's Global replay / Text fusion only
-choices leave both alone."""
+weight or repeats; the per-epoch share counts the table's repeats; and Krea 2's Global replay
+choice leaves both alone."""
 import os
 
 from PIL import Image
@@ -99,7 +99,7 @@ def test_the_table_stays_with_the_reg_fold_and_goes_with_subject_modes(tmp_path)
 
 def test_krea2_methods_leave_the_table_and_reg_alone(tmp_path):
     train, reg = _tree(tmp_path)
-    for method in ("Standard", "Global replay", "Text fusion only"):
+    for method in ("Standard", "Global replay"):
         st = _inputs(tmp_path, train, reg, KREA2_TRAINING_METHOD=method,
                      FOLDER_OPTS={"close": {"repeats": 2, "weight": 0.5}})
         toml = launch.dataset_toml(DESC, st)
@@ -108,7 +108,7 @@ def test_krea2_methods_leave_the_table_and_reg_alone(tmp_path):
 
 def test_training_maps_with_global_replay_is_refused_at_start(tmp_path):
     train, reg = _tree(tmp_path)
-    for method, refused in (("Global replay", True), ("Standard", False), ("Text fusion only", False)):
+    for method, refused in (("Global replay", True), ("Standard", False)):
         st = _inputs(tmp_path, train, reg, TRAINING_MAPS=True, KREA2_TRAINING_METHOD=method)
         assert st["TRAINING_MAPS"] is True
         probs = [p for p in launch.krea2_method_problems(DESC, st) if "Training maps" in p]

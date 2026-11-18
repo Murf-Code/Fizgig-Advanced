@@ -37,8 +37,7 @@ KREA2 = FamilyDescription(
         key="KREA2_TRAINING_METHOD",
         label="Training method",
         choices=(("Standard", ""),
-                 ("Global replay", "training_method=global_replay"),
-                 ("Text fusion only", "training_method=text_fusion")),
+                 ("Global replay", "training_method=global_replay")),
         # the test build's label for the method its runs used; its other labels land on Standard
         choice_values=("", "Selective global replay H2D (experimental)"),
         default="Standard",
@@ -49,10 +48,7 @@ KREA2 = FamilyDescription(
                       ("Global replay", "First runs the whole model once to get the real loss, then replays it one "
                        "block at a time to work out each block's update. Only one block's working memory is held at "
                        "once, so it's faster and lighter on VRAM when blocks are swapped, and nothing is "
-                       "approximated. Needs batch 1 and a standard LoRA."),
-                      ("Text fusion only", "Trains only the four text-fusion blocks as a standard LoRA. The main "
-                       "image model stays frozen, so the file is small. Rank 64 is a good starting point; alpha "
-                       "follows rank as usual. Works with every option except Global replay.")),
+                       "approximated. Needs batch 1 and a standard LoRA.")),
         summary="{}",
     ), FamilyOption(
         key="KREA2_SELECTIVE_BLOCK_CHECK",
