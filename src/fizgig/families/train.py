@@ -42,7 +42,7 @@ from fizgig.families.lora import FamilyLoRA  # noqa: E402
 from fizgig.families.registry import get as get_family  # noqa: E402
 from fizgig.training.adaptive_lr import AdaptiveLR  # noqa: E402
 from fizgig.training.resume_lr import resume_lr  # noqa: E402
-from fizgig.training.metadata import (build_metadata, latest_sample_image, refresh_checkpoint_thumbnail,  # noqa: E402
+from fizgig.training.metadata import (build_metadata, training_metadata, bucket_resolutions, latest_sample_image, refresh_checkpoint_thumbnail,  # noqa: E402
                                       resolve_title, sample_for_epoch, thumbnail_data_uri)
 from fizgig.training.train_utils import LossRecorder, prune_state_dirs, validate_output_name  # noqa: E402
 from fizgig.training.step_log import StepLog, take_request  # noqa: E402
@@ -1467,6 +1467,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     desc = get_family(family)
     if desc is None or not desc.training_ready:
         raise RuntimeError(f"unknown or untrainable family {family!r}")
+    _meta_t0 = time.time()                     # the saved LoRA's training time (training_metadata)
+    _meta_best = [None, None]                  # best validation loss and its epoch, with or without early stop
     validate_output_name(output_name)          # before any model loads, not at the first save an epoch in (#70)
     # none given: a LoRA trains with AdamW, a fine-tune with Adafactor (#312). Fine-tune > Optimizer
     # (--ft_optimizer, including CMuon) wins when it is a real fine-tune optimizer other than the
@@ -2702,6 +2704,38 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             if any(_face_end):
                 md["ss_face_until"] = f"{_face_end[0]}:{_face_end[1]}"
         md.update(driver.run_metadata())
+        try:                                 # the training facts: names and numbers only, never captions or paths
+            _fo = dict(family_options or {})
+            _best = (es.best, es.best_epoch) if es is not None and es.best is not None else tuple(_meta_best)
+            _lr = None
+            try:
+                _lr = float(optimizer.param_groups[0]["lr"]) if optimizer is not None else None
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+                _lr = None
+            try:
+                _vg = len(validator.groups) if validator is not None else None
+            except (NameError, AttributeError, TypeError):    # before validation is set up
+                _vg = None
+            try:
+                _steps = step_off + global_step
+            except NameError:
+                _steps = global_step
+            _sched = ("adaptive" if adaptive else lr_scheduler if scheduler is not None else
+                      "optimizer's own" if optimizer is not None else lr_scheduler)
+            for k, v in training_metadata(
+                    seed=seed, batch_size=bsz, grad_accum=accum, epochs=max_train_epochs, epoch=epoch,
+                    steps=_steps, steps_per_epoch=steps_per_epoch,
+                    max_steps=steps_per_epoch * max_train_epochs, num_images=group.num_train_items,
+                    scheduler=_sched, warmup_steps=lr_warmup_steps, resolution=_res,
+                    buckets=bucket_resolutions(group.datasets), mixed_precision="bf16", base_precision=precision,
+                    base_model=dit_path, datasets=group.datasets,
+                    training_method=(_fo.get("training_method") if desc.key == "krea2" else None),
+                    selective_block_check=selective_global_replay,
+                    folder_balance=None, validation_groups=_vg,
+                    best_epoch=_best[1], best_val_loss=_best[0], current_lr=_lr, started_at=_meta_t0).items():
+                md.setdefault(k, v)          # an existing key (a family's own) is never replaced
+        except Exception:                    # never in the way of a save
+            logger.debug("[save] training facts left out of the metadata", exc_info=True)
         return md
 
     def save_lora(path, epoch):
@@ -3545,6 +3579,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             return
         v, per_t, sec = r
         last_val[0] = v                   # adaptive LR judges on it at this epoch's end
+        if _meta_best[0] is None or v < _meta_best[0]:
+            _meta_best[0], _meta_best[1] = v, epoch_no
         steplog.add_validation(step_off + global_step, epoch_no, v, per_t, sec, seg=validator.seg,
                                groups=getattr(validator, "last_groups", None))
         logger.info(f"[validation] step {step_off + global_step} (epoch {epoch_no}): loss {v:.5f}  "
