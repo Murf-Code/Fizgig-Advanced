@@ -1006,8 +1006,9 @@ def form(desc):
         _row("VALIDATION_GROUPS", "Validation groups", "choice",
              "1 checks the images as one set, as it always has. 2 or 3 checks that many separate sets of Images to "
              "check (Fizgig picks them for you, or deals your own picked images between them) and draws each set as "
-             "its own thin line on the loss graph, under the average. If every line dips on the same epoch, the dip "
-             "is real; if only one does, that set just had a bad check. Early stop and Adaptive LR keep going by the "
+             "its own thin line on the loss graph, shifted onto the average so you can compare their shape (the hover "
+             "shows each group's real loss). If every line dips on the same epoch, the dip is real; if only one does, "
+             "that set just had a bad check. Early stop and Adaptive LR keep going by the "
              "average. Each check takes that many times longer, and with the hold-out on up to a fifth of your "
              "pictures are set aside.", ["1", "2", "3"], default="1"),
         _row("VALIDATION_HOLDOUT", "Hold the validation images out of training", "check",

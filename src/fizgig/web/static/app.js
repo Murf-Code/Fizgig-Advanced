@@ -5880,8 +5880,8 @@ function lossChart(curve) {
 // ---- the loss graph: a run's loss at every step (the trainer's .fizgig_loss_<name>.jsonl), with smoothing, a log
 // scale and outliers clipped - its settings kept in this browser
 const LG_KEY = "fizgig_lossgraph";
-const LG_DEF = {smooth: 0.9, log: false, clip: true, lr: true, emean: false, ravg: false, val: false, vg: true, vgband: false};
-const lgSet = () => { try { return {...LG_DEF, ...JSON.parse(localStorage.getItem(LG_KEY) || "{}")}; } catch (e) { return {...LG_DEF}; } };
+const LG_DEF = {smooth: 0.9, log: false, clip: true, lr: true, emean: false, ravg: false, val: false, vg: true};
+const lgSet = () => { try { const s = {...LG_DEF, ...JSON.parse(localStorage.getItem(LG_KEY) || "{}")}; delete s.vgband; return s; } catch (e) { return {...LG_DEF}; } };
 const lgSave = (s) => { try { localStorage.setItem(LG_KEY, JSON.stringify(s)); } catch (e) { /* private window */ } };
 
 // the loss graph's LR scale: 0 at the bottom, the run's start/peak rate at the top (the largest rate logged - a
@@ -5942,14 +5942,35 @@ function valSections(val) {
 }
 
 // the validation groups' checks (data.val_groups: [[step, epoch, [mean of each group], seg], ...]) as the validation
-// line's sections, each point [step, epoch, mean of group gi] (a group with nothing that check is left out); the
+// line's sections, each point [step, epoch, mean of group gi, seg] (a group with nothing that check is left out); the
 // checks of a run without groups, or from before it had them, give nothing
 function valGroupParts(val, vgroups, gi) {
   const by = new Map((vgroups || []).map((g) => [`${g[3] || 0}:${g[0]}`, g[2]]));
   return valSections(val).map((part) => part.map((p) => {
     const g = by.get(`${p[4] || 0}:${p[0]}`);
-    return g && g[gi] != null && isFinite(g[gi]) ? [p[0], p[1], g[gi]] : null;
+    return g && g[gi] != null && isFinite(g[gi]) ? [p[0], p[1], g[gi], p[4] || 0] : null;
   }).filter(Boolean));
+}
+// offsets that shift each group's values onto the average, so the lines overlay and the scale stays tight.
+// one offset a group a section: mean(val) - mean(group) over the checks in that section that both share
+function vgOverlayOffsets(val, vgroups, nGroups) {
+  const by = new Map((vgroups || []).map((g) => [`${g[3] || 0}:${g[0]}`, g[2]]));
+  const out = new Map();
+  for (const part of valSections(val)) {
+    const seg = (part[0] && part[0][4]) || 0;
+    for (let gi = 0; gi < nGroups; gi++) {
+      const shared = [];
+      for (const p of part) {
+        const g = by.get(`${p[4] || 0}:${p[0]}`);
+        if (g && g[gi] != null && isFinite(g[gi]) && isFinite(p[2])) shared.push([p[2], g[gi]]);
+      }
+      if (!shared.length) continue;
+      const mVal = shared.reduce((a, r) => a + r[0], 0) / shared.length;
+      const mGrp = shared.reduce((a, r) => a + r[1], 0) / shared.length;
+      out.set(`${seg}:${gi}`, mVal - mGrp);
+    }
+  }
+  return out;
 }
 // each group's mark on the graph and in its legend: a circle, a square, a diamond (shape as well as colour and dash)
 function vgMark(mk, gi, cx, cy, cls) {
@@ -5995,7 +6016,6 @@ function lossGraph(data) {
   const tog = (k) => { const i = el("input", {type: "checkbox"}); i.checked = !!set[k]; return i; };
   const emOn = tog("emean"), raOn = tog("ravg"), valOn = tog("val");
   const vgOn = el("input", {type: "checkbox"}); vgOn.checked = set.vg !== false;
-  const bandOn = tog("vgband");
   const em = (data.epoch_mean || []).filter((p) => isFinite(p[2]));
   const ra = (data.running_avg || []).filter((p) => isFinite(p[1]));
   const val = (data.val || []).filter((p) => isFinite(p[2]));
@@ -6005,14 +6025,15 @@ function lossGraph(data) {
   const vgRows = (data.val_groups || []).filter((g) => Array.isArray(g[2]));
   const nGroups = vgRows.reduce((m, g) => Math.max(m, g[2].length), 0);
   const hasGroups = hasVal && nGroups > 1;
+  const vgOff = hasGroups ? vgOverlayOffsets(val, vgRows, nGroups) : new Map();
   const redraw = () => {
     Object.assign(set, {smooth: Number(smooth.value), log: log.checked, clip: clip.checked, lr: lrOn.checked, pf: pfOn.checked,
-      emean: emOn.checked, ravg: raOn.checked, val: valOn.checked, vg: vgOn.checked, vgband: bandOn.checked});
+      emean: emOn.checked, ravg: raOn.checked, val: valOn.checked, vg: vgOn.checked});
     lgSave(set);
     legendFill();
     draw();
   };
-  for (const i of [smooth, log, clip, lrOn, pfOn, emOn, raOn, valOn, vgOn, bandOn]) i.addEventListener("input", redraw);
+  for (const i of [smooth, log, clip, lrOn, pfOn, emOn, raOn, valOn, vgOn]) i.addEventListener("input", redraw);
   // what each line and mark is
   const key = (cls, text) => el("span", {class: "lg-key"}, el("i", {class: "lg-sw " + cls}), text);
   const legend = el("div", {class: "lg-legend"});
@@ -6028,7 +6049,6 @@ function lossGraph(data) {
         " - its own scale, the teal numbers" : "")) : null,
     ...(set.val && hasVal && set.vg && hasGroups ? Array.from({length: nGroups}, (_x, gi) =>
       el("span", {class: "lg-key"}, vgSwatch(gi), `validation group ${gi + 1}`)) : []),
-    set.val && hasVal && set.vg && hasGroups && set.vgband ? key("lg-sw-vgband", "range between the lowest and highest group") : null,
     em.length ? key("lg-sw-best", "lowest epoch loss") : null, key("lg-sw-epoch", "end of an epoch (e1 is the end of epoch 1)")].filter(Boolean));
   legendFill();
   const tip = (node, text) => { node.title = text; return node; };
@@ -6042,9 +6062,9 @@ function lossGraph(data) {
       "a mean from the start, then a window of one epoch. It drifts down even when nothing improves, so it's mostly for show."),
     hasVal ? tip(ctl("Validation loss", valOn), "The fixed validation check (Samples > Image Validation): the same " +
       "images at the same noise levels and noise each time. Down = learning; turning up = overcooking.") : null,
-    hasGroups ? tip(ctl("Validation groups", vgOn), "Each separate set of validation images as its own thin line, under the " +
-      "average. If every line dips on the same epoch, the dip is real; if only one does, that set just had a bad check.") : null,
-    hasGroups ? tip(ctl("Group range", bandOn), "A light band from the lowest to the highest group at each check.") : null),
+    hasGroups ? tip(ctl("Validation groups", vgOn), "Each separate set of validation images as its own thin line, shifted onto the " +
+      "average to compare their shape. The hover shows each group's real loss. If every line dips on the same epoch, the dip is " +
+      "real; if only one does, that set just had a bad check.") : null),
   svgHost, legend, read);
 
   function draw() {
@@ -6053,8 +6073,16 @@ function lossGraph(data) {
     // Epoch average / Running avg on with 2+ validation checks shown: validation gets its own scale (valScale), its
     // numbers in teal in a second column beside the loss numbers, so both trends fill the plot height
     const trends = (set.emean && em.length) || (set.ravg && ra.length);
-    // the groups' values stay inside validation's scale, so the lines and the band are never cut off
-    const gvals = set.val && hasVal && set.vg && hasGroups ? vgRows.flatMap((g) => g[2]).filter((x) => x != null && isFinite(x)) : [];
+    // the groups' values, shifted onto the average, stay inside validation's scale (raw baselines
+    // would stretch it and flatten the dips)
+    const gvals = set.val && hasVal && set.vg && hasGroups ? vgRows.flatMap((g) => {
+      const seg = g[3] || 0;
+      return (g[2] || []).map((x, gi) => {
+        if (x == null || !isFinite(x)) return null;
+        const off = vgOff.get(`${seg}:${gi}`);
+        return off == null ? null : x + off;
+      });
+    }).filter((x) => x != null && isFinite(x)) : [];
     const ownVal = valScale(trends, set.val, val.length);
     const L = ownVal ? 110 : 54, R = (hasLr && set.lr) || (hasPf && pfOn.checked) ? 64 : 12, T = 10, B = 26;   // room for the live rate beside "LR"
     const xs = pts.map((p) => p[0]);
@@ -6154,24 +6182,19 @@ function lossGraph(data) {
       else line("lg-ravg", ra, 1);
     }
     if (set.emean) { line("lg-emean", em, 2); dots("lg-emean-dot", em, 2, (p) => `Epoch ${p[1]} average: ${p[2].toFixed(4)}`); }
-    // validation groups: the optional range band, then every group's own thin line and marks, under the average
+    // validation groups: every group's own thin line and marks, shifted onto the average so
+    // their shape can be compared; the hover still shows the real loss
     const gAt = new Map(vgRows.map((g) => [`${g[3] || 0}:${g[0]}`, g[2]]));
     if (set.val && hasVal && set.vg && hasGroups) {
-      if (set.vgband) {
-        for (const part of valSections(val)) {
-          const rows = part.map((p) => [p[0], (gAt.get(`${p[4] || 0}:${p[0]}`) || []).filter((x) => x != null && isFinite(x))])
-            .filter((r) => r[1].length > 1);
-          if (rows.length < 2) continue;
-          const up = rows.map((r) => `${X(r[0]).toFixed(1)},${VY(Math.max(...r[1])).toFixed(1)}`);
-          const dn = rows.slice().reverse().map((r) => `${X(r[0]).toFixed(1)},${VY(Math.min(...r[1])).toFixed(1)}`);
-          svg.append(mk("polygon", {class: "lg-vg-band", points: up.concat(dn).join(" ")}));
-        }
-      }
       for (let gi = 0; gi < nGroups; gi++) {
-        for (const part of valGroupParts(val, vgRows, gi)) line(`lg-vg lg-vg-${gi + 1}`, part, 2, VY);
+        for (const part of valGroupParts(val, vgRows, gi)) {
+          const drawn = part.map((p) => [p[0], p[1], p[2] + (vgOff.get(`${p[3] || 0}:${gi}`) || 0)]);
+          line(`lg-vg lg-vg-${gi + 1}`, drawn, 2, VY);
+        }
         for (const part of valGroupParts(val, vgRows, gi)) for (const p of part) {
-          const m = vgMark(mk, gi, X(p[0]), VY(p[2]), `lg-vg-dot lg-vg-dot-${gi + 1}`);
-          const tt = mk("title", {}); tt.textContent = `Validation group ${gi + 1} at step ${p[0]} (epoch ${p[1]}): ${p[2].toFixed(4)}`;
+          const y = p[2] + (vgOff.get(`${p[3] || 0}:${gi}`) || 0);
+          const m = vgMark(mk, gi, X(p[0]), VY(y), `lg-vg-dot lg-vg-dot-${gi + 1}`);
+          const tt = mk("title", {}); tt.textContent = `Validation group ${gi + 1} at step ${p[0]} (epoch ${p[1]}): ${p[2].toFixed(4)} (offset to the average)`;
           m.append(tt); svg.append(m);
         }
       }

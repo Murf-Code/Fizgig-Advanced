@@ -280,4 +280,75 @@ def test_graph_reads_the_groups_without_breaking_old_runs():
     js = open(os.path.join(ROOT, "web", "static", "app.js"), encoding="utf-8").read()
     assert "data.val_groups" in js and "valGroupParts" in js and "vgMark" in js
     assert "const hasGroups = hasVal && nGroups > 1" in js          # no val_groups (an older run): nothing extra is drawn
-    assert "gvals" in js and "vgOn" in js and "bandOn" in js
+    assert "gvals" in js and "vgOn" in js and "vgOverlayOffsets" in js
+    assert "bandOn" not in js and "lg-vg-band" not in js and "Group range" not in js
+    css = open(os.path.join(ROOT, "web", "static", "style.css"), encoding="utf-8").read()
+    assert "lg-vg-band" not in css and "lg-sw-vgband" not in css
+
+
+def test_group_lines_shift_onto_the_average_and_keep_the_real_loss():
+    """The group toggle draws each line offset onto the average so the scale stays tight;
+    tooltips still show the real loss. Offsets are one a group a section (shared checks)."""
+    import json, shutil, subprocess
+    if not shutil.which("node"):
+        pytest.skip("needs node")
+    js = open(os.path.join(ROOT, "web", "static", "app.js"), encoding="utf-8").read()
+    assert "shifted onto the " in js and "average to compare their shape" in js
+    assert "offset to the average" in js
+    # the form help and the training notes agree
+    form_src = open(os.path.join(ROOT, "families", "form.py"), encoding="utf-8").read()
+    assert "shifted onto the average so you can compare their shape" in form_src
+    assert "under the average" not in form_src
+    start = js.index("function valSections(val)")
+    end = js.index("function vgMark(")
+    fns = js[start:end]
+    script = fns + r"""
+const val = [
+  [10, 1, 0.160, null, 0],
+  [20, 2, 0.161, null, 0],
+  [30, 3, 0.158, null, 0],
+  [40, 4, 0.160, null, 0],
+  [50, 5, 0.200, null, 1],
+  [60, 6, 0.220, null, 1],
+];
+const groups = [
+  [10, 1, [0.140, 0.180], 0],
+  [20, 2, [0.141, 0.181], 0],
+  [30, 3, [0.138, 0.178], 0],
+  [40, 4, [0.140, 0.180], 0],
+  [50, 5, [0.300, 0.100], 1],
+  [60, 6, [0.320, 0.120], 1],
+];
+const off = vgOverlayOffsets(val, groups, 2);
+const shifted = (seg, gi, x) => x + off.get(`${seg}:${gi}`);
+const mean = (xs) => xs.reduce((s, x) => s + x, 0) / xs.length;
+const g1s0 = [0.140, 0.141, 0.138, 0.140].map((x) => shifted(0, 0, x));
+const g2s0 = [0.180, 0.181, 0.178, 0.180].map((x) => shifted(0, 1, x));
+const val0 = [0.160, 0.161, 0.158, 0.160];
+const g1s1 = [0.300, 0.320].map((x) => shifted(1, 0, x));
+const g2s1 = [0.100, 0.120].map((x) => shifted(1, 1, x));
+const val1 = [0.200, 0.220];
+const raw = groups.flatMap((g) => g[2]);
+const out = {
+  off00: off.get("0:0"), off01: off.get("0:1"), off10: off.get("1:0"), off11: off.get("1:1"),
+  g1s0, g2s0, g1s1, g2s1,
+  meanG1s0: mean(g1s0), meanVal0: mean(val0),
+  meanG1s1: mean(g1s1), meanVal1: mean(val1),
+  dipG1: g1s0[2] - g1s0[0], dipVal: val0[2] - val0[0],
+  rawSpan: Math.max(...raw) - Math.min(...raw),
+  shiftSpan: Math.max(...g1s0, ...g2s0) - Math.min(...g1s0, ...g2s0),
+  valSpan: Math.max(...val0) - Math.min(...val0),
+};
+console.log(JSON.stringify(out));
+"""
+    out = json.loads(subprocess.check_output(["node", "-e", script], text=True))
+    assert abs(out["off00"] - 0.02) < 1e-12 and abs(out["off01"] - -0.02) < 1e-12
+    assert abs(out["off10"] - -0.10) < 1e-12 and abs(out["off11"] - 0.10) < 1e-12
+    assert abs(out["meanG1s0"] - out["meanVal0"]) < 1e-12
+    assert abs(out["meanG1s1"] - out["meanVal1"]) < 1e-12
+    want0 = [0.160, 0.161, 0.158, 0.160]
+    assert all(abs(a - b) < 1e-12 for a, b in zip(out["g1s0"], want0))
+    assert all(abs(a - b) < 1e-12 for a, b in zip(out["g2s0"], want0))
+    assert abs(out["dipG1"] - out["dipVal"]) < 1e-12
+    assert abs(out["shiftSpan"] - out["valSpan"]) < 1e-12
+    assert out["rawSpan"] > 0.04 and out["shiftSpan"] < 0.005

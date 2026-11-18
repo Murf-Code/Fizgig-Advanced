@@ -2643,8 +2643,6 @@ a.pick-pill-vast:hover { border-color: var(--success); }
 .lg-vg-dot-1 { fill: var(--vg-1); }
 .lg-vg-dot-2 { fill: var(--vg-2); }
 .lg-vg-dot-3 { fill: var(--vg-3); }
-.loss-graph-svg .lg-vg-band { fill: var(--data-teal); fill-opacity: 0.16; stroke: none; }
-.lg-sw-vgband { height: 10px; border: 0; background: var(--data-teal); opacity: 0.3; }
 .lg-vg-sw { overflow: visible; }
 .loss-graph-svg .lg-stop { stroke: var(--danger); stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
 .loss-graph-svg .lg-stop-label { fill: var(--danger-text); }
