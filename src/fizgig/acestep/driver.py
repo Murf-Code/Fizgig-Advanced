@@ -245,12 +245,14 @@ class AceStepDriver(FamilyDriver):
             args.needs_reencode = lambda p: True       # skip_existing is decided below, by the source file
 
             def encode(batch):
+                done = 0                                # how many it really encoded (the cache log's count)
                 for it in batch:
                     stamp = f"{os.path.getsize(it.item_key)}:{int(os.path.getmtime(it.item_key))}:{MAX_SECONDS}"
                     if args.skip_existing and os.path.exists(it.latent_cache_path):
                         with safe_open(it.latent_cache_path, framework="pt") as f:
                             if (f.metadata() or {}).get("source") == stamp:
                                 continue
+                    done += 1
                     wav = read_audio(it.item_key)
                     z = V.encode(vae, torch.from_numpy(wav), gen)[0].T            # (64, T)
                     logger.info(f"latent cache: {it.item_key} -> {tuple(z.shape)} ({wav.shape[1] / 48000:.1f} s)")
@@ -258,6 +260,7 @@ class AceStepDriver(FamilyDriver):
                     save_file({f"latent_{z.shape[1]}": _clean(z, "latent", it.item_key)}, it.latent_cache_path,
                               metadata={"architecture": desc.arch_id, "seconds": f"{wav.shape[1] / 48000:.3f}",
                                         "source": stamp, "format_version": FORMAT_VERSION})
+                return done
             encode_datasets(datasets, encode, args)
             return True
 

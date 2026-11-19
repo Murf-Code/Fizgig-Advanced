@@ -68,11 +68,13 @@ def _ref_sizes(item):
     return ",".join(f"{c.shape[1]}x{c.shape[0]}" for c in (item.control_content or []))
 
 
-def save_cond(desc, item, cond, refs=""):
+def save_cond(desc, item, cond, refs="", encoder=""):
     os.makedirs(os.path.dirname(item.text_encoder_output_cache_path), exist_ok=True)
     md = {"architecture": desc.arch_id, "caption1": item.caption, "format_version": FORMAT_VERSION}
     if refs:
         md["reference_sizes"] = refs
+    if encoder:
+        md["text_encoder"] = encoder        # the encoder file it came from (--skip_existing re-encodes on a new one)
     from fizgig.dataset import compact_text      # Krea 2: only the real tokens on disk (the padding is never read)
     compact_text.save({f"cond__{k}": _clean(v, k, item.item_key) for k, v in cond.items()},
                       item.text_encoder_output_cache_path, md, getattr(desc, "text_cache_trim", False))
@@ -93,15 +95,26 @@ def cond_file_matches(path, caption):
     return _cached_matches(path, caption, "")
 
 
-def _cached_matches(path, caption, refs):
-    """An existing text cache that still fits: same caption and same before-image sizes."""
+def _cached_matches(path, caption, refs, encoder=None):
+    """An existing text cache that still fits: same caption and same before-image sizes (and, when encoder is given,
+    written by that text encoder file: see encoder_stamp)."""
     from safetensors import safe_open
     try:
         with safe_open(path, framework="pt") as f:
             md = f.metadata() or {}
     except Exception:
         return False
-    return md.get("caption1") == caption and md.get("reference_sizes", "") == refs
+    return (md.get("caption1") == caption and md.get("reference_sizes", "") == refs
+            and (encoder is None or md.get("text_encoder") == encoder))
+
+
+def encoder_stamp(model):
+    """The text encoder file as a text cache records it (name and size): a cache another encoder wrote (a new
+    quantisation, a different file in Preferences) is not kept by --skip_existing."""
+    try:
+        return f"{os.path.basename(str(model))}:{os.path.getsize(model)}"
+    except (OSError, TypeError):
+        return os.path.basename(str(model or ""))
 
 
 def _has_controls(path):
@@ -117,6 +130,7 @@ def _encode_text_with_references(args, datasets, driver, te, desc):
     """The text stage for edit pairs: walks the latent batches (they carry the bucket-sized before-images)."""
     from fizgig.scripts.cache_text import post_process, prepare_cache_files_and_paths
     files, paths = prepare_cache_files_and_paths(datasets)
+    enc = encoder_stamp(args.model)
     workers = args.num_workers if args.num_workers is not None else max(1, os.cpu_count() - 1)
     for i, ds in enumerate(datasets):
         logger.info(f"Encoding dataset [{i}] with its before-images")
@@ -124,11 +138,11 @@ def _encode_text_with_references(args, datasets, driver, te, desc):
             for it in batch:
                 p, refs = os.path.normpath(it.text_encoder_output_cache_path), _ref_sizes(it)
                 paths[i].add(p)
-                if args.skip_existing and p in files[i] and _cached_matches(p, it.caption, refs):
+                if args.skip_existing and p in files[i] and _cached_matches(p, it.caption, refs, enc):
                     continue
-                c = driver.encode_text_with_references(te, [it.caption], [it.control_content])[0]
+                c = driver.encode_text_with_references(te(), [it.caption], [it.control_content])[0]
                 logger.info(f"text cache: {it.item_key} with {len(it.control_content)} before-image(s) at {refs}")
-                save_cond(desc, it, c, refs)
+                save_cond(desc, it, c, refs, enc)
     post_process(datasets, files, paths, args.keep_cache)
 
 
@@ -139,7 +153,7 @@ def _encode_tag_variants(args, datasets, driver, te, desc):
     if not any(settings_of(ds) for ds in datasets):
         return
     workers = args.num_workers if args.num_workers is not None else max(1, os.cpu_count() - 1)
-    build_for_datasets(datasets, lambda caps: driver.encode_text(te, caps), arch=desc.arch_id, num_workers=workers,
+    build_for_datasets(datasets, lambda caps: driver.encode_text(te(), caps), arch=desc.arch_id, num_workers=workers,
                        batch=min(int(args.batch_size or 8), 64), clean=lambda v, k: _clean(v, k, "caption variant"),
                        compact=getattr(desc, "text_cache_trim", False))
 
@@ -206,46 +220,81 @@ def main():
 
 
 def _stage(args, desc, driver, datasets, device, aux, pairs, variants=True):
-    """This stage (latents or text) for these datasets. variants: the tag shuffle / dropout variants too."""
-    if driver.cache_stage(args.stage, datasets, args, device, aux):
+    """This stage (latents or text) for these datasets. variants: the tag shuffle / dropout variants too.
+
+    The VAE / text encoder loads only when a picture or caption needs encoding: a pass over a cache that is all
+    there (a resume that checks it) reads it and loads no model."""
+    skip = args.skip_existing
+    if args.stage == "text":
+        # a family's own text layout keeps the skip it had: --skip_existing is the shared text stage's, caption-checked
+        args.skip_existing = False
+    try:
+        own = driver.cache_stage(args.stage, datasets, args, device, aux)
+    finally:
+        args.skip_existing = skip
+    if own:
         return                              # the family caches in its own layout (H3)
     if args.stage == "latents":
         from fizgig.scripts.cache_latents import encode_datasets
-        vae = driver.load_vae(args.model, device)
+        vae = _Lazy(lambda: driver.load_vae(args.model, device))
         # a cache from before the pairs were added (or after they were removed) no longer fits: re-encode it
         args.needs_reencode = lambda path: _has_controls(path) != pairs
         args.keep_alpha = desc.rgba
 
         def encode(batch):
             imgs = [(it.content[0] if isinstance(it.content, list) else it.content) for it in batch]
-            for it, z in zip(batch, driver.encode_images(vae, imgs)):
+            for it, z in zip(batch, driver.encode_images(vae(), imgs)):
                 # one at a time: a multi-reference edit's extra pictures have their own shapes, and a driver may
                 # stack its batch (Klein)
-                ctrl = [driver.encode_images(vae, [c])[0] for c in (it.control_content or [])]
+                ctrl = [driver.encode_images(vae(), [c])[0] for c in (it.control_content or [])]
                 logger.info(f"latent cache: {it.item_key} -> {tuple(z.shape)}"
                             + (f" + {len(ctrl)} before-image(s)" if ctrl else ""))
                 save_latents(desc, it, z, ctrl)
         encode_datasets(datasets, encode, args)
     else:
         from fizgig.scripts.cache_text import post_process, prepare_cache_files_and_paths, process_batches
+        enc = encoder_stamp(args.model)
         if pairs and not args.slider:
-            te = driver.load_reference_text_encoder(args.model, device)
+            te = _Lazy(lambda: driver.load_reference_text_encoder(args.model, device))
             _encode_text_with_references(args, datasets, driver, te, desc)
-            driver.unload_text_encoder(te)
+            te.unload(driver.unload_text_encoder)
             return
         if args.batch_size is None:
             args.batch_size = 8
         files, paths = prepare_cache_files_and_paths(datasets)
-        te = driver.load_text_encoder(args.model, device)
+        te = _Lazy(lambda: driver.load_text_encoder(args.model, device))
+        # --skip_existing keeps a caption's cache only when it was encoded from this caption by this encoder: an
+        # edited caption (or a new encoder file) is encoded again
+        args.text_matches = lambda path, caption: _cached_matches(path, caption, "", enc)
 
         def encode(batch):
-            for it, c in zip(batch, driver.encode_text(te, [it.caption for it in batch])):
-                save_cond(desc, it, c)
-        process_batches(args, datasets, files, paths, encode)
+            for it, c in zip(batch, driver.encode_text(te(), [it.caption for it in batch])):
+                save_cond(desc, it, c, encoder=enc)
+        try:
+            process_batches(args, datasets, files, paths, encode)
+        finally:
+            args.text_matches = None
         post_process(datasets, files, paths, args.keep_cache)
         if variants:
             _encode_tag_variants(args, datasets, driver, te, desc)
-        driver.unload_text_encoder(te)
+        te.unload(driver.unload_text_encoder)
+
+
+class _Lazy:
+    """A model loaded on its first use (call it for the model); unload(fn) hands it to fn only if it was loaded."""
+
+    def __init__(self, load):
+        self._load, self._m, self.loaded = load, None, False
+
+    def __call__(self):
+        if not self.loaded:
+            self._m, self.loaded = self._load(), True
+        return self._m
+
+    def unload(self, fn):
+        if self.loaded:
+            fn(self._m)
+            self._m, self.loaded = None, False
 
 
 if __name__ == "__main__":

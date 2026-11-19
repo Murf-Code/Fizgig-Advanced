@@ -469,9 +469,11 @@ def spread_problems(desc, inputs):
     return [f"Timestep focus: pick one of {', '.join(TS.LABELS[k] for k in desc.timestep_spread)}."]
 
 
-def uncached_pictures(toml_text):
+def uncached_pictures(toml_text, held_paths=None):
     """How many pictures in the dataset TOML's folders have no latent or no text cache in their cache folder (a
-    resume skips caching, so a cache deleted by hand would leave it nothing to train on)."""
+    resume skips caching, so a cache deleted by hand would leave it nothing to train on). held_paths: the run's
+    validation hold-out as Start picked it - the TOML's holdout_file on disk is still the list the paused run gave
+    back (emptied) until Start writes it, so read from there the held-out pictures would count as uncached."""
     import toml   # not tomllib: that's Python 3.11+, and 3.10 installs are supported
     from fizgig.dataset.image_dataset import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
     exts = {e.lower() for e in (*IMAGE_EXTENSIONS, *VIDEO_EXTENSIONS, *AUDIO_EXTENSIONS)}
@@ -494,7 +496,7 @@ def uncached_pictures(toml_text):
         img, cdir = ds.get("image_directory"), ds.get("cache_directory")
         if not img or not cdir or not os.path.isdir(img):
             continue
-        held = held_stems(hfile, img)       # the validation hold-out's pictures: in their own cache folder
+        held = held_stems(hfile, img, held_paths)   # the validation hold-out's pictures: in their own cache folder
         have, have_held = stems(cdir), (stems(os.path.join(cdir, HOLDOUT_CACHE)) if held else set())
         for f in os.listdir(img):
             stem = os.path.splitext(f)[0]
@@ -1276,8 +1278,9 @@ def cache_command(desc, inputs, stage, config=""):
     cmd = [inputs["python"], os.path.join(inputs["repo_dir"], desc.cache_script), "--family", desc.key,
            "--stage", stage, "--dataset_config", config or inputs["DATASET_CONFIG"], "--model", model]
     cmd += option_tokens(desc, inputs)[1]
-    if stage == "latents":
-        cmd.append("--skip_existing")   # validated against the current bucket
+    # latents: validated against the current bucket; text: against the caption it was encoded from (an edited
+    # caption is encoded again)
+    cmd.append("--skip_existing")
     if inputs.get("_holdout_file") and not config:
         cmd.append("--holdout_cache")   # the validation hold-out's pictures, cached on their own for validation
     if slider_on(desc, inputs, "pairs"):
@@ -2623,12 +2626,14 @@ def plan(desc, inputs):
             p.dataset_toml = dataset_toml(desc, inputs)
         except (TypeError, ValueError):
             p.problems.append("Target Megapixels (Dataset) must be a number above 0")
+    holdout_paths = []
     if not p.problems and _s(inputs.get("DATASET_CONFIG")):
         # the validation hold-out (on by default): its list written fresh every Start (an empty one when off, so a
         # list an interrupted run left can never hold pictures out of another), named in the TOML when it holds any
         from fizgig.training import holdout as _ho
         hpath = _ho.path_for(inputs["DATASET_CONFIG"])
         paths, names, how, why = holdout_pick(desc, inputs, p.dataset_toml)
+        holdout_paths = list(paths)
         p.files.append((hpath, _ho.content(paths, names, how, why)))
         if paths:
             inputs["_holdout_file"] = hpath
@@ -2674,7 +2679,8 @@ def plan(desc, inputs):
         p.stages.append(Stage("Multi-person composites", cmd))
     resuming = inputs.get("resuming") or bool(_s(inputs.get("RESUME_TRAINING")))
     if resuming and not inputs.get("recache") and inputs.get("enable_cache", True):
-        n = uncached_pictures(p.dataset_toml)
+        # this Start's hold-out list (its file isn't written yet: on disk it is still the one the pause emptied)
+        n = uncached_pictures(p.dataset_toml, held_paths=holdout_paths)
         if n:                           # a resume expects its cache; deleted by hand, it's made again (only what's gone)
             inputs["recache"] = True
             p.console.append(f"[cache] {n} picture(s) have no cache - caching them before the run resumes.\n")

@@ -88,9 +88,11 @@ def encode_datasets(datasets, encode_fn, args):
         all_cache_paths = []
         from fizgig.training.progress import CacheProgress, dataset_items
         shown = CacheProgress("pictures", dataset_items(dataset))
+        seen = encoded = 0     # the bar counts the pictures checked; these say how many were actually encoded
 
         for _, batch in tqdm(dataset.retrieve_latent_cache_batches(num_workers)):
             shown.add(len(batch))
+            seen += len(batch)
             # RGB, unless the family's VAE takes alpha (description rgba) and the picture is see-through somewhere
             keep_alpha = getattr(args, "keep_alpha", False)
             def _see(a):
@@ -150,7 +152,11 @@ def encode_datasets(datasets, encode_fn, args):
 
             bs = args.batch_size if args.batch_size is not None else len(batch)
             for j in range(0, len(batch), bs):
-                encode_fn(batch[j : j + bs])
+                # encode_fn may return how many it really encoded (a family that decides the skip itself: ACE-Step)
+                done = encode_fn(batch[j : j + bs])
+                encoded += done if isinstance(done, int) and not isinstance(done, bool) else len(batch[j : j + bs])
+
+        logger.info(f"[cache] dataset [{i}]: {seen - encoded} already cached, {encoded} encoded")
 
         # Remove stale cache files
         all_cache_paths = set(os.path.normpath(p) for p in all_cache_paths)

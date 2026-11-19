@@ -335,7 +335,7 @@ class Watch:
                     chunk = todo[i:i + 4]
                     for (_, item, cap, _), cond in zip(chunk, self.driver.encode_text(te, [c for _, _, c, _ in chunk])):
                         item.caption = cap
-                        cache.save_cond(desc, item, cond)     # the loader reads this file every step
+                        cache.save_cond(desc, item, cond, encoder=cache.encoder_stamp(self.te_path))   # read every step
                 ok = True
                 # tag shuffle / caption dropout: the old caption's variants no longer apply (the loader already
                 # ignores them - their source caption differs); the new caption's are made now, with the encoder here

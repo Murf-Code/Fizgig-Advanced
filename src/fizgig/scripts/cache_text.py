@@ -66,7 +66,12 @@ def process_batches(args, datasets, all_files, all_paths, encode_fn, index_offse
             all_paths[i].update(os.path.normpath(item.text_encoder_output_cache_path) for item in batch)
 
             if args.skip_existing:
-                batch = [item for item in batch if os.path.normpath(item.text_encoder_output_cache_path) not in all_files[i]]
+                # an optional check of a cache that exists (args.text_matches(path, caption) -> bool): the shared
+                # family stage keeps it only when it was encoded from this caption, so an edited one is encoded again
+                _match = getattr(args, "text_matches", None)
+                batch = [item for item in batch
+                         if os.path.normpath(item.text_encoder_output_cache_path) not in all_files[i]
+                         or (_match is not None and not _match(item.text_encoder_output_cache_path, item.caption))]
                 if not batch:
                     continue
 

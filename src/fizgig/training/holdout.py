@@ -72,10 +72,11 @@ def give_back(path):
     return list(data.get("names") or data["paths"])
 
 
-def held_stems(holdout_file, image_directory):
+def held_stems(holdout_file, image_directory, paths=None):
     """The file stems (cache keys) of the held-out pictures in this dataset folder; a detail crop folder leaves out the
-    crops of its training folder's held-out pictures (a crop is named as its picture)."""
-    paths = read(holdout_file).get("paths") or []
+    crops of its training folder's held-out pictures (a crop is named as its picture). paths: the hold-out's picture
+    paths as given (Start's own list, before its file is written) instead of the file's."""
+    paths = list(paths) if paths is not None else (read(holdout_file).get("paths") or [])
     if not paths or not image_directory:
         return set()
     here = _norm(image_directory)
