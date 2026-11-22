@@ -10996,7 +10996,8 @@ function renderCaptions() {
 }
 
 
-function studioTokens(s){return (s||"").split(",").map(x=>x.trim()).filter(Boolean);}
+function studioTokens(s){return (s||"").split(/\r?\n/,1)[0].split(",").map(x=>x.trim()).filter(Boolean);}
+function studioCompose(original,tags){const rest=(original||"").match(/\r?\n[\s\S]*$/);return tags.join(", ")+(rest?rest[0]:"");}
 function studioUnique(a){const seen=new Set();return a.filter(x=>{const k=x.toLowerCase();if(seen.has(k))return false;seen.add(k);return true;});}
 function renderCaptionStudio(host,items,ext){
   const selection=S.cap.studioSelection||(S.cap.studioSelection=new Set());
@@ -11046,7 +11047,7 @@ function renderCaptionStudio(host,items,ext){
     word.textContent=String(ta.value.trim()?ta.value.trim().split(/\s+/).length:0)+" words · "+String(studioTokens(ta.value).length)+" tags";
     tags.replaceChildren();
     for(const t of studioUnique(studioTokens(ta.value)))tags.append(el("button",{class:"studio-chip",text:t+" ×",onclick:()=>{
-      ta.value=studioTokens(ta.value).filter(x=>x.toLowerCase()!==t.toLowerCase()).join(", ");remember();redraw();
+      ta.value=studioCompose(ta.value,studioTokens(ta.value).filter(x=>x.toLowerCase()!==t.toLowerCase()));remember();redraw();
     }}));
   };
   ta.addEventListener("input",()=>{remember();redraw();});
@@ -11094,13 +11095,13 @@ function renderCaptionStudio(host,items,ext){
     el("div",{class:"caption-card-title",text:mediaLabel(current)}),ta,word,
     el("div",{class:"field-row"},el("button",{class:"btn btn-primary",text:"Save caption",onclick:save}),
       btn("Undo",()=>historyStep("undo")),btn("Redo",()=>historyStep("redo")),
-      btn("Deduplicate",()=>{ta.value=studioUnique(studioTokens(ta.value)).join(", ");remember();redraw();}),
-      btn("Sort tags",()=>{ta.value=studioUnique(studioTokens(ta.value)).sort((a,b)=>a.localeCompare(b)).join(", ");remember();redraw();}),
-      btn("Strip artist tags",()=>{ta.value=studioTokens(ta.value).filter(t=>!/^artist\s*:/i.test(t)).join(", ");remember();redraw();})),
+      btn("Deduplicate",()=>{ta.value=studioCompose(ta.value,studioUnique(studioTokens(ta.value)));remember();redraw();}),
+      btn("Sort tags",()=>{ta.value=studioCompose(ta.value,studioUnique(studioTokens(ta.value)).sort((a,b)=>a.localeCompare(b)));remember();redraw();}),
+      btn("Strip artist tags",()=>{ta.value=studioCompose(ta.value,studioTokens(ta.value).filter(t=>!/^artist\s*:/i.test(t)));remember();redraw();})),
     pictureActions,note);
   const newTag=el("input",{placeholder:"Add tag",type:"text",class:"w-path"});
   right.append(el("strong",{text:"Image tags"}),tags,el("div",{class:"field-row"},newTag,btn("Add",()=>{
-    if(newTag.value.trim()){ta.value=studioUnique([...studioTokens(ta.value),newTag.value.trim()]).join(", ");newTag.value="";remember();redraw();}
+    if(newTag.value.trim()){ta.value=studioCompose(ta.value,studioUnique([...studioTokens(ta.value),newTag.value.trim()]));newTag.value="";remember();redraw();}
   })),el("strong",{text:"Dataset tag index"}));
   const counts=new Map();
   for(const it of S.cap.items)for(const t of new Set(studioTokens(it.caption).map(t=>t.toLowerCase())))counts.set(t,(counts.get(t)||0)+1);
@@ -11115,14 +11116,18 @@ function renderCaptionStudio(host,items,ext){
     const newTag=mode==="rename"?prompt("Replacement tag:"):"";
     if(mode==="rename"&&!newTag)return;
     const affected=selection.size?S.cap.items.filter(it=>selection.has(it.path)):S.cap.items;
+    if(affected.some(it=>drafts.has(it.path)&&drafts.get(it.path)!==it.caption)){
+      alert("Save your unsaved caption drafts before a bulk tag operation.");return;
+    }
     if(!confirm("Apply to "+affected.length+" captions?"))return;
     let done=0,fail=0;
     for(const it of affected){
       const source=studioTokens(it.caption);
       const target=mode==="remove"?source.filter(t=>t.toLowerCase()!==old.trim().toLowerCase()):
         mode==="rename"?source.map(t=>t.toLowerCase()===old.trim().toLowerCase()?newTag.trim():t):[...source,old.trim()];
-      const after=studioUnique(target).join(", ");
-      if(after===source.join(", "))continue;
+      const afterTags=studioUnique(target);
+      if(afterTags.join(", ")===source.join(", "))continue;
+      const after=studioCompose(it.caption,afterTags);
       try{await api("/api/captions/save",{folder:capItemFolder(it),name:it.name,text:after,ext});it.caption=after;done++;}
       catch(e){fail++;}
     }
