@@ -43,17 +43,20 @@ assert.match(app,/fullStage\.append\(network\)/);
 assert.match(app,/const flow=CaptionStudioViz\.tagbenchWaterfall\(/);
 assert.match(css,/#tab-captions \.studio-tb-explore\s*\{/);
 
-// The left splitter starts at the smallest allowed 15% (rather than the old
-// 19%) without discarding custom widths. Thumbnail cards render 15% smaller.
-assert.match(app,/sizes=\{left:15,right:36\}/);
+// The left splitter defaults to 12%, but can be dragged down to 6% with a
+// true 96px minimum; custom widths still persist. Images keep their 85% size.
+assert.match(app,/sizes=\{left:12,right:36\}/);
 assert.match(app,/sizes\.left===19&&sizes\.right===36/);
-assert.match(app,/Math\.max\(15,Math\.min\(30,sizes\.left\)\)/);
+assert.match(app,/Math\.max\(6,Math\.min\(30,sizes\.left\)\)/);
+assert.match(app,/minmax\(96px,/);
 assert.match(css,/#tab-captions \.studio-thumb-rail \.studio-browser-row\s*\{[^}]*width:85%;/);
 assert.match(css,/max-height:calc\(var\(--caption-settings-preview-height,360px\) \* \.85\)/);
 
-// The center image fits available vertical space, preserving aspect ratio.
-// The old 68vh/750px image ceiling prevented this on tall workbench layouts.
-assert.match(css,/#tab-captions \.studio-host \.studio-editor\{[^}]*height:min\(82dvh,950px\)/);
+// The stage expands to fill the available notebook viewport, rather than
+// being capped at 82dvh/950px. Short windows still scroll normally.
+assert.match(css,/\.notebook-pane:has\(> #tab-captions\.active\)/);
+assert.match(css,/#tab-captions\.active #captionsGrid\.studio-host > \.studio-layout\s*\{\s*flex:1 1 auto;/);
+assert.match(css,/#tab-captions\.active #captionsGrid\.studio-host > \.studio-layout > :is\(\.studio-browser,\.studio-editor,\.studio-index\)/);
 assert.match(css,/#tab-captions \.studio-image-stage \.studio-preview\{[^}]*flex:1 1 0;[^}]*height:100%;/);
 assert.match(css,/#tab-captions \.studio-image-stage \.studio-preview img,[\s\S]*?max-height:100%;[\s\S]*?object-fit:contain/);
 assert.doesNotMatch(css,/\.studio-image-stage \.studio-preview img[^\n]*max-height:min\(68vh,750px\)/);
@@ -165,6 +168,9 @@ assert.match(css,/\.studio-tag-list\.is-scrolling \.studio-index-tag:hover:not\(
 assert.match(css,/scrollbar-gutter:stable/);
 assert.match(css,/contain:paint/);
 assert.match(css,/\.studio-file:is\(\.is-picked,\.active\) \{\s*animation:none;\s*filter:none;/);
+
+// Stuck is a vivid, distinct red independent of the theme's muted danger token.
+assert.match(css,/\[data-learning-status="stuck"\]\{--caption-learning-ring:#ff3344\}/);
 
 // The loss status selector follows the Loss Status toggle rather than
 // remaining visible (and potentially filtering invisibly) when switched off.
