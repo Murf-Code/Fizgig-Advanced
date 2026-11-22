@@ -103,3 +103,44 @@ def test_claimed_queue_is_recovered_without_overwriting_newer_updates(tmp_path):
         "a": "newer", "b": "recovered", "c": "detected"
     }
     assert not processing.exists()
+
+
+def test_edited_still_is_reencoded_into_same_cache_path(tmp_path, monkeypatch):
+    from PIL import Image
+    import torch
+    from safetensors.torch import load_file, save_file
+
+    root = tmp_path / "dataset"
+    root.mkdir()
+    Image.new("RGB", (32, 32), "blue").save(root / "photo.png")
+    cache_path = tmp_path / "photo_cache.safetensors"
+    save_file({"latent_4x4": torch.zeros(4, 4, 4)}, str(cache_path))
+    output = tmp_path / "run"
+    q = output / "loss_log" / "image_updates.json"
+    q.parent.mkdir(parents=True)
+    q.write_text('{"photo": "updated"}', encoding="utf-8")
+
+    class Driver:
+        description = SimpleNamespace(arch_id="krea2", rgba=False, text_cache_trim=False)
+        def load_vae(self, path, device):
+            return object()
+        def encode_images(self, vae, images):
+            assert images[0].shape[:2] == (32, 32)
+            return [torch.ones(4, 4, 4)]
+
+    item = SimpleNamespace(item_key="photo", bucket_size=(32, 32),
+                           original_size=(32, 32), latent_cache_path=str(cache_path))
+    monkeypatch.setattr(loss_watch, "_items", lambda group: {"photo": item})
+    watch = loss_watch.Watch.__new__(loss_watch.Watch)
+    watch.group = object()
+    watch.output_dir = str(output)
+    watch.folders = {"": str(root)}
+    watch.image_dir = str(root)
+    watch.vae_path = str(tmp_path / "vae")
+    watch.driver = Driver()
+    watch.removed_keys = set()
+    watch._images(1, None, torch.device("cpu"), False)
+    assert watch.removed_keys == set()
+    assert torch.equal(load_file(str(cache_path))["latent_4x4"], torch.ones(4, 4, 4))
+    assert not q.exists()
+    assert not (tmp_path / "photo_cache.safetensors.live-update").exists()
