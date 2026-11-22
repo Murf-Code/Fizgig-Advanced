@@ -619,14 +619,19 @@ class Watch:
                     stem = str(k)[len(prefix):].rsplit("/", 1)[-1]
             if not folder:
                 folder = self.image_dir or ""
-            source = _picture(folder, stem, listings)
+            source = self._source_for_key(str(k), listings)
             if action == "removed" or not source:
                 self.removed_keys.add(str(k))
                 logger.info("[image-fix] %s excluded from subsequent epochs", k)
             elif action == "updated":
-                # Never train on stale cached pixels if the VAE cannot refresh this item.
+                # Never train on stale cache while the edited source is waiting to refresh.
                 self.removed_keys.add(str(k))
-                todo.append((str(k), items[k], source))
+                if os.path.splitext(source)[1].lower() not in _picture_exts():
+                    self.unsupported_media_keys.add(str(k))
+                    logger.error("[live-dataset] %s was edited: audio/video recaching during an active "
+                                 "run is not supported for this family; excluded until restart", k)
+                else:
+                    todo.append((str(k), items[k], source))
         if not todo:
             _remove(processing)
             return
@@ -647,29 +652,61 @@ class Watch:
             try:
                 for k, item, source in todo:
                     try:
-                        # The still-image update path must not silently discard edit reference latents.
+                        # A paired edit must refresh target, every before-image latent and
+                        # reference-aware text together. Never discard control latents.
                         from safetensors import safe_open
                         with safe_open(item.latent_cache_path, framework="pt", device="cpu") as existing:
-                            if any(key.startswith("latent_control_") for key in existing.keys()):
-                                raise ValueError("Paired-reference cache requires a full recache")
-                        # The old bucket is fixed for the active run, even if an edit changes aspect.
+                            had_controls = any(key.startswith("latent_control_") for key in existing.keys())
+                        ds = self._owner_dataset(k)
+                        paired = bool(getattr(ds, "has_control", False) or had_controls)
+                        if paired and not getattr(self.driver, "supports_references", False):
+                            raise ValueError("The driver cannot live-refresh paired references")
                         with torch.no_grad():
                             upright = open_upright(source)
                             new_source_size = upright.size
                             image = resize_image_to_bucket(upright, tuple(item.bucket_size))
                             encoded = self.driver.encode_images(vae, [image])[0]
+                            references = self._reference_images(k, source, tuple(item.bucket_size)) if paired else []
+                            limit = max(1, getattr(self.driver.description, "edit_references", 1))
+                            if len(references) > limit:
+                                raise ValueError(f"Paired references exceed this model's limit of {limit}")
+                            encoded_controls = [self.driver.encode_images(vae, [ref])[0] for ref in references]
                             import copy
                             scratch = copy.copy(item)
                             scratch.original_size = new_source_size
-                            scratch.latent_cache_path = item.latent_cache_path + ".live-update"
+                            scratch.control_content = references if paired else None
+                            owner = self._owner_dataset(k)
+                            new_cache = (owner.get_latent_cache_path(scratch) if owner is not None
+                                         else item.latent_cache_path)
+                            scratch.latent_cache_path = new_cache + ".live-update"
+                            old_cache = item.latent_cache_path
                             try:
-                                cache.save_latents(self.driver.description, scratch, encoded)
-                                os.replace(scratch.latent_cache_path, item.latent_cache_path)
+                                cache.save_latents(self.driver.description, scratch, encoded,
+                                                   encoded_controls)
+                                os.replace(scratch.latent_cache_path, new_cache)
+                                item.latent_cache_path = new_cache
                                 item.original_size = new_source_size
+                                if paired:
+                                    item.control_content = references
+                                    # A paired text cache is vision-conditioned on the
+                                    # before-images. Keep this key excluded until text
+                                    # also refreshes successfully.
+                                    from fizgig.dataset.caption_file import read_caption
+                                    caption_file = os.path.splitext(source)[0] + (
+                                        getattr(owner, "caption_extension", None) or self.caption_ext)
+                                    try:
+                                        cap = read_caption(caption_file)
+                                    except OSError:
+                                        cap = item.caption
+                                    self._pending_reference_text[k] = cap
+                                if old_cache != new_cache:
+                                    _remove(old_cache)
                             finally:
                                 _remove(scratch.latent_cache_path)
-                        self.removed_keys.discard(k)
-                        logger.info("[image-fix] epoch %s: %s latent re-encoded at %s", epoch, k, item.bucket_size)
+                        if not paired:
+                            self.removed_keys.discard(k)
+                        logger.info("[image-fix] epoch %s: %s latent re-encoded at %s%s", epoch, k,
+                                    item.bucket_size, " with paired controls (text pending)" if paired else "")
                     except Exception:
                         pending[k] = "updated"
                         logger.warning("[image-fix] could not refresh %s; retaining pending update", k, exc_info=True)
