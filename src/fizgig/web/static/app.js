@@ -7279,7 +7279,10 @@ function mePaint() {
   const m = meState(), cv = $("meCanvas"), c = cv.getContext("2d");
   c.setTransform(1, 0, 0, 1, 0, 0);
   c.fillStyle = themeColor("--bg-inset"); c.fillRect(0, 0, cv.width, cv.height);
-  if (!m.pic || !m.mask) return;
+  if (!m.pic || !m.mask) {
+    if(m.rmTint)m.rmTint.hidden=true;
+    return;
+  }
   c.setTransform(m.zoom, 0, 0, m.zoom, m.ox, m.oy);
   c.imageSmoothingEnabled = m.zoom < 2;
   const w = m.mask.width, h = m.mask.height, show = Number($("meShow").value) / 100;
