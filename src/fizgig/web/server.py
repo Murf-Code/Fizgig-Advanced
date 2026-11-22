@@ -571,11 +571,20 @@ def write_all_captions(text, folder, ext, overwrite=False):
     existing = [f for f in photos if os.path.exists(os.path.join(folder, os.path.splitext(f)[0] + ext))]
     if existing and not overwrite:
         return {"exists": len(existing), "total": len(photos)}
+    from fizgig.web import caption_review
+    from fizgig.web.image_edit import write_atomic
+    written = skipped = 0
     for f in photos:
-        with open(os.path.join(folder, os.path.splitext(f)[0] + ext), "w", encoding="utf-8") as fh:
-            fh.write(text)
-    append_log(f"[captions] wrote \"{text}\" as the caption of {len(photos)} photos in {folder}\n")
-    return {"ok": True, "written": len(photos)}
+        target = os.path.join(folder, os.path.splitext(f)[0] + ext)
+        with caption_review._lock:
+            if caption_review.is_caption_locked(target):
+                skipped += 1
+                continue
+            write_atomic(target, text.encode("utf-8"))
+            written += 1
+    append_log(f"[captions] wrote \"{text}\" to {written} of {len(photos)} photos in {folder}; "
+               f"{skipped} reviewed and locked\n")
+    return {"ok": True, "written": written, "reviewed_skipped": skipped}
 
 
 def user_presets(desc) -> list:
@@ -5825,12 +5834,13 @@ class Handler(BaseHTTPRequestHandler):
                 if not stem or not os.path.isdir(folder):
                     return self.json({"error": "bad folder or file"}, 400)
                 from fizgig.web import caption_review
-                if caption_review.is_locked(folder, name):
-                    raise ValueError("This caption is reviewed and locked. Unlock it in Caption Studio first.")
                 from fizgig.web.image_loss import queue_for_folder
                 from fizgig.web.image_edit import write_atomic
                 filename = os.path.join(folder, stem + ext)
-                write_atomic(filename, str(text).encode("utf-8"))
+                with caption_review._lock:
+                    if caption_review.is_locked(folder, name) or caption_review.is_caption_locked(filename):
+                        raise ValueError("This caption is reviewed and locked. Unlock it in Caption Studio first.")
+                    write_atomic(filename, str(text).encode("utf-8"))
                 with _lock:
                     active = dict(_run)
                     running = active.get("proc") is not None and active["proc"].poll() is None
