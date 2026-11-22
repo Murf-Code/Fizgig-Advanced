@@ -4043,3 +4043,111 @@ body.caption-glass-ui .studio-context-rule {
 #tab-captions .studio-natural-pane[hidden]{display:none!important}
 #tab-captions .studio-natural-caption{width:100%;min-height:90px;box-sizing:border-box;resize:vertical}
 #tab-captions .studio-tag-editor-pane .studio-caption[hidden]{display:none!important}
+
+
+/* Compact anchored Edit Tags dropdown, shared by Classic and Glass. */
+#tab-captions .studio-top-actions{
+  overflow:visible;
+  position:relative;
+  z-index:12;
+}
+#tab-captions .studio-top-actions>.studio-edit-menu{
+  position:relative;
+  display:block;
+  flex:0 0 auto;
+  min-width:0;
+  width:auto;
+  margin:0;
+  padding:0;
+  border:0;
+  background:transparent;
+  z-index:21;
+}
+#tab-captions .studio-top-actions>.studio-edit-menu[open]{
+  flex:0 0 auto;
+  order:initial;
+  width:auto;
+  min-width:0;
+  background:transparent;
+}
+#tab-captions .studio-top-actions>.studio-edit-menu>summary{
+  display:flex;
+  align-items:center;
+  gap:11px;
+  border:1px solid var(--border);
+  border-radius:9px;
+  padding:9px 12px;
+  white-space:nowrap;
+  font-size:12px;
+  font-weight:650;
+  cursor:pointer;
+  user-select:none;
+  list-style:none;
+}
+#tab-captions .studio-top-actions>.studio-edit-menu>summary::after{
+  content:"";
+  width:7px;
+  height:7px;
+  border-right:1.5px solid currentColor;
+  border-bottom:1.5px solid currentColor;
+  transform:rotate(45deg) translateY(-2px);
+  opacity:.7;
+  margin-left:2px;
+}
+#tab-captions .studio-top-actions>.studio-edit-menu[open]>summary::after{
+  transform:rotate(225deg) translateY(-1px);
+}
+#tab-captions .studio-top-actions>.studio-edit-menu>summary::-webkit-details-marker{display:none}
+#tab-captions .studio-top-actions>.studio-edit-menu>.studio-bulk{
+  position:absolute;
+  top:calc(100% + 8px);
+  left:0;
+  z-index:23;
+  display:flex;
+  flex-direction:column;
+  align-items:stretch;
+  gap:8px;
+  min-width:255px;
+  width:max-content;
+  max-width:min(92vw,340px);
+  padding:12px;
+  margin:0;
+  border:1px solid var(--border);
+  border-radius:12px;
+  background:var(--bg-surface);
+  color:var(--text-primary);
+  box-shadow:0 16px 38px rgba(0,0,0,.33);
+}
+#tab-captions .studio-top-actions>.studio-edit-menu:not([open])>.studio-bulk{
+  display:none;
+}
+#tab-captions .studio-top-actions>.studio-edit-menu>.studio-bulk>strong{
+  width:auto;
+  font-size:12px;
+  color:var(--text-secondary);
+}
+#tab-captions .studio-top-actions>.studio-edit-menu>.studio-bulk>.btn{
+  display:block;
+  width:100%;
+  text-align:left;
+  white-space:normal;
+  min-height:36px;
+}
+#tab-captions .studio-top-actions>.studio-edit-menu .studio-bulk-note{
+  font-size:11px;
+  max-width:100%;
+  overflow-wrap:anywhere;
+}
+#tab-captions.caption-theme-glass .studio-top-actions>.studio-edit-menu>.studio-bulk{
+  border-color:rgba(255,255,255,.25);
+  background:rgba(23,24,41,.93);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.14),0 20px 45px rgba(0,0,0,.48);
+  backdrop-filter:blur(22px) saturate(1.1);
+  -webkit-backdrop-filter:blur(22px) saturate(1.1);
+}
+@media(max-width:600px){
+  #tab-captions .studio-top-actions>.studio-edit-menu>.studio-bulk{
+    width:min(320px,calc(100vw - 40px));
+    max-width:calc(100vw - 40px);
+  }
+}
