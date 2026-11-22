@@ -11115,12 +11115,70 @@ function studioCategories(){
   S.cap.studioCategories=state;return state;
 }
 function studioSaveCategories(state){localStorage.setItem(state.key,JSON.stringify({colors:state.colors,tags:state.tags}));}
+function captionRemovedPanel(ext) {
+  const panel=el("details",{class:"studio-removed-browser"});
+  const summary=el("summary",{text:"Removed images · restore from dataset"});
+  const folders=[...new Set([S.imageFolder,...S.cap.items.map(capItemFolder)].filter(Boolean))];
+  const folder=el("select",{class:"w-path",title:"Dataset folder containing removed images"});
+  for(const path of folders)folder.append(el("option",{value:path,text:path}));
+  folder.value=folders.includes(S.cap.studioRemovedFolder)?S.cap.studioRemovedFolder:folders[0]||"";
+  S.cap.studioRemovedFolder=folder.value;
+  const info=el("span",{class:"field-hint",text:"Removed pictures stay in the removed/ folder; restoring never overwrites an existing file."});
+  const entries=el("div",{class:"studio-removed-list"});
+  let serial=0;
+  const refresh=async()=>{
+    const id=++serial, target=folder.value;
+    entries.replaceChildren(el("span",{class:"field-hint",text:"Looking for removed pictures…"}));
+    try{
+      const result=await api("/api/captions/removed?folder="+encodeURIComponent(target)+
+        "&ext="+encodeURIComponent(ext));
+      if(id!==serial || target!==folder.value)return;
+      entries.replaceChildren();
+      const list=result.items||[];
+      if(!list.length){
+        entries.append(el("div",{class:"field-hint",text:"No removed pictures saved in this folder."}));
+        return;
+      }
+      for(const it of list){
+        const row=el("div",{class:"studio-removed-row"});
+        const label=el("div",{},el("strong",{text:it.name}),
+          el("div",{class:"field-hint",text:it.legacy?
+            "Older removal · restores under the stored file name":
+            it.moved.length+" related file(s) preserved (picture, caption, mask)"}));
+        const button=el("button",{class:"btn btn-sm",text:"Restore",onclick:async()=>{
+          if(!confirm("Restore "+it.name+" to its dataset folder? Existing files will not be replaced."))return;
+          button.disabled=true;info.textContent="Restoring "+it.name+"…";
+          try{
+            const result=await api("/api/captions/restore_saved",{folder:target,id:it.id,ext});
+            info.textContent=result.remaining?.length?
+              "Restored "+result.restored.length+" file(s), but these already exist or could not move: "+
+                result.remaining.join(", "):
+              "Restored "+result.restored.length+" file(s).";
+            await loadCaptions();
+          }catch(e){info.textContent=e.message;button.disabled=false;}
+        }});
+        row.append(label,button);entries.append(row);
+      }
+    }catch(e){entries.replaceChildren(el("span",{class:"field-hint",text:e.message}));}
+  };
+  folder.addEventListener("change",()=>{S.cap.studioRemovedFolder=folder.value;refresh();});
+  panel.append(summary,el("div",{class:"field-row"},folder,
+    el("button",{class:"btn btn-sm",text:"Refresh",onclick:refresh})),
+    info,entries);
+  panel.open=!!S.cap.studioRemovedOpen;
+  panel.addEventListener("toggle",()=>{S.cap.studioRemovedOpen=panel.open;if(panel.open)refresh();});
+  if(panel.open)refresh();
+  return panel;
+}
 function renderCaptionStudio(host,items,ext){
   const selection=S.cap.studioSelection||(S.cap.studioSelection=new Set());
   S.cap.studioDelimiter=S.cap.studioDelimiter||localStorage.getItem("fizgig_caption_separator")||",";
   const pageItems=items.slice(S.cap.page*CAP_PAGE,(S.cap.page+1)*CAP_PAGE);
   const current=pageItems.find(i=>i.path===S.cap.studioPath)||pageItems[0]||items[0];
-  if(!current){host.textContent="No matching images.";return;}
+  if(!current){
+    host.append(captionRemovedPanel(ext),el("div",{class:"field-hint",text:"No matching images. Restore a removed image above, or change your filter."}));
+    return;
+  }
   S.cap.studioPath=current.path;
   let captionMode=studioCaptionMode(current);
   const locked=!!S.cap.studioReviewed?.has(current.path);
@@ -11376,7 +11434,8 @@ function renderCaptionStudio(host,items,ext){
   const liveStatus=el("div",{class:"studio-live-status field-hint",id:"studioLiveStatus",
     text:studioLiveSummary(S.cap.liveStatus)});
   liveStatus.classList.toggle("needs-attention",!!S.cap.liveStatus?.attention);
-  redraw();host.classList.add("studio-host");host.append(liveStatus,bulk,el("div",{class:"studio-layout"},left,center,right));
+  redraw();host.classList.add("studio-host");host.append(liveStatus,bulk,captionRemovedPanel(ext),
+    el("div",{class:"studio-layout"},left,center,right));
 }
 
 // the table view: one row a file, sorted by a click on a column's head (again: the other way)
