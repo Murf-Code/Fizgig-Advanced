@@ -4,7 +4,6 @@ Runs under pytest or directly (python checks/test_krea2_direction_edit_v2.py). U
 weights and a fake encoder, so it needs neither the Krea 2 checkpoint nor Qwen3-VL.
 """
 import hashlib
-import json
 import os
 import random
 import sys
@@ -286,10 +285,12 @@ def test_rounds_sum_exactly_and_raise_the_rank():
     assert {"txt_rf_0@r1", "txt_rf_0@r2", "txt_rf_1@r1", "txt_rf_1@r2"} <= set(res["reliability"])
     out = tempfile.mkdtemp(prefix="de_v2_out_")
     de.export(res, cfg, out, "r2")
-    rep = json.load(open(os.path.join(out, "r2_direction_edit.json")))
-    assert rep["lora"]["rank"] >= 2, "rank is raised to num_directions x rounds"
-    assert all(e["lora_relative_error"] < 1e-4 for e in rep["edits"].values())
-    assert rep["method"] == "text_fusion_direction_edit_v2"
+    assert set(os.listdir(out)) == {"r2.safetensors"}
+    from safetensors import safe_open
+    with safe_open(os.path.join(out, "r2.safetensors"), framework="pt", device="cpu") as f:
+        metadata = f.metadata() or {}
+    assert int(metadata["ss_network_dim"]) >= 2, "rank is raised to num_directions x rounds"
+    assert not any("direction_edit" in key.lower() or "calibration" in key.lower() for key in metadata)
 
 
 # --- the whole-dataset scan -------------------------------------------------------------------------------------
@@ -334,10 +335,9 @@ def test_run_direction_edit_end_to_end_with_scan_rounds_and_spill():
     finally:
         de.load_fusion_path = real_loader
     names = set(os.listdir(out))
-    assert {"e2e.safetensors", "e2e_direction_edit.json", "e2e_direction_edit_scores.csv",
-            "e2e_direction_edit_scan.csv"} <= names
-    rep = json.load(open(os.path.join(out, "e2e_direction_edit.json")))
-    assert rep["scan"] and rep["scan"]["targets"] and rep["verify"]["held_out"] is True
+    assert names == {"e2e.safetensors"}
+    assert r["verify"]["held_out"] is True
+    assert not any("direction_edit" in name.lower() or "calibration" in name.lower() for name in names)
     assert {x for x in os.listdir(tempfile.gettempdir()) if x.startswith("fizgig_direction_edit_")} == before, \
         "the spill folder must be removed"
     assert "verify" in r
