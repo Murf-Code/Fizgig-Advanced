@@ -11824,6 +11824,11 @@ function renderCaptionStudio(host,items,ext){
   let captionMode=studioCaptionMode(current);
   const locked=!!S.cap.studioReviewed?.has(current.path);
   const categoryState=studioCategories();
+  const themeGraph=S.cap.studioTagbenchGraph;
+  if(themeGraph?.key===String(S.imageFolder||"")+"|"+ext&&
+      themeGraph.items===S.cap.items)
+    categoryState.generatedColors=themeGraph.model.colors;
+  else CaptionStudioViz.setTagbenchPalette(null);
   const editorCompose=tags=>studioCompose(ta.value,tags,captionMode);
   const left=el("aside",{class:"caption-studio-panel studio-browser"});
   const center=el("div",{class:"caption-studio-panel studio-editor"});
@@ -13010,11 +13015,18 @@ function renderCaptionStudio(host,items,ext){
     S.cap.studioExploreMode=view;
     indexMode.value="list";
     if(view==="list"){
+      if(S.cap.studioExploreNeedRedraw){
+        S.cap.studioExploreNeedRedraw=false;
+        renderCaptions();
+        return;
+      }
+      for(const child of fullStage.children)child.dispose?.();
       fullStage.hidden=true;
       layout.hidden=false;
       fullStage.replaceChildren();
       applySizes();
     }else{
+      for(const child of fullStage.children)child.dispose?.();
       layout.hidden=true;
       fullStage.hidden=false;
       fullStage.replaceChildren();
@@ -13025,18 +13037,15 @@ function renderCaptionStudio(host,items,ext){
             picked.has(it.path)?picked.delete(it.path):picked.add(it.path);
           }else{picked.clear();picked.add(it.path);}
           S.cap.studioPath=it.path;
+          S.cap.studioExploreNeedRedraw=true;
           for(const tile of fullStage.querySelectorAll(".studio-tb-flow-tile")){
             const image=tile.dataset.path;
             tile.classList.toggle("is-picked",picked.has(image)||image===it.path);
           }
         };
         const flow=CaptionStudioViz.tagbenchWaterfall(items,chooseImage,openImageMenu,
-          S.cap.studioPath,S.cap.studioSelection);
+          S.cap.studioPath,S.cap.studioSelection,TOKEN);
         fullStage.append(flow);
-        for(const tile of flow.querySelectorAll(".studio-tb-flow-tile")){
-          // dataset paths originate in the caption items, not user HTML
-          tile.dataset.path=tile.getAttribute("data-path")||"";
-        }
       }else{
         const revision=S.cap.studioRevision||0;
         const cache=S.cap.studioTagbenchGraph;
@@ -13055,6 +13064,8 @@ function renderCaptionStudio(host,items,ext){
           S.cap.studioExplorePickedTag=tag;
           const exact=tag?JSON.stringify(tag):"";
           S.cap.studioQuery=exact;
+          S.cap.page=0;
+          S.cap.studioExploreNeedRedraw=true;
           if(tag){
             const first=S.cap.items.find(it=>studioTokens(it.caption,studioCaptionMode(it))
               .some(value=>value.toLocaleLowerCase()===tag));
