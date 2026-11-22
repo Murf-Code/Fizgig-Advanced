@@ -13169,19 +13169,12 @@ function renderCaptionStudio(host,items,ext){
       return true;
     }catch(e){say(e.message);alert("Tag edit failed: "+e.message);return false;}
   };
-  const historyUI=studioHistory();
-  const undoGlobal=btn("↶ Undo dataset "+(historyUI.past.at(-1)?.label||"change"),async()=>{
-    try{await studioTravel("undo");}catch(e){alert("Undo stopped: "+e.message);}
-  });
-  const redoGlobal=btn("↷ Redo dataset "+(historyUI.future.at(-1)?.label||"change"),async()=>{
-    try{await studioTravel("redo");}catch(e){alert("Redo stopped: "+e.message);}
-  });
-  undoGlobal.disabled=!historyUI.past.length||historyUI.busy;
-  redoGlobal.disabled=!historyUI.future.length||historyUI.busy;
+  // Undo/Redo remain beside Edit image/crop and on Ctrl+Z/Ctrl+Y.
+  // The Edit Tags dropdown is reserved for the four TagBench editing actions.
   const applyOrdering=async()=>{
     const affected=selection.size?S.cap.items.filter(it=>selection.has(it.path)):S.cap.items;
     if(affected.some(it=>drafts.has(it.path)&&drafts.get(it.path)!==it.caption)){
-      say("Save unsaved caption drafts before bulk ordering.");return;
+      say("Save unsaved caption drafts before bulk ordering.");return false;
     }
     try{
       const changes=[];
@@ -13191,8 +13184,11 @@ function renderCaptionStudio(host,items,ext){
         if(after!==(it.caption||""))changes.push({folder:capItemFolder(it),name:it.name,
           path:it.path,before:it.caption,after});
       }
-      if(!changes.length){say("No tag ordering changes were needed.");return;}
-      if(!confirm("Reorder tags in "+changes.length+" captions? All changes undo as one group."))return;
+      if(!changes.length){say("No tag ordering changes were needed.");return false;}
+      if(changes.length>1000){
+        say("Ordering supports up to 1000 captions per operation.");return false;
+      }
+      if(!confirm("Reorder tags in "+changes.length+" captions? All changes undo as one group."))return false;
       await api("/api/captions/batch_edit",{ext,edits:changes.map(c=>({
         folder:c.folder,name:c.name,expected:c.before,text:c.after
       }))});
@@ -13200,7 +13196,8 @@ function renderCaptionStudio(host,items,ext){
       for(const c of changes){const it=S.cap.items.find(i=>i.path===c.path);if(it)it.caption=c.after;}
       S.cap.studioRevision=(S.cap.studioRevision||0)+1;
       renderCaptions();
-    }catch(e){say("Batch ordering: "+e.message);}
+      return true;
+    }catch(e){say("Batch ordering: "+e.message);return false;}
   };
   // All AI caption actions in the workbench use the shared image selection.
   // The standard Overwrite checkbox remains the single source of truth.
@@ -13226,9 +13223,7 @@ function renderCaptionStudio(host,items,ext){
     }catch(e){say(e.message);}
   };
   S.cap.studioCaptionSelected=captionSelected;
-  bulk.append(el("strong",{text:"History & advanced tag ordering"}),undoGlobal,redoGlobal,
-    btn("Order tags across selection",applyOrdering),
-    el("span",{class:"field-hint studio-bulk-note"}));
+  // Menu items are appended below, once the Find & Replace dialog exists.
   const liveStatus=el("div",{class:"studio-live-status field-hint",id:"studioLiveStatus",
     text:studioLiveSummary(S.cap.liveStatus)});
   liveStatus.classList.toggle("needs-attention",!!S.cap.liveStatus?.attention);
@@ -13484,12 +13479,72 @@ function renderCaptionStudio(host,items,ext){
     refresh();
     findInput.focus({preventScroll:true});
   };
+  // Ordering rules already exist in the workbench, but were not exposed.
+  // Give the screenshot's "Batch Reorder Tags…" action a focused dialog that
+  // reuses the original rules and the same atomic undoable caption batch.
+  const openBatchReorder=()=>{
+    document.querySelector(".caption-order-backdrop")?.remove();
+    const previousFocus=document.activeElement;
+    const overlay=el("div",{class:"caption-settings-backdrop caption-order-backdrop"});
+    const dialog=el("section",{class:"caption-settings-modal caption-order-modal",
+      role:"dialog","aria-modal":"true","aria-label":"Batch Reorder Tags",tabindex:"-1"});
+    const status=el("p",{class:"field-hint",role:"status",text:""});
+    const close=()=>{
+      overlay.remove();
+      document.body.classList.remove("caption-settings-open");
+      if(previousFocus?.isConnected)previousFocus.focus({preventScroll:true});
+    };
+    const heading=el("header",{class:"caption-settings-heading"},
+      el("h2",{text:"Batch Reorder Tags"}),
+      el("button",{class:"btn btn-sm caption-settings-close",type:"button",
+        text:"✕","aria-label":"Close Batch Reorder Tags",onclick:close}));
+    const targetCount=selection.size?selection.size:S.cap.items.length;
+    const area=el("div",{class:"caption-order-fields"},
+      el("p",{class:"caption-find-desc",text:"Change the order of tags in "+
+        (selection.size?"the "+targetCount+" selected image(s)":"all "+targetCount+" images")+
+        ". Captions marked reviewed or written as prose are protected."}),
+      el("label",{class:"caption-order-field"},el("span",{text:"Order"}),orderSelect),
+      el("label",{class:"caption-order-field"},el("span",{text:"Tags to pin first"}),frontTags),
+      el("label",{class:"caption-order-field"},el("span",{text:"Tags to pin last"}),backTags),
+      status);
+    const applyBtn=el("button",{class:"btn btn-primary",type:"button",text:"Reorder tags"});
+    applyBtn.addEventListener("click",async()=>{
+      applyBtn.disabled=true;
+      try{
+        const succeeded=await applyOrdering();
+        if(succeeded)close();
+        else {status.textContent="No changes applied; check the workbench notice or your selection.";applyBtn.disabled=false;}
+      }catch(error){status.textContent=error.message;applyBtn.disabled=false;}
+    });
+    dialog.append(heading,area,el("footer",{class:"caption-settings-footer"},
+      applyBtn,el("button",{class:"btn",type:"button",text:"Cancel",onclick:close})));
+    overlay.append(dialog);document.body.append(overlay);
+    document.body.classList.add("caption-settings-open");
+    overlay.addEventListener("pointerdown",e=>{if(e.target===overlay)close();});
+    overlay.addEventListener("keydown",e=>{
+      if(e.key==="Escape"){e.preventDefault();e.stopPropagation();close();return;}
+      if(e.key!=="Tab")return;
+      const targets=[...dialog.querySelectorAll("button:not([disabled]),input:not([disabled]),select:not([disabled])")];
+      if(!targets.length)return;
+      if(e.shiftKey&&document.activeElement===targets[0]){e.preventDefault();targets.at(-1).focus();}
+      else if(!e.shiftKey&&document.activeElement===targets.at(-1)){e.preventDefault();targets[0].focus();}
+    });
+    orderSelect.focus({preventScroll:true});
+  };
   const editMenu=el("details",{class:"studio-edit-menu"});
-  const findAndReplaceButton=el("button",{type:"button",class:"btn btn-sm studio-find-replace-action",
-    text:"Find and Replace…",title:"Replace text in the current filtered caption view (Ctrl+R)",
-    onclick:openFindReplace});
-  bulk.prepend(findAndReplaceButton);
-  editMenu.append(el("summary",{text:"Edit Tags",title:"Find and replace, undo/redo and tag ordering"}),bulk);
+  const menuAction=(title,shortcut,fn)=>{
+    const button=el("button",{type:"button",class:"btn studio-edit-action",
+      title:title+" ("+shortcut+")",
+      onclick:()=>{editMenu.open=false;fn();}},
+      el("span",{text:title}),el("kbd",{text:shortcut}));
+    bulk.append(button);
+  };
+  menuAction("Find and Replace…","Ctrl+R",openFindReplace);
+  menuAction("Batch Reorder Tags…","Ctrl+B",openBatchReorder);
+  menuAction("Remove Duplicate Tags","Ctrl+D",()=>void cleanTags("duplicate"));
+  menuAction("Remove Empty Tags","Ctrl+E",()=>void cleanTags("empty"));
+  editMenu.append(el("summary",{text:"Edit Tags",
+    title:"Find and Replace, Batch Reorder, Remove Duplicate or Empty Tags"}),bulk);
   // The dropdown floats above the workbench instead of expanding the toolbar.
   // Register a single dismiss listener, replacing the previous render's handler.
   if(S.cap.studioEditMenuDismiss){
@@ -13858,7 +13913,7 @@ function renderCaptionStudio(host,items,ext){
       handled();
       openFindReplace();
     }
-    else if(key==="b"){handled();editMenu.open=true;editMenu.scrollIntoView({block:"nearest"});}
+    else if(key==="b"){handled();openBatchReorder();}
     else if(key==="d"){handled();void cleanTags("duplicate");}
     else if(key==="e"){handled();void cleanTags("empty");}
     else if(key==="o"){handled();openSelectedImage();}

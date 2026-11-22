@@ -5153,3 +5153,34 @@ body.caption-glass-ui .studio-image-context-menu .studio-tag-color-swatch{
 /* Loss Status controls both the per-image verdict rings and its filter.
    The label is an inline flex container, so enforce the hidden attribute. */
 #tab-captions .studio-learning-filter-label[hidden]{display:none!important}
+
+/* Screenshot-accurate Edit Tags menu: four actions, shortcut labels, no
+   duplicate history controls or persistent form fields. */
+#tab-captions .studio-top-actions>.studio-edit-menu>.studio-bulk{
+  gap:2px;padding:5px;min-width:280px;max-width:min(92vw,350px);
+}
+#tab-captions .studio-top-actions>.studio-edit-menu>.studio-bulk>.studio-edit-action{
+  display:flex;align-items:center;justify-content:space-between;
+  width:100%;min-height:39px;gap:14px;padding:8px 10px;margin:0;
+  border:0;border-radius:6px;background:transparent;
+  text-align:left;font-size:13px;font-weight:450;
+}
+#tab-captions .studio-top-actions>.studio-edit-menu>.studio-bulk>.studio-edit-action:hover,
+#tab-captions .studio-top-actions>.studio-edit-menu>.studio-bulk>.studio-edit-action:focus-visible{
+  background:var(--accent-subtle);color:var(--text-primary);
+}
+#tab-captions .studio-top-actions .studio-edit-action kbd{
+  font-size:10px;font-weight:500;color:var(--text-muted);
+  white-space:nowrap;background:transparent;border:0;
+}
+#tab-captions .caption-order-modal .caption-order-fields{
+  display:flex;flex-direction:column;gap:13px;
+  padding:17px 20px;min-width:0;
+}
+#tab-captions .caption-order-modal .caption-order-field{
+  display:flex;flex-direction:column;gap:6px;
+  font-size:12px;color:var(--text-secondary);
+}
+#tab-captions .caption-order-modal .caption-order-field :is(input,select){
+  min-height:36px;width:100%;box-sizing:border-box;
+}

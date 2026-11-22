@@ -177,3 +177,15 @@ assert.match(app,/if\(!learningCheck\.checked&&wasFiltered\)\{/);
 assert.match(app,/if\(\$\("capView"\)\.value==="studio"&&S\.cap\.studioLearningColors\)/);
 assert.match(app,/filterLabel\.hidden=S\.cap\.studioExploreMode==="constellation"/);
 assert.match(css,/#tab-captions \.studio-learning-filter-label\[hidden\]\{display:none!important\}/);
+
+// Edit Tags must match TagBench's four dropdown items and shortcuts. Reorder
+// opens a real dialog exposing previously hidden ordering rules.
+assert.match(app,/menuAction\("Find and Replace…","Ctrl\+R",openFindReplace\)/);
+assert.match(app,/menuAction\("Batch Reorder Tags…","Ctrl\+B",openBatchReorder\)/);
+assert.match(app,/menuAction\("Remove Duplicate Tags","Ctrl\+D"/);
+assert.match(app,/menuAction\("Remove Empty Tags","Ctrl\+E"/);
+assert.match(app,/const openBatchReorder=\(\)=>/);
+assert.match(app,/el\("label",\{class:"caption-order-field"\},el\("span",\{text:"Order"\}\),orderSelect\)/);
+assert.match(app,/else if\(key==="b"\)\{handled\(\);openBatchReorder\(\);\}/);
+assert.doesNotMatch(app,/History & advanced tag ordering/);
+assert.match(css,/studio-edit-action kbd\{/);
