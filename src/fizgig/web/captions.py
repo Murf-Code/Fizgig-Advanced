@@ -271,6 +271,12 @@ def with_crops(folder):
     return [folder] + ([big] if big else [])
 
 
+def _review_locked(path):
+    """Use persisted review locks for legacy and AI batch captioning."""
+    from fizgig.web import caption_review
+    return caption_review.is_caption_locked(path)
+
+
 def static_captions(folder, trigger, overwrite, clips, photos=True, voice=False, ext=".txt"):
     """The trigger word as every file's caption (only files without one unless overwrite); a family that trains on
     recordings gets them too, and so do the folder's detail crops."""
@@ -278,6 +284,9 @@ def static_captions(folder, trigger, overwrite, clips, photos=True, voice=False,
         raise ValueError("Type a trigger word first.")
     made = skipped = 0
     for p in [p for f in with_crops(folder) for p in media_files(f, clips, photos, audio=voice)]:
+        if _review_locked(p):
+            skipped += 1
+            continue
         cap = os.path.splitext(p)[0] + ext
         if os.path.exists(cap) and not overwrite:
             skipped += 1
@@ -303,6 +312,9 @@ def song_captions(folder, trigger, words, overwrite, ext=".txt"):
         raise ValueError("No songs (wav, mp3, flac, m4a) in the training folder.")
     made = skipped = 0
     for n in songs:
+        if _review_locked(os.path.join(folder, n)):
+            skipped += 1
+            continue
         cap = os.path.join(folder, os.path.splitext(n)[0] + ext)
         if os.path.exists(cap) and not overwrite:
             skipped += 1
@@ -332,7 +344,7 @@ def find_replace(folder, find, replace, apply, ext=".txt"):
     pat = re.compile(re.escape(find), re.IGNORECASE)
     changes = []
     for fp in _caption_files(folder, ext):
-        if fp.lower().endswith(".lyrics.txt"):          # a song's lyrics are the words sung, not a caption
+        if _review_locked(fp) or fp.lower().endswith(".lyrics.txt"):          # a song's lyrics are the words sung, not a caption
             continue
         try:
             old = read_text(fp)
@@ -361,7 +373,7 @@ def add_text(folder, start, end, trigger, apply, ext=".txt"):
     has = lambda cap, t: re.search(r"(?<!\w)" + re.escape(t) + r"(?!\w)", cap, re.IGNORECASE)
     changes = []
     for fp in _caption_files(folder, ext):
-        if fp.lower().endswith(".lyrics.txt"):
+        if _review_locked(fp) or fp.lower().endswith(".lyrics.txt"):
             continue
         try:
             old = read_text(fp)
@@ -515,7 +527,7 @@ def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_to
     else:
         model = desc.label
     images = [p for p in (only or [p for f in with_crops(folder) for p in media_files(f, clips, photos)])
-              if os.path.isfile(p)]
+              if os.path.isfile(p) and not _review_locked(p)]
     if not images and not only:
         raise ValueError("Nothing here for the AI to caption: this model trains on recordings. Use Static Caption All "
                          "or Caption every song." if not photos and not clips else
