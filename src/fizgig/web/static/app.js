@@ -12902,14 +12902,51 @@ function renderCaptionStudio(host,items,ext){
   document.addEventListener("pointerdown",S.cap.studioEditMenuDismiss);
   document.addEventListener("keydown",S.cap.studioEditMenuDismiss);
   editMenu.querySelector("summary").setAttribute("aria-label","Edit Tags options");
-  const duplicatePanel=captionDuplicatePanel(ext);
   const removedPanel=captionRemovedPanel(ext);
   const toolsRow=el("div",{class:"studio-main-actions"});
   const settingsBtn=btn("Settings",()=>captionWorkbenchSettingsOpen());
   const existingWildcard=exportWildcard;
   const dupBtn=btn("Find Duplicate Images",()=>{
-    duplicatePanel.open=true;
-    duplicatePanel.scrollIntoView({block:"start",behavior:"smooth"});
+    document.querySelector(".caption-duplicates-backdrop")?.remove();
+    const previouslyFocused=document.activeElement;
+    const overlay=el("div",{class:"caption-settings-backdrop caption-duplicates-backdrop"});
+    const dialog=el("section",{class:"caption-settings-modal caption-duplicates-modal",
+      role:"dialog","aria-modal":"true","aria-label":"Find Duplicate Images",tabindex:"-1"});
+    const heading=el("header",{class:"caption-settings-heading"},
+      el("h2",{text:"Find Duplicate Images"}));
+    const panel=captionDuplicatePanel(ext);
+    panel.open=true;
+    panel.classList.add("caption-duplicates-content");
+    const close=()=>{
+      if(!overlay.isConnected)return;
+      S.cap.studioDuplicates.open=false;
+      panel.open=false;
+      overlay.remove();
+      document.body.classList.remove("caption-settings-open");
+      if(previouslyFocused?.isConnected)previouslyFocused.focus({preventScroll:true});
+    };
+    heading.append(el("button",{class:"btn btn-sm caption-settings-close",type:"button",
+      text:"✕","aria-label":"Close Duplicate Images",onclick:close}));
+    const footer=el("footer",{class:"caption-settings-footer"},
+      el("span",{class:"field-hint",text:"Review matches before merging tags or moving files. Removal is reversible."}),
+      el("button",{class:"btn btn-primary",type:"button",text:"Close",onclick:close}));
+    dialog.append(heading,panel,footer);
+    overlay.append(dialog);
+    document.body.append(overlay);
+    document.body.classList.add("caption-settings-open");
+    overlay.addEventListener("pointerdown",e=>{if(e.target===overlay)close();});
+    overlay.addEventListener("keydown",e=>{
+      if(e.key==="Escape"){e.preventDefault();e.stopPropagation();close();return;}
+      if(e.key!=="Tab")return;
+      const focusables=[...dialog.querySelectorAll(
+        'button:not([disabled]),input:not([disabled]),select:not([disabled]),summary,[tabindex="0"]')]
+        .filter(node=>node.getClientRects().length&&!node.closest("[hidden]"));
+      if(!focusables.length)return;
+      const first=focusables[0],last=focusables.at(-1);
+      if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
+      else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
+    });
+    dialog.focus({preventScroll:true});
   });
   const actionBar=el("nav",{class:"studio-top-actions","aria-label":"Caption Workbench tools"},
     settingsBtn,editMenu,dupBtn);
@@ -13072,7 +13109,7 @@ function renderCaptionStudio(host,items,ext){
     else if(key==="o"){handled();openSelectedImage();}
   };
   document.addEventListener("keydown",S.cap.studioKeyHandler);
-  toolsRow.append(actionBar,duplicatePanel,removedPanel);
+  toolsRow.append(actionBar,removedPanel);
   layout.append(left,divider("left"),center,divider("right"),right);
   redraw();host.classList.add("studio-host");
   host.append(liveStatus,toolsRow,layout);
