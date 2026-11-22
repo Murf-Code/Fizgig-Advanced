@@ -223,3 +223,17 @@ assert.match(app,/Delete .*selected tag/);
 assert.doesNotMatch(app,/Delete .*selected tag\(s\) from all unlocked dataset captions/);
 assert.match(app,/if\(!imageTagPicked\.has\(tag\.toLowerCase\(\)\)\)imageTagPicked\.clear\(\)/);
 assert.match(app,/if\(!selectionState\.has\(tag\)\)\{/);
+
+// Double-click edits tag spelling inline. Empty edits and Escape restore the
+// original row (including All Tags scroll position) without saving changes.
+// The outer Image Tags Delete/Backspace shortcut must not eat keystrokes in
+// the inline text editor.
+assert.match(app,/button\.addEventListener\("dblclick",\(\)=>\{/);
+assert.match(app,/if\(canceled\|\|!next\|\|next===t\)\{/);
+assert.match(app,/row\.replaceChildren\(button\)/);
+assert.match(app,/if\(e\.target\.closest\("input,textarea,\[contenteditable=true\]"\)\)return/);
+assert.match(app,/const originalChildren=\[\.\.\.row\.childNodes\]/);
+assert.match(app,/if\(canceled\|\|!next\|\|next===tag\)\{restore\(\);return;\}/);
+assert.match(app,/if\(!ok\)restore\(\)/);
+assert.match(app,/row\.isConnected\)row\.replaceChildren\(\.\.\.originalChildren\)/);
+assert.match(app,/e\.key==="Escape"\)\{/);

@@ -12768,6 +12768,9 @@ function renderCaptionStudio(host,items,ext){
     document.addEventListener("pointerdown",dismiss,true);
   };
   tags.addEventListener("keydown",e=>{
+    // Don't turn Backspace/Delete inside the inline rename input into a
+    // destructive selected-tag delete. Editing text must work normally.
+    if(e.target.closest("input,textarea,[contenteditable=true]"))return;
     if((e.key==="Delete"||e.key==="Backspace")&&!e.ctrlKey&&!e.metaKey){
       e.preventDefault();e.stopPropagation();removePickedTags();
     }
@@ -12804,20 +12807,33 @@ function renderCaptionStudio(host,items,ext){
         syncImageTagSelection(before);
       });
       button.addEventListener("dblclick",()=>{
-        if(locked)return;
+        if(locked||captionMode==="prose")return;
         const input=el("input",{type:"text",class:"studio-inline-image-tag",value:t,
-          "aria-label":"Rename "+t});
+          "aria-label":"Edit tag "+t,
+          title:"Enter or click away to save · Escape or empty input to cancel"});
         row.replaceChildren(input);
-        let canceled=false;
+        let canceled=false,finished=false;
         input.addEventListener("keydown",e=>{
-          if(e.key==="Enter"){e.preventDefault();input.blur();}
-          if(e.key==="Escape"){e.preventDefault();canceled=true;input.blur();}
+          if(e.key==="Enter"){e.preventDefault();e.stopPropagation();input.blur();}
+          if(e.key==="Escape"){
+            e.preventDefault();e.stopPropagation();canceled=true;input.blur();
+          }
         });
         input.addEventListener("blur",()=>{
-          if(!canceled)editImageTag(t,input.value);
-          else redraw();
+          if(finished)return;
+          finished=true;
+          const next=input.value.trim();
+          // Blank input, Escape, and unchanged text leave the original tag
+          // in place. In particular, don't strand a blank text field in the
+          // list after editImageTag's no-op guard.
+          if(canceled||!next||next===t){
+            row.replaceChildren(button);
+            return;
+          }
+          editImageTag(t,next);
         },{once:true});
-        input.focus();input.select();
+        input.focus({preventScroll:true});
+        input.select();
       });
       button.addEventListener("contextmenu",e=>imageTagMenu(e,t));
       button.draggable=!locked;
@@ -13020,15 +13036,22 @@ function renderCaptionStudio(host,items,ext){
   let tagEditing=null;
   const beginTagRename=(row,tag)=>{
     if(tagEditing)return;
+    const originalChildren=[...row.childNodes];
     const entry=el("input",{type:"text",class:"studio-inline-tag-edit",value:tag,
-      "aria-label":"Rename "+tag+" throughout the dataset"});
+      "aria-label":"Edit tag "+tag+" throughout the dataset",
+      title:"Enter or click away to save · Escape or empty input to cancel"});
     row.replaceChildren(entry);
     tagEditing={old:tag,entry};
     let canceled=false,finished=false;
+    const restore=()=>{
+      // Keep the existing row, its listeners, selection, and the user's scroll
+      // position. Rebuilding the entire All Tags index jumps to its top.
+      if(row.isConnected)row.replaceChildren(...originalChildren);
+    };
     const finish=async()=>{
       if(finished)return;finished=true;tagEditing=null;
       const next=entry.value.trim();
-      if(canceled||!next||next.toLowerCase()===tag.toLowerCase()){tagRows();return;}
+      if(canceled||!next||next===tag){restore();return;}
       const ok=await apply("rename",tag,"all",next);
       if(ok){
         const prev=categoryState.tags[tag.toLowerCase()];
@@ -13043,11 +13066,15 @@ function renderCaptionStudio(host,items,ext){
         }
         if(prev||color)studioSaveCategories(categoryState);
       }
-      tagRows();
+      if(!ok)restore();
+      // Success already re-renders the workbench, including its updated All
+      // Tags index. Do not rebuild a detached index after the API resolves.
     };
     entry.addEventListener("keydown",e=>{
-      if(e.key==="Enter"){e.preventDefault();entry.blur();}
-      if(e.key==="Escape"){canceled=true;e.preventDefault();entry.blur();}
+      if(e.key==="Enter"){e.preventDefault();e.stopPropagation();entry.blur();}
+      if(e.key==="Escape"){
+        canceled=true;e.preventDefault();e.stopPropagation();entry.blur();
+      }
     });
     entry.addEventListener("blur",finish,{once:true});
     entry.focus({preventScroll:true});entry.select();
@@ -13102,7 +13129,7 @@ function renderCaptionStudio(host,items,ext){
       const row=el("li",{class:"studio-tag-list-item"});
       const selected=selectionState.has(tag);
       const tagBtn=el("button",{class:"studio-index-tag"+(selected?" is-picked":""),
-        type:"button",text:tag+" ("+n+")",title:"Click to filter images · Ctrl-click to select tags · Right-click for tag actions",
+        type:"button",text:tag+" ("+n+")",title:"Click to filter images · Ctrl-click to select · Double-click to edit spelling · Right-click for tag actions",
         "data-tag":tag,
         "aria-pressed":selected?"true":"false"});
       tagBtn.style.setProperty("--studio-tag-color",CaptionStudioViz.colorForTag(tag,categoryState));
