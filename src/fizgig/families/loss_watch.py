@@ -127,6 +127,7 @@ class Watch:
         self.vae_path = vae_path
         self.folder_weights = folder_weights
         self.removed_keys = set()
+        self.stale_image_keys = set()  # pending VAE/media refresh; caption updates must not unblock these
         self.invalid_mask_keys = set()  # mask errors are distinct from deleted/stale image latents
         self.trigger_word, self.trigger_position = trigger_word, trigger_position
         self.triggers = dict(recaption_triggers or {})     # another folder's own trigger word, by key prefix
@@ -945,6 +946,7 @@ class Watch:
             if old_path != new_cache:
                 _remove(old_path)
             self.removed_keys.discard(key)
+            self.stale_image_keys.discard(key)
             self.unsupported_media_keys.discard(key)
             # A clip's still item shares this cache and must be released too.
             self.removed_keys.discard(key.removesuffix("#still") + "#still")
@@ -1000,10 +1002,12 @@ class Watch:
             source = self._source_for_key(str(k), listings)
             if action == "removed" or not source:
                 self.removed_keys.add(str(k))
+                self.stale_image_keys.discard(str(k))
                 logger.info("[image-fix] %s excluded from subsequent epochs", k)
             elif action == "updated":
                 # Never train on stale cache while the edited source is waiting to refresh.
                 self.removed_keys.add(str(k))
+                self.stale_image_keys.add(str(k))
                 if os.path.splitext(source)[1].lower() not in _picture_exts():
                     if self.driver.description.key == "minimax":
                         # Only the canonical clip entry encodes the shared media
@@ -1109,6 +1113,7 @@ class Watch:
                                     _remove(old_cache)
                             finally:
                                 _remove(scratch.latent_cache_path)
+                        self.stale_image_keys.discard(k)
                         if not paired:
                             self.removed_keys.discard(k)
                         logger.info("[image-fix] epoch %s: %s latent re-encoded at %s%s", epoch, k,
@@ -1232,7 +1237,10 @@ class Watch:
                     _remove(scratch.text_encoder_output_cache_path)
                 item.caption = cap
                 self.stale_caption_keys.discard(k)
-                self.removed_keys.discard(k)
+                # Finishing text does not make a deleted source or a still-stale
+                # VAE/media cache trainable; only image refresh can clear that.
+                if source and os.path.isfile(source) and k not in getattr(self, "stale_image_keys", ()):
+                    self.removed_keys.discard(k)
                 getattr(self, "_pending_reference_text", {}).pop(k, None)
 
             if plain_rows:
