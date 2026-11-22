@@ -44,6 +44,8 @@ jobs:
         run: node checks/test_caption_studio_image.cjs
       - name: Image editor paint and resize performance regressions
         run: node checks/test_mask_editor_performance.cjs
+      - name: Remove brush cursor and composited preview regressions
+        run: node checks/test_remove_preview_latency.cjs
       - name: TagBench duplicate finder preserves native LaMa removal wiring
         run: node checks/test_caption_studio_duplicates.cjs
       - name: Caption Studio regression checks
