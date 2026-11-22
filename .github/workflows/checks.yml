@@ -42,6 +42,8 @@ jobs:
         run: node checks/test_caption_studio_training_picks.cjs
       - name: Caption Studio shared image editor wiring checks
         run: node checks/test_caption_studio_image.cjs
+      - name: Image Prep glass overlay lifecycle and shared editor regression
+        run: node checks/test_prep_glass_editor.cjs
       - name: Image editor paint and resize performance regressions
         run: node checks/test_mask_editor_performance.cjs
       - name: Remove brush cursor and composited preview regressions
