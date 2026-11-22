@@ -10917,6 +10917,9 @@ function renderCaptions() {
   const q = $("capSearch").value.trim().toLowerCase();
   const all = S.cap.items;
   let items = q ? all.filter((i) => i.name.toLowerCase().includes(q) || (i.caption || "").toLowerCase().includes(q)) : all;
+  const filter = $("capFilter").value;
+  if (filter === "missing") items = items.filter(i => i.caption === null);
+  else if (filter === "captioned") items = items.filter(i => i.caption !== null);
   const sort = $("capSort").value, px = (i) => (i.size ? i.size[0] * i.size[1] : null);
   if (sort !== "name") {                       // by pixel count; songs (no size) go last either way
     items = [...items].sort((a, b) => (px(a) == null) - (px(b) == null) ||
@@ -11237,6 +11240,7 @@ function wireCaptions() {
   $("frApply").addEventListener("click", held($("frApply"), () => findReplace(true)));
   $("capSearch").addEventListener("input", debounce(() => { S.cap.page = 0; renderCaptions(); }, 250));
   $("capSort").addEventListener("change", () => { S.cap.page = 0; renderCaptions(); });
+  $("capFilter").addEventListener("change", () => { S.cap.page = 0; renderCaptions(); });
   $("capPrev").addEventListener("click", () => { S.cap.page--; renderCaptions(); window.scrollTo(0, 0); });
   $("capNext").addEventListener("click", () => { S.cap.page++; renderCaptions(); });
   const goto = () => {                          // the desktop's Go to page: a number, kept within the pages there are
