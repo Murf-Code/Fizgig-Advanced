@@ -50,6 +50,8 @@ jobs:
         run: node checks/test_caption_image_perf.cjs
       - name: Background Remove worker bridge and patch safety
         run: node checks/test_remove_worker_bridge.cjs
+      - name: Serial asynchronous mask saves preserve newer edits
+        run: node checks/test_mask_async_save.cjs
       - name: TagBench duplicate finder preserves native LaMa removal wiring
         run: node checks/test_caption_studio_duplicates.cjs
       - name: Caption Studio regression checks
