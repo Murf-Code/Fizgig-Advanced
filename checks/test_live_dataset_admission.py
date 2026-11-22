@@ -31,7 +31,7 @@ class FakeDriver:
     def encode_text(self, te, captions):
         if self.text_hook:
             self.text_hook()
-        return [{"cond__mock": torch.ones(1, 4)} for _ in captions]
+        return [{"mock": torch.ones(1, 4)} for _ in captions]
 
     def unload_text_encoder(self, te):
         pass
@@ -79,6 +79,8 @@ def live_setup(tmp_path):
     watch.stale_caption_keys = set()
     watch._pending_reference_text = {}
     watch.watch = None
+    watch.auto_recaption = False
+    watch.stale_image_keys = set()
     watch.reg = set()
     watch._source_snapshot = watch._source_state()
     return root, dataset, watch
@@ -154,3 +156,15 @@ def test_secondary_subject_new_cache_name_has_no_training_prefix(tmp_path):
     new_item = next(it for it in ds.batch_manager.live_pools[(256, 256)] if it.item_key == "s2:new")
     assert os.path.basename(new_item.latent_cache_path) == "new_0256x0256_krea2.safetensors"
     assert os.path.basename(new_item.text_encoder_output_cache_path) == "new_krea2_te.safetensors"
+
+
+def test_caption_success_does_not_unblock_failed_image_refresh(tmp_path):
+    root, ds, watch = live_setup(tmp_path)
+    watch.vae_path = None  # model missing: no successful latent refresh
+    watch._images(1, None, torch.device("cpu"), False, {"old": "updated"})
+    assert "old" in watch.stale_image_keys
+    assert "old" in watch.removed_keys
+    watch._captions(1, None, torch.device("cpu"), False, {"old": "old concept"})
+    assert "old" in watch.removed_keys
+    assert "old" in watch.stale_image_keys
+    assert watch.excluded({"item_keys": ["old"]})
