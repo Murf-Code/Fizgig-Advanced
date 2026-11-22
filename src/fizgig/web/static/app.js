@@ -7043,7 +7043,8 @@ async function meRmSave(onlyWm) {
     const name = m.name;
     try {
       const r = await api("/api/masks/edit/watermark_save", {folder: m.folder || S.imageFolder, name, pad: meWmPad(),
-        add: diff.add ? diff.add.toDataURL("image/png") : "", erase: diff.erase ? diff.erase.toDataURL("image/png") : ""});
+        add: diff.add ? await MaskEditorPerf.pngDataURL(diff.add) : "",
+        erase: diff.erase ? await MaskEditorPerf.pngDataURL(diff.erase) : ""});
       item.watermark = !!r.watermark;
       if (m.name === name) { m.rmBase = now; m.rmFromWm = !!r.watermark; m.rmHandEdited = false; meImgBar(); }
       meWmBar();
@@ -7329,10 +7330,15 @@ function meSnapshot() {
   copy.getContext("2d").drawImage(m.mask, 0, 0);
   return copy;
 }
-function mePush() {
-  const m = meState();
-  m.undo.push(meSnapshot()); if (m.undo.length > ME_UNDO) m.undo.shift();
-  m.redo = [];
+function mePush(tiled=false) {
+  const m=meState();
+  // A brush stroke captures only tiles it touches. Destructive whole-image
+  // operations and server image steps still use their existing snapshots.
+  const entry=tiled?MaskEditorPerf.tiles(m.mask):meSnapshot();
+  m.strokeHistory=tiled?entry:null;
+  m.undo.push(entry);
+  if(m.undo.length>ME_UNDO)m.undo.shift();
+  m.redo=[];
 }
 async function meRestore(from, to) {
   const m = meState();
@@ -7370,6 +7376,18 @@ async function meRestore(from, to) {
       maskInfo();
     } catch (e) { $("meState").textContent = e.message; }
     finally { m.stepBusy = false; meBusy(""); meImgBar(); meDraw(); }
+    return;
+  }
+  if(top.kind==="tiles"){
+    const restored=MaskEditorPerf.restore(top,m.mask);
+    from.pop();to.push(restored.inverse);
+    if(restored.rect){
+      const p=restored.rect;
+      m.maskDirtyRect=meDirtyRect(m.maskDirtyRect,
+        (p.l+p.r)/2,(p.t+p.b)/2,Math.max(p.r-p.l,p.b-p.t),
+        m.mask.width,m.mask.height);
+    }
+    m.dirty=true;meStateLine();meDraw();
     return;
   }
   to.push(meSnapshot());
@@ -7585,7 +7603,8 @@ async function meApply() {
     if (!m.rmDirty) { $("meState").textContent = "Paint over what to remove first."; return; }
     await meRmSave(true);                              // the watermark mask as you edited it, before it's filled
     const old = m.pic, fromWm = m.rmFromWm;
-    const r = await mePicStep("/api/masks/edit/remove", {png: m.rm.toDataURL("image/png"), backup: !!fromWm},
+    const r = await mePicStep("/api/masks/edit/remove", {
+      png: await MaskEditorPerf.pngDataURL(m.rm),backup:!!fromWm},
       "remove", "Removing…");
     if (!r) { meImgBar(); return; }
     const item = m.list.find((p) => p.name === m.name);
@@ -7635,6 +7654,7 @@ function meDab(x,y,context){
   const m=meState(),c=context||m.mask.getContext("2d");
   const r=Number($("meSize").value)/2/m.zoom;
   const soft=Number($("meSoft").value)/100,a=Number($("meStrength").value)/100;
+  if(m.strokeHistory)MaskEditorPerf.capture(m.strokeHistory,m.mask,x,y,r);
   c.globalCompositeOperation=(m.tool==="erase")!==!!m.flip?"destination-out":"source-over";
   const stamp=soft>0?meBrushStamp(m,r,soft,a):null;
   if(stamp)c.drawImage(stamp.canvas,x-stamp.half,y-stamp.half);
@@ -7676,7 +7696,7 @@ async function meSave() {
   c.fillStyle = "#000"; c.fillRect(0, 0, out.width, out.height); c.drawImage(m.mask, 0, 0);
   try {
     const r = await api("/api/masks/edit/save", {folder: m.folder || S.imageFolder, name: m.name,
-      png: out.toDataURL("image/png")});
+      png: await MaskEditorPerf.pngDataURL(out)});
     m.dirty = false;
     const item = m.list.find((p) => p.name === m.name);
     if (item) item.mask = !r.removed;
@@ -7865,7 +7885,7 @@ function meWire() {
     }
     if (e.button !== 0 && e.button !== 2) return;
     m.flip = e.button === 2;                           // right-click: the Brush erases, the Eraser paints
-    mePush(); meDab(p.x, p.y); last = p; m.dirty = true; meStateLine(); meDraw();
+    mePush(true); meDab(p.x, p.y); last = p; m.dirty = true; meStateLine(); meDraw();
   });
   cv.addEventListener("pointermove", (e) => {
     const p = meAt(e);
@@ -7880,7 +7900,9 @@ function meWire() {
   });
   const up = () => {
     if (last && m.tool === "remove") meRmSave(true);  // stroke end: kept at once
-    last = null; pan = null; m.panning = false; m.flip = false; m.cropDrag = null; meImgBar(); meDraw(); };
+    last = null; pan = null; m.panning = false; m.flip = false; m.cropDrag = null;
+    m.strokeHistory=null;
+    meImgBar(); meDraw(); };
   cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
   cv.addEventListener("pointerleave", () => { cursor.hidden=true; });
   cv.addEventListener("contextmenu", (e) => e.preventDefault());   // right-click: SAM's "take away", the brush's erase
