@@ -20,7 +20,7 @@ def apply(edits, ext=".txt"):
     if not isinstance(ext, str) or not re.fullmatch(r"\.[A-Za-z0-9_]{1,12}", ext):
         raise ValueError("Invalid caption extension.")
     planned, seen = [], set()
-    with _LOCK:
+    with _LOCK, caption_review._lock:
         for entry in edits:
             if not isinstance(entry, dict):
                 raise ValueError("Invalid caption change.")
