@@ -2590,6 +2590,13 @@ def plan(desc, inputs):
     """The whole launch: problems first (a plan with problems must not start), then the stages in order."""
     from fizgig.families.checks import tidy_name
     inputs = dict(inputs)
+    if desc.key == "krea2":
+        _family_values = inputs.get("FAMILY_OPTIONS") or {}
+        _calibration_on = (_family_values.get("KREA2_DIRECTION_EDIT")
+                           if "KREA2_DIRECTION_EDIT" in _family_values else _family_values.get("direction_edit"))
+        if str(_calibration_on or "").strip().lower() in ("1", "true", "on", "yes"):
+            inputs["VALIDATION_HOLDOUT"] = True
+            inputs["VALIDATION_LOSS"] = True
     folder = _s(inputs.get("image_folder"))
     if folder and not os.path.isabs(folder):
         inputs["image_folder"] = os.path.abspath(folder)     # the subprocesses run from the Fizgig folder

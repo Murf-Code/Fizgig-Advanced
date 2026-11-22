@@ -61,6 +61,29 @@ KREA2 = FamilyDescription(
         requires="KREA2_TRAINING_METHOD=Global replay",
         hint="Every 8 steps, pauses blocks that are making the loss worse.",
         summary="Selective block check",
+    ), FamilyOption(
+        key="KREA2_DIRECTION_EDIT",
+        label="Text-fusion calibration",
+        kind="check",
+        tokens="direction_edit=1",
+        default="",
+        section="other",
+        mode="lora",
+        featured=True,
+        hint="Scans the complete training dataset for consistently suppressed concepts before training. "
+             "Uses this run's held-out Image Validation pictures to verify the edit; rejected edits are not included.",
+        summary="Text-fusion calibration",
+    ), FamilyOption(
+        key="KREA2_DIRECTION_TARGET_TAGS",
+        label="Target tags (optional)",
+        kind="entry",
+        tokens="direction_edit_target_tags={}",
+        default="",
+        section="other",
+        mode="lora",
+        requires="KREA2_DIRECTION_EDIT",
+        hint="Leave blank for automatic discovery. Or enter comma-separated tags to test; each still must show "
+             "consistent measured suppression or it is skipped.",
     )),
     trigger_attention=True,           # training maps' trigger-word map (an experiment)
     start_lr_bands=(("lora", 3e-5, 3e-4), ("slider", 7e-5, 6e-4)),
