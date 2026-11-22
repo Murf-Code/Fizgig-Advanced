@@ -5466,3 +5466,90 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
 #tab-captions #captionImageEditorSlot .me-stage{
   isolation:isolate;
 }
+
+/* Caption Workbench: Remove and Crop edit the center Tags preview directly.
+   The Image Prep mask editor stays intact and owns the same live canvas. */
+#tab-captions .studio-image-stage .studio-preview.studio-preview-editing{
+  position:relative;
+  overflow:hidden;
+  isolation:isolate;
+}
+#tab-captions .studio-image-stage .studio-preview-editing #meStage{
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  min-height:0;
+  max-height:none;
+  margin:0;
+  border:0;
+  border-radius:inherit;
+  overflow:hidden;
+  background:var(--bg-inset);
+}
+#tab-captions .studio-image-stage .studio-preview-editing #meCanvas{
+  display:block;
+  width:100%;
+  height:100%;
+  max-height:none;
+  box-sizing:border-box;
+  touch-action:none;
+  cursor:none;
+}
+#tab-captions .studio-image-toolbar{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  flex-wrap:wrap;
+  gap:6px;
+  flex:none;
+  min-width:0;
+  margin:0;
+  padding:5px 7px;
+  border:1px solid var(--border);
+  border-radius:10px;
+  background:var(--bg-surface);
+}
+#tab-captions .studio-image-toolbar .btn{
+  min-width:0;
+  padding:7px 12px;
+  white-space:nowrap;
+}
+#tab-captions .studio-image-toolbar .btn.is-active{
+  background:var(--accent-subtle);
+  border-color:var(--accent);
+  color:var(--text-primary);
+  box-shadow:inset 0 0 0 1px var(--accent-border);
+}
+#tab-captions .studio-image-brush-size{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+  padding:0 7px;
+  font-size:12px;
+  white-space:nowrap;
+  color:var(--text-secondary);
+}
+#tab-captions .studio-image-brush-size input{
+  width:clamp(84px,10vw,150px);
+  min-width:70px;
+  accent-color:var(--accent);
+}
+#tab-captions .studio-image-size-value{
+  width:45px;
+  font-size:11px;
+  text-align:end;
+  color:var(--text-muted);
+  font-variant-numeric:tabular-nums;
+}
+#tab-captions .studio-image-toolbar [hidden]{display:none!important}
+#tab-captions.caption-theme-glass .studio-image-toolbar{
+  background:rgba(19,20,34,.92);
+  border-color:rgba(183,190,255,.20);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.08);
+}
+@media(max-width:650px){
+  #tab-captions .studio-image-toolbar{gap:5px;padding:5px}
+  #tab-captions .studio-image-toolbar .btn{padding:7px 9px}
+}
