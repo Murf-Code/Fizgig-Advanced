@@ -4001,3 +4001,45 @@ body.caption-glass-ui .studio-context-rule {
 @media(max-width:650px){
   #tab-captions .studio-host .studio-thumb-rail{grid-template-columns:none}
 }
+
+
+/* Compact TagBench controls: selection lives on the image context menu. */
+#tab-captions .studio-natural-toggle{display:inline-flex;align-items:center;gap:9px;
+  cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap}
+#tab-captions .studio-natural-toggle input[type="checkbox"]{appearance:auto;
+  accent-color:var(--accent);width:16px;height:16px;flex:none;cursor:pointer}
+#tab-captions .studio-natural-toggle input:disabled{cursor:not-allowed}
+#tab-captions .studio-image-tags-heading{display:flex;align-items:center;
+  justify-content:space-between;gap:8px;flex-wrap:wrap}
+#tab-captions .studio-ai-dock{display:flex;flex-direction:column;gap:14px;
+  min-width:0;min-height:250px;overflow-x:hidden;overflow-y:auto}
+#tab-captions .studio-ai-dock[hidden]{display:none!important}
+#tab-captions .studio-ai-controls{display:flex;flex-direction:column;gap:12px;min-width:0}
+#tab-captions .studio-ai-controls select{min-width:0;width:100%;max-width:100%;box-sizing:border-box}
+#tab-captions .studio-ai-controls .btn{width:100%;white-space:normal}
+#tab-captions .studio-tag-editor-pane{overflow-x:hidden;overflow-y:auto;min-width:0;min-height:0;
+  flex:1 1 auto}
+#tab-captions .studio-tag-advanced{display:block;flex:none;min-width:0;overflow:visible;
+  position:relative}
+#tab-captions .studio-tag-advanced>summary{user-select:none;cursor:pointer;
+  position:relative;z-index:1}
+#tab-captions .studio-tag-advanced[open]>.field-row,
+#tab-captions .studio-tag-advanced[open]>.studio-category-manager{min-width:0;
+  max-width:100%;flex-wrap:wrap}
+#tab-captions .studio-tag-advanced select{width:100%;min-width:0;max-width:100%}
+#tab-captions .studio-image-tag-list{list-style:none;display:flex;flex-direction:column;
+  gap:2px;min-width:0;max-height:330px;overflow-y:auto;margin:0;padding:4px;
+  border:1px solid var(--border);border-radius:9px;background:var(--bg-inset)}
+#tab-captions .studio-image-tag-row{list-style:none;margin:0;padding:0;min-width:0}
+#tab-captions .studio-image-tag{display:block;width:100%;text-align:left;
+  padding:7px 10px;border:0;border-left:3px solid transparent;border-radius:6px;
+  background:transparent;color:var(--text-primary);cursor:pointer;
+  white-space:normal;overflow-wrap:anywhere}
+#tab-captions .studio-image-tag:hover{background:var(--bg-hover)}
+#tab-captions .studio-image-tag.is-picked{background:var(--accent-subtle);
+  border-left-color:var(--accent);color:var(--text-primary)}
+#tab-captions .studio-inline-image-tag{width:100%;box-sizing:border-box}
+#tab-captions .studio-natural-pane{display:flex;flex-direction:column;gap:8px;min-width:0}
+#tab-captions .studio-natural-pane[hidden]{display:none!important}
+#tab-captions .studio-natural-caption{width:100%;min-height:90px;box-sizing:border-box;resize:vertical}
+#tab-captions .studio-tag-editor-pane .studio-caption[hidden]{display:none!important}
