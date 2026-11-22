@@ -1202,7 +1202,11 @@ def scan_select(cfg, pairs, rows, meta, requested_targets=None):
         by_tag.setdefault(pr["tag"], []).append(math.log(max(row[stage], 1e-12)))
     tags = sorted(t for t, v in by_tag.items() if len(v) >= 2)
     if len(tags) < 8:
-        raise ValueError(f"the scan measured only {len(tags)} tags: lower scan_min_count or point it at more captions.")
+        requested = list(requested_targets or cfg.get("target_tags") or [])
+        skipped = [{"tag": t, "reason": f"only {len(tags)} distinct tags could be measured; at least 8 are needed"}
+                   for t in requested]
+        return {"targets": [], "controls": [], "skipped_targets": skipped, "rows": [],
+                "fit": {"reason": f"only {len(tags)} distinct tags could be measured"}}
     mean = lambda v: sum(v) / len(v)          # noqa: E731
     y = torch.tensor([mean(by_tag[t]) for t in tags], dtype=torch.float64)
     ya = torch.tensor([mean(by_tag[t][0::2]) for t in tags], dtype=torch.float64)
@@ -1246,7 +1250,7 @@ def scan_select(cfg, pairs, rows, meta, requested_targets=None):
         controls.append(nm)
         if len(controls) >= int(cfg["scan_controls"]):
             break
-    if len(controls) < 3:
+    if tgt and len(controls) < 3:
         raise ValueError(f"the scan found only {len(controls)} mid-range tags to use as controls (needs 3): "
                          "raise scan_max_tags or lower scan_min_count.")
     role = {tags[i] for i in tgt}
@@ -1498,6 +1502,7 @@ def run_direction_edit(cfg, *, dit_path, te_path, vae_path=None, output_dir, out
                                                         for v in held.values() if str(v or "").strip()))
             if cfg.get("caption_source") is not None:
                 cfg["caption_source"]["verify_source"] = "Fizgig image-validation hold-out"
+                cfg["caption_source"]["verify_files"] = list(held)
                 cfg["caption_source"]["verify_count"] = len(cfg["verify_prompts"])
         check_config(cfg)
         if not dit_path or not os.path.isfile(dit_path):

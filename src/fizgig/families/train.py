@@ -130,7 +130,7 @@ def _prepare_krea2_direction_edit(desc, family_options, network_type, slider, fi
         cfg["scan_z"] = 1.0
         cfg["scan_stage"] = "rf_1"
         cfg["score_stage"] = "txtmlp"
-        cal_dir = os.path.join(output_dir, ".direction_edit")
+        cal_dir = os.path.join(output_dir, "direction_edit")
         os.makedirs(cal_dir, exist_ok=True)
         logger.info(f"[direction-edit] scanning {len(training_records)} training captions; "
                     f"{len(verification_records)} held-out captions reserved for verification")
