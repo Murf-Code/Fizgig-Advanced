@@ -25,6 +25,7 @@ import re
 import shutil
 import sys
 import time
+import tempfile
 import uuid
 from multiprocessing import Value
 
@@ -67,50 +68,24 @@ def _direction_option_on(value):
     return str(value or "").strip().lower() in ("1", "true", "on", "yes")
 
 
-def _write_direction_report(info, updates):
-    """Update the calibration report with Fizgig's held-out image-verification verdict."""
-    path = (info or {}).get("report")
-    if not path or not os.path.isfile(path):
-        return
-    try:
-        with open(path, encoding="utf-8") as f:
-            report = json.load(f)
-        report.update(updates)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(report, f, indent=2)
-        os.replace(tmp, path)
-    except Exception:
-        logger.warning("[direction-edit] couldn't update the report", exc_info=True)
-
-
 def _prepare_krea2_direction_edit(desc, family_options, network_type, slider, finetune, share_worker,
                                   group, val_held, dit_path, te_path, output_dir, output_name, seed, device):
-    """Discover under-represented tags from every training caption; keep the hold-out entirely separate."""
+    """Prepare a candidate from training captions only; keep verification results in memory."""
     options = dict(family_options or {})
     if desc.key != "krea2" or not _direction_option_on(options.get("direction_edit")):
         return None
-    reason = (
-        "calibration currently supports standard LoRA only" if str(network_type or "lora").lower() != "lora" else
-        "slider training has no single target-caption distribution" if slider else
-        "full fine-tuning changes the base model instead of producing a LoRA" if finetune else
-        "shared/helper training cannot yet combine calibration weights" if share_worker is not None else
-        "the automatic Image Validation hold-out is empty" if not val_held else
-        "the Krea 2 Qwen3-VL text encoder path is not set" if not te_path else
-        ""
-    )
-    if reason:
-        logger.warning(f"[direction-edit] skipped: {reason}")
-        return {"status": "skipped", "reason": reason, "targets": [], "controls": []}
+    if (str(network_type or "lora").lower() != "lora" or slider or finetune or share_worker is not None
+            or not val_held or not te_path):
+        return None
+
+    temp_dir = None
     try:
         from fizgig.krea2 import direction_edit_v2 as direction_edit
         training_records = direction_edit.captions_from_group(group)
         verification_records = direction_edit.captions_from_held(val_held)
         if len(training_records) < 8 or not verification_records:
-            reason = (f"only {len(training_records)} training captions and {len(verification_records)} "
-                      "held-out captions were found; need at least 8 and 1")
-            logger.warning(f"[direction-edit] skipped: {reason}")
-            return {"status": "skipped", "reason": reason, "targets": [], "controls": []}
+            return None
+
         manual = str(options.get("direction_edit_target_tags") or "").strip()
         de_options = {"direction_edit_scan": "1"}
         if manual:
@@ -130,62 +105,22 @@ def _prepare_krea2_direction_edit(desc, family_options, network_type, slider, fi
         cfg["scan_z"] = 1.0
         cfg["scan_stage"] = "rf_1"
         cfg["score_stage"] = "txtmlp"
-        cal_dir = os.path.join(output_dir, "direction_edit")
-        os.makedirs(cal_dir, exist_ok=True)
-        logger.info(f"[direction-edit] scanning {len(training_records)} training captions; "
-                    f"{len(verification_records)} held-out captions reserved for verification")
+
+        temp_dir = tempfile.mkdtemp(prefix="fizgig-krea2-calibration-")
         result = direction_edit.run_direction_edit(
-            cfg, dit_path=dit_path, te_path=te_path, output_dir=cal_dir,
-            output_name=f"{output_name}_text_fusion_calibration", device=device)
-        info = {
-            **result,
-            "status": result.get("status") or "candidate_pending_image_validation",
-            "targets": list(cfg.get("target_tags") or []),
-            "controls": list(cfg.get("control_tags") or []),
-            "scan": cfg.get("scan_report"),
-            "training_captions": len(training_records),
-            "verification_captions": len(verification_records),
-            "image_validation": None,
-            "applied": False,
-        }
-        if result.get("status") == "skipped" or not result.get("lora"):
-            logger.info("[direction-edit] no calibration produced; normal training continues")
-            return info
+            cfg, dit_path=dit_path, te_path=te_path, output_dir=temp_dir,
+            output_name="candidate", device=device)
+        candidate = result.get("lora")
         verify = result.get("verify") or {}
-        if not verify.get("held_out") or not verify.get("beats_random"):
-            info["status"] = "rejected"
-            info["reason"] = ("text-side verification did not beat the random-direction control"
-                              if verify.get("held_out") else "text-side verification did not use held-out captions")
-            try:
-                os.remove(result["lora"])
-            except OSError:
-                pass
-            _write_direction_report(info, {"status": "rejected", "rejection_reason": info["reason"],
-                                            "text_verification": verify})
-            logger.warning(f"[direction-edit] REJECTED: {info['reason']}; normal training continues")
-            info["lora"] = None
-            return info
-        logger.info(f"[direction-edit] text-side verification passed; targets: {', '.join(info['targets'])}")
-        return info
-    except Exception as exc:
-        logger.warning(f"[direction-edit] calibration failed safely; normal training continues: "
-                       f"{type(exc).__name__}: {exc}", exc_info=True)
-        return {"status": "failed", "reason": f"{type(exc).__name__}: {exc}", "targets": [], "controls": []}
-
-
-def _finish_krea2_direction_edit(info, image_validation):
-    """Write the held-out image-verification result into the calibration report."""
-    if not info:
-        return
-    info["image_validation"] = image_validation
-    info["applied"] = bool(image_validation.get("accepted"))
-    info["status"] = "applied" if info["applied"] else "rejected"
-    _write_direction_report(info, {
-        "status": info["status"], "image_validation": image_validation,
-        **({"rejection_reason": image_validation.get("reason")} if not info["applied"] else {}),
-    })
-
-
+        if (result.get("status") == "skipped" or not candidate
+                or not verify.get("held_out") or not verify.get("beats_random")):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return None
+        return {"lora": candidate, "_temporary_dir": temp_dir}
+    except Exception:
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        return None
 
 
 def folder_weight_map(group):
@@ -2340,24 +2275,18 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     driver.prepare_training(dit, group, net)
     if calibration_info and calibration_info.get("lora") and os.path.isfile(calibration_info["lora"]):
         try:
-            n = net.add_file(calibration_info["lora"], CALIBRATION, 1.0)
-            if n:
-                calibration_active = True
-                logger.info(f"[direction-edit] candidate loaded into {n} text-fusion Linears; "
-                            "held-out image validation will decide whether to keep it")
-            else:
+            calibration_active = bool(net.add_file(calibration_info["lora"], CALIBRATION, 1.0))
+            if not calibration_active:
                 net.remove(CALIBRATION)
-                calibration_info["status"] = "rejected"
-                calibration_info["reason"] = "calibration LoRA matched no Krea 2 Linears"
-                _write_direction_report(calibration_info, {"status": "rejected",
-                                                            "rejection_reason": calibration_info["reason"]})
-        except Exception as exc:
-            calibration_info["status"] = "rejected"
-            calibration_info["reason"] = f"candidate load failed: {type(exc).__name__}: {exc}"
-            _write_direction_report(calibration_info, {"status": "rejected",
-                                                        "rejection_reason": calibration_info["reason"]})
-            logger.warning(f"[direction-edit] candidate load failed; normal training continues: {exc}",
-                           exc_info=True)
+        except Exception:
+            calibration_active = False
+            net.remove(CALIBRATION)
+        finally:
+            try:
+                os.remove(calibration_info["lora"])
+            except OSError:
+                pass
+            shutil.rmtree(calibration_info.get("_temporary_dir") or "", ignore_errors=True)
     if training_adapter:
         n = net.add_file(training_adapter, ADAPTER, training_adapter_strength)
         if n == 0:
@@ -2797,16 +2726,6 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             if any(_face_end):
                 md["ss_face_until"] = f"{_face_end[0]}:{_face_end[1]}"
         md.update(driver.run_metadata())
-        if calibration_info:
-            md["ss_fizgig_direction_edit"] = json.dumps({
-                "version": 2, "status": calibration_info.get("status", "skipped"),
-                "targets": calibration_info.get("targets") or [],
-                "controls": calibration_info.get("controls") or [],
-                "image_validation": calibration_info.get("image_validation"),
-                "report": os.path.basename(calibration_info.get("report") or ""),
-                "training_captions": calibration_info.get("training_captions"),
-                "verification_captions": calibration_info.get("verification_captions"),
-            }, ensure_ascii=False)
         try:                                 # the training facts: names and numbers only, never captions or paths
             _fo = dict(family_options or {})
             _best = (es.best, es.best_epoch) if es is not None and es.best is not None else tuple(_meta_best)
@@ -3684,19 +3603,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                             image_check["reason"] = "held-out validation loss regressed beyond the 0.5% tolerance"
             except Exception as exc:
                 image_check["reason"] = f"{type(exc).__name__}: {exc}"
-                logger.warning("[direction-edit] held-out image verification failed safely", exc_info=True)
         if not image_check["accepted"]:
             if net.has(CALIBRATION):
                 net.remove(CALIBRATION)
             calibration_active = False
-            logger.warning(f"[direction-edit] REJECTED by Fizgig Image Validation: "
-                           f"{image_check.get('reason') or 'verification failed'}; normal training continues")
         else:
             net.set_enabled(CALIBRATION, True)
-            logger.info(f"[direction-edit] ACCEPTED by Fizgig Image Validation: "
-                        f"{image_check['baseline_loss']:.5f} -> {image_check['calibrated_loss']:.5f} "
-                        f"on {image_check['held_out_images']} held-out images")
-        _finish_krea2_direction_edit(calibration_info, image_check)
     best_path = os.path.join(output_dir, f"{output_name}-best.safetensors")
     if validation_early_stop and validator is None:
         logger.info("[early stop] off: it needs Image Validation, which this run doesn't have")
