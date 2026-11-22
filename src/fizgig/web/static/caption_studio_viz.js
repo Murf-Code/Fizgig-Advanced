@@ -12,6 +12,8 @@ const CaptionStudioViz = (() => {
   };
   function colorForTag(tag, categories) {
     const key=lower(tag);
+    if(/^#[0-9a-f]{6}$/i.test(categories?.tagColors?.[key]||""))
+      return categories.tagColors[key];
     const category=categories?.tags?.[key];
     if(category&&categories?.colors?.[category])return categories.colors[category];
     if(categories?.generatedColors?.has(key))return categories.generatedColors.get(key);
@@ -418,7 +420,8 @@ const CaptionStudioViz = (() => {
     const colors=new Map();
     nodes.forEach(n=>{
       n.x+=500;n.y+=360;
-      const category=categories?.tags?.[n.tag],manual=category&&categories.colors?.[category];
+      const category=categories?.tags?.[n.tag];
+      const manual=categories?.tagColors?.[n.tag]||(category&&categories.colors?.[category]);
       n.color=manual||tbHue(n.group);colors.set(n.tag,n.color);
     });
     // Index node colors once; avoid O(all dataset tags × 120) scans.
@@ -432,7 +435,8 @@ const CaptionStudioViz = (() => {
       const family=tbFamily(tag.tag),stem=tbStem(tag.tag);
       const friendColor=(stem.length>=4&&stemColors.get(stem))||
         (family!==null&&familyColors.get(family));
-      const category=categories?.tags?.[tag.tag],manual=category&&categories.colors?.[category];
+      const category=categories?.tags?.[tag.tag];
+      const manual=categories?.tagColors?.[tag.tag]||(category&&categories.colors?.[category]);
       if(manual||friendColor)colors.set(tag.tag,manual||friendColor);
     }
     return {...graph,nodes,chosen,alike,colors};

@@ -10,12 +10,12 @@ const css=fs.readFileSync("src/fizgig/web/static/style.css","utf8");
 assert.match(app,/const editorPane=el\("section",\{class:"studio-tag-editor-pane"\}\)/);
 assert.match(app,/const tagIndexPane=el\("section",\{class:"studio-tag-index-pane"\}\)/);
 assert.match(app,/right\.querySelector\("\.studio-image-tags-heading"\)/);
-assert.match(app,/right\.querySelector\("\.studio-add-tag"\),tags,word,naturalEditor,suggestions/);
+assert.match(app,/right\.querySelector\("\.studio-add-tag"\),tags,word/);
 assert.match(app,/while\(right\.firstChild\)tagIndexPane\.append\(right\.firstChild\)/);
 assert.match(app,/rightDock\.append\(showAll,showAi\)/);
 assert.match(app,/right\.append\(editorPane,rightDock,tagIndexPane,aiPane\)/);
-assert.match(app,/const showAll=btn\("All Tags",\(\)=>showTabs\("all"\)\)/);
-assert.match(app,/const showAi=btn\("Auto-Captioner",\(\)=>showTabs\("ai"\)\)/);
+assert.match(app,/const showAll=btn\("All Tags",\(\)=>\{/);
+assert.match(app,/const showAi=btn\("Auto-Captioner",\(\)=>\{/);
 assert.doesNotMatch(app,/editorPane\.hidden\s*=/);
 assert.doesNotMatch(app,/showImage=btn\("Image Tags"/);
 assert.match(app,/tagIndexPane\.hidden=S\.cap\.studioDock!=="all"/);
@@ -26,7 +26,7 @@ assert.match(app,/aiPane\.hidden=S\.cap\.studioDock!=="ai"/);
 assert.match(app,/const sortDirection=el\("select"/);
 assert.match(app,/sortDirection\.addEventListener\("change",updateTagSort\)/);
 assert.match(app,/indexSearch\.addEventListener\("input"/);
-assert.match(app,/studioTagAutocomplete/);
+assert.match(app,/studio-add-tag-suggestions/);
 assert.match(app,/class:"studio-natural-toggle"/);
 assert.match(css,/#tab-captions \.studio-host \.studio-image-tag-list\s*\{/);
 assert.match(css,/#tab-captions \.studio-host \.studio-tag-index-pane \.studio-explore>/);
@@ -83,5 +83,33 @@ assert.match(app,/action\.textContent="Caption selected \(AI\)"/);
 assert.match(css,/Image Tags uses the same compact tag-list treatment as All Tags/);
 assert.match(css,/#tab-captions \.studio-host \.studio-image-tag,[\s\S]*?#tab-captions \.studio-host \.studio-tag-list-item \.studio-index-tag\{/);
 assert.match(css,/#tab-captions\.caption-theme-glass \.studio-host \.studio-image-tag::before/);
+
+// Tag entry uses one field with Enter or a real clickable suggestion.
+assert.match(app,/const addTag=value=>/);
+assert.match(app,/newTag\.addEventListener\("keydown"/);
+assert.match(app,/if\(e\.key==="Enter"&&!e\.isComposing\)/);
+assert.match(app,/tagSuggestionList\.append\(option\)/);
+assert.match(app,/option\.addEventListener\("click"/);
+assert.doesNotMatch(app,/newTag,btn\("Add"/);
+assert.doesNotMatch(app,/newTag\.parentElement\?\.querySelector\("button"\)/);
+
+// No old category settings panel. Colors are edited from tag context menus,
+// shared by Image Tags, All Tags and the cached Constellation palette.
+assert.doesNotMatch(app,/const catPanel=el\("details"/);
+assert.doesNotMatch(app,/const advancedTags=el\("details"/);
+assert.match(app,/studioTagColorMenu\(menu,tag,categoryState,renderCaptions\)/);
+assert.match(app,/tagColors:raw\.tagColors/);
+assert.match(app,/categoryState\.generatedColors=themeGraph\.model\.colors/);
+assert.match(app,/CaptionStudioViz\.setTagbenchPalette\(themeGraph\.model\.colors\)/);
+assert.match(app,/const model=CaptionStudioViz\.tagbenchModel\(graphTags,categoryState\)/);
+assert.match(css,/studio-tag-color-swatches/);
+
+// Natural language replaces the lower All Tags list using the one autosaved
+// textarea; clicking All Tags restores the list.
+assert.match(app,/tagIndexPane\.replaceChildren\(/);
+assert.match(app,/S\.cap\.studioNaturalMode=false;S\.cap\.studioDock="all";renderCaptions\(\)/);
+assert.match(app,/const naturalEditor=el\("section",\{class:"studio-natural-pane"\},captionText\)/);
+assert.match(css,/#tab-captions \.studio-host \.studio-tag-index-pane>\.studio-natural-pane/);
+assert.match(css,/#tab-captions\.caption-theme-glass \.studio-host \.studio-natural-toggle:has\(input:checked\)/);
 
 console.log("TagBench stacked sidebar and unchanged Tags/Waterfall/Constellation selector checks passed");

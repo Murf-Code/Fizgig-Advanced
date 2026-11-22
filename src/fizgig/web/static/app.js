@@ -11285,15 +11285,58 @@ function studioCategories(){
   if(S.cap.studioCategories?.key===key)return S.cap.studioCategories;
   let raw={};try{raw=JSON.parse(localStorage.getItem(key)||"{}");}catch(e){raw={};}
   const state={key,colors:raw.colors&&typeof raw.colors==="object"?raw.colors:{},
-    tags:raw.tags&&typeof raw.tags==="object"?raw.tags:{}};
+    tags:raw.tags&&typeof raw.tags==="object"?raw.tags:{},
+    tagColors:raw.tagColors&&typeof raw.tagColors==="object"?raw.tagColors:{}};
   S.cap.studioCategories=state;return state;
 }
 function studioSaveCategories(state){
-  localStorage.setItem(state.key,JSON.stringify({colors:state.colors,tags:state.tags}));
+  localStorage.setItem(state.key,JSON.stringify({
+    colors:state.colors,tags:state.tags,tagColors:state.tagColors}));
   // Recompute learned Constellation colors when a manual category/color changes.
   S.cap.studioTagbenchGraph=null;
   CaptionStudioViz.setTagbenchPalette(null);
 }
+// Tag color is now edited in the tag's right-click menu, shared by Image
+// Tags and All Tags. Existing category colors remain readable for old datasets.
+function studioTagColorMenu(menu,tag,categories,done){
+  const key=String(tag||"").toLocaleLowerCase();
+  const current=categories.tagColors?.[key]||"";
+  const heading=el("div",{class:"studio-tag-color-heading",text:"Tag color"});
+  const grid=el("div",{class:"studio-tag-color-swatches",role:"group",
+    "aria-label":"Color for "+tag});
+  const apply=color=>{
+    if(color)categories.tagColors[key]=color;
+    else delete categories.tagColors[key];
+    studioSaveCategories(categories);
+    menu.remove();
+    done?.();
+  };
+  const palette=[
+    ["Coral","#ed815b"],["Orange","#f7a351"],["Gold","#f3d06c"],
+    ["Green","#6cce9a"],["Teal","#53cdd6"],["Blue","#7098fc"],
+    ["Purple","#9a75ef"],["Pink","#ee83c0"]
+  ];
+  for(const [name,color] of palette){
+    const selected=current.toLowerCase()===color;
+    const swatch=el("button",{type:"button",role:"menuitem",
+      class:"studio-tag-color-swatch"+(selected?" is-current":""),
+      title:name+" ("+color+")","aria-label":"Set "+tag+" color to "+name,
+      "aria-pressed":String(selected)});
+    swatch.style.setProperty("--swatch-color",color);
+    swatch.addEventListener("click",()=>apply(color));
+    grid.append(swatch);
+  }
+  const more=el("div",{class:"studio-tag-color-custom"});
+  const pick=el("input",{type:"color",value:/^#[0-9a-f]{6}$/i.test(current)?current:"#9a75ef",
+    "aria-label":"Custom color for "+tag,title:"Choose custom tag color"});
+  pick.addEventListener("change",()=>apply(pick.value));
+  const reset=el("button",{type:"button",role:"menuitem",class:"studio-tag-color-auto",
+    text:"Auto color",title:"Restore the automatic or saved category color"});
+  reset.addEventListener("click",()=>apply(null));
+  more.append(el("span",{text:"Custom"}),pick,reset);
+  menu.append(heading,grid,more);
+}
+
 // Scan perceptual near-duplicates across all captioned dataset pictures, not just
 // the visible page. The Python service never auto-deletes; every action is reviewed.
 function captionDuplicatePanel(ext){
@@ -11958,11 +12001,22 @@ function renderCaptionStudio(host,items,ext){
   let captionMode=studioCaptionMode(current);
   const locked=!!S.cap.studioReviewed?.has(current.path);
   const categoryState=studioCategories();
-  const themeGraph=S.cap.studioTagbenchGraph;
-  if(themeGraph?.key===String(S.imageFolder||"")+"|"+ext&&
-      themeGraph.items===S.cap.items)
-    categoryState.generatedColors=themeGraph.model.colors;
-  else CaptionStudioViz.setTagbenchPalette(null);
+  // Build one Constellation palette per dataset revision and share it with
+  // Image Tags and All Tags, even if Constellation has never been opened.
+  // Reuse the exact graph in Constellation to avoid a second expensive layout.
+  const graphKey=String(S.imageFolder||"")+"|"+ext;
+  const revision=S.cap.studioRevision||0;
+  let themeGraph=S.cap.studioTagbenchGraph;
+  if(themeGraph?.key!==graphKey||themeGraph.items!==S.cap.items||
+      themeGraph.revision!==revision){
+    const graphTags=S.cap.items.filter(it=>studioCaptionMode(it)==="tags")
+      .map(it=>({tags:studioTokens(it.caption,"tags")}));
+    const model=CaptionStudioViz.tagbenchModel(graphTags,categoryState);
+    themeGraph={key:graphKey,items:S.cap.items,revision,model};
+    S.cap.studioTagbenchGraph=themeGraph;
+  }
+  categoryState.generatedColors=themeGraph.model.colors;
+  CaptionStudioViz.setTagbenchPalette(themeGraph.model.colors);
   const editorCompose=tags=>studioCompose(ta.value,tags,captionMode);
   const left=el("aside",{class:"caption-studio-panel studio-browser"});
   const center=el("div",{class:"caption-studio-panel studio-editor"});
@@ -12315,14 +12369,38 @@ function renderCaptionStudio(host,items,ext){
   // a pending caption write. Each path has one serialized, debounced queue.
   const autoTasks=S.cap.studioAutosaves||(S.cap.studioAutosaves=new Map());
   const autoKey=JSON.stringify([capItemFolder(current),current.path,ext]);
+  // Small recovery cache: preserve per-image undo/redo and pending drafts across
+  // page refreshes. Never replay a cached draft over an externally edited file.
+  const cacheKey="fizgig_caption_editor_history_v1:"+autoKey;
+  const diskCaption=current.caption??"";
+  if(!histories.has(current.path)&&!drafts.has(current.path)){
+    try{
+      const cached=JSON.parse(localStorage.getItem(cacheKey)||"null");
+      // A write may have reached disk just before a browser crash, even if
+      // the acknowledgement never arrived. Keep undo/redo in that case too.
+      const matchesDisk=cached?.lastSaved===diskCaption||
+        (cached?.draft===diskCaption&&cached?.value===diskCaption);
+      if(matchesDisk&&typeof cached.value==="string"&&
+          (cached.draft===null||cached.draft===undefined?
+            cached.value===diskCaption:cached.draft===cached.value)){
+        const valid=a=>Array.isArray(a)?a.filter(v=>typeof v==="string").slice(-40):[];
+        histories.set(current.path,{
+          past:valid(cached.past),future:valid(cached.future),value:cached.value
+        });
+        if(typeof cached.draft==="string"&&cached.draft!==diskCaption)
+          drafts.set(current.path,cached.draft);
+      }
+    }catch(_){/* malformed or unavailable cache cannot replace disk data */}
+  }
   let autoTask=autoTasks.get(autoKey);
   if(!autoTask){
     const target={folder:capItemFolder(current),name:current.name,path:current.path,ext};
     autoTask={...target,pending:false,busy:false,timer:null,notify:null,
-      lastSaved:current.caption??"",lastError:null};
+      urgent:false,retryMs:0,lastSaved:current.caption??"",lastError:null};
     autoTask.flush=async()=>{
       if(autoTask.busy||!autoTask.pending)return;
       autoTask.pending=false;
+      autoTask.urgent=false;
       const latest=drafts.get(target.path);
       if(latest===undefined||latest===autoTask.lastSaved){
         if(latest===autoTask.lastSaved)drafts.delete(target.path);
@@ -12341,6 +12419,7 @@ function renderCaptionStudio(host,items,ext){
         });
         autoTask.lastSaved=latest;
         autoTask.lastError=null;
+        autoTask.retryMs=0;
         const matching=S.cap.items.find(it=>it.path===target.path);
         if(matching)matching.caption=latest;
         if(current.path===target.path)current.caption=latest;
@@ -12355,15 +12434,21 @@ function renderCaptionStudio(host,items,ext){
         autoTask.notify?.(drafts.has(target.path)?"Newer edits pending…":
           (saved.queued?"Saved; queued for next epoch":"Saved"));
       }catch(error){
+        // A failed server write must NEVER discard the editor's pending draft.
+        // Retry with backoff until it succeeds or the user edits again.
         autoTask.lastError=error;
-        autoTask.notify?.("Autosave failed: "+error.message+" — edit again to retry.");
+        autoTask.pending=true;
+        autoTask.retryMs=Math.min(60000,Math.max(2500,(autoTask.retryMs||1250)*2));
+        autoTask.notify?.("Save failed: "+error.message+
+          " · Draft and undo history cached locally; retrying automatically.");
       }finally{
         autoTask.busy=false;
-        // A newer edit submitted during the request must save afterward, never
-        // race the earlier write or get overwritten by its completion.
+        autoTask.persistCache?.();
+        // Serialize writes per image, even across navigation and undo/redo.
         if(autoTask.pending){
           clearTimeout(autoTask.timer);
-          autoTask.timer=setTimeout(()=>void autoTask.flush(),650);
+          const delay=autoTask.lastError?autoTask.retryMs:(autoTask.urgent?0:650);
+          autoTask.timer=setTimeout(()=>void autoTask.flush(),delay);
         }
       }
     };
@@ -12372,13 +12457,27 @@ function renderCaptionStudio(host,items,ext){
   autoTask.notify=message=>{
     if(S.cap.studioPath===current.path&&note.isConnected)note.textContent=message;
   };
-  const queueAutosave=()=>{
+  // If a browser refresh recovered a pending draft, resume the write safely
+  // only when the server caption still matched the cached revision.
+  if(!autoTask.busy&&!autoTask.pending&&drafts.has(current.path)&&
+      drafts.get(current.path)!==autoTask.lastSaved){
+    autoTask.pending=true;
+    autoTask.urgent=true;
+    clearTimeout(autoTask.timer);
+    autoTask.timer=setTimeout(()=>void autoTask.flush(),200);
+  }
+  const queueAutosave=(immediate=false)=>{
     if(locked)return;
     autoTask.pending=true;
+    autoTask.urgent=autoTask.urgent||immediate;
     autoTask.lastError=null;
-    autoTask.notify?.("Unsaved changes · autosaving…");
+    autoTask.retryMs=0;
+    autoTask.notify?.(immediate?"Saving tag change…":"Unsaved changes · autosaving…");
     clearTimeout(autoTask.timer);
-    autoTask.timer=setTimeout(()=>void autoTask.flush(),650);
+    if(!autoTask.busy){
+      if(immediate)void autoTask.flush();
+      else autoTask.timer=setTimeout(()=>void autoTask.flush(),650);
+    }
   };
   const ta=el("textarea",{class:"studio-caption",rows:7});
   // TagBench uses an Image Tags list and a natural-language caption toggle,
@@ -12391,10 +12490,12 @@ function renderCaptionStudio(host,items,ext){
   const naturalCheckbox=el("input",{type:"checkbox",class:"studio-natural-check",
     "aria-label":"Show natural-language caption"});
   naturalCheckbox.checked=naturalMode;
-  naturalCheckbox.disabled=locked;
   naturalCheckbox.addEventListener("change",()=>{
     S.cap.studioNaturalMode=naturalCheckbox.checked;
+    if(naturalCheckbox.checked)S.cap.studioDock="all";
     renderCaptions();
+    if(naturalCheckbox.checked)
+      document.querySelector("#captionsGrid .studio-natural-caption")?.focus({preventScroll:true});
   });
   const naturalToggle=el("label",{class:"studio-natural-toggle"},naturalCheckbox,
     el("span",{text:"Natural language"}));
@@ -12402,14 +12503,47 @@ function renderCaptionStudio(host,items,ext){
   current._ta=ta;
   const hist=histories.get(current.path)||{past:[],future:[],value:ta.value};
   histories.set(current.path,hist);
-  const remember=()=>{
+  // Bounded browser recovery cache; the in-memory stack still keeps 150 steps.
+  // Writes never depend on this storage (private mode/quota may disable it).
+  const persistHistory=()=>{
+    try{
+      const snapshot={lastSaved:autoTask.lastSaved,value:hist.value,
+        past:hist.past.slice(-40),future:hist.future.slice(-40),
+        draft:drafts.has(current.path)?drafts.get(current.path):null};
+      let payload=JSON.stringify(snapshot);
+      if(payload.length>110000){
+        snapshot.past=snapshot.past.slice(-10);
+        snapshot.future=snapshot.future.slice(-10);
+        payload=JSON.stringify(snapshot);
+      }
+      localStorage.setItem(cacheKey,payload);
+      const indexKey="fizgig_caption_editor_history_recent_v1";
+      let recent=JSON.parse(localStorage.getItem(indexKey)||"[]");
+      if(!Array.isArray(recent))recent=[];
+      recent=recent.filter(key=>typeof key==="string"&&key!==cacheKey);
+      recent.push(cacheKey);
+      if(recent.length>80){
+        for(const old of recent.slice(0,-80))localStorage.removeItem(old);
+        recent=recent.slice(-80);
+      }
+      localStorage.setItem(indexKey,JSON.stringify(recent));
+    }catch(_){/* in-memory undo/redo and unsaved draft remain available */}
+  };
+  const cacheHistory=(immediate=false)=>{
+    clearTimeout(autoTask.cacheTimer);
+    if(immediate)persistHistory();
+    else autoTask.cacheTimer=setTimeout(persistHistory,160);
+  };
+  autoTask.persistCache=()=>cacheHistory(true);
+  const remember=(immediate=false)=>{
     if(ta.value===hist.value)return;
     hist.past.push(hist.value);
     if(hist.past.length>150)hist.past.shift();
     hist.future=[];
     hist.value=ta.value;
     drafts.set(current.path,ta.value);
-    queueAutosave();
+    cacheHistory(immediate);
+    queueAutosave(immediate);
   };
   const historyStep=direction=>{
     if(locked){say("Unlock this reviewed caption before editing.");return;}
@@ -12417,14 +12551,19 @@ function renderCaptionStudio(host,items,ext){
     const to=direction==="undo"?hist.future:hist.past;
     if(!from.length)return;
     to.push(hist.value);hist.value=from.pop();
-    ta.value=hist.value;drafts.set(current.path,ta.value);queueAutosave();redraw();
+    ta.value=hist.value;
+    drafts.set(current.path,ta.value);
+    cacheHistory(true);
+    queueAutosave(true);
+    redraw();
   };
   const word=el("div",{class:"field-hint"});
   const tags=el("ul",{class:"studio-image-tag-list",role:"list",
     "aria-label":"Image Tags; click to select, double-click to rename, Delete to remove"});
   const imageTagPicked=S.cap.studioImageTagPicked||(S.cap.studioImageTagPicked=new Set());
-  const captionText=el("textarea",{class:"studio-natural-caption",rows:3,
-    placeholder:"Freeform caption, saved on the line beneath the image tags"});
+  const captionText=el("textarea",{class:"studio-natural-caption",rows:12,
+    "aria-label":"Natural language caption",
+    placeholder:"Write a natural-language caption for this image…"});
   captionText.readOnly=locked;
   const existingText=()=>{
     const raw=ta.value||"";
@@ -12441,6 +12580,8 @@ function renderCaptionStudio(host,items,ext){
       ta.value=prefix+(captionText.value?"\n"+captionText.value:"");
     }
     remember();
+    word.textContent=String(studioTokens(ta.value,captionMode).length)+
+      " tags · "+String(ta.value.trim()?ta.value.trim().split(/\s+/).length:0)+" words";
   });
   const editImageTag=(original,next)=>{
     if(locked)return say("Unlock this reviewed image first.");
@@ -12449,31 +12590,41 @@ function renderCaptionStudio(host,items,ext){
     if(!next||next===original)return;
     const parts=studioTokens(ta.value,"tags");
     ta.value=studioCompose(ta.value,studioUnique(parts.map(t=>t===original?next:t)),"tags");
-    imageTagPicked.clear();remember();redraw();
+    imageTagPicked.clear();remember(true);redraw();
   };
   const removePickedTags=()=>{
     if(locked||captionMode==="prose")return;
     const parts=studioTokens(ta.value,"tags");
     if(!imageTagPicked.size)return;
     ta.value=studioCompose(ta.value,parts.filter(t=>!imageTagPicked.has(t.toLowerCase())),"tags");
-    imageTagPicked.clear();remember();redraw();
+    imageTagPicked.clear();remember(true);redraw();
   };
   const imageTagMenu=(event,tag)=>{
     event.preventDefault();
-    if(locked||captionMode==="prose")return;
-    imageTagPicked.add(tag.toLowerCase());redraw();
+    if(!locked&&captionMode!=="prose"){
+      imageTagPicked.add(tag.toLowerCase());redraw();
+    }
     document.querySelectorAll(".studio-tag-context-menu").forEach(n=>n.remove());
     const menu=el("div",{class:"studio-image-context-menu studio-tag-context-menu",role:"menu"});
     const menuAction=(name,fn)=>menu.append(el("button",{type:"button",role:"menuitem",text:name,
       onclick:()=>{menu.remove();fn();}}));
-    menuAction("Rename tag",()=>{
-      const next=prompt("Rename image tag:",tag);if(next!==null)editImageTag(tag,next);
-    });
-    menuAction("Remove selected tags",removePickedTags);
+    if(!locked&&captionMode!=="prose"){
+      menuAction("Rename tag",()=>{
+        const next=prompt("Rename image tag:",tag);if(next!==null)editImageTag(tag,next);
+      });
+      menuAction("Remove selected tags",removePickedTags);
+    }
+    studioTagColorMenu(menu,tag,categoryState,renderCaptions);
     document.body.append(menu);
     const bounds=menu.getBoundingClientRect();
     menu.style.left=Math.max(6,Math.min(event.clientX,window.innerWidth-bounds.width-8))+"px";
     menu.style.top=Math.max(6,Math.min(event.clientY,window.innerHeight-bounds.height-8))+"px";
+    const dismiss=e=>{
+      if(!menu.isConnected){document.removeEventListener("pointerdown",dismiss,true);return;}
+      if(menu.contains(e.target))return;
+      menu.remove();document.removeEventListener("pointerdown",dismiss,true);
+    };
+    document.addEventListener("pointerdown",dismiss,true);
   };
   tags.addEventListener("keydown",e=>{
     if((e.key==="Delete"||e.key==="Backspace")&&!e.ctrlKey&&!e.metaKey){
@@ -12536,7 +12687,7 @@ function renderCaptionStudio(host,items,ext){
         const a=arr.indexOf(from),b=arr.indexOf(t);
         if(a<0||b<0||a===b)return;
         arr.splice(a,1);arr.splice(b,0,from);
-        ta.value=studioCompose(ta.value,arr,"tags");remember();redraw();
+        ta.value=studioCompose(ta.value,arr,"tags");remember(true);redraw();
       });
       row.append(button);tags.append(row);
     }
@@ -12591,27 +12742,30 @@ function renderCaptionStudio(host,items,ext){
     el("div",{class:"studio-preview"},mediaFor(current,true)),
     ta,word,
     pictureActions,note);
-  const newTag=el("input",{placeholder:"Add tag",type:"text",class:"w-path"});
+  const newTag=el("input",{placeholder:"Add tag · Enter to save",type:"text",
+    class:"w-path",autocomplete:"off","aria-label":"Add image tag"});
   newTag.disabled=captionMode==="prose"||locked;
-  const naturalEditor=el("section",{class:"studio-natural-pane"},
-    el("strong",{text:"Caption"}),captionText);
-  naturalEditor.hidden=!naturalMode&&captionMode!=="prose";
+  const naturalEditor=el("section",{class:"studio-natural-pane"},captionText);
+  naturalEditor.hidden=!naturalMode;
+  const addTag=value=>{
+    if(locked||captionMode==="prose")return;
+    const tag=String(value||"").trim();
+    if(!tag)return;
+    ta.value=editorCompose(studioUnique([...studioTokens(ta.value,captionMode),tag]));
+    newTag.value="";
+    remember(true);redraw();
+  };
+  const tagSuggestionList=el("div",{class:"studio-add-tag-suggestions",
+    role:"listbox","aria-label":"Suggested tags",hidden:true});
+  const tagInputArea=el("div",{class:"studio-add-tag-input"},newTag,tagSuggestionList);
   right.append(
     el("div",{class:"studio-image-tags-heading"},
       el("strong",{text:"Image Tags"}),naturalToggle),
-    el("div",{class:"field-row studio-add-tag"},newTag,btn("Add",()=>{
-    if(locked){say("Unlock before adding tags.");return;}
-    if(captionMode==="prose"){say("Choose Tag list mode to edit tags in this prose caption.");return;}
-    if(newTag.value.trim()){ta.value=editorCompose(studioUnique([...studioTokens(ta.value,captionMode),newTag.value.trim()]));newTag.value="";remember();redraw();}
-  })),tags,word,naturalEditor);
+    el("div",{class:"field-row studio-add-tag"},tagInputArea),tags,word);
   const rev=S.cap.studioRevision||0;
-  const sepSelect=el("select",{class:"w-combo"});
-  [[",","Commas"],[";","Semicolons"],["|","Pipes"]].forEach(([value,label])=>sepSelect.append(el("option",{value,text:label})));
-  sepSelect.value=S.cap.studioDelimiter;
-  sepSelect.addEventListener("change",()=>{S.cap.studioDelimiter=sepSelect.value;localStorage.setItem("fizgig_caption_separator",sepSelect.value);S.cap.studioRevision=(S.cap.studioRevision||0)+1;renderCaptions();});
-  const advancedTags=el("details",{class:"studio-tag-advanced"});
-  advancedTags.append(el("summary",{text:"Tag settings & categories"}),
-    el("div",{class:"field-row"},el("span",{class:"field-label",text:"Tag separator:"}),sepSelect));
+  // Separator and category colors remain in saved dataset preferences for
+  // backwards compatibility; the old Tag settings & categories UI is removed.
+  // Direct per-tag overrides are available in both tag right-click menus.
   let tagIndex=S.cap.studioTagCache;
   if(!tagIndex||tagIndex.items!==S.cap.items||tagIndex.rev!==rev){
     const counts=new Map();
@@ -12628,33 +12782,46 @@ function renderCaptionStudio(host,items,ext){
     S.cap.studioTokenCounts={family:S.family,items:S.cap.items,rev,counts};
     return counts;
   };
-  const suggestions=el("datalist",{id:"studioTagAutocomplete"});
-  for(const [tag] of tagIndex.sorted.slice(0,500))suggestions.append(el("option",{value:tag}));
+  // Explicit, clickable suggestions: native datalist does not reliably
+  // distinguish selecting an option from typing across browsers.
   let autoPrefs={};
   try{autoPrefs=JSON.parse(localStorage.getItem("fizgig.caption-workbench.settings.v1")||"{}")||{};}catch(_){}
-  if(autoPrefs.autocomplete!==false)newTag.setAttribute("list","studioTagAutocomplete");
-  right.append(suggestions);
-  newTag.addEventListener("keydown",e=>{
-    if(e.key==="Enter"){e.preventDefault();newTag.parentElement?.querySelector("button")?.click();}
+  const updateSuggestions=()=>{
+    const needle=newTag.value.trim().toLocaleLowerCase();
+    tagSuggestionList.replaceChildren();
+    if(!needle||autoPrefs.autocomplete===false||newTag.disabled){
+      tagSuggestionList.hidden=true;return;
+    }
+    const existing=new Set(studioTokens(ta.value,"tags").map(t=>t.toLocaleLowerCase()));
+    const matches=tagIndex.sorted.filter(([tag])=>tag.toLocaleLowerCase().includes(needle)
+      &&!existing.has(tag.toLocaleLowerCase())).slice(0,8);
+    for(const [tag,count] of matches){
+      const option=el("button",{type:"button",role:"option",
+        class:"studio-add-tag-suggestion",text:tag+" ("+count+")",
+        "aria-label":"Add tag "+tag});
+      option.addEventListener("click",()=>{
+        addTag(tag);
+        tagSuggestionList.hidden=true;
+        newTag.focus({preventScroll:true});
+      });
+      tagSuggestionList.append(option);
+    }
+    tagSuggestionList.hidden=!matches.length;
+  };
+  newTag.addEventListener("input",updateSuggestions);
+  newTag.addEventListener("focus",updateSuggestions);
+  newTag.addEventListener("blur",()=>{
+    // Let a suggestion's pointerdown select it before dismissing.
+    setTimeout(()=>{if(!tagInputArea.contains(document.activeElement))
+      tagSuggestionList.hidden=true;},120);
   });
-  const catPanel=el("details",{class:"studio-category-manager"});
-  catPanel.append(el("summary",{text:"Tag categories & colors"}));
-  const catName=el("input",{type:"text",placeholder:"New category",class:"w-path"});
-  const catColor=el("input",{type:"color",value:"#7c66d8",title:"Category color"});
-  catPanel.append(el("div",{class:"field-row"},catName,catColor,btn("Add category",()=>{
-    const name=catName.value.trim().slice(0,40);
-    if(!name){say("Type a category name.");return;}
-    categoryState.colors[name]=catColor.value;studioSaveCategories(categoryState);renderCaptions();
-  })));
-  for(const [name,color] of Object.entries(categoryState.colors).sort((a,b)=>a[0].localeCompare(b[0]))){
-    const inp=el("input",{type:"color",value:/^#[0-9a-f]{6}$/i.test(color)?color:"#7c66d8",title:"Change "+name+" color"});
-    inp.addEventListener("change",()=>{categoryState.colors[name]=inp.value;studioSaveCategories(categoryState);renderCaptions();});
-    catPanel.append(el("div",{class:"field-row"},inp,el("span",{text:name}),btn("Delete",()=>{
-      if(!confirm("Delete category "+name+"? Existing tag assignments will be unassigned."))return;
-      delete categoryState.colors[name];for(const [tag,cat] of Object.entries(categoryState.tags))if(cat===name)delete categoryState.tags[tag];
-      studioSaveCategories(categoryState);renderCaptions();
-    })));
-  }
+  newTag.addEventListener("keydown",e=>{
+    if(e.key==="Escape"){tagSuggestionList.hidden=true;return;}
+    if(e.key==="Enter"&&!e.isComposing){
+      e.preventDefault();addTag(newTag.value);
+      tagSuggestionList.hidden=true;
+    }
+  });
   // TagBench's All Tags separates the sort field and direction into two
   // compact dropdowns. Preserve Fizgig's six existing sort values internally.
   const sortSelect=el("select",{class:"w-combo","aria-label":"Sort All Tags by"});
@@ -12719,11 +12886,16 @@ function renderCaptionStudio(host,items,ext){
       const ok=await apply("rename",tag,"all",next);
       if(ok){
         const prev=categoryState.tags[tag.toLowerCase()];
+        const color=categoryState.tagColors[tag.toLowerCase()];
         if(prev&&!categoryState.tags[next.toLowerCase()]){
           categoryState.tags[next.toLowerCase()]=prev;
           delete categoryState.tags[tag.toLowerCase()];
-          studioSaveCategories(categoryState);
         }
+        if(color&&!categoryState.tagColors[next.toLowerCase()]){
+          categoryState.tagColors[next.toLowerCase()]=color;
+          delete categoryState.tagColors[tag.toLowerCase()];
+        }
+        if(prev||color)studioSaveCategories(categoryState);
       }
       tagRows();
     };
@@ -12743,6 +12915,7 @@ function renderCaptionStudio(host,items,ext){
     addAction("Rename tag (all images)",()=>beginTagRename(row,tag));
     addAction("Remove tag from selected images",()=>void apply("remove",tag,"selection"));
     addAction("Remove tag from all images",()=>void apply("remove",tag,"all"));
+    studioTagColorMenu(menu,tag,categoryState,renderCaptions);
     document.body.append(menu);
     const rect=menu.getBoundingClientRect();
     menu.style.left=Math.max(6,Math.min(e.clientX,window.innerWidth-rect.width-8))+"px";
@@ -12834,7 +13007,6 @@ function renderCaptionStudio(host,items,ext){
     const url=URL.createObjectURL(new Blob([txt],{type:"text/plain;charset=utf-8"}));
     const a=document.createElement("a");a.href=url;a.download="fizgig_captions.txt";a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
   });
-  advancedTags.append(catPanel);
   right.append(el("div",{class:"studio-tag-search-wrap"},indexSearch),
     el("div",{class:"studio-tag-sort"},el("span",{class:"field-label",text:"Sort by"}),sortSelect,sortDirection),
     explore,tagCount);
@@ -13021,14 +13193,23 @@ function renderCaptionStudio(host,items,ext){
   // rebuilding them or duplicating state.
   for(const node of [
     right.querySelector(".studio-image-tags-heading"),
-    right.querySelector(".studio-add-tag"),tags,word,naturalEditor,suggestions
+    right.querySelector(".studio-add-tag"),tags,word
   ])if(node)editorPane.append(node);
   while(right.firstChild)tagIndexPane.append(right.firstChild);
   while(center.firstChild)editorPane.append(center.firstChild);
   editorPane.querySelector(".studio-caption-head")?.remove();
-  editorPane.append(advancedTags);
-  const listHeading=el("div",{class:"studio-pane-heading"},el("strong",{text:"All Tags"}));
-  tagIndexPane.prepend(listHeading);
+  // There is no separate Tag settings & categories section. Tag colors are
+  // edited from the tag context menu and applied to all visualizations.
+  if(naturalMode){
+    // Reuse the one autosaved caption textarea and fill the space formerly
+    // occupied by the All Tags list and its search/sort controls.
+    tagIndexPane.replaceChildren(
+      el("div",{class:"studio-pane-heading"},el("strong",{text:"Caption"})),
+      naturalEditor);
+  }else{
+    tagIndexPane.prepend(el("div",{class:"studio-pane-heading"},
+      el("strong",{text:"All Tags"})));
+  }
   center.append(imageStage);
   // Lower selector changes only the second section. Image Tags stays at the
   // top, as in TagBench, even while the Auto-Captioner is open.
@@ -13040,12 +13221,18 @@ function renderCaptionStudio(host,items,ext){
     S.cap.studioDock=mode==="ai"?"ai":"all";
     tagIndexPane.hidden=S.cap.studioDock!=="all";
     aiPane.hidden=S.cap.studioDock!=="ai";
-    rightDock.dataset.active=S.cap.studioDock;
-    showAll.setAttribute("aria-selected",String(S.cap.studioDock==="all"));
+    rightDock.dataset.active=naturalMode&&S.cap.studioDock==="all"?"caption":S.cap.studioDock;
+    showAll.setAttribute("aria-selected",String(!naturalMode&&S.cap.studioDock==="all"));
     showAi.setAttribute("aria-selected",String(S.cap.studioDock==="ai"));
   };
-  const showAll=btn("All Tags",()=>showTabs("all"));
-  const showAi=btn("Auto-Captioner",()=>showTabs("ai"));
+  const showAll=btn("All Tags",()=>{
+    if(naturalMode){S.cap.studioNaturalMode=false;S.cap.studioDock="all";renderCaptions();}
+    else showTabs("all");
+  });
+  const showAi=btn("Auto-Captioner",()=>{
+    if(naturalMode){S.cap.studioNaturalMode=false;S.cap.studioDock="ai";renderCaptions();}
+    else showTabs("ai");
+  });
   showAll.setAttribute("role","tab");
   showAi.setAttribute("role","tab");
   aiPane.append(el("strong",{text:"Auto-Captioner"}));

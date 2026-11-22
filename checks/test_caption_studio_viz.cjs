@@ -70,4 +70,18 @@ try {
   global.document=savedDoc;
   global.window=savedWin;
 }
+// One palette powers Constellation, Image Tags and All Tags. Direct
+// right-click colors override automatic and legacy category assignments.
+const assigned={tagColors:{lion:"#1357ab"},tags:{lion:"legacy"},
+  colors:{legacy:"#ff6600"}};
+const colored=Viz.tagbenchModel(captions2,assigned);
+assert.equal(colored.nodes.find(n=>n.tag==="lion").color,"#1357ab");
+assert.equal(colored.colors.get("lion"),"#1357ab");
+assert.equal(Viz.colorForTag("LION",assigned),"#1357ab");
+const auto=Viz.tagbenchModel(captions2);
+Viz.setTagbenchPalette(auto.colors);
+assert.equal(Viz.colorForTag("lion",{tags:{},colors:{}}),
+  auto.colors.get("lion"),"Image Tags and All Tags use the same graph hue");
+Viz.setTagbenchPalette(null);
+
 console.log("Caption Studio visualization co-occurrence and double-click checks passed");
