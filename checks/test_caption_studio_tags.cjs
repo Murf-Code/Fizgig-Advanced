@@ -43,3 +43,19 @@ assert.equal(T.captionWildcards(["lion, blue mane\nAt sunset", "lion, blue mane"
 assert.equal(T.captionWildcards([]), "");
 
 console.log("Caption Studio tag parsing and Boolean filter checks passed");
+
+assert.equal(T.addFilter("", "red hair", "and"), '"red hair"');
+assert.equal(T.addFilter("", "red hair", "not"), 'NOT "red hair"');
+assert.equal(T.addFilter("", "red hair", "or"), '"red hair"');
+const conjunct=T.addFilter('blue OR black', "red hair", "and");
+assert.equal(T.search(["blue"],conjunct),false);
+assert.equal(T.search(["blue","red hair"],conjunct),true);
+assert.equal(T.search(["black","red hair"],conjunct),true);
+const excluded=T.addFilter('blue OR black', "red hair", "not");
+assert.equal(T.search(["blue"],excluded),true);
+assert.equal(T.search(["blue","red hair"],excluded),false);
+const disjunct=T.addFilter('blue AND black', "red hair", "or");
+assert.equal(T.search(["red hair"],disjunct),true);
+assert.equal(T.search(["blue"],disjunct),false);
+assert.equal(T.search(["blue","black"],disjunct),true);
+assert.throws(()=>T.addFilter("blue","red","invalid"),/Unknown filter mode/);

@@ -5184,3 +5184,36 @@ body.caption-glass-ui .studio-image-context-menu .studio-tag-color-swatch{
 #tab-captions .caption-order-modal .caption-order-field :is(input,select){
   min-height:36px;width:100%;box-sizing:border-box;
 }
+
+/* TagBench image and tag context menus use the same compact section rhythm.
+   Category expands in place instead of crowding the context menu with colors. */
+.studio-tag-context-menu .studio-tag-color-category{
+  display:block;min-width:0;margin:0;
+  border:0;padding:0;background:transparent;
+}
+.studio-tag-context-menu .studio-tag-color-category>summary{
+  display:flex;align-items:center;justify-content:space-between;
+  width:100%;box-sizing:border-box;padding:10px 12px;cursor:pointer;
+  border-radius:8px;list-style:none;font:500 12px/1.25 inherit;
+}
+.studio-tag-context-menu .studio-tag-color-category>summary::-webkit-details-marker{
+  display:none;
+}
+.studio-tag-context-menu .studio-tag-color-category>summary::after{
+  content:"▾";opacity:.7;font-size:11px;
+}
+.studio-tag-context-menu .studio-tag-color-category[open]>summary::after{
+  content:"▴";
+}
+.studio-tag-context-menu .studio-tag-color-category>summary:hover{
+  background:var(--bg-hover);
+}
+body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summary{
+  color:#f4f6fc;
+}
+body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summary:hover{
+  background:rgba(126,132,255,.25);
+}
+.studio-tag-context-menu .studio-context-rule{
+  height:1px;margin:6px 5px;background:var(--border);
+}

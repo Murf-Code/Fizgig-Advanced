@@ -189,3 +189,27 @@ assert.match(app,/el\("label",\{class:"caption-order-field"\},el\("span",\{text:
 assert.match(app,/else if\(key==="b"\)\{handled\(\);openBatchReorder\(\);\}/);
 assert.doesNotMatch(app,/History & advanced tag ordering/);
 assert.match(css,/studio-edit-action kbd\{/);
+
+// TagBench image menu keeps core copy/delete/review actions first, with the
+// earlier Validation/Sample functionality grouped after them.
+assert.match(app,/action\("Select All Images","Ctrl\+A"/);
+assert.match(app,/action\("Invert Selection","Ctrl\+I"/);
+assert.match(app,/action\("Copy Tags","Ctrl\+C"/);
+assert.match(app,/action\("Paste Tags","Ctrl\+V"/);
+assert.match(app,/action\("Delete "\+\(count===1\?"Image":"Images"\),"Ctrl\+Del"/);
+assert.match(app,/action\(complete\?"Mark Incomplete":"Mark Complete","Ctrl\+K"/);
+assert.match(app,/action\(inValidation\?"Remove "/);
+assert.match(app,/action\(inSamples\?"Remove "/);
+// Tag context menus are two distinct scopes with the same Boolean filter
+// choices; global deletion explicitly confirms before writing.
+assert.match(app,/const filterByTag=\(tag,mode\)=>/);
+assert.match(app,/CaptionStudioTags\.addFilter\(S\.cap\.studioQuery,tag,mode\)/);
+assert.match(app,/menuAction\("Add to Filter"/);
+assert.match(app,/addAction\("Add to Filter"/);
+assert.match(app,/menuAction\("Exclude from Filter"/);
+assert.match(app,/addAction\("Exclude from Filter"/);
+assert.match(app,/menuAction\("Delete Tag",\(\)=>void apply\("remove",tag,"all"\)/);
+assert.match(app,/addAction\("Delete Tag",\(\)=>void apply\("remove",tag,"all"\)/);
+assert.match(app,/Delete tag "'\+old\.trim\(\)\+'" from all eligible dataset captions/);
+assert.match(app,/const category=el\("details",\{class:"studio-tag-color-category"\}\)/);
+assert.match(css,/\.studio-tag-context-menu \.studio-tag-color-category>summary\{/);

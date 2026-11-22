@@ -96,6 +96,19 @@ const CaptionStudioTags = (() => {
   function search(values, expression) {
     return compileSearch(expression)(values);
   }
+  // TagBench context-menu Boolean actions: preserve the user's existing
+  // expression and wrap it before combining to avoid changing precedence.
+  function addFilter(expression, tag, mode = "and") {
+    const raw=String(expression||"").trim();
+    const label=String(tag||"").trim();
+    if(!label)return raw;
+    if(!["and","or","not"].includes(mode))throw new Error("Unknown filter mode");
+    const term=JSON.stringify(label);
+    const clause=(mode==="not"?"NOT ":"")+term;
+    const next=!raw?clause:"("+raw+") "+(mode==="or"?"OR":"AND")+" "+clause;
+    compileSearch(next);
+    return next;
+  }
 
   // Deterministic tag ordering. Front/back pins preserve user-supplied priority,
   // while the rest can use frequency or the model tokenizer's real token counts.
@@ -136,6 +149,7 @@ const CaptionStudioTags = (() => {
   const wildcards = (values, delimiter = ",") => unique(values).sort((a, b) => a.localeCompare(b))
     .join("\n") + (values.length ? "\n" : "");
 
-  return Object.freeze({kind, tags, compose, unique, search, compileSearch, order, captionWildcards, wildcards});
+  return Object.freeze({kind, tags, compose, unique, search, compileSearch, addFilter,
+    order, captionWildcards, wildcards});
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = CaptionStudioTags;

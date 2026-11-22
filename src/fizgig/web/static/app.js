@@ -11322,6 +11322,11 @@ function studioSaveCategories(state){
 function studioTagColorMenu(menu,tag,categories,done){
   const key=String(tag||"").toLocaleLowerCase();
   const current=categories.tagColors?.[key]||"";
+  // TagBench shows the palette under a "Category" submenu, not as always-
+  // visible swatches taking up the bottom half of every tag context menu.
+  const category=el("details",{class:"studio-tag-color-category"});
+  const summary=el("summary",{role:"menuitem",text:"Category",
+    "aria-label":"Category: choose tag color"});
   const heading=el("div",{class:"studio-tag-color-heading",text:"Tag color"});
   const grid=el("div",{class:"studio-tag-color-swatches",role:"group",
     "aria-label":"Color for "+tag});
@@ -11355,7 +11360,8 @@ function studioTagColorMenu(menu,tag,categories,done){
     text:"Auto color",title:"Restore the automatic or saved category color"});
   reset.addEventListener("click",()=>apply(null));
   more.append(el("span",{text:"Custom"}),pick,reset);
-  menu.append(heading,grid,more);
+  category.append(summary,heading,grid,more);
+  menu.append(category);
 }
 
 // Scan perceptual near-duplicates across all captioned dataset pictures, not just
@@ -12323,11 +12329,17 @@ function renderCaptionStudio(host,items,ext){
     const separator=()=>menu.append(el("div",{class:"studio-context-rule",role:"separator"}));
     action("Select All Images","Ctrl+A",()=>{S.cap.items.forEach(x=>selection.add(x.path));renderCaptions();});
     action("Invert Selection","Ctrl+I",invertImageSelection);
-    action("Clear Selection","",()=>{selection.clear();renderCaptions();});
     separator();
     action("Copy Tags","Ctrl+C",()=>copyImageTags(it.path),!count);
     action("Paste Tags","Ctrl+V",()=>pasteImageTags(it.path),!count);
     action("Copy File "+(count===1?"Name":"Names"),"Ctrl+Alt+C",()=>copyImageNames(it.path),!count);
+    separator();
+    action("Delete "+(count===1?"Image":"Images"),"Ctrl+Del",()=>removeSelectedImages(it.path),!count);
+    action("Open in New Tab","Ctrl+O",()=>openSelectedImage(it.path),!count||!targets[0]?.size);
+    action(complete?"Mark Incomplete":"Mark Complete","Ctrl+K",
+      ()=>toggleImageReview(it.path),!count);
+    // Fizgig-specific training picks remain available as secondary actions;
+    // they should not interrupt the standard TagBench image context menu.
     separator();
     const pictures=validTrainingPictures(targets);
     const plural=pictures.length===1?"Image":"Images";
@@ -12340,11 +12352,7 @@ function renderCaptionStudio(host,items,ext){
       "",()=>toggleValidationImages(it.path),!pictures.length);
     action(inSamples?"Remove "+plural+" from Sample Images":"Add "+plural+" to Sample Images",
       "",()=>toggleSampleImages(it.path),!pictures.length);
-    separator();
-    action("Delete "+(count===1?"Image":"Images"),"Ctrl+Del",()=>removeSelectedImages(it.path),!count);
-    action("Open in New Tab","Ctrl+O",()=>openSelectedImage(it.path),!count||!targets[0]?.size);
-    action(complete?"Mark Incomplete":"Mark Complete","Ctrl+K",
-      ()=>toggleImageReview(it.path),!count);
+    action("Clear Selection","",()=>{selection.clear();renderCaptions();});
     document.body.append(menu);
     const rect=menu.getBoundingClientRect();
     menu.style.left=Math.max(6,Math.min(e.clientX,window.innerWidth-rect.width-8))+"px";
@@ -12706,6 +12714,13 @@ function renderCaptionStudio(host,items,ext){
     ta.value=studioCompose(ta.value,parts.filter(t=>!imageTagPicked.has(t.toLowerCase())),"tags");
     imageTagPicked.clear();remember(true);redraw();
   };
+  const filterByTag=(tag,mode)=>{
+    S.cap.studioQuery=CaptionStudioTags.addFilter(S.cap.studioQuery,tag,mode);
+    S.cap.page=0;
+    S.cap.studioExploreNeedRedraw=true;
+    S.cap.studioExploreMode="list";
+    renderCaptions();
+  };
   const imageTagMenu=(event,tag)=>{
     event.preventDefault();
     if(!locked&&captionMode!=="prose"){
@@ -12715,14 +12730,25 @@ function renderCaptionStudio(host,items,ext){
     }
     document.querySelectorAll(".studio-tag-context-menu").forEach(n=>n.remove());
     const menu=el("div",{class:"studio-image-context-menu studio-tag-context-menu",role:"menu"});
-    const menuAction=(name,fn)=>menu.append(el("button",{type:"button",role:"menuitem",text:name,
+    const menuAction=(name,fn,disabled=false)=>menu.append(el("button",{
+      type:"button",role:"menuitem",text:name,disabled,
       onclick:()=>{menu.remove();fn();}}));
-    if(!locked&&captionMode!=="prose"){
-      menuAction("Rename tag",()=>{
-        const next=prompt("Rename image tag:",tag);if(next!==null)editImageTag(tag,next);
-      });
-      menuAction("Remove selected tags",removePickedTags);
-    }
+    const separator=()=>menu.append(el("div",{class:"studio-context-rule",role:"separator"}));
+    menuAction("Add to Filter",()=>filterByTag(tag,"and"));
+    menuAction("Exclude from Filter",()=>filterByTag(tag,"not"));
+    menuAction("Add to Filter (OR)",()=>filterByTag(tag,"or"));
+    separator();
+    const editable=!locked&&captionMode!=="prose";
+    menuAction('Remove "'+tag+'"',()=>{
+      if(!editable)return;
+      const parts=studioTokens(ta.value,"tags");
+      ta.value=studioCompose(ta.value,
+        parts.filter(t=>t.toLowerCase()!==tag.toLowerCase()),"tags");
+      imageTagPicked.delete(tag.toLowerCase());
+      remember(true);redraw();
+    },!editable);
+    menuAction("Delete Tag",()=>void apply("remove",tag,"all"),!editable);
+    separator();
     studioTagColorMenu(menu,tag,categoryState,renderCaptions);
     document.body.append(menu);
     const bounds=menu.getBoundingClientRect();
@@ -13025,9 +13051,14 @@ function renderCaptionStudio(host,items,ext){
     const menu=el("div",{class:"studio-image-context-menu studio-tag-context-menu",role:"menu"});
     const addAction=(name,fn)=>menu.append(el("button",{type:"button",role:"menuitem",text:name,
       onclick:()=>{menu.remove();fn();}}));
-    addAction("Rename tag (all images)",()=>beginTagRename(row,tag));
-    addAction("Remove tag from selected images",()=>void apply("remove",tag,"selection"));
-    addAction("Remove tag from all images",()=>void apply("remove",tag,"all"));
+    const separator=()=>menu.append(el("div",{class:"studio-context-rule",role:"separator"}));
+    addAction("Add to Filter",()=>filterByTag(tag,"and"));
+    addAction("Exclude from Filter",()=>filterByTag(tag,"not"));
+    addAction("Add to Filter (OR)",()=>filterByTag(tag,"or"));
+    separator();
+    addAction('Remove "'+tag+'"',()=>void apply("remove",tag,selection.size?"selection":"image"));
+    addAction("Delete Tag",()=>void apply("remove",tag,"all"));
+    separator();
     studioTagColorMenu(menu,tag,categoryState,renderCaptions);
     document.body.append(menu);
     const rect=menu.getBoundingClientRect();
@@ -13143,7 +13174,10 @@ function renderCaptionStudio(host,items,ext){
     if(affected.some(it=>drafts.has(it.path)&&drafts.get(it.path)!==it.caption)){
       alert("Save your unsaved caption drafts before a bulk tag operation.");return;
     }
-    if(!confirm("Apply to "+affected.length+" captions?"))return;
+    const detail=mode==="remove"&&scope==="all"?
+      'Delete tag "'+old.trim()+'" from all eligible dataset captions?':
+      "Apply "+mode+" tag to "+affected.length+" caption(s)?";
+    if(!confirm(detail))return false;
     const changes=[];
     for(const it of affected){
       if(S.cap.studioReviewed?.has(it.path)||studioCaptionMode(it)==="prose")continue;
