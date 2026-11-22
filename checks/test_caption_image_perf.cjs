@@ -42,7 +42,7 @@ assert.throws(()=>perf.restore(backward.inverse,fakeMask(20,20)),/dimensions cha
 
 const closed=[];
 function bitmap(width,height,id){return {width,height,close(){closed.push(id);}};}
-const cache=new perf.PreviewCache(80);
+const cache=new perf.PreviewCache(130);
 cache.put("a",bitmap(4,4,"a"));cache.put("b",bitmap(4,4,"b"));
 assert.strictEqual(cache.get("a"),cache.get("a"));
 cache.put("c",bitmap(4,4,"c"));
