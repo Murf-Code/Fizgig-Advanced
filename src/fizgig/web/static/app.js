@@ -10934,6 +10934,7 @@ function renderCaptions() {
     (q ? ` · ${items.length} match` : "") + (pages > 1 ? ` · page ${S.cap.page + 1} of ${pages}` : "");
   $("capPrev").disabled = S.cap.page === 0; $("capNext").disabled = S.cap.page >= pages - 1;
   host.classList.toggle("captions-as-table", $("capView").value === "table");
+  if ($("capView").value === "studio") { renderCaptionStudio(host, items, ext); return; }
   if ($("capView").value === "table") {
     host.append(captionsTable(items.slice(S.cap.page * CAP_PAGE, (S.cap.page + 1) * CAP_PAGE), ext));
     fitTexts(host);
@@ -11004,6 +11005,87 @@ function renderCaptions() {
     host.append(card);
   }
   fitTexts(host);
+}
+
+
+function studioTokens(s){return (s||"").split(",").map(x=>x.trim()).filter(Boolean);}
+function studioUnique(a){const seen=new Set();return a.filter(x=>{const k=x.toLowerCase();if(seen.has(k))return false;seen.add(k);return true;});}
+function renderCaptionStudio(host,items,ext){
+  const selection=S.cap.studioSelection||(S.cap.studioSelection=new Set());
+  const pageItems=items.slice(S.cap.page*CAP_PAGE,(S.cap.page+1)*CAP_PAGE);
+  const current=items.find(i=>i.path===S.cap.studioPath)||pageItems[0]||items[0];
+  if(!current){host.textContent="No matching images.";return;}
+  S.cap.studioPath=current.path;
+  const left=el("aside",{class:"caption-studio-panel studio-browser"});
+  const center=el("div",{class:"caption-studio-panel studio-editor"});
+  const right=el("aside",{class:"caption-studio-panel studio-index"});
+  const note=el("div",{class:"field-hint"});
+  const say=s=>{note.textContent=s;};
+  const btn=(s,fn)=>el("button",{class:"btn btn-sm",text:s,onclick:fn});
+  left.append(el("strong",{text:"Dataset browser"}),el("div",{class:"field-hint",text:String(items.length)+" files"}));
+  left.append(btn("Select page",()=>{pageItems.forEach(i=>selection.add(i.path));renderCaptions();}),btn("Clear selection",()=>{selection.clear();renderCaptions();}));
+  for(const it of pageItems){
+    const cb=el("input",{type:"checkbox"});cb.checked=selection.has(it.path);
+    cb.onchange=()=>{if(cb.checked)selection.add(it.path);else selection.delete(it.path);};
+    const thumb=it.size?el("img",{src:"/api/thumb?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(TOKEN),loading:"lazy"}):el("span",{text:"♪"});
+    left.append(el("div",{class:"studio-browser-row"},cb,el("button",{class:"studio-file"+(it.path===current.path?" active":""),onclick:()=>{S.cap.studioPath=it.path;renderCaptions();}},thumb,el("span",{text:mediaLabel(it)+(it.caption===null?" · missing caption":"")}))));
+  }
+  const ta=el("textarea",{class:"studio-caption",rows:7});ta.value=current.caption||"";current._ta=ta;
+  const word=el("div",{class:"field-hint"});
+  const tags=el("div",{class:"studio-chips"});
+  const redraw=()=>{
+    word.textContent=String(ta.value.trim()?ta.value.trim().split(/\s+/).length:0)+" words · "+String(studioTokens(ta.value).length)+" tags";
+    tags.replaceChildren();
+    for(const t of studioUnique(studioTokens(ta.value)))tags.append(el("button",{class:"studio-chip",text:t+" ×",onclick:()=>{
+      ta.value=studioTokens(ta.value).filter(x=>x.toLowerCase()!==t.toLowerCase()).join(", ");redraw();
+    }}));
+  };
+  ta.addEventListener("input",redraw);
+  const save=async()=>{
+    try{const x=await api("/api/captions/save",{folder:capItemFolder(current),name:current.name,text:ta.value,ext});
+      current.caption=ta.value;say(x.queued?"Saved; queued for next epoch":"Saved");}
+    catch(e){say(e.message);}
+  };
+  center.append(el("strong",{text:"Caption editor"}),el("div",{class:"studio-preview"},mediaFor(current,true)),
+    el("div",{class:"caption-card-title",text:mediaLabel(current)}),ta,word,
+    el("div",{class:"field-row"},el("button",{class:"btn btn-primary",text:"Save caption",onclick:save}),
+      btn("Deduplicate",()=>{ta.value=studioUnique(studioTokens(ta.value)).join(", ");redraw();}),
+      btn("Sort tags",()=>{ta.value=studioUnique(studioTokens(ta.value)).sort((a,b)=>a.localeCompare(b)).join(", ");redraw();}),
+      btn("Strip artist tags",()=>{ta.value=studioTokens(ta.value).filter(t=>!/^artist\s*:/i.test(t)).join(", ");redraw();})),note);
+  const newTag=el("input",{placeholder:"Add tag",type:"text",class:"w-path"});
+  right.append(el("strong",{text:"Image tags"}),tags,el("div",{class:"field-row"},newTag,btn("Add",()=>{
+    if(newTag.value.trim()){ta.value=studioUnique([...studioTokens(ta.value),newTag.value.trim()]).join(", ");newTag.value="";redraw();}
+  })),el("strong",{text:"Dataset tag index"}));
+  const counts=new Map();
+  for(const it of S.cap.items)for(const t of new Set(studioTokens(it.caption).map(t=>t.toLowerCase())))counts.set(t,(counts.get(t)||0)+1);
+  const index=el("div",{class:"studio-tag-index"});
+  for(const [tag,n] of [...counts].sort((a,b)=>b[1]-a[1]).slice(0,120))index.append(el("button",{class:"studio-index-tag",text:tag+" · "+n,onclick:()=>{
+    $("capSearch").value=tag;S.cap.page=0;renderCaptions();
+  }}));
+  right.append(index);
+  const bulk=el("div",{class:"studio-bulk"});
+  const apply=async(mode)=>{
+    const old=prompt("Tag to "+mode+":");if(!old||!old.trim())return;
+    const newTag=mode==="rename"?prompt("Replacement tag:"):"";
+    if(mode==="rename"&&!newTag)return;
+    const affected=selection.size?S.cap.items.filter(it=>selection.has(it.path)):S.cap.items;
+    if(!confirm("Apply to "+affected.length+" captions?"))return;
+    let done=0,fail=0;
+    for(const it of affected){
+      const source=studioTokens(it.caption);
+      const target=mode==="remove"?source.filter(t=>t.toLowerCase()!==old.trim().toLowerCase()):
+        mode==="rename"?source.map(t=>t.toLowerCase()===old.trim().toLowerCase()?newTag.trim():t):[...source,old.trim()];
+      const after=studioUnique(target).join(", ");
+      if(after===source.join(", "))continue;
+      try{await api("/api/captions/save",{folder:capItemFolder(it),name:it.name,text:after,ext});it.caption=after;done++;}
+      catch(e){fail++;}
+    }
+    renderCaptions();
+    const n=$("captionsGrid").querySelector(".studio-bulk-note");if(n)n.textContent=done+" updated"+(fail?" · "+fail+" failed":"");
+  };
+  bulk.append(el("strong",{text:"Bulk tags · selected or whole dataset"}),btn("Rename tag",()=>apply("rename")),
+    btn("Remove tag",()=>apply("remove")),btn("Add tag",()=>apply("add")),el("span",{class:"field-hint studio-bulk-note"}));
+  redraw();host.classList.add("studio-host");host.append(bulk,el("div",{class:"studio-layout"},left,center,right));
 }
 
 // the table view: one row a file, sorted by a click on a column's head (again: the other way)

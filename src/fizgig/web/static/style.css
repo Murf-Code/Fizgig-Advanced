@@ -3255,3 +3255,23 @@ label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; 
 .cap-pref-done { color: var(--success); font-weight: 600; white-space: nowrap; }
 .cap-pref-err { grid-column: 1 / -1; color: var(--warning); }
 @media (max-width: 640px) { .cap-pref-row { grid-template-columns: 1fr auto; } .cap-pref-row > .field-hint:not(.cap-pref-err) { grid-column: 1 / -1; } }
+
+/* Caption Studio fits Fizgig's existing dark card palette. */
+.studio-host{display:block!important}
+.studio-bulk{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.studio-layout{display:grid;grid-template-columns:minmax(200px,1fr) minmax(340px,2fr) minmax(200px,1fr);gap:12px}
+.caption-studio-panel{min-width:0;border:1px solid #414759;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px;background:rgba(25,29,39,.7)}
+.studio-browser{max-height:760px;overflow:auto}
+.studio-browser-row{display:flex;align-items:center;gap:7px}
+.studio-file{background:transparent;color:inherit;border:1px solid transparent;border-radius:8px;text-align:left;padding:6px;display:flex;align-items:center;gap:9px;cursor:pointer;overflow-wrap:anywhere;min-width:0;width:100%}
+.studio-file:hover,.studio-file.active{background:rgba(110,150,230,.14);border-color:rgba(110,150,230,.4)}
+.studio-file img{height:52px;width:52px;object-fit:cover;border-radius:5px}
+.studio-preview{min-height:260px;max-height:480px;border-radius:10px;background:rgba(0,0,0,.22);display:flex;align-items:center;justify-content:center;overflow:hidden}
+.studio-preview img,.studio-preview video{max-width:100%;max-height:480px;object-fit:contain}
+.studio-caption{width:100%;min-height:160px;box-sizing:border-box;resize:vertical}
+.studio-chips{display:flex;gap:6px;flex-wrap:wrap}
+.studio-chip{color:inherit;border:1px solid rgba(140,170,230,.4);background:rgba(90,130,210,.16);border-radius:18px;padding:5px 8px;cursor:pointer}
+.studio-tag-index{max-height:340px;overflow:auto;display:flex;flex-direction:column}
+.studio-index-tag{border:0;border-bottom:1px solid rgba(140,150,170,.18);background:transparent;color:inherit;padding:7px;text-align:left;cursor:pointer}
+@media(max-width:1100px){.studio-layout{grid-template-columns:1fr 2fr}.studio-index{grid-column:1/-1}}
+@media(max-width:650px){.studio-layout{grid-template-columns:1fr}.studio-index{grid-column:auto}}
