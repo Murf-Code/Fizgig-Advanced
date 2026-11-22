@@ -11191,65 +11191,6 @@ function studioSaveCategories(state){
   S.cap.studioTagbenchGraph=null;
   CaptionStudioViz.setTagbenchPalette(null);
 }
-function captionRemovedPanel(ext) {
-  const panel=el("details",{class:"studio-removed-browser"});
-  const summary=el("summary",{text:"Removed images · restore from dataset"});
-  const folders=[...new Set([S.imageFolder,...S.cap.items.map(capItemFolder)].filter(Boolean))];
-  const folder=el("input",{type:"text",class:"w-path",list:"captionRemovedFolderSuggestions",
-    placeholder:"Dataset folder (including an empty subfolder)",title:"Folder containing removed/ images"});
-  const suggestions=el("datalist",{id:"captionRemovedFolderSuggestions"});
-  for(const path of folders)suggestions.append(el("option",{value:path}));
-  folder.value=S.cap.studioRemovedFolder||folders[0]||"";
-  S.cap.studioRemovedFolder=folder.value;
-  const info=el("span",{class:"field-hint",text:"Removed pictures stay in the removed/ folder; restoring never overwrites an existing file."});
-  const entries=el("div",{class:"studio-removed-list"});
-  let serial=0;
-  const refresh=async()=>{
-    const id=++serial, target=folder.value;
-    entries.replaceChildren(el("span",{class:"field-hint",text:"Looking for removed pictures…"}));
-    try{
-      const result=await api("/api/captions/removed?folder="+encodeURIComponent(target)+
-        "&ext="+encodeURIComponent(ext));
-      if(id!==serial || target!==folder.value)return;
-      entries.replaceChildren();
-      const list=result.items||[];
-      if(!list.length){
-        entries.append(el("div",{class:"field-hint",text:"No removed pictures saved in this folder."}));
-        return;
-      }
-      for(const it of list){
-        const row=el("div",{class:"studio-removed-row"});
-        const label=el("div",{},el("strong",{text:it.name}),
-          el("div",{class:"field-hint",text:it.legacy?
-            "Older removal · restores under the stored file name":
-            it.moved.length+" related file(s) preserved (picture, caption, mask)"}));
-        const button=el("button",{class:"btn btn-sm",text:"Restore",onclick:async()=>{
-          if(!confirm("Restore "+it.name+" to its dataset folder? Existing files will not be replaced."))return;
-          button.disabled=true;info.textContent="Restoring "+it.name+"…";
-          try{
-            const result=await api("/api/captions/restore_saved",{folder:target,id:it.id,ext});
-            info.textContent=result.remaining?.length?
-              "Restored "+result.restored.length+" file(s), but these already exist or could not move: "+
-                result.remaining.join(", "):
-              "Restored "+result.restored.length+" file(s).";
-            await loadCaptions();
-          }catch(e){info.textContent=e.message;button.disabled=false;}
-        }});
-        row.append(label,button);entries.append(row);
-      }
-    }catch(e){entries.replaceChildren(el("span",{class:"field-hint",text:e.message}));}
-  };
-  folder.addEventListener("change",()=>{S.cap.studioRemovedFolder=folder.value;refresh();});
-  panel.append(summary,el("div",{class:"field-row"},folder,suggestions,
-    el("button",{class:"btn btn-sm",text:"Refresh",onclick:()=>{
-      S.cap.studioRemovedFolder=folder.value;refresh();
-    }})),
-    info,entries);
-  panel.open=!!S.cap.studioRemovedOpen;
-  panel.addEventListener("toggle",()=>{S.cap.studioRemovedOpen=panel.open;if(panel.open)refresh();});
-  if(panel.open)refresh();
-  return panel;
-}
 // Scan perceptual near-duplicates across all captioned dataset pictures, not just
 // the visible page. The Python service never auto-deletes; every action is reviewed.
 function captionDuplicatePanel(ext){
@@ -11815,8 +11756,10 @@ function renderCaptionStudio(host,items,ext){
   const pageItems=items.slice(S.cap.page*CAP_PAGE,(S.cap.page+1)*CAP_PAGE);
   const current=pageItems.find(i=>i.path===S.cap.studioPath)||pageItems[0]||items[0];
   if(!current){
-    host.append(captionDuplicatePanel(ext),captionRemovedPanel(ext),
-      el("div",{class:"field-hint",text:"No matching images in the dataset selected on the Start tab. Change your filter, choose a dataset on Start, or restore a removed image."}));
+    host.append(el("div",{class:"studio-empty-captions"},
+      el("div",{class:"field-hint",text:"No matching images in this view. Change your filter or restore images to the dataset folder, then refresh."}),
+      el("button",{class:"btn btn-primary",type:"button",text:"Refresh dataset",
+        onclick:()=>void loadCaptions().catch(e=>alert("Refresh failed: "+e.message))})));
     return;
   }
   S.cap.studioPath=current.path;
@@ -12961,9 +12904,22 @@ function renderCaptionStudio(host,items,ext){
   document.addEventListener("pointerdown",S.cap.studioEditMenuDismiss);
   document.addEventListener("keydown",S.cap.studioEditMenuDismiss);
   editMenu.querySelector("summary").setAttribute("aria-label","Edit Tags options");
-  const removedPanel=captionRemovedPanel(ext);
   const toolsRow=el("div",{class:"studio-main-actions"});
   const settingsBtn=btn("Settings",()=>captionWorkbenchSettingsOpen());
+  const refreshBtn=btn("Refresh",async()=>{
+    if(refreshBtn.disabled)return;
+    refreshBtn.disabled=true;
+    refreshBtn.textContent="Refreshing…";
+    try{
+      // Re-list from disk, including images manually restored from removed/.
+      // This must not move or restore files automatically.
+      await loadCaptions();
+    }catch(error){
+      alert("Dataset refresh failed: "+error.message);
+      if(refreshBtn.isConnected){refreshBtn.disabled=false;refreshBtn.textContent="Refresh";}
+    }
+  });
+  refreshBtn.title="Reload images and captions from the dataset folder";
   const existingWildcard=exportWildcard;
   const dupBtn=btn("Find Duplicate Images",()=>{
     document.querySelector(".caption-duplicates-backdrop")?.remove();
@@ -13009,7 +12965,7 @@ function renderCaptionStudio(host,items,ext){
   });
   const autoCaptionBtn=btn("Auto-Captioner",()=>showTabs("ai"));
   const actionBar=el("nav",{class:"studio-top-actions","aria-label":"Caption Workbench tools"},
-    settingsBtn,editMenu,dupBtn,autoCaptionBtn);
+    settingsBtn,refreshBtn,editMenu,dupBtn,autoCaptionBtn);
   if(existingWildcard)actionBar.append(existingWildcard);
   // TagBench's Waterfall and Constellation replace the ENTIRE three-panel
   // stage. The normal Tags button restores the caption editor and lists.
@@ -13242,7 +13198,7 @@ function renderCaptionStudio(host,items,ext){
     else if(key==="o"){handled();openSelectedImage();}
   };
   document.addEventListener("keydown",S.cap.studioKeyHandler);
-  toolsRow.append(actionBar,removedPanel);
+  toolsRow.append(actionBar);
   layout.append(left,divider("left"),center,divider("right"),right);
   redraw();host.classList.add("studio-host");
   host.append(liveStatus,toolsRow,layout,fullStage);
