@@ -8,12 +8,10 @@ not mistakenly presented as exact duplicates. All matches require human review.
 from __future__ import annotations
 
 import hashlib
-import math
 import os
 import re
 import threading
 from collections import defaultdict
-from functools import lru_cache
 
 import numpy as np
 from PIL import Image, ImageOps
@@ -24,15 +22,17 @@ PHOTO_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif",
               ".tif", ".tiff", ".avif"}
 MAX_FILES = 30000
 MAX_PAIRS = 150000
-MIN_SCORE = 75
+MAX_DISTANCE = 16   # TagBench strictness slider: 0 identical-looking, 16 lenient
 _JOBS: dict[str, dict] = {}
 _LOCK = threading.RLock()
 _WRITE_LOCK = threading.RLock()
 
 
 def _root(folder):
-    folder = os.path.realpath(os.path.abspath(str(folder or "")))
-    if not folder or not os.path.isdir(folder):
+    if not isinstance(folder, (str, os.PathLike)) or not str(folder).strip():
+        raise ValueError("Choose an existing training dataset folder.")
+    folder = os.path.realpath(os.path.abspath(str(folder)))
+    if not os.path.isdir(folder):
         raise ValueError("Choose an existing training dataset folder.")
     return folder
 
@@ -71,40 +71,60 @@ def paths_for_scan(folder, paths):
     return root, sorted(result), result
 
 
-@lru_cache(maxsize=1)
-def _dct_basis():
-    n = 32
-    v = np.arange(n, dtype=np.float64)
-    basis = np.cos((np.pi / (2 * n)) * np.outer(v, 2 * v + 1))
-    return basis[:8, :]
-
-
 def fingerprint(path):
+    """TagBench 1.2: 64-bit dHash + 4×4 RGB-grid + exact file check.
+
+    Its original implementation is in TagBench's src/dupe-match.ts. Python
+    computes the same grayscale-neighbor comparison and 40-point RGB distance
+    for the web server; SHA-256 replaces the collision-prone 64-bit file FNV.
+    """
     with Image.open(path) as src:
         src.seek(0)
-        im = ImageOps.exif_transpose(src).convert("RGB")
-        width, height = im.size
-        rgb = np.asarray(im.resize((8, 8), Image.Resampling.BOX), dtype=np.float64)
-        mean = tuple(float(v) for v in rgb.mean(axis=(0, 1)))
-        gray = np.asarray(im.resize((32, 32), Image.Resampling.LANCZOS).convert("L"),
-                          dtype=np.float64)
-    b = _dct_basis()
-    coefficients = (b @ gray @ b.T).ravel()[1:]  # ignore the DC/lightness coefficient
-    median = np.median(coefficients)
-    bits = sum(1 << i for i, v in enumerate(coefficients) if v > median)
-    return (bits, mean, width, height)
+        im = ImageOps.exif_transpose(src).convert("RGBA")
+        # Browser canvas draws RGBA pixels over an initially transparent black
+        # surface: preserve that visual result rather than inventing white.
+        rgb = Image.new("RGBA", im.size, (0, 0, 0, 0))
+        rgb.alpha_composite(im)
+        rgb = rgb.convert("RGB")
+        width, height = rgb.size
+        small = np.asarray(rgb.resize((9, 8), Image.Resampling.BILINEAR),
+                           dtype=np.float64)
+        luminance = small[:, :, 0] * .30 + small[:, :, 1] * .59 + small[:, :, 2] * .11
+        differences = luminance[:, :-1] > luminance[:, 1:]
+        # Row-major and low-bit first, as TagBench's dhash() produces.
+        bitmask = sum(1 << i for i, yes in enumerate(differences.ravel()) if yes)
+        color = np.asarray(rgb.resize((4, 4), Image.Resampling.BILINEAR),
+                           dtype=np.uint8).reshape(48).tobytes()
+    exact = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            exact.update(block)
+    return bitmask, color, width, height, exact.hexdigest()
 
 
-def distance(a, b):
+def hamming(a, b):
     return (a ^ b).bit_count()
 
 
-def similarity(a, b):
-    # Mean color prevents a monotone/solid red picture from appearing identical
-    # to the same-shaped blue picture just because their pHashes have no detail.
-    phash = 100.0 * (1.0 - distance(a[0], b[0]) / 63.0)
-    color = 100.0 * (1.0 - sum(abs(x - y) for x, y in zip(a[1], b[1])) / (3 * 255.0))
-    return round(max(0.0, min(phash, color)), 1)
+def color_distance(left, right):
+    # Count 4×4 cells whose RGB difference exceeds 40, same as TagBench.
+    n = 0
+    for i in range(0, 48, 3):
+        if sum((left[i+k] - right[i+k]) ** 2 for k in range(3)) > 40 * 40:
+            n += 1
+    return n
+
+
+def apart(a, b):
+    """Original TagBench distance: 0 for equal bytes else max(dHash, color)."""
+    if a[4] == b[4]:
+        return 0
+    return max(hamming(a[0], b[0]), color_distance(a[1], b[1]))
+
+
+def distance(a, b):
+    """Hamming metric for the BK-tree's inexpensive candidate screening."""
+    return hamming(a, b)
 
 
 class _BKTree:
@@ -168,15 +188,14 @@ def _compute(job):
     pairs = []
     truncated = False
     records = list(features.items())
-    # Threshold is independently adjustable afterwards. Precompute all edges
-    # at the lowest supported threshold and filter cached scores in status().
-    radius = math.ceil(63 * (100 - MIN_SCORE) / 100.0)
+    # Precompute TagBench-distance edges to 16 once; slider updates filter in memory.
+    radius = MAX_DISTANCE
     for i, (_path, f) in enumerate(records):
         for j in tree.matches(f[0], radius):
             other_path, other = records[j]
-            score = similarity(other, f)
-            if score >= MIN_SCORE:
-                pairs.append((other_path, _path, score))
+            diff = apart(other, f)
+            if diff <= MAX_DISTANCE:
+                pairs.append((other_path, _path, diff, other[4] == f[4]))
                 if len(pairs) >= MAX_PAIRS:
                     truncated = True
                     break
@@ -219,14 +238,14 @@ def start(folder, paths):
     return status(root)
 
 
-def status(folder, threshold=92, offset=0, page_size=32):
+def status(folder, strictness=4, offset=0, page_size=32):
     root = _root(folder)
     try:
-        threshold = float(threshold)
+        strictness = int(strictness)
     except (TypeError, ValueError):
-        raise ValueError("Similarity threshold must be a number.") from None
-    if not MIN_SCORE <= threshold <= 100:
-        raise ValueError(f"Similarity must be {MIN_SCORE}–100%.")
+        raise ValueError("Strictness must be an integer from 0 through 16.") from None
+    if not 0 <= strictness <= MAX_DISTANCE:
+        raise ValueError(f"Strictness must be 0–{MAX_DISTANCE}.")
     try:
         offset = int(offset)
     except (ValueError, TypeError):
@@ -235,41 +254,45 @@ def status(folder, threshold=92, offset=0, page_size=32):
     with _LOCK:
         j = _JOBS.get(root)
         if j is None:
-            return {"stage": "idle", "processed": 0, "total": 0, "threshold": threshold}
+            return {"stage": "idle", "processed": 0, "total": 0, "strictness": strictness}
         overview = {k: j[k] for k in ("stage", "processed", "total", "scanned",
                                       "failures", "truncated")}
-        overview["threshold"] = threshold
+        overview["strictness"] = strictness
         if j["stage"] == "error":
             overview["error"] = j.get("error", "Scan failed")
             return overview
         if j["stage"] != "done":
             return overview
-        matches = [(a, b, score) for a, b, score in j["pairs"] if score >= threshold]
+        matches = [(a, b, diff, exact) for a, b, diff, exact in j["pairs"] if diff <= strictness]
         info = j["files"]
-    parent = {p: p for a, b, _ in matches for p in (a, b)}
+    parent = {p: p for a, b, _diff, _exact in matches for p in (a, b)}
     def find(p):
         while parent[p] != p:
             parent[p] = parent[parent[p]]
             p = parent[p]
         return p
-    for a, b, _ in matches:
+    for a, b, _diff, _exact in matches:
         pa, pb = find(a), find(b)
         if pa != pb:
             parent[pb] = pa
     members = defaultdict(set)
     for p in parent:
         members[find(p)].add(p)
-    scores = defaultdict(list)
-    for a, _b, score in matches:
-        scores[find(a)].append(score)
+    costs = defaultdict(list)
+    links = defaultdict(list)
+    for a, b, diff, exact in matches:
+        key = find(a)
+        costs[key].append(diff)
+        links[key].append({"a": a, "b": b, "distance": diff, "identical": exact})
     groups = []
     for paths in members.values():
         sorted_paths = sorted(paths)
+        root_key = find(sorted_paths[0])
         groups.append({"id": hashlib.sha1(sorted_paths[0].encode("utf-8")).hexdigest()[:16],
-                       "similarity": round(min(scores[find(sorted_paths[0])]), 1),
-                       "count": len(paths),
+                       "distance": max(costs[root_key]), "identical": all(x["identical"] for x in links[root_key]),
+                       "count": len(paths), "links": links[root_key][:200],
                        "items": [info[p] for p in sorted_paths]})
-    groups.sort(key=lambda g: (-g["similarity"], -g["count"], g["items"][0]["path"]))
+    groups.sort(key=lambda g: (g["distance"], -g["count"], g["items"][0]["path"]))
     overview.update(groups=groups[offset:offset + page_size],
                     group_count=len(groups), pair_count=len(matches),
                     offset=offset, next_offset=(offset + page_size if
