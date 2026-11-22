@@ -3,7 +3,7 @@ name: Checks
 on:
   pull_request:
   push:
-    branches: [master]
+    branches: [master, test/caption-workbench]
 
 jobs:
   checks:
