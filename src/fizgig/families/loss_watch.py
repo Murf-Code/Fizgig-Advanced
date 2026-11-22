@@ -157,6 +157,7 @@ class Watch:
         # external file edits that bypass the Caption Studio save route.
         self._source_snapshot = self._source_state()
         self._mask_snapshot = self._mask_state()
+        self._unscheduled_last = None
         if auto_recaption and not self.image_dir:
             logger.warning("[auto-recaption] image_directory not found in the dataset config - auto-recaption off")
             auto_recaption = False
@@ -224,6 +225,58 @@ class Watch:
             pass
         self.watch.resume_from_jsonl(up_to_epoch=start_epoch, resets=resets)
 
+
+
+    def _unscheduled_inputs(self):
+        """Keys of newly present source media outside the fixed active batch schedule.
+
+        Changing step counts/buckets mid-run without caching and reconciling the
+        optimizer schedule would be unsafe. Surface these files explicitly rather
+        than pretending they joined the run.
+        """
+        from fizgig.dataset.masks import is_mask_file
+        scheduled = set(_items(self.group))
+        found = set()
+        for ds in getattr(self.group, "datasets", ()) or ():
+            if getattr(ds, "is_reg", False) or getattr(ds, "holdout_only", False):
+                continue
+            folder = getattr(ds, "image_directory", None)
+            if not folder or not os.path.isdir(folder):
+                continue
+            prefix = str(getattr(ds, "item_prefix", "") or "")
+            extensions = set(_picture_exts()) | {x.lower() for x in getattr(ds, "extra_extensions", ())}
+            held = set(getattr(ds, "holdout_stems", ()) or ())
+            try:
+                names = os.listdir(folder)
+            except OSError:
+                continue
+            for filename in names:
+                stem, ext = os.path.splitext(filename)
+                if ext.lower() not in extensions or is_mask_file(filename) or stem in held:
+                    continue
+                if prefix + stem not in scheduled and os.path.isfile(os.path.join(folder, filename)):
+                    found.add(prefix + stem)
+        return sorted(found)
+
+    def _report_unscheduled_inputs(self):
+        pending = self._unscheduled_inputs()
+        if pending == getattr(self, "_unscheduled_last", None):
+            return
+        if pending:
+            logger.warning("[live-dataset] %s input(s) exist outside this run's cached batch schedule "
+                           "(examples: %s). They require a new cache/optimizer schedule and are NOT "
+                           "being trained. Restart the run to include them.",
+                           len(pending), ", ".join(pending[:12]))
+        status_path = os.path.join(self.output_dir, "loss_log", "live_dataset_status.json")
+        os.makedirs(os.path.dirname(status_path), exist_ok=True)
+        payload = {"requires_restart": bool(pending), "unscheduled_count": len(pending),
+                   "unscheduled_examples": pending[:40],
+                   "reason": ("New or uncached media cannot be added safely to the active fixed training "
+                              "schedule. Restart training after preparing the cache." if pending else "")}
+        with open(status_path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        os.replace(status_path + ".tmp", status_path)
+        self._unscheduled_last = pending
 
     def _mask_state(self):
         """{item key: (path, size, mtime)} for masks of active still-image datasets.
@@ -416,6 +469,10 @@ class Watch:
         except Exception:
             logger.warning("[live-dataset] source scan failed; queued UI edits still apply", exc_info=True)
             changed_images, changed_text = {}, {}
+        try:
+            self._report_unscheduled_inputs()
+        except Exception:
+            logger.warning("[live-dataset] could not report new source media", exc_info=True)
         try:
             self._images(epoch, dit, device, parkable, changed_images)
         except Exception:
