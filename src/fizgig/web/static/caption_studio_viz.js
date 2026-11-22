@@ -430,12 +430,13 @@ const CaptionStudioViz = (() => {
     const cols=Array.from({length:columns},()=>{
       const col=document.createElement("div");col.className="studio-tb-flow-column";flow.append(col);return col;
     });
-    items.forEach((it,i)=>{
-      if(!it.size)return;
+    const pictures=items.filter(it=>it.size);
+    pictures.forEach((it,i)=>{
       const tile=document.createElement("button");
       tile.type="button";tile.className="studio-tb-flow-tile";
       tile.dataset.path=it.path;
       tile.setAttribute("aria-label",it.name);
+      tile.setAttribute("aria-pressed",String(!!selection?.has(it.path)));
       if(it.path===activePath||selection?.has(it.path))tile.classList.add("is-picked");
       const img=document.createElement("img");
       img.loading="lazy";img.decoding="async";
@@ -446,7 +447,7 @@ const CaptionStudioViz = (() => {
       tile.addEventListener("contextmenu",event=>onContextMenu(event,it));
       cols[i%columns].append(tile);
     });
-    if(!items.length){const hint=document.createElement("p");hint.textContent="No images match the current dataset filter.";hint.className="field-hint";flow.append(hint);}
+    if(!pictures.length){const hint=document.createElement("p");hint.textContent="No pictures match the current dataset filter.";hint.className="field-hint";flow.append(hint);}
     stage.append(flow);
     let widthCount=columns;
     const resize=()=>{
