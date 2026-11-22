@@ -4348,3 +4348,36 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   background:color-mix(in srgb,var(--bg-surface) 76%,transparent);
   border-color:var(--accent-border);
 }
+
+/* Consistent TagBench-style tag coloring across Constellation, Image Tags,
+   All Tags and Waterfall. Unassigned tags inherit theme-derived palette. */
+#tab-captions .studio-image-tag,
+#tab-captions .studio-tag-list-item .studio-index-tag {
+  border-left:3px solid var(--studio-tag-color,var(--accent));
+}
+#tab-captions .studio-image-tag {
+  color:var(--studio-tag-color,var(--text-primary));
+  background:color-mix(in srgb,var(--studio-tag-color,var(--accent)) 9%,var(--bg-inset));
+}
+#tab-captions .studio-image-tag.is-picked {
+  color:var(--studio-tag-color,var(--text-primary));
+  background:color-mix(in srgb,var(--studio-tag-color,var(--accent)) 22%,var(--bg-inset));
+}
+#tab-captions .studio-tag-list-item .studio-index-tag {
+  color:var(--studio-tag-color,var(--text-primary));
+}
+#tab-captions.caption-theme-glass .studio-tag-list-item .studio-index-tag {
+  border-left-color:var(--studio-tag-color,var(--accent));
+  color:var(--studio-tag-color,var(--text-primary));
+}
+#tab-captions .studio-waterfall-bar {
+  background:var(--studio-tag-color,var(--accent));
+}
+#tab-captions.caption-theme-glass .studio-waterfall-bar {
+  background:linear-gradient(90deg,
+    color-mix(in srgb,var(--studio-tag-color,var(--accent)) 65%,var(--bg-inset)),
+    var(--studio-tag-color,var(--accent)));
+}
+#tab-captions .studio-star-node circle {
+  fill:var(--studio-tag-color,var(--accent));
+}
