@@ -1,0 +1,76 @@
+name: Branch-wide audit
+on:
+  push:
+    branches: [test/caption-workbench]
+  workflow_dispatch:
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Compile all Python sources (report pre-existing failures)
+        shell: bash
+        run: |
+          python -m compileall -q src > /tmp/branch-pycompile.log 2>&1
+          result=$?
+          cat /tmp/branch-pycompile.log
+          echo "Whole-source compile exit: $result"
+          exit 0
+      - name: Parse all Javascript sources
+        run: |
+          for f in $(find src -type f -name '*.js'); do node --check "$f"; done
+      - name: Find duplicate HTML IDs
+        run: |
+          python - <<'PY'
+          from collections import Counter
+          import re
+          from pathlib import Path
+          for path in Path("src").rglob("*.html"):
+              ids = re.findall(r'\bid="([^"]+)"', path.read_text(encoding="utf-8"))
+              dup = [(key,n) for key,n in Counter(ids).items() if n>1]
+              print(f"{path}: {len(ids)} static IDs, {len(dup)} duplicate IDs")
+              for key,n in dup:
+                  print(f"  duplicate: {key!r} x{n}")
+              if dup:
+                  raise SystemExit(1)
+          PY
+
+  full-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test environment
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r checks/requirements.txt
+      - name: Discover complete test suite
+        shell: bash
+        run: |
+          set +e
+          timeout 180s python -m pytest checks --collect-only -q > /tmp/branch-collection.log 2>&1
+          result=$?
+          tail -n 150 /tmp/branch-collection.log
+          echo "Full test discovery exit: $result"
+          exit 0
+      - name: Run broad tests (best effort, report errors)
+        shell: bash
+        run: |
+          set +e
+          timeout 420s python -m pytest checks -q --disable-warnings --maxfail=20 > /tmp/branch-tests.log 2>&1
+          result=$?
+          tail -n 220 /tmp/branch-tests.log
+          echo "Full test suite exit: $result"
+          exit 0
