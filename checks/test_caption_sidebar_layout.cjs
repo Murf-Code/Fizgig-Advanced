@@ -117,7 +117,7 @@ assert.match(css,/studio-tag-color-swatches/);
 // textarea; clicking All Tags restores the list.
 assert.match(app,/tagIndexPane\.replaceChildren\(/);
 assert.match(app,/S\.cap\.studioNaturalMode=false;S\.cap\.studioDock="all";renderCaptions\(\)/);
-assert.match(app,/const naturalEditor=el\("section",\{class:"studio-natural-pane"\},captionText\)/);
+assert.match(app,/const naturalEditor=el\("section",\{class:"studio-natural-pane"\},captionText,captionHelp\)/);
 assert.match(css,/#tab-captions \.studio-host \.studio-tag-index-pane>\.studio-natural-pane/);
 assert.match(css,/#tab-captions\.caption-theme-glass \.studio-host \.studio-natural-toggle:has\(input:checked\)/);
 
