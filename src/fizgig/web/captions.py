@@ -271,6 +271,30 @@ def with_crops(folder):
     return [folder] + ([big] if big else [])
 
 
+def selected_media(folder, requested):
+    """Resolve an explicit AI selection or reject it; never turn [] into caption-all.
+
+    Paths are confined to the chosen dataset and its current largest detail-crop
+    folder. Resolve symlinks before comparison.
+    """
+    if requested is None:
+        return None
+    if not isinstance(requested, list) or not 1 <= len(requested) <= 1000:
+        raise ValueError("Choose 1–1000 images to caption.")
+    inside = {os.path.realpath(p) for p in with_crops(folder)}
+    result = []
+    for item in requested:
+        if not isinstance(item, str) or not item:
+            raise ValueError("Invalid selected media path.")
+        resolved = os.path.realpath(item)
+        if os.path.dirname(resolved) not in inside or not os.path.isfile(resolved):
+            raise ValueError("Selected media is missing or outside the chosen dataset.")
+        if os.path.splitext(resolved)[1].lower() not in IMAGE_EXTS | {".mp4", ".jxl"}:
+            raise ValueError("Selected file is not a supported image or video.")
+        result.append(resolved)
+    return list(dict.fromkeys(result))
+
+
 def _review_locked(path):
     """Use persisted review locks for legacy and AI batch captioning."""
     from fizgig.web import caption_review
