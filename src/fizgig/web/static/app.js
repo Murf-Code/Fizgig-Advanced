@@ -11980,10 +11980,11 @@ function renderCaptionStudio(host,items,ext){
     }else explore.append(index);
   };
   indexMode.addEventListener("change",drawExplore);
-  right.append(el("div",{class:"field-row"},sortSelect,indexMode,btn("Export wildcard",()=>{
-    const txt=CaptionStudioTags.wildcards(sorted.map(x=>x[0]));
+  right.append(el("div",{class:"field-row"},sortSelect,indexMode,btn("Export caption wildcard",()=>{
+    const txt=CaptionStudioTags.captionWildcards(S.cap.items.map(it=>it.caption));
+    if(!txt){say("No captions to export as a prompt wildcard.");return;}
     const url=URL.createObjectURL(new Blob([txt],{type:"text/plain;charset=utf-8"}));
-    const a=document.createElement("a");a.href=url;a.download="fizgig_tags.txt";a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
+    const a=document.createElement("a");a.href=url;a.download="fizgig_captions.txt";a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
   })),explore);
   drawExplore();
   const bulk=el("div",{class:"studio-bulk"});
