@@ -7103,6 +7103,7 @@ async function meGo(i, force) {
     if (mimg) meFromGray(mask, mimg);
   }
   m.pic = pic; m.mask = mask; m.dirty = false; m.undo = []; m.redo = [];
+  meRequestPreview(pic,q+"&v="+m.ver);
   m.before = null; meFresh();
   await meLoadWmStroke();
   meStateLine(); meWmBar();
@@ -7140,11 +7141,31 @@ async function meReload() {
     if (mimg) meFromGray(mask, mimg);
   }
   m.pic = pic; m.mask = mask; m.dirty = false;
+  meRequestPreview(pic,q+"&v="+m.ver);
   meFresh(); await meLoadWmStroke(); meStateLine(); meWmBar(); meFit();
   return true;
 }
 function meImage(src) {
   return new Promise((ok, bad) => { const im = new Image(); im.onload = () => ok(im); im.onerror = bad; im.src = src; });
+}
+function meRequestPreview(pic,key){
+  const m=meState();
+  m.previewKey=key;m.preview=null;
+  if(!m.previewCache)m.previewCache=new MaskEditorPerf.PreviewCache();
+  const cached=m.previewCache.get(key);
+  if(cached){m.preview=cached;return;}
+  if(!m.mask||typeof createImageBitmap!=="function")return;
+  const size=MaskEditorPerf.previewSize(m.mask.width,m.mask.height);
+  if(!size)return; // Small pictures already fit without a reduced proxy.
+  // Resizing an ImageBitmap normally runs off-thread in Chromium. Never
+  // block navigation waiting for the preview: the original stays available.
+  createImageBitmap(pic,size).then(bitmap=>{
+    m.previewCache.put(key,bitmap);
+    if(m.previewKey===key){
+      m.preview=m.previewCache.get(key);
+      meDraw();
+    }
+  }).catch(()=>{}); // Unsupported bitmap resizing retains the original.
 }
 function meFromGray(canvas, img) {
   // the saved mask (grey = how much is learned) -> the working canvas: white, with that much opacity
@@ -7293,7 +7314,12 @@ function mePaint() {
   if (m.view === "mask") {
     c.fillStyle = "#000"; c.fillRect(0, 0, w, h); c.drawImage(m.mask, 0, 0);
   } else {
-    c.drawImage(m.showBefore && m.before ? m.before : m.pic, 0, 0, w, h);
+    // Use a 1.5MP cached proxy while fitted; zoomed inspection and the
+    // original-before comparison always retain full image detail.
+    const fastPreview=m.preview&&!m.showBefore&&
+      m.zoom*w<=m.preview.width*1.35&&m.zoom*h<=m.preview.height*1.35;
+    c.drawImage(m.showBefore&&m.before?m.before:
+      fastPreview?m.preview:m.pic,0,0,w,h);
     if (m.view === "over" && !m.showBefore) {
       const [tint, dim] = meLayers();
       c.globalAlpha = show * 0.8; c.drawImage(dim, 0, 0);       // what isn't learned dimmed...
