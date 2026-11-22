@@ -516,8 +516,16 @@ class Watch:
                 for i in range(0, len(todo), 4):
                     chunk = todo[i:i + 4]
                     for (_, item, cap, _), cond in zip(chunk, self.driver.encode_text(te, [c for _, _, c, _ in chunk])):
+                        import copy
+                        scratch = copy.copy(item)
+                        scratch.caption = cap
+                        scratch.text_encoder_output_cache_path = item.text_encoder_output_cache_path + ".live-update"
+                        try:
+                            cache.save_cond(desc, scratch, cond, encoder=cache.encoder_stamp(self.te_path))
+                            os.replace(scratch.text_encoder_output_cache_path, item.text_encoder_output_cache_path)
+                        finally:
+                            _remove(scratch.text_encoder_output_cache_path)
                         item.caption = cap
-                        cache.save_cond(desc, item, cond, encoder=cache.encoder_stamp(self.te_path))   # read every step
                 ok = True
                 # tag shuffle / caption dropout: the old caption's variants no longer apply (the loader already
                 # ignores them - their source caption differs); the new caption's are made now, with the encoder here
