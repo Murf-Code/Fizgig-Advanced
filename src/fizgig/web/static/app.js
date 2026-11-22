@@ -10988,6 +10988,9 @@ async function loadCaptions() {
 
 function renderCaptions() {
   const host = $("captionsGrid");
+  // Preserve the one real set of bound AI model/task controls across renders.
+  // The workbench re-creates this host frequently (selection, filters, saves).
+  captionAiControlsRestore();
   host.innerHTML = "";
   const ext = $("captionExt").value.trim() || ".txt";
   const q = $("capSearch").value.trim().toLowerCase();
@@ -11761,6 +11764,44 @@ function captionWorkbenchSettingsOpen(advanced=false,initializeOnly=false){
       }};
   }
   if(!initializeOnly)captionSettingsDialog.open(advanced);
+}
+
+// The original AI caption controls are already wired by wireCaptions().
+ // Reparent them rather than copying markup or binding a second model/task state.
+function captionAiControlsRestore(){
+  const slot=S.cap?.studioAiControlMount;
+  if(!slot)return;
+  const {home,panels,anchor}=slot;
+  if(!home?.isConnected)return;
+  for(const panel of panels){
+    if(panel?.parentNode!==home)
+      home.insertBefore(panel,anchor?.parentNode===home?anchor:null);
+  }
+}
+function captionAiControlsMount(target){
+  captionAiControlsRestore();
+  const home=captionSettingsDialog?.original||
+    document.querySelector("#tab-captions .caption-tools-drawer");
+  if(!home)return false;
+  const model=home.querySelector("#capModel")?.closest(".section-card");
+  const generation=home.querySelector("#capAll")?.closest(".section-card");
+  const songs=home.querySelector("#capSongCard");
+  const panels=[model,generation,songs].filter(Boolean);
+  if(!model||!generation)return false;
+  const anchor=home.querySelector("#capTranslate")?.closest(".section-card");
+  S.cap.studioAiControlMount={home,panels,anchor};
+  const group=el("div",{class:"studio-ai-model-panels"});
+  for(const panel of panels){
+    if(panel===model){
+      const title=panel.querySelector(".card-title");if(title)title.textContent="Model & instructions";
+    }
+    if(panel===generation){
+      const title=panel.querySelector(".card-title");if(title)title.textContent="Whole dataset";
+    }
+    group.append(panel);
+  }
+  target.append(group);
+  return true;
 }
 
 function renderCaptionStudio(host,items,ext){
@@ -12702,11 +12743,13 @@ function renderCaptionStudio(host,items,ext){
   const showAI=btn("Auto-Captioner",()=>showTabs("ai"));
   const redundantAiRow=bulk.querySelector(".studio-selected-ai");
   if(redundantAiRow)redundantAiRow.remove();
-  const aiHint=el("div",{class:"field-hint",text:"Caption selected images using the model and task configured in Caption generation settings."});
-  const aiRun=btn("Run on selected images",captionSelected);
+  const aiHint=el("div",{class:"field-hint",text:"Use the model and task below to caption selected images or the entire Start-tab dataset."});
+  const aiRun=btn("Caption selected images",captionSelected);
   aiRun.classList.add("btn-primary");
   const aiControls=el("div",{class:"studio-ai-controls"},aiChoice,aiRun);
-  aiPane.append(el("strong",{text:"Auto-Captioner"}),aiHint,aiControls);
+  aiPane.append(el("strong",{text:"Auto-Captioner"}),aiHint);
+  captionAiControlsMount(aiPane);
+  aiPane.append(el("div",{class:"studio-ai-selection"},el("strong",{text:"Selected images"}),aiControls));
   rightDock.append(showTags,showAI);
   showTabs(activeDock);
   right.append(editorPane,rightDock,tagIndexPane,aiPane);
