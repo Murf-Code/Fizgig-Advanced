@@ -2641,6 +2641,11 @@ def remove_from_dataset(folder, name, ext):
             target, k = os.path.join(dest, f"{s} ({k}){e}"), k + 1
         os.replace(os.path.join(folder, n), target)
         moved.append([n, os.path.basename(target)])
+    try:
+        from fizgig.web import removed_images
+        removed_images.record(folder, moved)
+    except Exception:
+        logger.exception("Could not save removal journal; images are still in removed/")
     return moved
 
 
@@ -2654,6 +2659,11 @@ def restore_to_dataset(folder, moved):
         if os.path.isfile(src) and not os.path.exists(dst):
             os.replace(src, dst)
             back.append(orig)
+    try:
+        from fizgig.web import removed_images
+        removed_images.reconcile(folder, moved, back)
+    except Exception:
+        logger.exception("Could not update removal journal")
     return back
 
 
@@ -4065,6 +4075,13 @@ class Handler(BaseHTTPRequestHandler):
                 except (OSError, ValueError):
                     pass
             return self.json(status)
+        if path == "/api/captions/removed":
+            from fizgig.web import removed_images
+            folder = (qs.get("folder") or [""])[0]
+            if not folder or not os.path.isdir(folder):
+                return self.json({"error": "Dataset folder not found"}, 400)
+            return self.json({"items": removed_images.listing(folder, captions.caption_ext(
+                (qs.get("ext") or [".txt"])[0]))})
         if path == "/api/captions/reviews":
             from fizgig.web import caption_review
             try:
@@ -5230,6 +5247,10 @@ class Handler(BaseHTTPRequestHandler):
                 if path != "/api/masks/edit/image_step" and (not folder or not os.path.isdir(folder)):
                     return self.json({"error": "Choose the training folder on the Start tab first."}, 400)
                 try:
+                    if path != "/api/masks/edit/image_step":
+                        from fizgig.web import caption_review
+                        if caption_review.is_locked(folder, name):
+                            raise ValueError("This picture is reviewed and locked. Unlock it in Caption Studio first.")
                     if path == "/api/masks/edit/crop":
                         result = image_edit.crop(folder, name, [b.get(k) for k in ("left", "top", "right", "bottom")])
                         result["queued"] = _notify_image_change(folder, name, "updated")
@@ -5671,6 +5692,21 @@ class Handler(BaseHTTPRequestHandler):
                 moved = remove_from_dataset(folder, name, captions.caption_ext(b.get("ext")))
                 _notify_image_change(folder, name, "removed")
                 return self.json({"moved": moved})
+            if path == "/api/captions/restore_saved":
+                from fizgig.web import removed_images
+                folder = str(b.get("folder") or "")
+                ident = str(b.get("id") or "")
+                if not folder or not os.path.isdir(folder):
+                    return self.json({"error": "Dataset folder not found"}, 400)
+                entry = removed_images.lookup(folder, ident, captions.caption_ext(b.get("ext")))
+                if entry is None:
+                    return self.json({"error": "Removed picture not found"}, 404)
+                restored = restore_to_dataset(folder, entry["moved"])
+                for name in restored:
+                    if os.path.splitext(name)[1].lower() in _IMAGES:
+                        _notify_image_change(folder, name, "updated")
+                remaining = [p[0] for p in entry["moved"] if p[0] not in restored]
+                return self.json({"restored": restored, "remaining": remaining})
             if path == "/api/captions/restore":
                 folder = str(b.get("folder") or "")
                 restored = restore_to_dataset(folder, b.get("moved") or [])
