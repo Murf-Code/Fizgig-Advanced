@@ -11509,13 +11509,30 @@ function renderCaptionStudio(host,items,ext){
   tagQuery.addEventListener("keydown",e=>{if(e.key==="Enter")applyTagQuery();});
   left.append(el("div",{class:"field-hint",text:"Boolean tag filter · AND / OR / NOT, parentheses, quoted tags"}),
     el("div",{class:"field-row"},tagQuery,btn("Apply",applyTagQuery),btn("Clear",()=>{S.cap.studioQuery="";renderCaptions();})));
-  left.append(btn("Select page",()=>{pageItems.forEach(i=>selection.add(i.path));renderCaptions();}),btn("Clear selection",()=>{selection.clear();renderCaptions();}));
+  left.append(el("div",{class:"field-row"},
+    btn("Select page",()=>{pageItems.forEach(i=>selection.add(i.path));renderCaptions();}),
+    btn("Select all matches",()=>{items.forEach(i=>selection.add(i.path));renderCaptions();}),
+    btn("Invert page",()=>{pageItems.forEach(i=>selection.has(i.path)?selection.delete(i.path):selection.add(i.path));renderCaptions();}),
+    btn("Clear",()=>{selection.clear();renderCaptions();})),
+    el("div",{class:"field-hint",text:selection.size+" selected · Shift-click selects ranges across pages"}));
   for(const it of pageItems){
     const cb=el("input",{type:"checkbox"});cb.checked=selection.has(it.path);
     cb.setAttribute("aria-label","Select "+it.name);
-    cb.onchange=()=>{if(cb.checked)selection.add(it.path);else selection.delete(it.path);};
+    const choose=(checked,range)=>{
+      const anchor=items.findIndex(x=>x.path===S.cap.studioSelectionAnchor);
+      const target=items.findIndex(x=>x.path===it.path);
+      const chosen=range&&anchor>=0?items.slice(Math.min(anchor,target),Math.max(anchor,target)+1):[it];
+      chosen.forEach(x=>checked?selection.add(x.path):selection.delete(x.path));
+      S.cap.studioSelectionAnchor=it.path;
+      renderCaptions();
+    };
+    cb.addEventListener("click",e=>choose(cb.checked,e.shiftKey));
     const thumb=it.size?el("img",{src:"/api/thumb?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(TOKEN),loading:"lazy"}):el("span",{text:"♪"});
-    left.append(el("div",{class:"studio-browser-row"},cb,el("button",{class:"studio-file"+(it.path===current.path?" active":""),onclick:()=>{S.cap.studioPath=it.path;renderCaptions();}},thumb,el("span",{text:mediaLabel(it)+(S.cap.studioReviewed?.has(it.path)?" · ✓ reviewed":it.caption===null?" · missing caption":"")}))));
+    left.append(el("div",{class:"studio-browser-row"},cb,el("button",{class:"studio-file"+(it.path===current.path?" active":""),onclick:e=>{
+      if(e.shiftKey){choose(true,true);return;}
+      if(e.ctrlKey||e.metaKey){choose(!selection.has(it.path),false);return;}
+      S.cap.studioPath=it.path;S.cap.studioSelectionAnchor=it.path;renderCaptions();
+    }},thumb,el("span",{text:mediaLabel(it)+(S.cap.studioReviewed?.has(it.path)?" · ✓ reviewed":it.caption===null?" · missing caption":"")}))));
   }
   const drafts=S.cap.studioDrafts||(S.cap.studioDrafts=new Map());
   const histories=S.cap.studioHistories||(S.cap.studioHistories=new Map());
@@ -11635,14 +11652,52 @@ function renderCaptionStudio(host,items,ext){
       renderCaptions();
     }catch(e){say(e.message);}
   });
+  const orderKey="fizgig_caption_order:"+String(S.imageFolder||"");
+  let orderSettings=S.cap.studioOrderSettings;
+  if(!orderSettings||orderSettings.key!==orderKey){
+    let saved={};try{saved=JSON.parse(localStorage.getItem(orderKey)||"{}");}catch(e){}
+    orderSettings=S.cap.studioOrderSettings={key:orderKey,rule:saved.rule||"alpha",
+      front:saved.front||"",back:saved.back||""};
+  }
+  const orderSelect=el("select",{class:"w-combo",title:"Order tags without touching description lines"});
+  [["original","Keep current order"],["alpha","Alphabetical A–Z"],["alpha-desc","Alphabetical Z–A"],
+    ["reverse","Reverse"],["frequency","Dataset frequency ↓"],["frequency-asc","Dataset frequency ↑"],
+    ["token-asc","Tokenizer pieces ↑"],["token-desc","Tokenizer pieces ↓"]]
+    .forEach(([value,label])=>orderSelect.append(el("option",{value,text:label})));
+  orderSelect.value=orderSettings.rule;
+  const frontTags=el("input",{type:"text",class:"w-path",placeholder:"Pin first: trigger, artist..."});
+  const backTags=el("input",{type:"text",class:"w-path",placeholder:"Pin last: rating, metadata..."});
+  frontTags.value=orderSettings.front;backTags.value=orderSettings.back;
+  const updateOrder=()=>{
+    orderSettings.rule=orderSelect.value;orderSettings.front=frontTags.value;orderSettings.back=backTags.value;
+    localStorage.setItem(orderKey,JSON.stringify(orderSettings));
+  };
+  [orderSelect,frontTags,backTags].forEach(node=>node.addEventListener("change",updateOrder));
+  const sortTagList=async(value,mode="tags")=>{
+    updateOrder();
+    const tokens=orderSelect.value.startsWith("token-")?await getTokenCounts():new Map();
+    const parts=studioTokens(value,mode);
+    return studioCompose(value,CaptionStudioTags.order(parts,{
+      rule:orderSettings.rule,front:orderSettings.front.split(",").map(x=>x.trim()).filter(Boolean),
+      back:orderSettings.back.split(",").map(x=>x.trim()).filter(Boolean),
+      counts:new Map(tagIndex.sorted),tokens
+    }),mode);
+  };
   center.append(el("div",{class:"field-row"},el("strong",{text:"Caption editor"}),reviewBtn),el("div",{class:"field-row"},
       el("span",{class:"field-label",text:"Caption format:"}),modeSelect),el("div",{class:"studio-preview"},mediaFor(current,true)),
     el("div",{class:"caption-card-title",text:mediaLabel(current)}),ta,word,
     el("div",{class:"field-row"},el("button",{class:"btn btn-primary",text:"Save caption",onclick:save}),
       btn("Undo",()=>historyStep("undo")),btn("Redo",()=>historyStep("redo")),
       btn("Deduplicate",()=>{if(locked)return say("Unlock before editing.");ta.value=editorCompose(studioUnique(studioTokens(ta.value,captionMode)));remember();redraw();}),
-      btn("Sort tags",()=>{if(locked)return say("Unlock before editing.");ta.value=editorCompose(studioUnique(studioTokens(ta.value,captionMode)).sort((a,b)=>a.localeCompare(b)));remember();redraw();}),
+      btn("Apply tag order",async()=>{
+        if(locked)return say("Unlock before editing.");
+        if(captionMode==="prose")return say("Prose captions are not tag-sorted.");
+        try{ta.value=await sortTagList(ta.value,captionMode);remember();redraw();}
+        catch(e){say("Tag ordering: "+e.message);}
+      }),
       btn("Strip artist tags",()=>{if(locked)return say("Unlock before editing.");ta.value=editorCompose(studioTokens(ta.value,captionMode).filter(t=>!/^(@|artist\s*:)/i.test(t)));remember();redraw();})),
+    el("div",{class:"field-row"},el("span",{class:"field-label",text:"Ordering:"}),orderSelect,
+      frontTags,backTags),
     pictureActions,note);
   const newTag=el("input",{placeholder:"Add tag",type:"text",class:"w-path"});
   newTag.disabled=captionMode==="prose"||locked;
@@ -11666,6 +11721,22 @@ function renderCaptionStudio(host,items,ext){
     tagIndex={items:S.cap.items,rev,sorted:[...counts].sort((a,b)=>b[1]-a[1])};
     S.cap.studioTagCache=tagIndex;
   }
+  const getTokenCounts=async()=>{
+    const cache=S.cap.studioTokenCounts;
+    if(cache?.family===S.family&&cache?.items===S.cap.items&&cache?.rev===rev)return cache.counts;
+    const top=tagIndex.sorted.slice(0,500).map(x=>x[0]);
+    const result=await api("/api/captions/tag_tokens",{family:S.family,tags:top});
+    const counts=new Map(Object.entries(result.counts||{}).map(([tag,count])=>[tag.toLowerCase(),Number(count)]));
+    S.cap.studioTokenCounts={family:S.family,items:S.cap.items,rev,counts};
+    return counts;
+  };
+  const suggestions=el("datalist",{id:"studioTagAutocomplete"});
+  for(const [tag] of tagIndex.sorted.slice(0,500))suggestions.append(el("option",{value:tag}));
+  newTag.setAttribute("list","studioTagAutocomplete");
+  right.append(suggestions);
+  newTag.addEventListener("keydown",e=>{
+    if(e.key==="Enter"){e.preventDefault();newTag.parentElement?.querySelector("button")?.click();}
+  });
   const catPanel=el("details",{class:"studio-category-manager"});
   catPanel.append(el("summary",{text:"Tag categories & colors"}));
   const catName=el("input",{type:"text",placeholder:"New category",class:"w-path"});
@@ -11686,11 +11757,28 @@ function renderCaptionStudio(host,items,ext){
   }
   right.append(catPanel);
   const sortSelect=el("select",{class:"w-combo"});
-  [["frequency","Frequency ↓"],["frequency-asc","Frequency ↑"],["alpha","Name A–Z"],["alpha-desc","Name Z–A"]].forEach(([value,label])=>sortSelect.append(el("option",{value,text:label})));
+  [["frequency","Frequency ↓"],["frequency-asc","Frequency ↑"],["alpha","Name A–Z"],["alpha-desc","Name Z–A"],
+    ["token-asc","Tokenizer pieces ↑"],["token-desc","Tokenizer pieces ↓"]]
+    .forEach(([value,label])=>sortSelect.append(el("option",{value,text:label})));
   sortSelect.value=S.cap.studioTagSort||"frequency";
-  sortSelect.addEventListener("change",()=>{S.cap.studioTagSort=sortSelect.value;renderCaptions();});
+  sortSelect.addEventListener("change",async()=>{
+    if(sortSelect.value.startsWith("token-")){
+      try{await getTokenCounts();}catch(e){say("Tokenizer unavailable: "+e.message);return;}
+    }
+    S.cap.studioTagSort=sortSelect.value;renderCaptions();
+  });
   const sorting=sortSelect.value;
-  const sorted=[...tagIndex.sorted].sort((a,b)=>sorting==="alpha"?a[0].localeCompare(b[0]):sorting==="alpha-desc"?b[0].localeCompare(a[0]):sorting==="frequency-asc"?a[1]-b[1]||a[0].localeCompare(b[0]):b[1]-a[1]||a[0].localeCompare(b[0]));
+  const tokenMap=S.cap.studioTokenCounts?.family===S.family&&
+    S.cap.studioTokenCounts.items===S.cap.items&&S.cap.studioTokenCounts.rev===rev?
+    S.cap.studioTokenCounts.counts:new Map();
+  const tokenNumber=tag=>tokenMap.get(tag.toLowerCase())??Number.POSITIVE_INFINITY;
+  const sorted=[...tagIndex.sorted].sort((a,b)=>sorting==="alpha"?a[0].localeCompare(b[0]):
+    sorting==="alpha-desc"?b[0].localeCompare(a[0]):
+    sorting==="frequency-asc"?a[1]-b[1]||a[0].localeCompare(b[0]):
+    sorting==="token-asc"?tokenNumber(a[0])-tokenNumber(b[0])||a[0].localeCompare(b[0]):
+    sorting==="token-desc"?(Number.isFinite(tokenNumber(b[0]))?tokenNumber(b[0]):-1)-
+      (Number.isFinite(tokenNumber(a[0]))?tokenNumber(a[0]):-1)||a[0].localeCompare(b[0]):
+    b[1]-a[1]||a[0].localeCompare(b[0]));
   const index=el("div",{class:"studio-tag-index"});
   for(const [tag,n] of sorted.slice(0,200)){
     const selected=categoryState.tags[tag]||"";
@@ -11756,8 +11844,32 @@ function renderCaptionStudio(host,items,ext){
   });
   undoGlobal.disabled=!historyUI.past.length||historyUI.busy;
   redoGlobal.disabled=!historyUI.future.length||historyUI.busy;
+  const applyOrdering=async()=>{
+    const affected=selection.size?S.cap.items.filter(it=>selection.has(it.path)):S.cap.items;
+    if(affected.some(it=>drafts.has(it.path)&&drafts.get(it.path)!==it.caption)){
+      say("Save unsaved caption drafts before bulk ordering.");return;
+    }
+    try{
+      const changes=[];
+      for(const it of affected){
+        if(S.cap.studioReviewed?.has(it.path)||studioCaptionMode(it)==="prose")continue;
+        const after=await sortTagList(it.caption||"","tags");
+        if(after!==(it.caption||""))changes.push({folder:capItemFolder(it),name:it.name,
+          path:it.path,before:it.caption,after});
+      }
+      if(!changes.length){say("No tag ordering changes were needed.");return;}
+      if(!confirm("Reorder tags in "+changes.length+" captions? All changes undo as one group."))return;
+      await api("/api/captions/batch_edit",{ext,edits:changes.map(c=>({
+        folder:c.folder,name:c.name,expected:c.before,text:c.after
+      }))});
+      studioRecord("Bulk tag order",{kind:"captions",ext,rows:changes});
+      for(const c of changes){const it=S.cap.items.find(i=>i.path===c.path);if(it)it.caption=c.after;}
+      S.cap.studioRevision=(S.cap.studioRevision||0)+1;
+      renderCaptions();
+    }catch(e){say("Batch ordering: "+e.message);}
+  };
   bulk.append(el("strong",{text:"Bulk tags · selected or whole dataset"}),undoGlobal,redoGlobal,
-    btn("Rename tag",()=>apply("rename")),
+    btn("Order selected tags",applyOrdering),btn("Rename tag",()=>apply("rename")),
     btn("Remove tag",()=>apply("remove")),btn("Add tag",()=>apply("add")),
     el("span",{class:"field-hint studio-bulk-note"}));
   const liveStatus=el("div",{class:"studio-live-status field-hint",id:"studioLiveStatus",
