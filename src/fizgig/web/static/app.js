@@ -12665,8 +12665,15 @@ function renderCaptionStudio(host,items,ext){
   const rebuildGeometry=()=>{
     const width=thumbs.clientWidth||S.cap.studioThumbWidth||180;
     if(geometry&&Math.abs(width-railWidth)<1)return;
+    // Resizing the split rail changes row heights. Anchor to the image at
+    // the top of the viewport rather than jumping to a different index.
+    const old=geometry,scroll=thumbs.scrollTop;
+    const anchor=old?studioThumbIndex(old.offsets,scroll):0;
+    const fraction=old?Math.max(0,Math.min(1,
+      (scroll-old.offsets[anchor])/Math.max(1,old.heights[anchor]))):0;
     railWidth=width;S.cap.studioThumbWidth=width;
     geometry=studioThumbGeometry(items,width);
+    if(old)thumbs.scrollTop=geometry.offsets[anchor]+fraction*geometry.heights[anchor];
     paintStart=paintEnd=-1;
   };
   const paintWindow=()=>{
