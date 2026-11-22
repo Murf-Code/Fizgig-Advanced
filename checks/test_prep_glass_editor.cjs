@@ -55,6 +55,7 @@ const vmContext={
   meOpen:async()=>{loaded++;state.pic={};state.mask={};state.folder="demo";},
   requestAnimationFrame:fn=>{fn();return 1;},
   meFit:()=>fitted++,
+  meImgBar:()=>{},
   mePrepareRemoveWorker:()=>{},
   meSave:async()=>{saves++;state.dirty=false;return true;},
   meRmSave:async()=>{wmSaves++;return true;},
