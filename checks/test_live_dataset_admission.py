@@ -168,3 +168,15 @@ def test_caption_success_does_not_unblock_failed_image_refresh(tmp_path):
     assert "old" in watch.removed_keys
     assert "old" in watch.stale_image_keys
     assert watch.excluded({"item_keys": ["old"]})
+
+
+def test_new_photo_with_optional_missing_caption_is_admitted(tmp_path):
+    root, ds, watch = live_setup(tmp_path)
+    (root / "new.txt").unlink()
+    ds.datasource.captions_optional = True
+    Image.new("RGB", (256, 256), "orange").save(root / "new.png")
+    watch._admit_new_images(1, None, torch.device("cpu"), False)
+    pool = ds.batch_manager.live_pools[(256, 256)]
+    item = next(x for x in pool if x.item_key == "new")
+    assert item.caption == ""
+    assert (tmp_path / "cache" / "new_krea2_te.safetensors").exists()
