@@ -150,3 +150,18 @@ assert.match(app,/class:"studio-missing-notice"/);
 assert.match(app,/text:"Show all images"/);
 assert.match(app,/S\.cap\.studioLearningFilter="all";/);
 assert.match(css,/\.studio-empty-actions\{/);
+
+// Scrolling Image Tags / All Tags must not flash hover rows under the cursor.
+// Each mounted list is stabilized; All Tags lazy insertion is frame-batched.
+assert.match(app,/const stabilizeTagScroll=list=>/);
+assert.match(app,/stabilizeTagScroll\(tags\)/);
+assert.match(app,/stabilizeTagScroll\(index\)/);
+assert.match(app,/list\.classList\.add\("is-scrolling"\)/);
+assert.match(app,/idle=setTimeout\(\(\)=>list\.classList\.remove\("is-scrolling"\),160\)/);
+assert.match(app,/let tagScrollLoadPending=false/);
+assert.match(app,/if\(!index\.isConnected\)return/);
+assert.match(css,/\.studio-image-tag-list\.is-scrolling \.studio-image-tag:hover:not\(\.is-picked\):not\(:focus-visible\)/);
+assert.match(css,/\.studio-tag-list\.is-scrolling \.studio-index-tag:hover:not\(\.is-picked\):not\(:focus-visible\)/);
+assert.match(css,/scrollbar-gutter:stable/);
+assert.match(css,/contain:paint/);
+assert.match(css,/\.studio-file:is\(\.is-picked,\.active\) \{\s*animation:none;\s*filter:none;/);

@@ -12636,8 +12636,20 @@ function renderCaptionStudio(host,items,ext){
     redraw();
   };
   const word=el("div",{class:"field-hint"});
+  // Hover styles on rows under a stationary mouse can flash rapidly while a
+  // scroll list moves. Suppress hover only for the duration of actual scroll;
+  // focus and persistent selection states are never suppressed.
+  const stabilizeTagScroll=list=>{
+    let idle=null;
+    list.addEventListener("scroll",()=>{
+      list.classList.add("is-scrolling");
+      clearTimeout(idle);
+      idle=setTimeout(()=>list.classList.remove("is-scrolling"),160);
+    },{passive:true});
+  };
   const tags=el("ul",{class:"studio-image-tag-list",role:"list",
     "aria-label":"Image Tags; click to select, double-click to rename, Delete to remove"});
+  stabilizeTagScroll(tags);
   const imageTagPicked=S.cap.studioImageTagPicked||(S.cap.studioImageTagPicked=new Set());
   const imageTagButtons=new Map();
   const syncImageTagSelection=before=>{
@@ -13071,9 +13083,17 @@ function renderCaptionStudio(host,items,ext){
     appendTagRows();
     tagCount.textContent=matchedTagRows.length+" / "+sorted.length+" Tags";
   };
+  stabilizeTagScroll(index);
+  let tagScrollLoadPending=false;
   index.addEventListener("scroll",()=>{
-    if(index.scrollTop+index.clientHeight>=index.scrollHeight-520)
-      appendTagRows();
+    if(tagScrollLoadPending)return;
+    tagScrollLoadPending=true;
+    requestAnimationFrame(()=>{
+      tagScrollLoadPending=false;
+      if(!index.isConnected)return;
+      if(index.scrollTop+index.clientHeight>=index.scrollHeight-520)
+        appendTagRows();
+    });
   },{passive:true});
   indexSearch.addEventListener("input",tagRows);
   tagRows();

@@ -5120,3 +5120,32 @@ body.caption-glass-ui .studio-image-context-menu .studio-tag-color-swatch{
 }
 #tab-captions .studio-host .studio-missing-notice[hidden]{display:none!important}
 #tab-captions .studio-empty-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:10px}
+
+/* Flicker-free caption tag lists. Avoid repainting transient :hover rows
+   under a stationary pointer while scrolling. The selected and keyboard
+   focus-visible states remain continuously visible. */
+#tab-captions .studio-host .studio-image-tag-list,
+#tab-captions .studio-host .studio-tag-index-pane .studio-tag-list {
+  scrollbar-gutter:stable;
+  overscroll-behavior:contain;
+  contain:paint;
+}
+#tab-captions .studio-host .studio-image-tag-list.is-scrolling .studio-image-tag:hover:not(.is-picked):not(:focus-visible),
+#tab-captions .studio-host .studio-tag-index-pane .studio-tag-list.is-scrolling .studio-index-tag:hover:not(.is-picked):not(:focus-visible) {
+  background:transparent;
+  box-shadow:none;
+  outline:none;
+}
+#tab-captions.caption-theme-glass .studio-host .studio-image-tag-list.is-scrolling .studio-image-tag:hover:not(.is-picked):not(:focus-visible),
+#tab-captions.caption-theme-glass .studio-host .studio-tag-index-pane .studio-tag-list.is-scrolling .studio-index-tag:hover:not(.is-picked):not(:focus-visible) {
+  background:transparent;
+  box-shadow:none;
+  outline:none;
+}
+/* Large multi-selections should not run an animated drop-shadow filter on
+   dozens of thumbnail images while the user scrolls their captions. Keep
+   the existing static colored selection ring/glow. */
+#tab-captions.caption-theme-glass .studio-host .studio-thumb-rail .studio-file:is(.is-picked,.active) {
+  animation:none;
+  filter:none;
+}
