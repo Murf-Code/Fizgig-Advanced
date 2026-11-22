@@ -44,7 +44,8 @@ assert.match(css,/\.studio-thumb-rail\.is-windowed \.studio-thumb-window\{/);
 
 // The compact status must never imply success while a draft is unsaved.
 assert.match(app,/id:"studioLiveStatus"/);
-assert.match(app,/if\(autoTask\.lastError\)\{state="attention";label="Save failed";\}/);
+assert.match(app,/if\(failedTask\)\{state="attention";label="Save failed";\}/);
+assert.match(app,/const savingTask=currentTasks\.some\(task=>task\.busy\|\|task\.pending\)/);
 assert.match(app,/else if\(status\?\.attention\)\{state="attention";label="Needs attention";\}/);
 assert.match(app,/state="saving";label="Saving…"/);
 assert.match(app,/state="pending";label="Pending next epoch"/);
