@@ -69,14 +69,42 @@ def _direction_option_on(value):
 
 
 def _prepare_krea2_direction_edit(desc, family_options, network_type, slider, finetune, share_worker,
-                                  group, val_held, dit_path, te_path, output_dir, output_name, seed, device):
-    """Prepare a candidate from training captions only; keep verification results in memory."""
-    options = dict(family_options or {})
-    if desc.key != "krea2" or not _direction_option_on(options.get("direction_edit")):
+                                  group, val_held, dit_path, te_path, output_dir, output_name, seed, device,
+                                  resume_state_dir=None):
+    """Prepare a new calibration, or restore the exact one belonging to a saved run."""
+    if desc.key != "krea2":
         return None
-    if (str(network_type or "lora").lower() != "lora" or slider or finetune or share_worker is not None
-            or not val_held or not te_path):
+    enabled = _direction_option_on((family_options or {}).get("direction_edit"))
+    if resume_state_dir:
+        state_file = os.path.join(resume_state_dir, "training_state.json")
+        try:
+            with open(state_file, encoding="utf-8") as f:
+                prior = json.load(f)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"[calibration] cannot inspect resume state {state_file}: {exc}") from exc
+        saved = os.path.join(resume_state_dir, "calibration.safetensors")
+        if prior.get("calibration_active"):
+            if not os.path.isfile(saved):
+                raise RuntimeError("[calibration] resume state requires an accepted calibration, but "
+                                   f"{saved} is missing; refusing to change training conditioning")
+            logger.info("[calibration] restoring accepted Text-fusion calibration from resume state")
+            return {"lora": saved, "resume": True}
+        if enabled:
+            logger.warning("[calibration] skipped on resume: state has no accepted calibration; "
+                           "new scans only run before a fresh training run")
         return None
+    if not enabled:
+        return None
+    if str(network_type or "lora").lower() != "lora" or slider or finetune or share_worker is not None:
+        logger.warning("[calibration] skipped: requires a normal LoRA run (no slider, fine-tune or helper)")
+        return None
+    if not val_held:
+        logger.warning("[calibration] skipped: Image Validation hold-out is required")
+        return None
+    if not te_path:
+        logger.warning("[calibration] skipped: missing text encoder path")
+        return None
+    logger.info("[calibration] scanning Text-fusion concepts before ordinary training")
 
     temp_dir = None
     try:
@@ -84,6 +112,8 @@ def _prepare_krea2_direction_edit(desc, family_options, network_type, slider, fi
         training_records = direction_edit.captions_from_group(group)
         verification_records = direction_edit.captions_from_held(val_held)
         if len(training_records) < 8 or not verification_records:
+            logger.warning("[calibration] skipped: requires 8+ training captions and held-out captions "
+                           "(got %d training, %d held out)", len(training_records), len(verification_records))
             return None
 
         manual = str(options.get("direction_edit_target_tags") or "").strip()
@@ -114,10 +144,15 @@ def _prepare_krea2_direction_edit(desc, family_options, network_type, slider, fi
         verify = result.get("verify") or {}
         if (result.get("status") == "skipped" or not candidate
                 or not verify.get("held_out") or not verify.get("beats_random")):
+            logger.info("[calibration] candidate rejected during scan: status=%s, candidate=%s, "
+                        "held_out=%s, beats_random=%s", result.get("status", "unknown"),
+                        bool(candidate), bool(verify.get("held_out")), bool(verify.get("beats_random")))
             shutil.rmtree(temp_dir, ignore_errors=True)
             return None
+        logger.info("[calibration] candidate passed scan; checking held-out image loss")
         return {"lora": candidate, "_temporary_dir": temp_dir}
     except Exception:
+        logger.exception("[calibration] scan failed; training continues without calibration")
         if temp_dir:
             shutil.rmtree(temp_dir, ignore_errors=True)
         return None
@@ -189,7 +224,7 @@ def _batch_key(batch, i):
 
 
 def _save_state(output_dir, output_name, net, optimizer, *, epoch, global_step, arch_id, extra=None, ema=None,
-                folder_epoch=None):
+                folder_epoch=None, calibration_path=None):
     """folder_epoch: the number in the folder's name when it isn't `epoch` - a Save & stop restore point mid-epoch is
     named after the epoch in progress (so it is the newest), while its training_state.json says the epochs done."""
     state_dir = os.path.join(output_dir, f"{output_name}-{epoch if folder_epoch is None else folder_epoch:06d}-state")
@@ -199,6 +234,15 @@ def _save_state(output_dir, output_name, net, optimizer, *, epoch, global_step, 
     except OSError:
         pass
     net.save(os.path.join(state_dir, "lora.safetensors"), dtype=torch.float32)
+    # The trainable LoRA alone is insufficient to reproduce an accepted calibration.
+    saved_calibration = os.path.join(state_dir, "calibration.safetensors")
+    if calibration_path:
+        if not os.path.isfile(calibration_path):
+            raise RuntimeError(f"[calibration] accepted calibration missing at state save: {calibration_path}")
+        if os.path.abspath(calibration_path) != os.path.abspath(saved_calibration):
+            shutil.copyfile(calibration_path, saved_calibration)
+    elif os.path.isfile(saved_calibration):
+        os.remove(saved_calibration)
     torch.save(optimizer.state_dict(), os.path.join(state_dir, "optimizer.pt"))
     if ema is not None:
         torch.save(ema.state_dict(), os.path.join(state_dir, "ema.pt"))
@@ -208,7 +252,8 @@ def _save_state(output_dir, output_name, net, optimizer, *, epoch, global_step, 
     torch.save(rng, os.path.join(state_dir, "rng.pt"))
     with open(os.path.join(state_dir, "training_state.json"), "w", encoding="utf-8") as f:   # commit marker, last
         json.dump({"epoch": epoch, "global_step": global_step, "architecture": arch_id,
-                   "optimizer": optimizer.__class__.__name__, **(extra or {})}, f)
+                   "optimizer": optimizer.__class__.__name__,
+                   "calibration_active": bool(calibration_path), **(extra or {})}, f)
     logger.info(f"[state] saved -> {state_dir}")
     return state_dir
 
@@ -2092,8 +2137,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     # ---- optional Krea 2 calibration: before the full DiT/VAE occupy VRAM -----------------------------
     calibration_info = _prepare_krea2_direction_edit(
         desc, family_options, network_type, slider, finetune, share_worker, group, val_held,
-        dit_path, te_path, output_dir, output_name, seed, device)
+        dit_path, te_path, output_dir, output_name, seed, device, resume_state_dir=resume_state_dir)
     calibration_active = False
+    calibration_file = None
 
     # ---- previews: encode prompts once, keep the VAE ---------------------------------------------
     encoded = neg = vae = ref_imgs = ref_latents = None
@@ -2280,14 +2326,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             if not calibration_active:
                 net.remove(CALIBRATION)
         except Exception:
+            logger.exception("[calibration] candidate LoRA could not be applied")
             calibration_active = False
             net.remove(CALIBRATION)
-        finally:
-            try:
-                os.remove(calibration_info["lora"])
-            except OSError:
-                pass
-            shutil.rmtree(calibration_info.get("_temporary_dir") or "", ignore_errors=True)
+        if not calibration_active:
+            logger.warning("[calibration] no matching calibration layers; disabled")
     if training_adapter:
         n = net.add_file(training_adapter, ADAPTER, training_adapter_strength)
         if n == 0:
@@ -3237,6 +3280,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             try:
                 _save_state(output_dir, output_name, net, optimizer, epoch=epoch, global_step=global_step,
                             arch_id=state_arch, ema=ema, folder_epoch=None if mid is None else epoch + 1,
+                            calibration_path=calibration_file,
                             extra={"learning_rate": box_learning_rate,
                                    **({"adaptive_lr_state": adaptive.state_dict()} if adaptive else {}),
                                    **({"mid_epoch": mid} if mid is not None else {}),
@@ -3655,7 +3699,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     pass
             if val_held and not validator.ready:   # held out: never drawn by training, so kept straight from the cache
                 validator.prefill([], val_held)
-    if calibration_active:
+    if calibration_active and calibration_info and not calibration_info.get("resume"):
         image_check = {
             "accepted": False,
             "held_out_images": len(validator.wanted) if validator is not None else 0,
@@ -3690,11 +3734,36 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             except Exception as exc:
                 image_check["reason"] = f"{type(exc).__name__}: {exc}"
         if not image_check["accepted"]:
+            logger.warning("[calibration] image validation rejected calibration: %s",
+                           image_check.get("reason", "no improvement"))
             if net.has(CALIBRATION):
                 net.remove(CALIBRATION)
             calibration_active = False
         else:
+            logger.info("[calibration] accepted: held-out loss %.6f -> %.6f",
+                        image_check["baseline_loss"], image_check["calibrated_loss"])
             net.set_enabled(CALIBRATION, True)
+    if calibration_active:
+        # Keep one stable copy outside the state folders: pruning an older resume
+        # state must not remove the calibration needed by the current run.
+        source = calibration_info["lora"]
+        calibration_file = os.path.join(output_dir, f".fizgig_calibration_{output_name}.safetensors")
+        os.makedirs(output_dir, exist_ok=True)
+        if os.path.abspath(source) != os.path.abspath(calibration_file):
+            staging = calibration_file + ".tmp"
+            try:
+                shutil.copyfile(source, staging)
+                os.replace(staging, calibration_file)
+            finally:
+                if os.path.exists(staging):
+                    os.remove(staging)
+        logger.info("[calibration] active; preserved for future resume-state saves")
+    elif calibration_info and not resume_state_dir:
+        stale = os.path.join(output_dir, f".fizgig_calibration_{output_name}.safetensors")
+        if os.path.isfile(stale):
+            os.remove(stale)
+    if calibration_info and calibration_info.get("_temporary_dir"):
+        shutil.rmtree(calibration_info["_temporary_dir"], ignore_errors=True)
     best_path = os.path.join(output_dir, f"{output_name}-best.safetensors")
     if validation_early_stop and validator is None:
         logger.info("[early stop] off: it needs Image Validation, which this run doesn't have")
