@@ -30,4 +30,8 @@ assert.deepEqual(T.order(["z", "a", "b"], {rule:"alpha",front:["b"],back:["z"]})
   ["b", "a", "z"]);
 assert.deepEqual(T.order(["z", "a", "b", "A"], {rule:"alpha"}), ["a", "b", "z"]);
 
+assert.equal(T.captionWildcards(["lion, blue mane\nAt sunset", "lion, blue mane", ""]),
+  "lion, blue mane At sunset\nlion, blue mane\n");
+assert.equal(T.captionWildcards([]), "");
+
 console.log("Caption Studio tag parsing and Boolean filter checks passed");
