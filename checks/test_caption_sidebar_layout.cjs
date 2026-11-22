@@ -134,3 +134,9 @@ assert.match(app,/const tagHeader=el\("div",\{class:"studio-tag-header"\},header
 assert.match(app,/Freeform caption\. Saved under the tags, after the first line break\./);
 assert.match(app,/const captionHelp=el\("p",\{class:"studio-natural-help"/);
 assert.match(css,/#tab-captions \.studio-host \.studio-tag-header\s*\{/);
+
+assert.match(app,/CaptionStudioLearning\.filterByVerdict\(items,S\.cap\.learningMap,/);
+assert.match(app,/const createLearningFilterSelect=\(\)=>/);
+assert.match(app,/actionBar\.append\(learningToggle,learningFilter,viewButtons\)/);
+assert.match(app,/const refilter=\(S\.cap\.studioLearningFilter\|\|"all"\)!=="all"/);
+assert.match(css,/#tab-captions \.studio-learning-filter-label\{/);

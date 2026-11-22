@@ -10954,6 +10954,7 @@ async function loadCaptions() {
     S.cap.studioSelectionAnchor=null;
     S.cap.studioPath=null;
     S.cap.studioQuery="";
+    S.cap.studioLearningFilter="all";
     // Chronological history is scoped to one dataset/extension, never write to
     // another dataset when the Start tab's folder changes.
     S.cap.studioHistory={key:historyDataset,past:[],future:[],busy:false};
@@ -11034,7 +11035,8 @@ function captionLearningUpdateMounted() {
 }
 function captionLearningWanted() {
   const sort=$("capSort")?.value;
-  return !!S.cap.studioLearningColors||sort==="loss-high"||sort==="loss-low";
+  return !!S.cap.studioLearningColors||sort==="loss-high"||sort==="loss-low"||
+    (S.cap.studioLearningFilter||"all")!=="all";
 }
 function captionLearningRefresh() {
   captionLearningEnsureFolder();
@@ -11057,8 +11059,10 @@ function captionLearningRefresh() {
       }
       const sort=$("capSort")?.value;
       const resort=sort==="loss-high"||sort==="loss-low";
-      // Don't replace a live caption editor while the user is typing.
-      if(resort&&!document.activeElement?.closest?.("#captionsGrid .studio-editor"))
+      const refilter=(S.cap.studioLearningFilter||"all")!=="all";
+      // The verdict filter and loss sort use the same snapshot. Avoid replacing
+      // a live caption editor while the user is typing.
+      if((resort||refilter)&&!document.activeElement?.closest?.("#captionsGrid .studio-editor"))
         renderCaptions();
       else captionLearningUpdateMounted();
     })
@@ -11116,6 +11120,9 @@ function renderCaptions() {
     items = items.filter(it => studioCaptionMode(it) === "tags" &&
       match(studioTokens(it.caption, "tags")));
   }
+  if($("capView").value==="studio")
+    items=CaptionStudioLearning.filterByVerdict(items,S.cap.learningMap,
+      S.cap.studioLearningFilter||"all");
   const pages = Math.max(1, Math.ceil(items.length / CAP_PAGE));
   S.cap.page = Math.min(S.cap.page, pages - 1);
   const missing = all.filter((i) => i.caption === null).length;
@@ -11912,6 +11919,24 @@ function captionAiControlsMount(target){
 }
 
 function renderCaptionStudio(host,items,ext){
+  // Shared with both the main toolbar and the empty-results fallback. Keep
+  // the filter independent from colored selection rings.
+  const createLearningFilterSelect=()=>{
+    const select=el("select",{class:"studio-learning-filter",
+      "aria-label":"Filter images by learning status",
+      title:"Show images with a loss-watch verdict. Statuses come from the latest available per-image loss report."});
+    for(const [value,label] of CaptionStudioLearning.statusOptions)
+      select.append(el("option",{value,text:label}));
+    select.value=S.cap.studioLearningFilter||"all";
+    select.addEventListener("change",()=>{
+      S.cap.studioLearningFilter=select.value;
+      S.cap.page=0;
+      S.cap.studioThumbScrollTop=0;
+      S.cap.studioExploreNeedRedraw=true;
+      renderCaptions();
+    });
+    return select;
+  };
   // Search updates as you type. Restore focus and caret after Studio rebuilds,
   // and leave the bar visible when the filter produces zero results.
   const createTagFilterBar=()=>{
@@ -11986,6 +12011,8 @@ function renderCaptionStudio(host,items,ext){
   if(!current){
     host.append(el("div",{class:"studio-empty-captions"},
       createTagFilterBar(),
+      el("label",{class:"studio-learning-filter-label"},
+        el("span",{text:"Image status"}),createLearningFilterSelect()),
       el("div",{class:"field-hint",text:"No matching images in this view. Change your filter or restore images to the dataset folder, then refresh."}),
       el("button",{class:"btn btn-primary",type:"button",text:"Refresh dataset",
         onclick:()=>void loadCaptions().catch(e=>alert("Refresh failed: "+e.message))})));
@@ -12030,7 +12057,8 @@ function renderCaptionStudio(host,items,ext){
   left.append(createTagFilterBar());
   const thumbs=el("div",{class:"studio-thumb-rail",role:"list","aria-label":"Dataset thumbnails",tabindex:"0"});
   const thumbViewKey=JSON.stringify([String(S.imageFolder||""),ext,
-    $("capSearch").value,$("capFilter").value,$("capSort").value,S.cap.studioQuery||""]);
+    $("capSearch").value,$("capFilter").value,$("capSort").value,S.cap.studioQuery||"",
+    S.cap.studioLearningFilter||"all"]);
   thumbs.dataset.viewKey=thumbViewKey;
   const missingBtn=btn($("capFilter").value==="missing"?"Missing Tags ✓":"Missing Tags",()=>{
     $("capFilter").value=$("capFilter").value==="missing"?"all":"missing";
@@ -13616,7 +13644,9 @@ function renderCaptionStudio(host,items,ext){
   const learningToggle=el("label",{class:"studio-learning-toggle",
     title:"Show a second outline based on the latest matching run's per-image loss verdict. The selection ring remains unchanged."},
     learningCheck,el("span",{text:"Learning colors"}));
-  actionBar.append(learningToggle,viewButtons);
+  const learningFilter=el("label",{class:"studio-learning-filter-label"},
+    el("span",{text:"Image status"}),createLearningFilterSelect());
+  actionBar.append(learningToggle,learningFilter,viewButtons);
   // TagBench shortcut parity. Only active inside Caption Workbench, and never
   // steals native typing shortcuts or Image Prep's own canvas bindings.
   const selectedForEdit=()=>imageTargets().filter(it=>!S.cap.studioReviewed?.has(it.path)&&

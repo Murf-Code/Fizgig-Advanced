@@ -5093,3 +5093,21 @@ body.caption-glass-ui .studio-image-context-menu .studio-tag-color-swatch{
   background:rgba(29,29,42,.88);
   backdrop-filter:none;-webkit-backdrop-filter:none;
 }
+
+/* Learning verdict filtering is independent from the colored loss rings. */
+#tab-captions .studio-learning-filter-label{
+  display:inline-flex;align-items:center;gap:7px;flex:none;
+  color:var(--text-secondary);font-size:12px;
+}
+#tab-captions .studio-learning-filter{
+  min-width:132px;max-width:210px;min-height:32px;
+  padding:5px 8px;border:1px solid var(--border);
+  border-radius:8px;background:var(--bg-inset);color:var(--text-primary);
+  font:inherit;font-size:12px;cursor:pointer;
+}
+#tab-captions .studio-learning-filter:focus-visible{
+  outline:2px solid var(--accent);outline-offset:2px;
+}
+#tab-captions .studio-empty-captions .studio-learning-filter-label{
+  align-self:flex-start;
+}

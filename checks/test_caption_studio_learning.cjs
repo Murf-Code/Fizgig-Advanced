@@ -35,3 +35,15 @@ assert.equal(L.shouldAutoEnable({auto_enable:false,run:{id:"old"}},""),false);
 assert.equal(L.shouldAutoEnable({auto_enable:true,run:{id:"new"}},"current"),true);
 assert.equal(L.shouldAutoEnable({auto_enable:true,run:null},""),false);
 console.log("caption learning helpers OK");
+
+// Explicit per-image verdicts, including absent/not-yet-evaluated images.
+const sample=[
+  {path:"h:/dataset/a.jpg"},{path:"h:/dataset/b.jpg"},
+  {path:"h:/dataset/missing.jpg"}
+];
+assert.deepEqual(L.filterByVerdict(sample,records,"all"),sample);
+assert.deepEqual(L.filterByVerdict(sample,records,"stuck"),[sample[0]]);
+assert.deepEqual(L.filterByVerdict(sample,records,"easy"),[sample[1]]);
+assert.deepEqual(L.filterByVerdict(sample,records,"none"),[sample[2]]);
+assert.deepEqual(L.filterByVerdict(sample,records,"watch"),[]);
+assert.ok(L.statusOptions.some(([value])=>value==="exhausted"));
