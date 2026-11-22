@@ -11949,24 +11949,57 @@ function renderCaptionStudio(host,items,ext){
     sorting==="token-desc"?(Number.isFinite(tokenNumber(b[0]))?tokenNumber(b[0]):-1)-
       (Number.isFinite(tokenNumber(a[0]))?tokenNumber(a[0]):-1)||a[0].localeCompare(b[0]):
     b[1]-a[1]||a[0].localeCompare(b[0]));
-  const index=el("div",{class:"studio-tag-index"});
-  for(const [tag,n] of sorted.slice(0,200)){
-    const selected=categoryState.tags[tag]||"";
-    const tagBtn=el("button",{class:"studio-index-tag",text:tag+" · "+n,onclick:()=>{
-      S.cap.studioQuery=JSON.stringify(tag);S.cap.page=0;renderCaptions();
-    }});
-    if(selected&&categoryState.colors[selected])tagBtn.style.borderLeft="4px solid "+categoryState.colors[selected];
-    const categorySelect=el("select",{class:"studio-category-select",title:"Category for "+tag});
-    categorySelect.append(el("option",{value:"",text:"Uncategorized"}));
-    for(const name of Object.keys(categoryState.colors).sort())categorySelect.append(el("option",{value:name,text:name}));
-    categorySelect.value=selected;
-    categorySelect.addEventListener("change",()=>{
-      if(categorySelect.value)categoryState.tags[tag]=categorySelect.value;
-      else delete categoryState.tags[tag];
-      studioSaveCategories(categoryState);renderCaptions();
-    });
-    index.append(el("div",{class:"studio-category-index-row"},tagBtn,categorySelect));
-  }
+  // TagBench All Tags is a compact, searchable vertical list; categories do not
+  // occupy an extra select control on every row. Keep category assignment via
+  // context menus and the existing category manager.
+  const index=el("ul",{class:"studio-tag-index studio-tag-list",role:"list","aria-label":"All Tags"});
+  const indexSearch=el("input",{type:"search",class:"studio-tag-search w-path",
+    placeholder:"Search Tags","aria-label":"Search Tags"});
+  indexSearch.value=S.cap.studioIndexSearch||"";
+  const tagCount=el("div",{class:"studio-tag-count field-hint"});
+  const selectionState=S.cap.studioPickedTags||(S.cap.studioPickedTags=new Set());
+  const tagRows=()=>{
+    const search=indexSearch.value.trim().toLowerCase();
+    S.cap.studioIndexSearch=indexSearch.value;
+    const matched=search?sorted.filter(([tag])=>tag.includes(search)):sorted;
+    index.replaceChildren();
+    // Display the entire filtered list, rather than silently truncating at 200.
+    for(const [tag,n] of matched){
+      const category=categoryState.tags[tag]||"";
+      const row=el("li",{class:"studio-tag-list-item"});
+      const selected=selectionState.has(tag);
+      const tagBtn=el("button",{class:"studio-index-tag"+(selected?" is-picked":""),
+        type:"button",text:tag+" ("+n+")",title:"Click to filter images · Ctrl-click to select tags · Right-click for tag category",
+        "aria-pressed":selected?"true":"false"});
+      if(category&&categoryState.colors[category]){
+        tagBtn.style.borderLeftColor=categoryState.colors[category];
+        tagBtn.style.color=categoryState.colors[category];
+      }
+      tagBtn.addEventListener("click",e=>{
+        if(e.ctrlKey||e.metaKey){
+          selectionState.has(tag)?selectionState.delete(tag):selectionState.add(tag);
+          tagRows();return;
+        }
+        const exact=JSON.stringify(tag);
+        S.cap.studioQuery=S.cap.studioQuery===exact?"":exact;
+        S.cap.page=0;renderCaptions();
+      });
+      tagBtn.addEventListener("contextmenu",e=>{
+        e.preventDefault();
+        const choices=["Uncategorized",...Object.keys(categoryState.colors).sort()];
+        const choice=prompt("Category for "+tag+"\n"+choices.join(" | "),category||"Uncategorized");
+        if(choice===null)return;
+        if(choice==="Uncategorized"||choice===""){delete categoryState.tags[tag];}
+        else if(categoryState.colors[choice])categoryState.tags[tag]=choice;
+        else {alert("Choose an existing category in Tag categories & colors.");return;}
+        studioSaveCategories(categoryState);tagRows();
+      });
+      row.append(tagBtn);index.append(row);
+    }
+    tagCount.textContent=matched.length+" / "+sorted.length+" Tags";
+  };
+  indexSearch.addEventListener("input",tagRows);
+  tagRows();
   const indexMode=el("select",{class:"w-combo",title:"Explore tag frequencies and co-occurrences"});
   [["list","Tag list"],["waterfall","Frequency waterfall"],["constellation","Tag constellation"]]
     .forEach(([value,label])=>indexMode.append(el("option",{value,text:label})));
@@ -11988,12 +12021,13 @@ function renderCaptionStudio(host,items,ext){
     }else explore.append(index);
   };
   indexMode.addEventListener("change",drawExplore);
-  right.append(el("div",{class:"field-row"},sortSelect,indexMode,btn("Export caption wildcard",()=>{
+  right.append(el("div",{class:"studio-tag-sort"},el("span",{class:"field-label",text:"Sort by"}),sortSelect),indexSearch,
+    el("div",{class:"field-row studio-view-selector"},indexMode,btn("Export caption wildcard",()=>{
     const txt=CaptionStudioTags.captionWildcards(S.cap.items.map(it=>it.caption));
     if(!txt){say("No captions to export as a prompt wildcard.");return;}
     const url=URL.createObjectURL(new Blob([txt],{type:"text/plain;charset=utf-8"}));
     const a=document.createElement("a");a.href=url;a.download="fizgig_captions.txt";a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
-  })),explore);
+  })),explore,tagCount);
   drawExplore();
   const bulk=el("div",{class:"studio-bulk"});
   const apply=async(mode)=>{
