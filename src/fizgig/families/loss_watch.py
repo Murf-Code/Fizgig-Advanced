@@ -17,6 +17,24 @@ import torch
 
 logger = logging.getLogger(__name__)
 
+def _save_live_text(desc, item, cond, *, refs="", encoder=""):
+    """Write the exact family-specific on-disk text format the batch loader expects.
+
+    H3 uses native hidden_states/attention_mask tensors, not the generic cond__
+    layout. Reusing the generic writer for it silently produces a cache that the
+    H3 trainer cannot consume even though the encoder reported success.
+    """
+    if getattr(desc, "key", "") == "minimax" or getattr(desc, "arch_id", "") == "minimaxh3":
+        from fizgig.minimax.caching import save_text_encoder_output_cache_minimax
+        hidden = cond.get("hidden_states")
+        if hidden is None:
+            raise ValueError("MiniMax H3 text encoder did not return hidden_states")
+        save_text_encoder_output_cache_minimax(item, hidden)
+    else:
+        from fizgig.families import cache
+        cache.save_cond(desc, item, cond, refs=refs, encoder=encoder)
+
+
 def _picture_exts():
     from fizgig.dataset.image_dataset import IMAGE_EXTENSIONS      # every format the training set reads
     return tuple(dict.fromkeys(e.lower() for e in IMAGE_EXTENSIONS))
@@ -387,7 +405,7 @@ class Watch:
                 text_tmp = copy.copy(item)
                 text_tmp.text_encoder_output_cache_path += ".live-update"
                 try:
-                    cache.save_cond(self.driver.description, text_tmp, condition,
+                    _save_live_text(self.driver.description, text_tmp, condition,
                                     refs=refs_text, encoder=cache.encoder_stamp(self.te_path))
                     if _refs and (not all(os.path.isfile(p) for p in self._reference_paths(key, source))):
                         raise ValueError("Reference removed during new-image encoding")
@@ -1231,7 +1249,7 @@ class Watch:
                 scratch.caption = cap
                 scratch.text_encoder_output_cache_path = item.text_encoder_output_cache_path + ".live-update"
                 try:
-                    cache.save_cond(desc, scratch, cond, refs=refs,
+                    _save_live_text(desc, scratch, cond, refs=refs,
                                     encoder=cache.encoder_stamp(self.te_path))
                     os.replace(scratch.text_encoder_output_cache_path,
                                item.text_encoder_output_cache_path)
