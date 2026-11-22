@@ -12517,13 +12517,15 @@ function renderCaptionStudio(host,items,ext){
     };
     document.addEventListener("pointerdown",dismiss,true);
   };
-  const tagRows=()=>{
-    const search=indexSearch.value.trim().toLowerCase();
-    S.cap.studioIndexSearch=indexSearch.value;
-    const matched=search?sorted.filter(([tag])=>tag.includes(search)):sorted;
-    index.replaceChildren();
-    // Display the entire filtered list, rather than silently truncating at 200.
-    for(const [tag,n] of matched){
+  // Keep All Tags fully browsable without mounting thousands of rows on each
+  // image selection. Only rows near the scroll position cost DOM memory.
+  let matchedTagRows=[],renderedTagRows=0;
+  const tagBatchSize=120;
+  const appendTagRows=()=>{
+    if(renderedTagRows>=matchedTagRows.length)return;
+    const fragment=document.createDocumentFragment();
+    const end=Math.min(matchedTagRows.length,renderedTagRows+tagBatchSize);
+    for(const [tag,n] of matchedTagRows.slice(renderedTagRows,end)){
       const category=categoryState.tags[tag]||"";
       const row=el("li",{class:"studio-tag-list-item"});
       const selected=selectionState.has(tag);
@@ -12551,10 +12553,25 @@ function renderCaptionStudio(host,items,ext){
         beginTagRename(row,tag);
       });
       tagBtn.addEventListener("contextmenu",e=>openTagActions(e,tag,row));
-      row.append(tagBtn);index.append(row);
+      row.append(tagBtn);fragment.append(row);
     }
-    tagCount.textContent=matched.length+" / "+sorted.length+" Tags";
+    index.append(fragment);
+    renderedTagRows=end;
   };
+  const tagRows=()=>{
+    const search=indexSearch.value.trim().toLowerCase();
+    S.cap.studioIndexSearch=indexSearch.value;
+    matchedTagRows=search?sorted.filter(([tag])=>tag.includes(search)):sorted;
+    renderedTagRows=0;
+    index.replaceChildren();
+    index.scrollTop=0;
+    appendTagRows();
+    tagCount.textContent=matchedTagRows.length+" / "+sorted.length+" Tags";
+  };
+  index.addEventListener("scroll",()=>{
+    if(index.scrollTop+index.clientHeight>=index.scrollHeight-300)
+      appendTagRows();
+  },{passive:true});
   indexSearch.addEventListener("input",()=>{tagRows();drawExplore();});
   tagRows();
   const indexMode=el("select",{class:"w-combo",title:"Explore tag frequencies and co-occurrences"});
