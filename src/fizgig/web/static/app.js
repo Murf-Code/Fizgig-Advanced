@@ -7428,6 +7428,9 @@ async function mePicStep(path, body, what, busy) {
     const r = await api(path, {folder: m.folder || S.imageFolder, name: m.name, ...body});
     m.undo.push({step: r.step, what}); if (m.undo.length > ME_UNDO * 2) m.undo.shift();
     m.redo = [];
+    if(S.cap?.imageEditing?.name===m.name && r.step!=null)
+      studioRecord(what+" image",{kind:"image",step:r.step,folder:m.folder||S.imageFolder,name:m.name,
+        path:S.cap.imageEditing.path});
     captionImageChanged();
     return r;
   } catch (e) { $("meState").textContent = e.message; return null; }
@@ -11417,6 +11420,67 @@ function captionDuplicatePanel(ext){
   if(panel.open)queueMicrotask(()=>{if(panel.isConnected)read();});
   return panel;
 }
+// A single chronological stack for saved caption edits, batch operations and
+// committed image steps. Each caption undo is optimistic: a concurrent external
+// edit or a new review lock stops the whole batch before any file is touched.
+function studioHistory(){
+  return S.cap.studioHistory||(S.cap.studioHistory={past:[],future:[],busy:false});
+}
+function studioRecord(label,entry){
+  const history=studioHistory();
+  if(!entry)return;
+  history.past.push({label,entry});
+  if(history.past.length>120)history.past.shift();
+  history.future=[];
+}
+async function studioTravel(direction){
+  const history=studioHistory();
+  if(history.busy)return;
+  const backward=direction==="undo",from=backward?history.past:history.future;
+  const op=from.at(-1);
+  if(!op)return;
+  const to=backward?history.future:history.past;
+  history.busy=true;
+  try{
+    if(op.entry.kind==="captions"){
+      const rows=op.entry.rows;
+      const edits=rows.map(row=>({
+        folder:row.folder,name:row.name,expected:backward?row.after:row.before,
+        text:backward?row.before:row.after
+      }));
+      await api("/api/captions/batch_edit",{edits,ext:op.entry.ext});
+      for(const row of rows){
+        const item=S.cap.items.find(x=>x.path===row.path);
+        if(item)item.caption=backward?row.before:row.after;
+        S.cap.studioDrafts?.delete(row.path);
+        S.cap.studioHistories?.delete(row.path);
+      }
+    }else if(op.entry.kind==="image"){
+      const entry=op.entry;
+      await api("/api/masks/edit/image_step",{step:entry.step,redo:!backward});
+      const m=meState();
+      if(S.cap.imageEditing?.path===entry.path && m.name===entry.name){
+        const src=backward?m.undo:m.redo,dst=backward?m.redo:m.undo;
+        const index=src.findLastIndex(x=>x.step===entry.step);
+        if(index>=0){dst.push(...src.splice(index,1));}
+        await meRefreshFlags(entry.name);
+        await meReload();meImgBar();meDraw();
+      }
+    }else if(op.entry.kind==="remove"){
+      const entry=op.entry;
+      if(backward){
+        await api("/api/captions/restore",{folder:entry.folder,moved:entry.moved});
+      }else{
+        const result=await api("/api/captions/remove",{folder:entry.folder,name:entry.name,ext:entry.ext});
+        entry.moved=result.moved;
+      }
+    }
+    from.pop();to.push(op);
+    S.cap.studioRevision=(S.cap.studioRevision||0)+1;
+    await loadCaptions();
+  }finally{history.busy=false;}
+}
+
 function renderCaptionStudio(host,items,ext){
   const selection=S.cap.studioSelection||(S.cap.studioSelection=new Set());
   S.cap.studioDelimiter=S.cap.studioDelimiter||localStorage.getItem("fizgig_caption_separator")||",";
@@ -11524,6 +11588,9 @@ function renderCaptionStudio(host,items,ext){
   const save=async()=>{
     if(locked){say("Unlock this reviewed caption before saving.");return;}
     try{const x=await api("/api/captions/save",{folder:capItemFolder(current),name:current.name,text:ta.value,ext});
+      if(current.caption!==ta.value)studioRecord("Save caption",{kind:"captions",ext,rows:[{
+        folder:capItemFolder(current),name:current.name,path:current.path,before:current.caption,after:ta.value
+      }]});
       current.caption=ta.value;drafts.delete(current.path);
       S.cap.studioRevision=(S.cap.studioRevision||0)+1;
       say(x.queued?"Saved; queued for next epoch":"Saved");}
@@ -11550,6 +11617,7 @@ function renderCaptionStudio(host,items,ext){
         if(S.cap.imageEditing?.path===current.path && !(await captionImageClose()))return;
         const folder=capItemFolder(current);
         const result=await api("/api/captions/remove",{folder,name:current.name,ext});
+        studioRecord("Remove image",{kind:"remove",folder,name:current.name,ext,moved:result.moved});
         S.cap.studioLastRemoval={folder,moved:result.moved};
         S.cap.items=S.cap.items.filter(it=>it.path!==current.path);
         drafts.delete(current.path);renderCaptions();
@@ -11656,29 +11724,42 @@ function renderCaptionStudio(host,items,ext){
       alert("Save your unsaved caption drafts before a bulk tag operation.");return;
     }
     if(!confirm("Apply to "+affected.length+" captions?"))return;
-    let done=0,fail=0;
+    const changes=[];
     for(const it of affected){
-      if(S.cap.studioReviewed?.has(it.path)||studioCaptionMode(it)==="prose")continue; // never rewrite locked or prose captions
+      if(S.cap.studioReviewed?.has(it.path)||studioCaptionMode(it)==="prose")continue;
       const source=studioTokens(it.caption,"tags");
       const target=mode==="remove"?source.filter(t=>t.toLowerCase()!==old.trim().toLowerCase()):
         mode==="rename"?source.map(t=>t.toLowerCase()===old.trim().toLowerCase()?newTag.trim():t):[...source,old.trim()];
-      const afterTags=studioUnique(target);
-      if(afterTags.join(", ")===source.join(", "))continue;
-      const after=studioCompose(it.caption,afterTags,"tags");
-      try{await api("/api/captions/save",{folder:capItemFolder(it),name:it.name,text:after,ext});it.caption=after;done++;}
-      catch(e){fail++;}
+      const after=studioCompose(it.caption,studioUnique(target),"tags");
+      if(after!==it.caption)changes.push({folder:capItemFolder(it),name:it.name,path:it.path,
+        before:it.caption,after});
     }
-    S.cap.studioRevision=(S.cap.studioRevision||0)+1;
-    renderCaptions();
-    const n=$("captionsGrid").querySelector(".studio-bulk-note");if(n)n.textContent=done+" updated"+(fail?" · "+fail+" failed":"");
+    if(!changes.length){say("No editable captions match.");return;}
+    try{
+      await api("/api/captions/batch_edit",{ext,edits:changes.map(c=>({
+        folder:c.folder,name:c.name,expected:c.before,text:c.after
+      }))});
+      studioRecord("Bulk "+mode+" tag",{kind:"captions",ext,rows:changes});
+      for(const c of changes){const it=S.cap.items.find(i=>i.path===c.path);if(it)it.caption=c.after;}
+      S.cap.studioRevision=(S.cap.studioRevision||0)+1;
+      renderCaptions();
+      const n=$("captionsGrid").querySelector(".studio-bulk-note");
+      if(n)n.textContent=changes.length+" captions updated · one undo restores the group";
+    }catch(e){say(e.message);}
   };
-  bulk.append(el("strong",{text:"Bulk tags · selected or whole dataset"}),btn("Rename tag",()=>apply("rename")),
+  const historyUI=studioHistory();
+  const undoGlobal=btn("↶ Undo "+(historyUI.past.at(-1)?.label||"change"),async()=>{
+    try{await studioTravel("undo");}catch(e){alert("Undo stopped: "+e.message);}
+  });
+  const redoGlobal=btn("↷ Redo "+(historyUI.future.at(-1)?.label||"change"),async()=>{
+    try{await studioTravel("redo");}catch(e){alert("Redo stopped: "+e.message);}
+  });
+  undoGlobal.disabled=!historyUI.past.length||historyUI.busy;
+  redoGlobal.disabled=!historyUI.future.length||historyUI.busy;
+  bulk.append(el("strong",{text:"Bulk tags · selected or whole dataset"}),undoGlobal,redoGlobal,
+    btn("Rename tag",()=>apply("rename")),
     btn("Remove tag",()=>apply("remove")),btn("Add tag",()=>apply("add")),
-    ...(S.cap.studioLastRemoval?[btn("Undo last removal",async()=>{
-      const last=S.cap.studioLastRemoval;
-      try{await api("/api/captions/restore",last);S.cap.studioLastRemoval=null;loadCaptions();}
-      catch(e){say(e.message);}
-    })]:[]),el("span",{class:"field-hint studio-bulk-note"}));
+    el("span",{class:"field-hint studio-bulk-note"}));
   const liveStatus=el("div",{class:"studio-live-status field-hint",id:"studioLiveStatus",
     text:studioLiveSummary(S.cap.liveStatus)});
   liveStatus.classList.toggle("needs-attention",!!S.cap.liveStatus?.attention);
