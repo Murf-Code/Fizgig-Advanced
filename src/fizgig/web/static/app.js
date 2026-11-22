@@ -11754,7 +11754,7 @@ function renderCaptionStudio(host,items,ext){
   // Search updates as you type. Restore focus and caret after Studio rebuilds,
   // and leave the bar visible when the filter produces zero results.
   const createTagFilterBar=()=>{
-    const field=el("input",{type:"search",class:"w-path studio-tag-query",
+    const field=el("input",{type:"text",class:"w-path studio-tag-query",
       placeholder:"Filter images by tags","aria-label":"Filter images by tags",
       title:"Filter as you type. Supports AND, OR, NOT and quoted tags."});
     field.value=S.cap.studioQuery||"";
@@ -13209,7 +13209,7 @@ function renderCaptionStudio(host,items,ext){
       handled();stepImage(["ArrowRight","ArrowDown"].includes(e.key)?1:-1);return;
     }
     if(!cmd){
-      if(key==="/"){handled();tagQuery.focus();}
+      if(key==="/"){handled();left.querySelector(".studio-tag-query")?.focus();}
       return;
     }
     if(key==="a"){handled();items.forEach(it=>selection.add(it.path));renderCaptions();}
