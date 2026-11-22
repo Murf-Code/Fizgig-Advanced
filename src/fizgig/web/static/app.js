@@ -11241,6 +11241,7 @@ function renderCaptionStudio(host,items,ext){
       if(current.crop){say("Remove detail crops from Image Prep.");return;}
       if(!confirm("Move "+current.name+" and its caption into removed/? You can undo this removal."))return;
       try{
+        if(S.cap.imageEditing?.path===current.path && !(await captionImageClose()))return;
         const folder=capItemFolder(current);
         const result=await api("/api/captions/remove",{folder,name:current.name,ext});
         S.cap.studioLastRemoval={folder,moved:result.moved};
@@ -11522,7 +11523,13 @@ function wireCaptions() {
   $("frPreview").addEventListener("click", () => findReplace(false));
   $("frAddPreview").addEventListener("click", () => addText(false));
   $("frAdd").addEventListener("click", () => addText(true));
-  $("capView").addEventListener("change", () => { S.cap.page = 0; renderCaptions(); });
+  $("captionImageClose").addEventListener("click",()=>captionImageClose().catch(e=>{
+    $("captionImageWorkspaceNote").textContent=e.message;
+  }));
+  $("capView").addEventListener("change", () => {
+    if($("capView").value!=="studio" && S.cap.imageEditing) captionImageClose();
+    S.cap.page = 0; renderCaptions();
+  });
   $("frApply").addEventListener("click", held($("frApply"), () => findReplace(true)));
   $("capSearch").addEventListener("input", debounce(() => { S.cap.page = 0; renderCaptions(); }, 250));
   $("capSort").addEventListener("change", () => { S.cap.page = 0; renderCaptions(); });
