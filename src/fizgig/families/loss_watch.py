@@ -520,7 +520,7 @@ class Watch:
                 continue
             names = folder_names(folder)
             prefix = str(getattr(ds, "item_prefix", "") or "")
-            for bucket in manager.buckets.values():
+            for bucket in list(manager.buckets.values()) + list(getattr(manager, "live_pools", {}).values()):
                 for item in bucket:
                     key = str(item.item_key)
                     if key in state or getattr(item, "still_only", False):
@@ -619,7 +619,7 @@ class Watch:
                     return p
         return ""
 
-    def _reference_paths(self, key, source):
+    def _reference_paths(self, key, source, listings=None):
         """Find controls currently on disk; datasource's startup list may now be stale."""
         from fizgig.dataset.masks import is_mask_file
         ds = self._owner_dataset(key)
@@ -632,7 +632,13 @@ class Watch:
                        getattr(ds, "extra_reference_directory", None)):
             if not folder or not os.path.isdir(folder):
                 continue
-            for n in os.listdir(folder):
+            if listings is not None and folder in listings:
+                names = listings[folder]
+            else:
+                names = os.listdir(folder)
+                if listings is not None:
+                    listings[folder] = names
+            for n in names:
                 nstem, ext = os.path.splitext(n)
                 if (ext.lower() in extensions and not is_mask_file(n) and
                     (nstem.casefold() == stem or nstem.casefold().startswith(stem + "_"))):
@@ -664,7 +670,7 @@ class Watch:
 
     def _source_state(self):
         """Fingerprint every active item's media, caption and paired controls."""
-        seen, listings = {}, {}
+        seen, listings, ref_listings = {}, {}, {}
         for key in _items(self.group):
             ds = self._owner_dataset(key)
             source = self._source_for_key(key, listings)
@@ -680,7 +686,7 @@ class Watch:
                     return (os.path.realpath(path), st.st_size, st.st_mtime_ns)
                 except OSError:
                     return ("", 0, 0)
-            refs = tuple(stamp(p) for p in self._reference_paths(key, source)) if source else ()
+            refs = tuple(stamp(p) for p in self._reference_paths(key, source, ref_listings)) if source else ()
             seen[str(key)] = (stamp(source), stamp(caption), caption, refs)
         return seen
 
