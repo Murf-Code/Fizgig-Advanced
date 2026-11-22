@@ -1431,6 +1431,7 @@ def _requeue(path, processing, updates):
         _remove(processing)
         return
     try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         newer = {}
         if os.path.exists(path):
             with open(path, encoding="utf-8") as f:
