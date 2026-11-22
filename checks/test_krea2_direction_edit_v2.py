@@ -352,13 +352,15 @@ def test_manual_target_is_skipped_when_not_suppressed():
     cfg.update(scan_min_count=8, scan_per_tag=6, scan_max_tags=500, scan_z=0.8)
     cfg = de._normalise(cfg)
     prompts, pairs, meta = de.plan_scan(cfg)
-    store = de.encode_prompts(prompts, None, "cpu", encoder=fake_encoder(weak={"tgt a"}))
-    rows = de.scan_measure(tiny_path(), store, pairs)
-    rejected = de.scan_select(cfg, pairs, rows, meta, requested_targets=["tag00"])
+    path = tiny_path()
+    neutral_rows = [{stage: 1.0 for stage in de.STAGES} for _ in pairs]
+    rejected = de.scan_select(cfg, pairs, neutral_rows, meta, requested_targets=["tag00"])
     assert rejected["targets"] == []
     assert rejected["skipped_targets"] and rejected["skipped_targets"][0]["tag"] == "tag00"
 
-    accepted = de.scan_select(cfg, pairs, rows, meta, requested_targets=["tgt a"])
+    store = de.encode_prompts(prompts, None, "cpu", encoder=fake_encoder(weak={"tgt a"}))
+    weak_rows = de.scan_measure(path, store, pairs)
+    accepted = de.scan_select(cfg, pairs, weak_rows, meta, requested_targets=["tgt a"])
     assert accepted["targets"] == ["tgt a"]
     store.close()
 
