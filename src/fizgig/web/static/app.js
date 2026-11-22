@@ -12043,6 +12043,23 @@ function renderCaptionStudio(host,items,ext){
   const selectionCount=el("span",{class:"studio-selection-count",text:selection.size+" selected"});
   const nav=el("div",{class:"studio-thumb-footer"},
     missingBtn,position,selectionCount);
+  // Keep fine-grained touchpad gestures native. Speed up detented mouse
+  // wheels only, without adding a smoothing animation or scroll lag.
+  thumbs.addEventListener("wheel",e=>{
+    if(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey||e.deltaX||!e.deltaY)return;
+    if(thumbs.scrollHeight<=thumbs.clientHeight)return;
+    const amount=Math.abs(e.deltaY);
+    const notched=(e.deltaMode===1&&Number.isInteger(amount))||
+      (e.deltaMode===0&&amount>=80&&Number.isInteger(amount)&&
+        (amount%100===0||amount%120===0));
+    if(!notched)return;
+    const pixels=e.deltaMode===1?e.deltaY*16:e.deltaY;
+    const destination=Math.max(0,Math.min(thumbs.scrollHeight-thumbs.clientHeight,
+      thumbs.scrollTop+pixels*1.6));
+    if(destination===thumbs.scrollTop)return;
+    e.preventDefault();
+    thumbs.scrollTop=destination;
+  },{passive:false});
   thumbs.addEventListener("keydown",e=>{
     if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="a"){
       e.preventDefault();S.cap.items.forEach(it=>selection.add(it.path));renderCaptions();

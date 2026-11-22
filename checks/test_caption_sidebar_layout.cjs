@@ -58,6 +58,15 @@ assert.match(css,/#tab-captions \.studio-image-stage \.studio-preview\{[^}]*flex
 assert.match(css,/#tab-captions \.studio-image-stage \.studio-preview img,[\s\S]*?max-height:100%;[\s\S]*?object-fit:contain/);
 assert.doesNotMatch(css,/\.studio-image-stage \.studio-preview img[^\n]*max-height:min\(68vh,750px\)/);
 
+// Thumbnail wheel acceleration is limited to detented mouse wheels so
+// precision touchpads continue using native scrolling. Programmatic rail
+// repositioning must not animate when selecting or restoring an image.
+assert.match(app,/thumbs\.addEventListener\("wheel",e=>\{/);
+assert.match(app,/amount%100===0\|\|amount%120===0/);
+assert.match(app,/\},\{passive:false\}\);/);
+assert.match(css,/#tab-captions \.studio-host \.studio-thumb-rail,[\s\S]*?scroll-behavior:auto;/);
+assert.doesNotMatch(css,/#tab-captions \.studio-host \.studio-thumb-rail,[\s\S]*?scroll-behavior:smooth;/);
+
 // The Tags rail is continuous and progressively mounted. Cards/Table alone
 // retain CAP_PAGE; arrow navigation and waterfall jumps reveal the active tile.
 assert.match(app,/const thumbBatch=64/);

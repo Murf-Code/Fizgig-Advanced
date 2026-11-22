@@ -3936,7 +3936,8 @@ body.caption-glass-ui .studio-context-rule {
   min-height:150px;
   overflow-y:auto;
   overflow-x:hidden;
-  scroll-behavior:smooth;
+  overscroll-behavior-y:contain;
+  scroll-behavior:auto; /* Immediate restoration and keyboard reveal. */
 }
 #tab-captions .studio-thumb-rail .studio-browser-row{
   display:block;
