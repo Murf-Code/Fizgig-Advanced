@@ -12777,19 +12777,26 @@ function renderCaptionStudio(host,items,ext){
   const tagHeading=editorPane.querySelector("strong");
   if(tagHeading)tagHeading.textContent="Image Tags · Caption Editor";
   center.append(imageStage);
-  const rightDock=el("div",{class:"studio-tag-dock"});
+  const rightDock=el("div",{class:"studio-tag-dock",role:"tablist",
+    "aria-label":"Caption tag lists"});
   const aiPane=el("section",{class:"studio-ai-dock",hidden:true});
-  const activeDock=S.cap.studioDock==="ai"?"ai":"tags";
+  // Image Tags is the top/default view. Dataset-wide tags occupy a separate
+  // tab; AI captioning remains reachable through its own toolbar action.
+  const activeDock=["image","all","ai"].includes(S.cap.studioDock)?
+    S.cap.studioDock:"image";
   const showTabs=mode=>{
     S.cap.studioDock=mode;
-    tagIndexPane.hidden=mode==="ai";
+    editorPane.hidden=mode!=="image";
+    tagIndexPane.hidden=mode!=="all";
     aiPane.hidden=mode!=="ai";
     rightDock.dataset.active=mode;
-    showTags.setAttribute("aria-selected",String(mode==="tags"));
-    showAI.setAttribute("aria-selected",String(mode==="ai"));
+    showImage.setAttribute("aria-selected",String(mode==="image"));
+    showAll.setAttribute("aria-selected",String(mode==="all"));
   };
-  const showTags=btn("All Tags",()=>showTabs("tags"));
-  const showAI=btn("Auto-Captioner",()=>showTabs("ai"));
+  const showImage=btn("Image Tags",()=>showTabs("image"));
+  const showAll=btn("All Tags",()=>showTabs("all"));
+  showImage.setAttribute("role","tab");
+  showAll.setAttribute("role","tab");
   const redundantAiRow=bulk.querySelector(".studio-selected-ai");
   if(redundantAiRow)redundantAiRow.remove();
   const aiHint=el("div",{class:"field-hint",text:"Use the model and task below to caption selected images or the entire Start-tab dataset."});
@@ -12799,9 +12806,9 @@ function renderCaptionStudio(host,items,ext){
   aiPane.append(el("strong",{text:"Auto-Captioner"}),aiHint);
   captionAiControlsMount(aiPane);
   aiPane.append(el("div",{class:"studio-ai-selection"},el("strong",{text:"Selected images"}),aiControls));
-  rightDock.append(showTags,showAI);
+  rightDock.append(showImage,showAll);
+  right.append(rightDock,editorPane,tagIndexPane,aiPane);
   showTabs(activeDock);
-  right.append(editorPane,rightDock,tagIndexPane,aiPane);
   // A single expandable Edit Tags menu replaces the permanently repeated bulk toolbar.
   // TagBench Find & Replace: literal, case-sensitive text replacement in the
   // filtered image view. Review-locked images are never edited. All accepted
@@ -13000,8 +13007,9 @@ function renderCaptionStudio(host,items,ext){
     });
     dialog.focus({preventScroll:true});
   });
+  const autoCaptionBtn=btn("Auto-Captioner",()=>showTabs("ai"));
   const actionBar=el("nav",{class:"studio-top-actions","aria-label":"Caption Workbench tools"},
-    settingsBtn,editMenu,dupBtn);
+    settingsBtn,editMenu,dupBtn,autoCaptionBtn);
   if(existingWildcard)actionBar.append(existingWildcard);
   const viewButtons=el("div",{class:"studio-view-rail",role:"group","aria-label":"Tag visualization"});
   [["list","Tags"],["waterfall","Waterfall"],["constellation","Constellation"]].forEach(([mode,label])=>{
