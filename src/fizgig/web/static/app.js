@@ -11194,7 +11194,6 @@ function renderCaptions() {
   S.cap.studioThumbObserver?.disconnect();
   S.cap.studioThumbObserver=null;
   if(priorRail){
-    S.cap.studioThumbRendered=Number(priorRail.dataset.rendered)||0;
     S.cap.studioThumbScrollTop=priorRail.scrollTop;
     S.cap.studioThumbViewKey=priorRail.dataset.viewKey||"";
   }
@@ -12161,6 +12160,34 @@ function captionAiControlsMount(target){
   return true;
 }
 
+// Fixed geometry lets the Tags rail scroll to *any* dataset image without
+// mounting the thousands of images between the current row and the target.
+// Thumbnail aspect ratios determine row heights, so mixed datasets do not jump
+// when offscreen images load. No global page size or Load-more button.
+function studioThumbGeometry(items,railWidth,gap=14){
+  const width=Math.max(36,(railWidth-20)*.85-14);
+  const heights=new Float64Array(items.length);
+  const offsets=new Float64Array(items.length+1);
+  for(let i=0;i<items.length;i++){
+    const size=items[i].size;
+    const ratio=size&&size[0]>0&&size[1]>0?size[1]/size[0]:1;
+    const imageHeight=size?Math.min(306,width*ratio):132;
+    heights[i]=Math.max(64,Math.ceil(imageHeight)+14);
+    offsets[i+1]=offsets[i]+heights[i]+gap;
+  }
+  return {heights,offsets,gap,total:Math.max(0,offsets[items.length]-(items.length?gap:0))};
+}
+function studioThumbIndex(offsets,position){
+  const count=offsets.length-1;
+  if(!count)return 0;
+  let lo=0,hi=count;
+  while(lo<hi){
+    const mid=(lo+hi)>>>1;
+    if(offsets[mid]<=position)lo=mid+1;
+    else hi=mid;
+  }
+  return Math.max(0,Math.min(count-1,lo-1));
+}
 function renderCaptionStudio(host,items,ext){
   // Shared with both the main toolbar and the empty-results fallback. Keep
   // the filter independent from colored selection rings.
@@ -12606,14 +12633,12 @@ function renderCaptionStudio(host,items,ext){
     document.removeEventListener("keydown",S.cap.studioDeleteKeyHandler);
     S.cap.studioDeleteKeyHandler=null;
   }
-  // Render small batches on demand. Unlike the old 12-image page, the rail
-  // grows as you scroll while preserving selection and the editor's active path.
-  const thumbBatch=64;
+  // Virtualized thumbnail stack: all images contribute to the scroll range,
+  // but only a small viewport-sized slice creates buttons and <img> elements.
   const activeIndex=items.findIndex(it=>it.path===current.path);
   const sameThumbView=S.cap.studioThumbViewKey===thumbViewKey;
-  let thumbRendered=CaptionStudioSelection.initialMountCount(items.length,
-    activeIndex,sameThumbView?(S.cap.studioThumbRendered||0):0,thumbBatch);
-  const createThumbRow=it=>{
+  thumbs.classList.add("is-windowed");
+  const createThumbRow=(it,index,height)=>{
     const isActive=it.path===current.path;
     const isPicked=selection.has(it.path);
     const thumb=it.size?el("img",{src:"/api/thumb?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(TOKEN),
@@ -12622,63 +12647,79 @@ function renderCaptionStudio(host,items,ext){
       class:"studio-file studio-thumb"+(isActive?" active":"")+(isPicked?" is-picked":"")+
         (S.cap.studioReviewed?.has(it.path)?" is-reviewed":""),
       "data-path":it.path,
-      title:it.name,
+      title:it.name,"aria-setsize":String(items.length),"aria-posinset":String(index+1),
       "aria-label":it.name+(it.caption===null?", missing caption":"")+(isPicked?", selected":""),
       "aria-pressed":isPicked?"true":"false",
       oncontextmenu:e=>openImageMenu(e,it),
-      onclick:e=>{
-        pickImage(it,e);
-        renderCaptions();
-      }},thumb);
+      onclick:e=>{pickImage(it,e);renderCaptions();}},thumb);
     captionLearningDecorate(tile,it);
-    return el("div",{class:"studio-browser-row",role:"listitem"},tile);
+    const row=el("div",{class:"studio-browser-row",role:"listitem"},tile);
+    row.style.height=height+"px";
+    return row;
   };
-  const moreThumbs=el("button",{type:"button",class:"btn btn-sm studio-thumb-load-more",
-    text:"Load more images","aria-label":"Load more dataset thumbnails"});
-  const appendThumbs=()=>{
-    const end=CaptionStudioSelection.nextMountCount(thumbRendered,items.length,thumbBatch);
+  const topSpace=el("div",{class:"studio-thumb-spacer","aria-hidden":"true"});
+  const windowRows=el("div",{class:"studio-thumb-window"});
+  const bottomSpace=el("div",{class:"studio-thumb-spacer","aria-hidden":"true"});
+  thumbs.append(topSpace,windowRows,bottomSpace);
+  let geometry=null,paintStart=-1,paintEnd=-1,railWidth=0,queued=false;
+  const rebuildGeometry=()=>{
+    const width=thumbs.clientWidth||S.cap.studioThumbWidth||180;
+    if(geometry&&Math.abs(width-railWidth)<1)return;
+    railWidth=width;S.cap.studioThumbWidth=width;
+    geometry=studioThumbGeometry(items,width);
+    paintStart=paintEnd=-1;
+  };
+  const paintWindow=()=>{
+    if(!thumbs.isConnected)return;
+    rebuildGeometry();
+    const {offsets,heights,total,gap}=geometry;
+    const top=thumbs.scrollTop,bottom=top+Math.max(100,thumbs.clientHeight);
+    const start=Math.max(0,studioThumbIndex(offsets,top)-7);
+    const end=Math.min(items.length,studioThumbIndex(offsets,bottom)+10);
+    if(start===paintStart&&end===paintEnd)return;
+    paintStart=start;paintEnd=end;
     const fragment=document.createDocumentFragment();
-    for(let i=thumbRendered;i<end;i++)fragment.append(createThumbRow(items[i]));
-    thumbs.insertBefore(fragment,moreThumbs);
-    thumbRendered=end;
-    thumbs.dataset.rendered=String(thumbRendered);
-    moreThumbs.hidden=thumbRendered>=items.length;
-    moreThumbs.textContent="Load more images ("+thumbRendered+" / "+items.length+")";
+    for(let i=start;i<end;i++)fragment.append(createThumbRow(items[i],i,heights[i]));
+    topSpace.style.height=offsets[start]+"px";
+    bottomSpace.style.height=Math.max(0,total-offsets[end]+(end<items.length?gap:0))+"px";
+    windowRows.replaceChildren(fragment);
+    thumbs.dataset.rendered=String(end-start);
   };
-  const initial=document.createDocumentFragment();
-  for(let i=0;i<thumbRendered;i++)initial.append(createThumbRow(items[i]));
-  thumbs.append(initial,moreThumbs);
-  thumbs.dataset.rendered=String(thumbRendered);
-  moreThumbs.hidden=thumbRendered>=items.length;
-  moreThumbs.textContent="Load more images ("+thumbRendered+" / "+items.length+")";
-  moreThumbs.addEventListener("click",appendThumbs);
-  // The rail is its own scroll container. IntersectionObserver only mounts
-  // the next batch near the bottom; a scroll fallback covers older browsers.
-  if(typeof IntersectionObserver!=="undefined"){
-    const observer=new IntersectionObserver(entries=>{
+  const queueWindow=()=>{
+    if(queued)return;
+    queued=true;
+    requestAnimationFrame(()=>{queued=false;paintWindow();});
+  };
+  thumbs.addEventListener("scroll",queueWindow,{passive:true});
+  if(typeof ResizeObserver!=="undefined"){
+    const observer=new ResizeObserver(()=>{
       if(!thumbs.isConnected){observer.disconnect();return;}
-      if(entries.some(entry=>entry.isIntersecting)&&!moreThumbs.hidden)appendThumbs();
-    },{root:thumbs,rootMargin:"320px 0px"});
-    observer.observe(moreThumbs);
+      if(Math.abs(thumbs.clientWidth-railWidth)>=1){
+        rebuildGeometry();queueWindow();
+      }
+    });
+    observer.observe(thumbs);
     S.cap.studioThumbObserver?.disconnect();
     S.cap.studioThumbObserver=observer;
-  }else{
-    thumbs.addEventListener("scroll",()=>{
-      if(!moreThumbs.hidden&&thumbs.scrollTop+thumbs.clientHeight>=thumbs.scrollHeight-320)
-        appendThumbs();
-    },{passive:true});
   }
+  const revealIndex=index=>{
+    if(index<0||index>=items.length)return;
+    rebuildGeometry();
+    const y=geometry.offsets[index],height=geometry.heights[index];
+    if(y<thumbs.scrollTop||y+height>thumbs.scrollTop+thumbs.clientHeight)
+      thumbs.scrollTop=Math.max(0,y-Math.max(0,(thumbs.clientHeight-height)*.30));
+    paintWindow();
+  };
+  thumbs.revealPath=path=>revealIndex(items.findIndex(it=>it.path===path));
   const revealActive=S.cap.studioThumbRevealPath===current.path;
   if(revealActive)S.cap.studioThumbRevealPath=null;
-  if(sameThumbView||revealActive){
-    const savedTop=S.cap.studioThumbScrollTop||0;
-    requestAnimationFrame(()=>{
-      if(!thumbs.isConnected)return;
-      if(sameThumbView)thumbs.scrollTop=savedTop;
-      if(revealActive)thumbs.querySelector(".studio-file.active")
-        ?.scrollIntoView({block:"nearest"});
-    });
-  }
+  requestAnimationFrame(()=>{
+    if(!thumbs.isConnected)return;
+    rebuildGeometry();
+    if(sameThumbView)thumbs.scrollTop=S.cap.studioThumbScrollTop||0;
+    paintWindow();
+    if(revealActive||!sameThumbView)revealIndex(activeIndex);
+  });
   left.append(thumbs,nav);
   const drafts=S.cap.studioDrafts||(S.cap.studioDrafts=new Map());
   const histories=S.cap.studioHistories||(S.cap.studioHistories=new Map());
@@ -14108,7 +14149,7 @@ function renderCaptionStudio(host,items,ext){
       // Match TagBench's active-image reveal when returning from Waterfall.
       requestAnimationFrame(()=>{
         if(host.isConnected&&S.cap.studioExploreMode==="list")
-          thumbs.querySelector(".studio-thumb.active")?.scrollIntoView({block:"nearest"});
+          thumbs.revealPath?.(S.cap.studioPath);
       });
     }else{
       for(const child of fullStage.children)child.dispose?.();
