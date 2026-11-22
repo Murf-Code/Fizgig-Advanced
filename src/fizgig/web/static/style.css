@@ -4695,3 +4695,28 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
 @media(prefers-reduced-motion:reduce){
   .tab-bar-scroller .side-section-chevron{transition:none}
 }
+
+/* Image tag search: live input with clear control in the same row. */
+#tab-captions .studio-filter-bar{
+  display:flex;align-items:stretch;gap:7px;width:100%;min-width:0;
+  margin:7px 0 10px;
+}
+#tab-captions .studio-filter-bar .studio-tag-query{
+  flex:1 1 auto;min-width:0;width:0;min-height:38px;
+}
+#tab-captions .studio-filter-bar .studio-tag-clear{
+  display:inline-flex;align-items:center;justify-content:center;
+  flex:0 0 38px;min-width:38px;min-height:38px;padding:0;
+  border:1px solid var(--border);border-radius:10px;
+  background:var(--bg-raised);color:var(--text-secondary);
+  font-size:19px;line-height:1;cursor:pointer;
+}
+#tab-captions .studio-filter-bar .studio-tag-clear[hidden]{display:none!important}
+#tab-captions .studio-filter-bar .studio-tag-clear:hover{
+  color:var(--text-primary);border-color:var(--accent-border);
+  background:var(--accent-subtle);
+}
+#tab-captions .studio-filter-bar .studio-tag-query[aria-invalid="true"]{
+  border-color:var(--warning);outline-color:var(--warning);
+}
+#tab-captions .studio-empty-captions .studio-filter-bar{max-width:460px}
