@@ -3632,7 +3632,7 @@ label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; 
   background:var(--bg-inset);
 }
 #tab-captions .caption-look-option {
-  appearance:none; cursor:pointer; white-space:nowrap; font:600 12px/1.25 inherit;
+  appearance:none; cursor:pointer; white-space:nowrap; font-weight:600; font-size:12px; line-height:1.25;
   font-family:inherit; color:var(--text-secondary); border:1px solid transparent;
   border-radius:9px; background:transparent; padding:9px 13px;
   transition:background .17s,border-color .17s,color .17s,box-shadow .17s;
@@ -3901,7 +3901,7 @@ body.caption-glass-ui .studio-image-context-menu {
 body.caption-glass-ui .studio-image-context-menu button {
   display:flex;align-items:center;justify-content:space-between;gap:20px;
   width:100%;padding:10px 12px;background:transparent;border:0;
-  border-radius:8px;color:#f4f6fc;text-align:left;cursor:pointer;font:500 12px/1.25 inherit;
+  border-radius:8px;color:#f4f6fc;text-align:left;cursor:pointer;font-weight:500;
   font-family:inherit;font-size:12px;line-height:1.25;
 }
 body.caption-glass-ui .studio-image-context-menu button:not(:disabled):hover {
