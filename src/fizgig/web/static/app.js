@@ -11009,8 +11009,7 @@ async function pollCaptions() {
   if(S.imageFolder && $("capView")?.value==="studio" && document.querySelector("#tab-captions.active")) {
     api("/api/captions/live_status?folder="+encodeURIComponent(S.imageFolder)).then(status=>{
       S.cap.liveStatus=status;
-      const box=$("studioLiveStatus");
-      if(box){box.textContent=studioLiveSummary(status);box.classList.toggle("needs-attention",!!status.attention);}
+      S.cap.studioStatusRefresh?.();
     }).catch(()=>{});
   }
   // Probe even when the colors are off, so a newly started watched run can
@@ -12773,7 +12772,12 @@ function renderCaptionStudio(host,items,ext){
     autoTasks.set(autoKey,autoTask);
   }
   autoTask.notify=message=>{
-    if(S.cap.studioPath===current.path&&note.isConnected)note.textContent=message;
+    if(S.cap.studioPath!==current.path)return;
+    // Successful autosaves belong in the small status control, not a
+    // permanent explanatory row below the image.
+    if(note.isConnected)
+      note.textContent=/^(Save failed|Autosave blocked)/.test(message)?message:"";
+    S.cap.studioStatusRefresh?.();
   };
   // If a browser refresh recovered a pending draft, resume the write safely
   // only when the server caption still matched the cached revision.
@@ -13634,9 +13638,41 @@ function renderCaptionStudio(host,items,ext){
   };
   S.cap.studioCaptionSelected=captionSelected;
   // Menu items are appended below, once the Find & Replace dialog exists.
-  const liveStatus=el("div",{class:"studio-live-status field-hint",id:"studioLiveStatus",
-    text:studioLiveSummary(S.cap.liveStatus)});
-  liveStatus.classList.toggle("needs-attention",!!S.cap.liveStatus?.attention);
+  // One compact status, with detailed diagnostics available on demand.
+  // Keep the long live-update explanation out of the image workspace.
+  const liveStatus=el("details",{class:"studio-live-status studio-workspace-status",
+    id:"studioLiveStatus"});
+  const liveLabel=el("span",{class:"studio-status-label",text:"Saved"});
+  const liveSummary=el("summary",{"aria-label":"Dataset save and training status"},
+    el("span",{class:"studio-status-dot","aria-hidden":"true"}),liveLabel);
+  const liveDetail=el("div",{class:"studio-status-detail"});
+  liveStatus.append(liveSummary,liveDetail);
+  const refreshStatus=()=>{
+    if(!liveStatus.isConnected)return;
+    const status=S.cap.liveStatus;
+    const pending=(Number(status?.pending_image_count)||0)+
+      (Number(status?.pending_caption_count)||0);
+    const localDraft=drafts.has(current.path)&&drafts.get(current.path)!==autoTask.lastSaved;
+    let state="saved",label="Saved";
+    if(autoTask.lastError){state="attention";label="Save failed";}
+    else if(status?.attention){state="attention";label="Needs attention";}
+    else if(autoTask.busy||autoTask.pending||localDraft||
+      (S.cap.imageEditing?.inline&&meState().dirty)){
+      state="saving";label="Saving…";
+    }else if(pending){
+      state="pending";label="Pending next epoch";
+    }
+    liveStatus.dataset.state=state;
+    liveLabel.textContent=label;
+    const details=studioLiveSummary(status);
+    liveDetail.textContent=autoTask.lastError?
+      "Caption save failed; the local draft is preserved and will retry. "+
+        autoTask.lastError.message+" "+details:details;
+    liveSummary.title=details;
+  };
+  S.cap.studioStatusRefresh=refreshStatus;
+  // Refresh once mounted; autosave and live-status polling use this callback.
+  requestAnimationFrame(refreshStatus);
   const layout=el("div",{class:"studio-layout studio-resizable"});
   let sizes=S.cap.studioPanelSizes;
   if(!sizes){
@@ -14196,7 +14232,7 @@ function renderCaptionStudio(host,items,ext){
   const learningFilter=el("label",{class:"studio-learning-filter-label",
     hidden:!learningCheck.checked},
     el("span",{text:"Image status"}),createLearningFilterSelect());
-  actionBar.append(learningToggle,learningFilter,viewButtons);
+  actionBar.append(learningToggle,learningFilter,viewButtons,liveStatus);
   // TagBench shortcut parity. Only active inside Caption Workbench, and never
   // steals native typing shortcuts or Image Prep's own canvas bindings.
   const selectedForEdit=()=>imageTargets().filter(it=>!S.cap.studioReviewed?.has(it.path)&&
@@ -14363,7 +14399,7 @@ function renderCaptionStudio(host,items,ext){
   toolsRow.append(actionBar);
   layout.append(left,divider("left"),center,divider("right"),right);
   redraw();host.classList.add("studio-host");
-  host.append(liveStatus,toolsRow,layout,fullStage);
+  host.append(toolsRow,layout,fullStage);
   openView(S.cap.studioExploreMode||"list");
   if(host.contains(layout)&&S.cap.imageEditing?.inline&&(S.cap.studioExploreMode||"list")==="list"){
     if(S.cap.imageEditing.path===current.path){
