@@ -125,6 +125,7 @@ class Watch:
         self.output_dir, self.group, self.driver, self.te_path = output_dir, group, driver, te_path
         self.vae_path = vae_path
         self.removed_keys = set()
+        self.invalid_mask_keys = set()  # mask errors are distinct from deleted/stale image latents
         self.trigger_word, self.trigger_position = trigger_word, trigger_position
         self.triggers = dict(recaption_triggers or {})     # another folder's own trigger word, by key prefix
         self.instr, self.instr_detailed = recaption_instruction, recaption_instruction_detailed
@@ -155,6 +156,7 @@ class Watch:
         # edits; these fingerprints additionally catch AI captions, bulk tools and
         # external file edits that bypass the Caption Studio save route.
         self._source_snapshot = self._source_state()
+        self._mask_snapshot = self._mask_state()
         if auto_recaption and not self.image_dir:
             logger.warning("[auto-recaption] image_directory not found in the dataset config - auto-recaption off")
             auto_recaption = False
@@ -222,6 +224,76 @@ class Watch:
             pass
         self.watch.resume_from_jsonl(up_to_epoch=start_epoch, resets=resets)
 
+
+    def _mask_state(self):
+        """{item key: (path, size, mtime)} for masks of active still-image datasets.
+
+        Masks are read by the batch loader on the latent grid, not VAE-encoded.
+        Checking them separately also detects masks added after training starts.
+        """
+        from fizgig.dataset.masks import folder_names, mask_for_stem
+        state = {}
+        for ds in getattr(self.group, "datasets", ()) or ():
+            if getattr(ds, "is_reg", False) or not getattr(ds, "loss_masks", False):
+                continue
+            folder = getattr(ds, "mask_directory", None) or getattr(ds, "image_directory", None)
+            manager = getattr(ds, "batch_manager", None)
+            if not folder or manager is None:
+                continue
+            names = folder_names(folder)
+            prefix = str(getattr(ds, "item_prefix", "") or "")
+            for bucket in manager.buckets.values():
+                for item in bucket:
+                    key = str(item.item_key)
+                    if key in state or getattr(item, "still_only", False):
+                        continue
+                    stem = key[len(prefix):] if key.startswith(prefix) else key
+                    stem = stem.rsplit("/", 1)[-1]
+                    mask = mask_for_stem(folder, stem, names)
+                    try:
+                        st = os.stat(mask) if mask else None
+                        state[key] = (os.path.realpath(mask), st.st_size, st.st_mtime_ns) if st else ("", 0, 0)
+                    except OSError:
+                        state[key] = ("", 0, 0)
+        return state
+
+    def _refresh_masks(self, changed_images=()):
+        """Validate added/edited masks and atomically switch each scheduled item's mask path.
+
+        An invalid new mask must never silently make a masked picture train unmasked.
+        Deleting a mask is an intentional switch to whole-picture loss at this boundary.
+        """
+        current = self._mask_state()
+        previous = getattr(self, "_mask_snapshot", {})
+        keys = {k for k, stamp in current.items() if stamp != previous.get(k)}
+        keys.update(k for k in changed_images if k in current)
+        if not keys:
+            self._mask_snapshot = current
+            return
+        from fizgig.dataset.masks import mask_problem
+        items = _items(self.group)
+        for key in sorted(keys):
+            item = items.get(key)
+            if item is None:
+                continue
+            path = current[key][0]
+            if path:
+                try:
+                    reason = mask_problem(path, item.original_size)
+                except Exception as exc:
+                    reason = str(exc) or "failed validation"
+                if reason:
+                    self.invalid_mask_keys.add(key)
+                    item.mask_path = None
+                    logger.warning("[live-mask] %s: mask %s (%s); image excluded until mask is fixed",
+                                   key, path, reason)
+                    continue
+            item.mask_path = path or None
+            self.invalid_mask_keys.discard(key)
+            logger.info("[live-mask] %s: %s at epoch boundary", key,
+                        "validated " + path if path else "mask removed; training unmasked")
+        self._mask_snapshot = current
+
     def _source_state(self):
         """Current source-file fingerprints, using the same item keys as cached training."""
         seen, listings = {}, {}
@@ -271,7 +343,8 @@ class Watch:
         # Never train a removed image, including a mixed batch whose family lacks
         # per-item losses. Skipping the whole batch is safer than training stale pixels.
         keys_to_check = keys if isinstance(keys, (list, tuple)) else [keys]
-        if any(str(k) in self.removed_keys for k in keys_to_check):
+        if any(str(k) in self.removed_keys or str(k) in getattr(self, "invalid_mask_keys", ())
+               for k in keys_to_check):
             return True
         if self.watch is None or self._reg_only(keys):
             return False
@@ -281,9 +354,10 @@ class Watch:
 
     def multiplier(self, batch):
         keys = batch.get("item_keys")
-        if (isinstance(keys, (list, tuple)) and len(keys) == 1 and str(keys[0]) in self.removed_keys):
+        blocked = self.removed_keys | getattr(self, "invalid_mask_keys", set())
+        if (isinstance(keys, (list, tuple)) and len(keys) == 1 and str(keys[0]) in blocked):
             return 0.0
-        if not isinstance(keys, (list, tuple)) and str(keys) in self.removed_keys:
+        if not isinstance(keys, (list, tuple)) and str(keys) in blocked:
             return 0.0
         return self.watch.multiplier(keys) if self.watch is not None and not self._reg_only(keys) else 1.0
 
@@ -307,7 +381,8 @@ class Watch:
         if per is None or len(keys) < 2 or int(per.shape[0]) != len(keys):
             return None
         raw = info.get("per_raw") or [float(x) for x in per.detach().float().cpu()]
-        out = [k in self.removed_keys or (self.watch is not None and k not in self.reg and self.watch.is_excluded([k])) for k in keys]
+        blocked = self.removed_keys | getattr(self, "invalid_mask_keys", set())
+        out = [k in blocked or (self.watch is not None and k not in self.reg and self.watch.is_excluded([k])) for k in keys]
         kept = [i for i, o in enumerate(out) if not o]
         mult = [0.0 if out[i] else float(reg_mult) if reg_keys and k in reg_keys else
                 (self.watch.multiplier([k]) if self.watch is not None else 1.0) for i, k in enumerate(keys)]
@@ -346,6 +421,10 @@ class Watch:
         except Exception:
             _recover_processing(os.path.join(self.output_dir, "loss_log", "image_updates.json"), changed_images)
             logger.warning("[image-fix] image refresh failed this boundary - training continues", exc_info=True)
+        try:
+            self._refresh_masks(changed_images)
+        except Exception:
+            logger.warning("[live-mask] mask refresh failed; old mask state retained", exc_info=True)
         try:
             self._captions(epoch, dit, device, parkable, changed_text)
         except Exception:
@@ -427,14 +506,18 @@ class Watch:
                                 raise ValueError("Paired-reference cache requires a full recache")
                         # The old bucket is fixed for the active run, even if an edit changes aspect.
                         with torch.no_grad():
-                            image = resize_image_to_bucket(open_upright(source), tuple(item.bucket_size))
+                            upright = open_upright(source)
+                            new_source_size = upright.size
+                            image = resize_image_to_bucket(upright, tuple(item.bucket_size))
                             encoded = self.driver.encode_images(vae, [image])[0]
                             import copy
                             scratch = copy.copy(item)
+                            scratch.original_size = new_source_size
                             scratch.latent_cache_path = item.latent_cache_path + ".live-update"
                             try:
                                 cache.save_latents(self.driver.description, scratch, encoded)
                                 os.replace(scratch.latent_cache_path, item.latent_cache_path)
+                                item.original_size = new_source_size
                             finally:
                                 _remove(scratch.latent_cache_path)
                         self.removed_keys.discard(k)
