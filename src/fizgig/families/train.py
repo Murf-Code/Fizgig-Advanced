@@ -2677,41 +2677,31 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             pass
 
     def metadata(epoch):
-        thumb = None if (metadata_thumbnail or "").lower() in ("off", "none") else (
-            metadata_thumbnail or latest_sample_image(output_dir))
         md = build_metadata(None, arch, time.time(),
-                            title=metadata_title if metadata_title is not None else resolve_title(
-                                output_name, metadata_trigger_phrase),
-                            author=metadata_author,
-                            description=metadata_description if metadata_description is not None else last_prompt[0],
-                            license=metadata_license, tags=metadata_tags, trigger_phrase=metadata_trigger_phrase,
-                            thumbnail=thumbnail_data_uri(thumb))
+                            title=metadata_title if metadata_title is not None else resolve_title(output_name, None),
+                            author=None, description=None, license=metadata_license, tags=None,
+                            trigger_phrase=None, thumbnail=None)
         md.update({"ss_network_module": f"fizgig.families ({desc.key}, {network_type})",
                    "ss_network_dim": str(network_dim if network_type == "lora" else lokr_factor),
                    "ss_network_alpha": str(network_alpha if network_type == "lora" else 1.0),
                    **({"ss_lokr_factor": str(lokr_factor)} if network_type == "lokr" else {}),
                    "ss_architecture": arch, "ss_epoch": str(epoch),
                    "ss_optimizer": opt_label, "ss_learning_rate": f"{learning_rate:g}",
-                   "ss_training_adapter": os.path.basename(training_adapter) if training_adapter else "none"})
+                   "ss_training_adapter_used": str(bool(training_adapter)).lower(),
+                   "ss_training_adapter_strength": f"{float(training_adapter_strength):g}"})
         if context_lora_path:
-            md.update({"ss_context_lora": os.path.basename(context_lora_path),
+            md.update({"ss_context_lora_used": "true",
                        "ss_context_lora_strength": str(context_lora_strength)})
         if reg_keys:                         # trained beside a regularisation set (a LoRA's, the Subjects card's)
             md.update({"ss_fizgig_reg_images": str(len(reg_keys)),
                        "ss_fizgig_reg_lr_multiplier": f"{float(reg_lr_multiplier):g}"})
         if slider:
-            # the deploy contract: strength is the dial (-1 one pole, +1 the other); tools read this
-            md.update({"ss_slider": "prompt_pairs" if slider_prompts else "image_pairs"})
-            if slider_prompts:
-                md.update({"ss_slider_prompts": json.dumps([str(x) for x in slider_prompts]),
-                           "ss_slider_guidance": f"{float(slider_guidance):g}"})
-                if slider_anchors:
-                    md.update({"ss_slider_anchors": json.dumps(list(slider_anchors)),
-                               "ss_slider_anchor_weight": f"{float(slider_anchor_weight):g}"})
-                if slider_history:          # the prompts it was steered through, from which epoch
-                    md.update({"ss_slider_prompt_history": json.dumps(slider_history)})
-            else:
-                md.update({"ss_slider_diff_weight": f"{float(slider_diff_weight):g}"})
+            # Keep slider settings useful without embedding user-authored prompts or anchors.
+            md.update({"ss_slider": "prompt_pairs" if slider_prompts else "image_pairs",
+                       "ss_slider_guidance": f"{float(slider_guidance):g}" if slider_prompts else "0",
+                       "ss_slider_anchor_count": str(len(slider_anchors)) if slider_prompts else "0",
+                       "ss_slider_anchor_weight": f"{float(slider_anchor_weight):g}" if slider_prompts else "0",
+                       "ss_slider_diff_weight": f"{float(slider_diff_weight):g}" if not slider_prompts else "0"})
         if train_blocks:
             md.update({"ss_train_blocks": ",".join(train_blocks)})
         if masked_training:
@@ -2735,26 +2725,114 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             except (AttributeError, IndexError, KeyError, TypeError, ValueError):
                 _lr = None
             try:
-                _vg = len(validator.groups) if validator is not None else None
+                _validator_enabled = validator is not None
+                _vg = len(validator.groups) if _validator_enabled else None
             except (NameError, AttributeError, TypeError):    # before validation is set up
-                _vg = None
+                _validator_enabled, _vg = False, None
             try:
                 _steps = step_off + global_step
             except NameError:
                 _steps = global_step
             _sched = ("adaptive" if adaptive else lr_scheduler if scheduler is not None else
                       "optimizer's own" if optimizer is not None else lr_scheduler)
+            _buckets = bucket_resolutions(group.datasets)
+            _family_spec = {
+                str(k): v for k, v in _fo.items()
+                if isinstance(v, (bool, int, float))
+                and not any(x in str(k).lower() for x in
+                            ("direction", "target", "tag", "caption", "prompt", "path", "file", "folder",
+                             "user", "author", "trigger"))
+            }
+            _optimizer_arg_spec = {}
+            # Parse only primitive numeric/bool optimizer arguments; never store the raw free-form string.
+            for _match in re.finditer(r"([A-Za-z][A-Za-z0-9_]*)=([^\s]+)", str(optimizer_args or "")):
+                _key, _value = _match.group(1).lower(), _match.group(2).strip("()")
+                if not re.fullmatch(r"[a-z][a-z0-9_]{0,40}", _key):
+                    continue
+                if _value.lower() in ("true", "false"):
+                    _optimizer_arg_spec[_key] = _value.lower() == "true"
+                elif re.fullmatch(r"-?\d+(?:\.\d+)?(?:e[-+]?\d+)?", _value, re.IGNORECASE):
+                    _optimizer_arg_spec[_key] = float(_value) if any(x in _value.lower() for x in (".", "e")) else int(_value)
+                elif re.fullmatch(r"-?\d+(?:\.\d+)?(?:e[-+]?\d+)?,-?\d+(?:\.\d+)?(?:e[-+]?\d+)?", _value, re.IGNORECASE):
+                    _optimizer_arg_spec[_key] = [float(x) for x in _value.split(",")]
+            _training_spec = {
+                "model": {"family": desc.key, "architecture": arch},
+                "network": {
+                    "type": network_type, "rank": int(network_dim) if network_type == "lora" else None,
+                    "alpha": float(network_alpha) if network_type == "lora" else None,
+                    "lokr_factor": int(lokr_factor) if network_type == "lokr" else None,
+                    "ema_decay": float(ema_decay or 0),
+                },
+                "optimizer": {
+                    "name": optimizer_type, "label": opt_label, "learning_rate": float(learning_rate),
+                    "arguments": _optimizer_arg_spec, "adaptive_lr": bool(adaptive_lr),
+                    "adaptive_lr_min": float(adaptive_lr_min) if adaptive_lr else None,
+                    "adaptive_lr_max": float(adaptive_lr_max) if adaptive_lr else None,
+                    "adaptive_lr_follows_validation": bool(adaptive_lr_on_val) if adaptive_lr else None,
+                },
+                "schedule": {
+                    "name": _sched, "warmup_steps": int(lr_warmup_steps),
+                    "cycles": int(lr_scheduler_num_cycles), "power": float(lr_scheduler_power),
+                    "adaptive_lr": bool(adaptive_lr),
+                },
+                "execution": {
+                    "batch_size": int(bsz), "gradient_accumulation_steps": int(accum),
+                    "effective_batch_size": int(bsz * accum), "training_precision": "bf16",
+                    "base_precision": precision, "gradient_checkpointing": bool(gradient_checkpointing),
+                    "checkpointed_blocks_off": int(gc_off_blocks), "blocks_to_swap": int(blocks_to_swap),
+                    "torch_compile": bool(do_compile), "compiled_checkpoint_outside": do_compile == "outside",
+                    "max_grad_norm": float(max_grad_norm), "background_loading": bool(_bg),
+                    "send_only_swap": bool(send_only_swap), "send_only_force": bool(send_only_force),
+                    "caption_dropout": float(caption_dropout),
+                },
+                "data": {
+                    "resolution": _res, "trained_resolutions": _buckets,
+                    "training_images": int(group.num_train_items), "regularization_images": int(len(reg_keys)),
+                    "regularization_lr_multiplier": float(reg_lr_multiplier) if reg_keys else None,
+                    "minimum_timestep": float(min_timestep), "maximum_timestep": float(max_timestep),
+                    "folder_weights_enabled": bool(folder_weights),
+                    "staged_training": bool(low_loader is not None),
+                    "stage_until": float(stage_until) if low_loader is not None else None,
+                    "stage_blend": float(stage_blend) if low_loader is not None else None,
+                },
+                "validation": {
+                    "enabled": bool(_validator_enabled), "holdout_images": int(len(val_held)),
+                    "groups": int(_vg or 1), "images_per_check": int(validation_images),
+                    "timesteps_per_check": int(validation_timesteps), "every_steps": int(validation_every_steps),
+                    "early_stop": bool(validation_early_stop), "patience": int(validation_patience),
+                    "minimum_delta": float(validation_min_delta), "best_epoch": _best[1],
+                    "best_loss": _best[0],
+                },
+                "training_features": {
+                    "training_method": _fo.get("training_method", "standard") if desc.key == "krea2" else "standard",
+                    "selective_block_check": bool(selective_global_replay),
+                    "masked_training": bool(masked_training),
+                    "mask_floor": float(mask_floor) if masked_training else None,
+                    "mask_prior": float(mask_prior) if masked_training else None,
+                    "face_boost": bool(face_on), "face_weight": float(face_weight) if face_on else None,
+                    "face_area": face_area if face_on else None,
+                    "face_cycle": face_cycle if face_on else None,
+                    "dop": bool(dop_cond), "dop_weight": float(dop_weight) if dop_cond else None,
+                    "dop_every": int(dop_every) if dop_cond else None,
+                    "training_maps": bool(training_maps), "family_options": _family_spec,
+                },
+                "runtime": {
+                    "training_seconds": round(time.time() - _meta_t0, 1),
+                    "peak_reserved_vram_gb": round(float(_train_peak[0]), 2),
+                },
+            }
             for k, v in training_metadata(
                     seed=seed, batch_size=bsz, grad_accum=accum, epochs=max_train_epochs, epoch=epoch,
                     steps=_steps, steps_per_epoch=steps_per_epoch,
                     max_steps=steps_per_epoch * max_train_epochs, num_images=group.num_train_items,
                     scheduler=_sched, warmup_steps=lr_warmup_steps, resolution=_res,
-                    buckets=bucket_resolutions(group.datasets), mixed_precision="bf16", base_precision=precision,
+                    buckets=_buckets, mixed_precision="bf16", base_precision=precision,
                     base_model=dit_path, datasets=group.datasets,
                     training_method=(_fo.get("training_method") if desc.key == "krea2" else None),
                     selective_block_check=selective_global_replay,
                     folder_balance=None, validation_groups=_vg,
-                    best_epoch=_best[1], best_val_loss=_best[0], current_lr=_lr, started_at=_meta_t0).items():
+                    best_epoch=_best[1], best_val_loss=_best[0], current_lr=_lr,
+                    training_spec=_training_spec, started_at=_meta_t0).items():
                 md.setdefault(k, v)          # an existing key (a family's own) is never replaced
         except Exception:                    # never in the way of a save
             logger.debug("[save] training facts left out of the metadata", exc_info=True)
