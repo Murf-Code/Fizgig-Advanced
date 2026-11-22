@@ -4381,3 +4381,102 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
 #tab-captions .studio-star-node circle {
   fill:var(--studio-tag-color,var(--accent));
 }
+
+
+.caption-duplicates-modal .studio-duplicate-browser{border:1px solid var(--accent-border);border-radius:10px;
+  background:var(--bg-surface);padding:12px;margin:0 0 12px;min-width:0}
+.caption-duplicates-modal .studio-duplicate-browser>summary{cursor:pointer;font-weight:650;color:var(--text-primary)}
+.caption-duplicates-modal .studio-duplicate-browser[open]>summary{margin-bottom:9px}
+.caption-duplicates-modal .studio-duplicate-controls{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+  padding:9px 0;margin:4px 0}
+.caption-duplicates-modal .studio-duplicate-threshold{width:clamp(120px,24vw,270px);max-width:100%;accent-color:var(--accent)}
+.caption-duplicates-modal .studio-duplicate-pages{gap:10px;justify-content:flex-end;flex-wrap:wrap;margin:8px 0}
+.caption-duplicates-modal .studio-duplicate-results{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,450px),1fr));gap:12px}
+.caption-duplicates-modal .studio-duplicate-group{min-width:0;border:1px solid var(--border);border-radius:9px;
+  background:var(--bg-inset);padding:10px;display:flex;flex-direction:column;gap:9px}
+.caption-duplicates-modal .studio-duplicate-head{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;
+  justify-content:space-between}
+.caption-duplicates-modal .studio-duplicate-head strong{font-size:12px;color:var(--text-primary)}
+.caption-duplicates-modal .studio-duplicate-group .field-row{flex-wrap:wrap;gap:7px}
+.caption-duplicates-modal .studio-duplicate-group select.w-path{flex:1 1 180px;width:auto;min-width:0}
+.caption-duplicates-modal .studio-duplicate-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:9px}
+.caption-duplicates-modal .studio-duplicate-card{min-width:0;border:1px solid var(--border);border-radius:8px;
+  overflow:hidden;background:var(--bg-surface)}
+.caption-duplicates-modal .studio-duplicate-card.keeper{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent-border)}
+.caption-duplicates-modal .studio-duplicate-card>img{width:100%;height:148px;object-fit:contain;display:block;
+  background:var(--bg-deep)}
+.caption-duplicates-modal .studio-duplicate-card-info{display:flex;flex-direction:column;gap:5px;padding:8px;
+  overflow-wrap:anywhere}
+.caption-duplicates-modal .studio-duplicate-card-info>strong{font-size:11px;max-width:100%}
+.caption-duplicates-modal .studio-duplicate-caption{font-size:11px;color:var(--text-secondary);
+  max-height:72px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+.caption-duplicates-modal .studio-duplicate-card-info .field-row{align-items:center}
+.caption-duplicates-modal .studio-duplicate-actions{display:flex;gap:8px;flex-wrap:wrap}
+.caption-duplicates-modal .studio-duplicate-merge-note{white-space:pre-wrap;overflow-wrap:anywhere}
+.caption-duplicates-modal .studio-duplicate-merge-preview{display:flex;flex-direction:column;gap:8px}
+.caption-duplicates-modal .studio-duplicate-caption-preview{padding:10px;margin:0;border:1px solid var(--border);
+  border-radius:7px;background:var(--bg-surface);white-space:pre-wrap;overflow-wrap:anywhere;
+  max-height:220px;overflow:auto;color:var(--text-primary);font-size:12px}
+@media(max-width:650px){
+  .caption-duplicates-modal .studio-duplicate-browser{padding:9px}
+  .caption-duplicates-modal .studio-duplicate-results{grid-template-columns:1fr}
+  .caption-duplicates-modal .studio-duplicate-card>img{height:120px}
+}
+
+/* Duplicate Image Finder now uses the same overlay shell as Settings.
+   Keep its data browser and controls inside this dialog, never inline in Studio. */
+.caption-duplicates-modal{width:min(96vw,1050px);max-height:min(92vh,950px)}
+.caption-duplicates-modal .caption-duplicates-content{
+  display:flex;flex-direction:column;gap:16px;min-height:0;overflow-y:auto;
+  margin:0;padding:22px 24px;border:0;border-radius:0;background:transparent;
+  color:inherit;
+}
+.caption-duplicates-modal .caption-duplicates-content>summary{display:none}
+.caption-duplicates-modal .caption-duplicates-content>.field-hint{
+  color:var(--text-secondary);font-size:12px;line-height:1.55;
+}
+.caption-duplicates-modal .studio-duplicate-controls{
+  display:grid;grid-template-columns:minmax(90px,auto) minmax(120px,1fr) auto auto;
+  gap:12px;align-items:center;margin:0;padding:14px;
+  border:1px solid var(--settings-line);border-radius:12px;
+  background:color-mix(in srgb,var(--accent) 6%,var(--bg-inset));
+}
+.caption-duplicates-modal .studio-duplicate-threshold{width:100%;accent-color:var(--accent)}
+.caption-duplicates-modal .caption-duplicates-content>label.field-row{
+  display:flex;align-items:center;gap:12px;margin:0;padding:14px;
+  border:1px solid var(--settings-line);border-radius:12px;
+}
+.caption-duplicates-modal .caption-duplicates-content input[type=checkbox]{
+  width:18px;height:18px;accent-color:var(--accent);
+}
+.caption-duplicates-modal .studio-duplicate-results{grid-template-columns:repeat(auto-fit,minmax(min(100%,440px),1fr))}
+.caption-duplicates-modal .studio-duplicate-group{
+  background:color-mix(in srgb,var(--bg-inset) 82%,transparent);
+  border-color:var(--settings-line);border-radius:12px;
+}
+.caption-duplicates-modal .studio-duplicate-card{
+  border-radius:10px;background:var(--bg-surface);
+}
+.caption-duplicates-modal .studio-duplicate-card.keeper{border-color:var(--accent)}
+.caption-duplicates-modal .studio-duplicate-card .field-row{
+  display:flex;align-items:center;gap:8px;
+}
+.caption-duplicates-modal :is(.field-hint,.studio-duplicate-caption){color:var(--text-secondary)}
+.caption-duplicates-modal .btn{
+  padding:8px 12px;border:1px solid var(--border-strong);
+  border-radius:9px;background:var(--bg-raised);color:var(--text-primary);
+  cursor:pointer;
+}
+.caption-duplicates-modal .btn-primary{background:var(--accent);border-color:var(--accent-border);color:var(--text-on-color)}
+.caption-duplicates-modal .btn:disabled{opacity:.5;cursor:not-allowed}
+.caption-duplicates-modal .btn:not(:disabled):hover{border-color:var(--accent);background:var(--accent-subtle)}
+.caption-duplicates-modal .studio-duplicate-merge-preview{min-width:0}
+.caption-duplicates-modal .studio-duplicate-caption-preview{background:var(--bg-inset)}
+@media(max-width:730px){
+  .caption-duplicates-modal .studio-duplicate-controls{grid-template-columns:minmax(0,1fr) auto}
+  .caption-duplicates-modal .studio-duplicate-controls .field-label{grid-column:1/-1}
+  .caption-duplicates-modal .studio-duplicate-controls .studio-duplicate-threshold{grid-column:1}
+  .caption-duplicates-modal .studio-duplicate-controls .btn-primary{grid-column:1/-1}
+  .caption-duplicates-modal .caption-duplicates-content{padding:14px 16px}
+  .caption-duplicates-modal .studio-duplicate-results{grid-template-columns:1fr}
+}
