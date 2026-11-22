@@ -326,7 +326,7 @@ def test_run_direction_edit_end_to_end_with_scan_rounds_and_spill():
         cfg = de.make_config({"direction_edit_caption_folder": d, "direction_edit_scan": "1",
                               "direction_edit_rounds": "2", "direction_edit_caption_count": "8"})
         cfg.update(scan_min_count=30, scan_per_tag=4, scan_targets=3, scan_controls=8, scan_z=0.3, columns=16,
-                   hash_checkpoint=False, ram_budget_gb=0.00001)
+                   ram_budget_gb=0.00001)
         cfg = de._normalise(cfg)
         out = tempfile.mkdtemp(prefix="de_v2_e2e_")
         before = {x for x in os.listdir(tempfile.gettempdir()) if x.startswith("fizgig_direction_edit_")}
