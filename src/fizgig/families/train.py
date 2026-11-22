@@ -322,7 +322,8 @@ def _load_state(state_dir, net, optimizer, device, arch, untagged_own=False, dri
         torch.set_rng_state(rng["torch"])
         if "cuda" in rng and torch.cuda.is_available():
             torch.cuda.set_rng_state_all(rng["cuda"])
-    return int(meta.get("epoch", 0)), int(meta.get("global_step", 0)), meta
+    saved_step = meta.get("global_step")
+    return int(meta.get("epoch", 0)), int(saved_step) if saved_step is not None else None, meta
 
 
 PREVIEW_PEAK_GB = [0.0]     # the largest reserved peak a preview reached this run (the Auto plan learns from it)
@@ -2547,16 +2548,21 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         _fresh_lrs = [g["lr"] for g in optimizer.param_groups] if optimizer is not None else []
         start_epoch, global_step, meta = _load_state(resume_state_dir, net, optimizer, device, state_arch,
                                                      untagged_own=desc.resumes_untagged_states, driver=driver)
-        if global_step is None:
-            global_step = start_epoch * steps_per_epoch
-        elif int(meta.get("batch_size", 1)) != bsz:
-            # it trained at another Batch size (moved to or from a pod that batches): a state is an epoch end, so the
-            # steps so far are its epochs at this run's steps per epoch - the LR schedule carries on from there
-            logger.info(f"[resume] it trained {meta.get('batch_size', 1)} picture(s) a step and goes on at {bsz}: "
-                        f"step {global_step} -> {start_epoch * steps_per_epoch}")
-            global_step = start_epoch * steps_per_epoch
         if isinstance(meta.get("mid_epoch"), dict) and meta["own_state"]:
             resume_mid = meta["mid_epoch"]
+        saved_batch_size = int(meta.get("batch_size", 1))
+        if global_step is None:
+            # Old state files did not always record global_step. A Save & stop point also has already-trained batches
+            # inside its epoch; include them so the live counter and loss-log cutoff stay on the same step.
+            global_step = start_epoch * steps_per_epoch
+            if resume_mid and saved_batch_size == bsz:
+                global_step += int(resume_mid.get("steps") or 0)
+        elif saved_batch_size != bsz:
+            # It trained at another Batch size: count its completed epochs at this run's steps per epoch. A mid-epoch
+            # batch set will not match the new batching, so those batches are trained again rather than counted here.
+            logger.info(f"[resume] it trained {saved_batch_size} picture(s) a step and goes on at {bsz}: "
+                        f"step {global_step} -> {start_epoch * steps_per_epoch}")
+            global_step = start_epoch * steps_per_epoch
         resume_es = meta.get("early_stop")
         if adaptive:
             adaptive.load_state_dict(meta.get("adaptive_lr_state"))
@@ -3316,7 +3322,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     # a test setting, ignored unless set: FIZGIG_TEST_VRAM_CAP_GB caps this process's VRAM (a real CUDA out-of-memory
     # where Windows would otherwise spill into shared memory), from step FIZGIG_TEST_VRAM_CAP_AT_STEP (default 0)
     test_cap = _test_vram_cap(device)
-    progress = tqdm(total=steps_per_epoch * max_train_epochs, initial=global_step, desc="steps", smoothing=0)
+    progress = tqdm(total=step_off + steps_per_epoch * max_train_epochs, initial=step_off + global_step,
+                    desc="steps", smoothing=0)
     between = [None]          # when the last epoch's steps ended: the time until the next epoch's is left out of s/it
     dit.train()
     pending = 0                            # micro-batches backpropagated since the last optimizer step

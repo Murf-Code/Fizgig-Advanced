@@ -217,6 +217,32 @@ def test_second_press_saves_a_restore_point_then_resume_finishes_the_epoch(tiny,
     assert (out / "t.safetensors").exists()
 
 
+def test_resume_from_state_without_global_step_keeps_mid_epoch_offset(tiny, tmp_path):
+    T, cfg = tiny
+    out = tmp_path / "legacy-step"
+    assert _run(T, cfg, out, press_at=SPE + 2) == "stopped"
+    state = out / "t-000002-state"
+    meta = json.loads((state / "training_state.json").read_text())
+    meta.pop("global_step")                 # an older compatible state format had no saved global step
+    (state / "training_state.json").write_text(json.dumps(meta))
+    os.remove(out / ".pause_requested")
+
+    assert _run(T, cfg, out, resume=str(state)) == "done"
+    assert [r["s"] for r in _losses(out)] == list(range(1, 3 * SPE + 1))
+
+
+def test_resume_from_a_whole_epoch_keeps_saving_each_epoch(tiny, tmp_path):
+    T, cfg = tiny
+    out = tmp_path / "epoch-saves"
+    assert _run(T, cfg, out, max_train_epochs=2) == "done"
+    state = out / "t-000001-state"
+    assert state.is_dir() and (out / "t-000001.safetensors").is_file()
+
+    assert _run(T, cfg, out, resume=str(state), max_train_epochs=3) == "done"
+    assert (out / "t-000002.safetensors").is_file()
+    assert (out / "t.safetensors").is_file()
+
+
 def test_with_accumulation_it_waits_for_the_optimizer_step(tiny, tmp_path):
     T, cfg = tiny
     out = tmp_path / "acc"

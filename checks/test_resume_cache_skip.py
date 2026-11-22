@@ -88,6 +88,21 @@ def test_a_cache_that_is_all_there_encodes_nothing_and_loads_no_model(counting, 
     assert _pass(str(cfg), str(model))["txt"] == 10
 
 
+def test_legacy_text_caches_without_an_encoder_stamp_are_reused(tmp_path):
+    import torch
+    from safetensors.torch import save_file
+    from fizgig.families.cache import _cached_matches
+
+    path = str(tmp_path / "legacy.safetensors")
+    save_file({"cond__test": torch.ones(1)}, path, metadata={"caption1": "same caption"})
+    assert _cached_matches(path, "same caption", "", "encoder.safetensors:123")
+    assert not _cached_matches(path, "edited caption", "", "encoder.safetensors:123")
+
+    save_file({"cond__test": torch.ones(1)}, path,
+              metadata={"caption1": "same caption", "text_encoder": "older-encoder:123"})
+    assert not _cached_matches(path, "same caption", "", "new-encoder:123")
+
+
 def test_the_text_stage_skips_by_caption(tmp_path):
     import argparse
     from fizgig.scripts.cache_text import process_batches

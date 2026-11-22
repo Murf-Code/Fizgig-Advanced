@@ -104,8 +104,10 @@ def _cached_matches(path, caption, refs, encoder=None):
             md = f.metadata() or {}
     except Exception:
         return False
+    # Caches made before encoder_stamp was introduced have no text_encoder field. Keep those when the caption and
+    # reference geometry still match; an explicit, different stamp is still a reason to re-encode.
     return (md.get("caption1") == caption and md.get("reference_sizes", "") == refs
-            and (encoder is None or md.get("text_encoder") == encoder))
+            and (encoder is None or not md.get("text_encoder") or md.get("text_encoder") == encoder))
 
 
 def encoder_stamp(model):
