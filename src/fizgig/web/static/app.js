@@ -13988,6 +13988,14 @@ function renderCaptionStudio(host,items,ext){
     "aria-label":"Caption Workbench visual explorer"});
   const openView=(mode)=>{
     const view=["list","waterfall","constellation"].includes(mode)?mode:"list";
+    if(view!=="list"&&S.cap.imageEditing?.inline){
+      // Waterfall and Constellation replace the image stage; flush pending
+      // Remove strokes and return the canvas home before hiding Tags.
+      void captionImageClose().then(ok=>{
+        if(ok)document.querySelector('#captionsGrid .studio-view-rail [data-view="'+view+'"]')?.click();
+      }).catch(e=>say("Image tools: "+e.message));
+      return;
+    }
     S.cap.studioExploreMode=view;
     indexMode.value="list";
     if(view==="list"){
@@ -14297,6 +14305,21 @@ function renderCaptionStudio(host,items,ext){
   redraw();host.classList.add("studio-host");
   host.append(liveStatus,toolsRow,layout,fullStage);
   openView(S.cap.studioExploreMode||"list");
+  if(S.cap.imageEditing?.inline&&(S.cap.studioExploreMode||"list")==="list"){
+    if(S.cap.imageEditing.path===current.path){
+      captionInlineSyncStage(preview);
+      refreshInlineButtons();
+    }else{
+      // Thumbnail navigation keeps editing in place, saving the previous
+      // image before loading the next. Do this after the new stage mounts.
+      const wanted=current.path;
+      const tool=meState().tool==="crop"?"crop":"remove";
+      requestAnimationFrame(()=>{
+        if(!host.isConnected||S.cap.studioPath!==wanted||!S.cap.imageEditing?.inline)return;
+        void captionImageOpen(current,tool).catch(e=>say("Image tools: "+e.message));
+      });
+    }
+  }
 }
 
 // the table view: one row a file, sorted by a click on a column's head (again: the other way)
