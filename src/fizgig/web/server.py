@@ -5287,6 +5287,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not folder or not os.path.isdir(folder):
                     return self.json({"error": "Choose the training folder on the Start tab first."}, 400)
                 try:
+                    from fizgig.web import caption_review
+                    if caption_review.is_locked(folder, name):
+                        raise ValueError("This picture is reviewed and locked. Unlock it in Caption Studio first.")
                     return self.json(image_edit.save_watermark_edit(folder, name, str(b.get("add") or ""),
                                                                     str(b.get("erase") or ""), b.get("pad")))
                 except (ValueError, TypeError) as e:
@@ -5294,7 +5297,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/masks/edit/save":  # allowed while training: written atomically, a running run reads it
                 from fizgig.web import mask_edit  # the next time that picture comes up (masks.load_mask checks mtime)
                 try:
-                    return self.json(mask_edit.save(str(b.get("folder") or ""), str(b.get("name") or ""),
+                    from fizgig.web import caption_review
+                    folder, name = str(b.get("folder") or ""), str(b.get("name") or "")
+                    if caption_review.is_locked(folder, name):
+                        raise ValueError("This picture is reviewed and locked. Unlock it in Caption Studio first.")
+                    return self.json(mask_edit.save(folder, name,
                                                     str(b.get("png") or "")))
                 except ValueError as e:
                     return self.json({"error": str(e)}, 400)
