@@ -59,7 +59,8 @@ def paired_case(tmp_path):
     ds = SimpleNamespace(item_prefix="s2:", image_directory=str(root),
         control_directory=str(before), extra_reference_directory=None,
         batch_manager=bm, is_reg=False, has_control=True,
-        caption_extension=".txt", extra_extensions=())
+        caption_extension=".txt", extra_extensions=(),
+        resolution=(32,32), enable_bucket=False, bucket_no_upscale=False, reso_steps=16)
     ds.get_latent_cache_path=lambda i: str(caches / (
         f"{i.item_key.split('/')[-1].split('.')[0]}_{i.original_size[0]:04d}x"
         f"{i.original_size[1]:04d}_qwen_image21.safetensors"))
