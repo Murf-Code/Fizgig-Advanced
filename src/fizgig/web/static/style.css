@@ -5791,3 +5791,159 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
 #tab-captions .studio-workspace-status[data-state="editing"] .studio-status-label{
   color:var(--text-primary);
 }
+
+
+/* Image Prep's full glass workspace. The original <details> stays as a
+   keyboard-accessible launcher, but its editor opens above the application
+   rather than expanding the Masks card. Captions reuses the same live stage
+   without showing this overlay. */
+#tab-prep #maskEdit{
+  margin:16px 0 0;
+  padding:0;
+  border:0;
+}
+#tab-prep #maskEdit > summary{
+  padding:15px 54px 15px 18px;
+  border:1px solid var(--accent-border);
+  border-left:3px solid var(--accent);
+  border-radius:14px;
+  background:linear-gradient(125deg,var(--bg-raised),var(--bg-surface));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.09),0 10px 24px rgba(0,0,0,.10);
+  gap:6px 12px;
+}
+#tab-prep #maskEdit > summary::before{display:none}
+#tab-prep #maskEdit > summary .me-launch-icon{
+  position:absolute;right:18px;top:50%;transform:translateY(-50%);
+  font-size:19px;color:var(--accent-text);line-height:1;
+}
+#tab-prep #maskEdit > summary:focus-visible{
+  outline:2px solid var(--accent);outline-offset:3px;
+}
+#tab-prep #maskEdit[open] > summary{margin-bottom:0}
+#tab-prep #maskEdit .me-dialog-backdrop{display:none}
+#tab-prep.active #maskEdit[open] > .me-dialog-backdrop{
+  display:flex;
+  position:fixed;inset:0;z-index:2150;
+  justify-content:center;align-items:center;
+  padding:clamp(8px,1.8vw,26px);
+  box-sizing:border-box;overflow:auto;
+  isolation:isolate;
+  background:rgba(5,8,20,.78);
+}
+#tab-prep.active #maskEdit[open] > .me-dialog-backdrop::before{
+  content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  backdrop-filter:blur(10px) saturate(1.15);
+  -webkit-backdrop-filter:blur(10px) saturate(1.15);
+}
+#tab-prep .me-dialog-window{
+  display:flex;flex-direction:column;
+  width:min(1490px,100%);height:min(940px,95dvh);
+  min-width:0;min-height:0;
+  color-scheme:dark;
+  --bg-inset:#111827;
+  --bg-raised:#212b41;
+  --bg-surface:#1b2538;
+  --bg-hover:rgba(255,255,255,.12);
+  --text-primary:#f4f5ff;
+  --text-secondary:#b9c3d9;
+  --text-muted:#a2aec5;
+  --border:rgba(202,213,255,.19);
+  --accent-border:rgba(169,157,255,.37);
+  --accent-text:#c3beff;
+  color:var(--text-primary);
+  border:1px solid rgba(213,218,255,.24);
+  border-radius:23px;
+  overflow:hidden;
+  background:linear-gradient(145deg,rgba(35,44,69,.985) 0%,rgba(18,26,44,.99) 46%,rgba(15,19,32,.99) 100%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.2),0 28px 95px rgba(0,0,0,.68),0 0 0 1px rgba(120,136,255,.06);
+}
+#tab-prep .me-dialog-heading{
+  flex:none;display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:18px clamp(16px,2vw,28px);
+  border-bottom:1px solid rgba(198,207,255,.13);
+  background:linear-gradient(115deg,rgba(159,145,255,.14),rgba(98,174,255,.06),rgba(0,0,0,.02));
+}
+#tab-prep .me-dialog-overline{
+  display:block;letter-spacing:.18em;text-transform:uppercase;
+  color:#afa9eb;font-weight:760;font-size:10px;
+}
+#tab-prep .me-dialog-heading h2{
+  color:#fafaff;font-size:21px;letter-spacing:-.035em;line-height:1.2;
+  margin:2px 0 2px;font-weight:730;
+}
+#tab-prep .me-dialog-heading p{color:#afbbd4;font-size:12px;margin:0}
+#tab-prep .me-dialog-heading-right{
+  display:flex;align-items:center;gap:14px;flex:none;
+}
+#tab-prep .me-dialog-live{font-size:11px;color:#c4cbe2;white-space:nowrap}
+#tab-prep .me-dialog-live>span{
+  display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:5px;
+  background:#85d7ca;box-shadow:0 0 8px rgba(124,215,202,.4);
+}
+#tab-prep .me-dialog-close{
+  border:1px solid rgba(187,191,241,.3);
+  background:rgba(255,255,255,.09);
+  border-radius:10px;color:#f4f3ff;
+  font-weight:700;min-height:36px;
+}
+#tab-prep .me-dialog-close:hover{background:rgba(163,150,249,.23)}
+#tab-prep .me-dialog-content{
+  flex:1;min-height:0;display:flex;flex-direction:column;
+  gap:9px;padding:14px clamp(12px,1.6vw,24px) 18px;
+  overflow-y:auto;overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+}
+#tab-prep .me-dialog-content>.me-bar{
+  flex:none;padding:8px 12px;margin:0;
+  background:rgba(255,255,255,.035);
+  border:1px solid rgba(198,207,255,.12);
+  border-radius:12px;
+}
+#tab-prep .me-dialog-content>.me-bar .btn{
+  color:var(--text-primary);border-color:var(--border);
+}
+#tab-prep .me-dialog-content>.me-bar .btn.active{
+  border-color:rgba(185,172,255,.6);
+  background:rgba(114,103,226,.3);
+}
+#tab-prep .me-dialog-content>.me-bar .me-slider{color:#c0c9da}
+#tab-prep .me-dialog-content>.me-bar .me-name{
+  margin-left:auto;color:#cbd5e8;overflow-wrap:anywhere;
+}
+#tab-prep .me-dialog-content>.me-bar .me-count{color:#d5d9e8}
+#tab-prep .me-dialog-guide{
+  flex:none;border:1px solid rgba(177,192,232,.15);
+  border-radius:10px;background:rgba(15,20,35,.35);
+}
+#tab-prep .me-dialog-guide>summary{
+  padding:7px 12px;font-size:11px;font-weight:650;
+  color:#bac6e1;cursor:pointer;
+}
+#tab-prep .me-dialog-guide>.field-hint{padding:4px 12px 12px;color:#bac4da}
+#tab-prep .me-dialog-guide[open]>summary{border-bottom:1px solid rgba(177,192,232,.12)}
+#tab-prep .me-dialog-content>.me-stage{
+  flex:1 0 280px;min-height:280px;max-height:none;margin:0;
+  border:1px solid rgba(187,193,241,.21);border-radius:13px;
+  background:#101523;box-shadow:inset 0 0 30px rgba(0,0,0,.2);
+}
+#tab-prep .me-dialog-content>.me-stage #meCanvas{
+  width:100%;height:100%;max-height:none;box-sizing:border-box;
+}
+#tab-prep .me-dialog-content>.me-bar .me-saved[data-state="unsaved"]{
+  color:#ffd19c;
+}
+#tab-prep .me-dialog-content>.field-hint{color:#aeb9d0;font-size:11px}
+#tab-prep .me-dialog-window:focus-visible{outline:2px solid rgba(174,159,255,.85);outline-offset:3px}
+@media(max-width:740px){
+  #tab-prep.active #maskEdit[open] > .me-dialog-backdrop{padding:5px;align-items:stretch}
+  #tab-prep .me-dialog-window{height:calc(100dvh - 10px);border-radius:14px}
+  #tab-prep .me-dialog-heading{padding:12px 14px;align-items:flex-start}
+  #tab-prep .me-dialog-heading h2{font-size:18px}
+  #tab-prep .me-dialog-heading p,#tab-prep .me-dialog-live{display:none}
+  #tab-prep .me-dialog-content{padding:9px;gap:7px}
+  #tab-prep .me-dialog-content>.me-bar{padding:7px;gap:7px}
+  #tab-prep .me-dialog-content>.me-stage{flex-basis:260px;min-height:240px}
+}
+@media(prefers-reduced-motion:reduce){
+  #tab-prep .me-dialog-window{transition:none;animation:none}
+}
