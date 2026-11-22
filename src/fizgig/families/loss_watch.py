@@ -329,7 +329,11 @@ class Watch:
 
     # ---- epoch boundary --------------------------------------------------------------------------------
     def boundary(self, epoch, dit, device, parkable=True):
-        """Reclassify, write problem_images.json, then apply queued caption edits and auto-recaptions."""
+        """Reclassify, detect dataset edits, and apply changes between epochs."""
+        # A crash/stop can leave a claimed queue behind. Fold it back into the
+        # pending queue before starting any new encoding work.
+        for name in ("image_updates.json", "caption_updates.json"):
+            _recover_processing(os.path.join(self.output_dir, "loss_log", name))
         if self.watch is not None:
             self.watch.epoch_boundary(epoch)
         try:
@@ -340,10 +344,12 @@ class Watch:
         try:
             self._images(epoch, dit, device, parkable, changed_images)
         except Exception:
+            _recover_processing(os.path.join(self.output_dir, "loss_log", "image_updates.json"), changed_images)
             logger.warning("[image-fix] image refresh failed this boundary - training continues", exc_info=True)
         try:
             self._captions(epoch, dit, device, parkable, changed_text)
         except Exception:
+            _recover_processing(os.path.join(self.output_dir, "loss_log", "caption_updates.json"), changed_text)
             logger.warning("[caption-fix] caption repair failed this boundary - training continues", exc_info=True)
 
     def _images(self, epoch, dit, device, parkable, detected=None):
@@ -365,7 +371,7 @@ class Watch:
             updates = {**(detected or {}), **updates}
         except Exception:
             logger.warning("[image-fix] could not read queued images; queue preserved", exc_info=True)
-            return
+            raise
         if not updates:
             _remove(processing)
             return
@@ -462,7 +468,7 @@ class Watch:
                     updates = {str(k): str(v) for k, v in json.load(f).items()}
             except Exception:
                 logger.warning("[caption-fix] could not read caption_updates.json - skipping", exc_info=True)
-                return
+                raise
         updates = {**(detected or {}), **updates}
         auto = []
         if self.auto_recaption and self.watch is not None and self.image_dir:
@@ -654,6 +660,27 @@ def _remove(path):
             os.remove(path)
     except OSError:
         pass                     # the GUI may hold it open; it is consumed next boundary
+
+
+def _recover_processing(path, pending=None):
+    """Recover a claimed queue after interrupted encoder work, preserving newer UI saves."""
+    processing = path + ".processing"
+    changes = {}
+    if os.path.isfile(processing):
+        try:
+            with open(processing, encoding="utf-8") as f:
+                changes = json.load(f)
+            if not isinstance(changes, dict):
+                raise ValueError("queue is not a mapping")
+        except (OSError, ValueError):
+            logger.warning("[live-dataset] unreadable claimed queue %s; keeping it for inspection", processing,
+                           exc_info=True)
+            return
+    changes.update(pending or {})
+    if changes:
+        _requeue(path, processing, changes)
+    elif os.path.isfile(processing):
+        _remove(processing)
 
 
 def _requeue(path, processing, updates):
