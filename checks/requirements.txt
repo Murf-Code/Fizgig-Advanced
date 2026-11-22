@@ -1,6 +1,6 @@
 pytest>=8
 numpy
-pillow
+pillow==13.0.0
 safetensors
 # families/train.py and what it loads (the slider anchor checks import it): the app's own pins
 tqdm==4.67.1
