@@ -10863,6 +10863,13 @@ async function pollCaptions() {
   if (S.cap.lastState && ["loading", "running", "translating"].includes(S.cap.lastState) && !busy) loadCaptions();   // done: the new captions
   else if (busy && Date.now() - (S.cap.liveAt || 0) > 5000) { S.cap.liveAt = Date.now(); captionsLive(); }
   S.cap.lastState = st.state;
+  if(S.imageFolder && $("capView")?.value==="studio" && document.querySelector("#tab-captions.active")) {
+    api("/api/captions/live_status?folder="+encodeURIComponent(S.imageFolder)).then(status=>{
+      S.cap.liveStatus=status;
+      const box=$("studioLiveStatus");
+      if(box){box.textContent=studioLiveSummary(status);box.classList.toggle("needs-attention",!!status.attention);}
+    }).catch(()=>{});
+  }
   if (busy || document.querySelector("#tab-captions.active")) S.cap.timer = setTimeout(pollCaptions, busy ? 1500 : 5000);
 }
 
@@ -10901,6 +10908,8 @@ async function loadCaptions() {
     }catch(e){reviewLookup.set(folder,new Set());console.warn("Caption review status:",e.message);}
   }));
   S.cap.studioReviewed=new Set(S.cap.items.filter(it=>reviewLookup.get(capItemFolder(it))?.has(it.name)).map(it=>it.path));
+  try{S.cap.liveStatus=await api("/api/captions/live_status?folder="+encodeURIComponent(S.imageFolder));}
+  catch(e){S.cap.liveStatus=null;}
   renderCaptions();
 }
 
@@ -11014,6 +11023,16 @@ function studioTokens(s,mode="auto"){return CaptionStudioTags.tags(s,mode,S.cap.
 function studioCompose(original,tags,mode="auto"){return CaptionStudioTags.compose(original,tags,mode,S.cap.studioDelimiter||",");}
 function studioUnique(a){return CaptionStudioTags.unique(a);}
 function studioCaptionMode(it){return CaptionStudioTags.kind(it.caption,S.cap.studioModes?.get(it.path)||"auto",S.cap.studioDelimiter||",");}
+function studioLiveSummary(status){
+  if(!status||!status.attention)return "Live dataset updates: edits refresh at epoch boundaries; newly added images join compatible fixed-size buckets.";
+  const parts=[];
+  if(status.unscheduled_count)parts.push(status.unscheduled_count+" new file(s) not yet admitted");
+  if(status.unsupported_media_count)parts.push(status.unsupported_media_count+" changed video/audio source(s) excluded until restart");
+  if(status.invalid_mask_count)parts.push(status.invalid_mask_count+" invalid mask(s) blocking training");
+  const samples=[...(status.unscheduled_examples||[]),...(status.unsupported_media_examples||[])].slice(0,8);
+  return "Live dataset attention: "+parts.join(" · ")+". "+(status.reason||"")+
+    (samples.length?" Examples: "+samples.join(", "):"");
+}
 function studioCategories(){
   const key="fizgig_caption_categories:"+String(S.imageFolder||"");
   if(S.cap.studioCategories?.key===key)return S.cap.studioCategories;
@@ -11291,7 +11310,10 @@ function renderCaptionStudio(host,items,ext){
       try{await api("/api/captions/restore",last);S.cap.studioLastRemoval=null;loadCaptions();}
       catch(e){say(e.message);}
     })]:[]),el("span",{class:"field-hint studio-bulk-note"}));
-  redraw();host.classList.add("studio-host");host.append(bulk,el("div",{class:"studio-layout"},left,center,right));
+  const liveStatus=el("div",{class:"studio-live-status field-hint",id:"studioLiveStatus",
+    text:studioLiveSummary(S.cap.liveStatus)});
+  liveStatus.classList.toggle("needs-attention",!!S.cap.liveStatus?.attention);
+  redraw();host.classList.add("studio-host");host.append(liveStatus,bulk,el("div",{class:"studio-layout"},left,center,right));
 }
 
 // the table view: one row a file, sorted by a click on a column's head (again: the other way)
