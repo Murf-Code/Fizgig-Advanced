@@ -11751,12 +11751,59 @@ function captionAiControlsMount(target){
 }
 
 function renderCaptionStudio(host,items,ext){
+  // Search updates as you type. Restore focus and caret after Studio rebuilds,
+  // and leave the bar visible when the filter produces zero results.
+  const createTagFilterBar=()=>{
+    const field=el("input",{type:"search",class:"w-path studio-tag-query",
+      placeholder:"Filter images by tags","aria-label":"Filter images by tags",
+      title:"Filter as you type. Supports AND, OR, NOT and quoted tags."});
+    field.value=S.cap.studioQuery||"";
+    const clear=el("button",{class:"btn btn-sm studio-tag-clear",type:"button",
+      text:"×","aria-label":"Clear image tag filter",title:"Clear image tag filter"});
+    const bar=el("div",{class:"studio-filter-bar"});
+    const refreshClear=()=>{clear.hidden=!field.value;};
+    const apply=()=>{
+      if(field.isComposing)return;
+      const next=field.value.trim();
+      try{CaptionStudioTags.search([],next);}
+      catch(e){
+        field.setAttribute("aria-invalid","true");
+        field.title="Incomplete tag query: "+e.message;
+        return;
+      }
+      field.removeAttribute("aria-invalid");
+      field.title="Filter as you type. Supports AND, OR, NOT and quoted tags.";
+      if(next===S.cap.studioQuery)return;
+      const caret=field.selectionStart;
+      S.cap.studioQuery=next;
+      S.cap.page=0;
+      renderCaptions();
+      const replacement=$("captionsGrid").querySelector(".studio-tag-query");
+      if(replacement){
+        replacement.focus({preventScroll:true});
+        if(caret!==null)replacement.setSelectionRange(caret,caret);
+      }
+    };
+    field.addEventListener("input",()=>{refreshClear();apply();});
+    field.addEventListener("compositionend",apply);
+    clear.addEventListener("click",()=>{
+      field.value="";
+      refreshClear();
+      apply();
+      // Also return focus if the filter was already empty.
+      $("captionsGrid").querySelector(".studio-tag-query")?.focus({preventScroll:true});
+    });
+    refreshClear();
+    bar.append(field,clear);
+    return bar;
+  };
   const selection=S.cap.studioSelection||(S.cap.studioSelection=new Set());
   S.cap.studioDelimiter=S.cap.studioDelimiter||localStorage.getItem("fizgig_caption_separator")||",";
   const pageItems=items.slice(S.cap.page*CAP_PAGE,(S.cap.page+1)*CAP_PAGE);
   const current=pageItems.find(i=>i.path===S.cap.studioPath)||pageItems[0]||items[0];
   if(!current){
     host.append(el("div",{class:"studio-empty-captions"},
+      createTagFilterBar(),
       el("div",{class:"field-hint",text:"No matching images in this view. Change your filter or restore images to the dataset folder, then refresh."}),
       el("button",{class:"btn btn-primary",type:"button",text:"Refresh dataset",
         onclick:()=>void loadCaptions().catch(e=>alert("Refresh failed: "+e.message))})));
@@ -11787,17 +11834,7 @@ function renderCaptionStudio(host,items,ext){
   left.append(el("div",{class:"studio-browser-heading"},
     el("strong",{text:"Images"}),
     el("span",{class:"field-hint",text:String(items.length)})));
-  const tagQuery=el("input",{type:"text",class:"w-path",placeholder:'Exact tags: "red hair" AND NOT blurry'});
-  tagQuery.value=S.cap.studioQuery||"";
-  const applyTagQuery=()=>{try{CaptionStudioTags.search([],tagQuery.value);S.cap.studioQuery=tagQuery.value.trim();S.cap.page=0;renderCaptions();}catch(e){say("Invalid tag query: "+e.message);}};
-  tagQuery.addEventListener("keydown",e=>{if(e.key==="Enter")applyTagQuery();});
-  tagQuery.placeholder='Filter images by tags';
-  tagQuery.title="Enter a tag query. Supports AND, OR, NOT and quoted tags.";
-  tagQuery.setAttribute("aria-label","Filter images by tags");
-  const clearFilter=btn("×",()=>{S.cap.studioQuery="";renderCaptions();});
-  clearFilter.title="Clear image tag filter";
-  const filterBar=el("div",{class:"studio-filter-bar"},tagQuery,btn("Search",applyTagQuery),clearFilter);
-  left.append(filterBar);
+  left.append(createTagFilterBar());
   const thumbs=el("div",{class:"studio-thumb-rail",role:"list","aria-label":"Dataset thumbnails",tabindex:"0"});
   const missingBtn=btn($("capFilter").value==="missing"?"Missing Tags ✓":"Missing Tags",()=>{
     $("capFilter").value=$("capFilter").value==="missing"?"all":"missing";
@@ -13143,7 +13180,7 @@ function renderCaptionStudio(host,items,ext){
       viewButtons.querySelector('[data-view="'+mode+'"]')?.click();return;
     }
     if(e.altKey&&!cmd){
-      const focus={f:tagQuery,a:newTag,s:indexSearch,i:tags};
+      const focus={f:left.querySelector(".studio-tag-query"),a:newTag,s:indexSearch,i:tags};
       if(key==="c"){handled();showTabs("ai");return;}
       if(focus[key]){
         handled();
