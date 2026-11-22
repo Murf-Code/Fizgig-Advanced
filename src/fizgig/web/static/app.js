@@ -10909,6 +10909,10 @@ function captionModelsChanged() {
 }
 
 async function loadCaptions() {
+  // Discard stale requests when datasets or caption extensions change while
+  // a slower media/review/status request is still in flight.
+  const serial=S.cap.loadSerial=(S.cap.loadSerial||0)+1;
+  const current=()=>serial===S.cap.loadSerial;
   // A dataset switch must not leave Image Prep mounted on the former folder.
   if(S.cap?.imageEditing&&!S.cap.imageClosing){
     const normalized=p=>String(p||"").replace(/\\/g,"/").replace(/\/+$/,"").toLowerCase();
@@ -10916,11 +10920,13 @@ async function loadCaptions() {
     if(!current||(old!==current&&!old.startsWith(current+"/"))){
       if(!(await captionImageClose()))
         throw new Error("Finish and close the previous dataset's picture editor first.");
+      if(!current())return;
     }
   }
   if (!S.cap.opts || S.cap.optsFamily !== S.family) {        // a model change can bring the song card
     await loadCaptionOptions().catch((e) => {        // said, and asked again next time the tab opens
       S.cap.opts = null; $("capModelHint").textContent = `Couldn't get the caption models: ${e.message}`; });
+    if(!current())return;
     S.cap.optsFamily = S.family;
   }
   pollCaptions();
@@ -10942,12 +10948,18 @@ async function loadCaptions() {
   for (const id of ["dsZip", "dsZipCaps"]) $(id).style.display = S.imageFolder ? "" : "none";
   $("capFolder").textContent = (S.imageFolder ? `Folder: ${S.imageFolder}  (set on the Start tab)` :
     "Choose the training folder on the Start tab first.") + subfoldersHint();
-  if (!S.imageFolder) { $("captionsSummary").textContent = "Choose the training folder on the Start tab."; return; }
-  const ext = $("captionExt").value.trim() || ".txt";
+  if (!S.imageFolder) {
+    S.cap.items=[];
+    $("captionsGrid").replaceChildren();
+    $("captionsSummary").textContent="Choose the training folder on the Start tab.";
+    return;
+  }
+  const ext = $("captionExt").value.trim() || ".txt",folderAtRequest=String(S.imageFolder);
   const r = await api(`/api/captions?folder=${encodeURIComponent(capFolder())}` +
     `&ext=${encodeURIComponent(ext)}&family=${encodeURIComponent(S.family || "")}`);
-  S.cap.items = r.items;                      // the pictures, then the largest detail crops (it.crop: their folder)
-  const folders=[...new Set(S.cap.items.map(capItemFolder))];
+  if(!current()||String(S.imageFolder)!==folderAtRequest||capExt()!==ext)return;
+  const items=r.items;                      // pictures and largest detail crops
+  const folders=[...new Set(items.map(capItemFolder))];
   const reviewLookup=new Map();
   await Promise.all(folders.map(async folder=>{
     try{
@@ -10955,9 +10967,15 @@ async function loadCaptions() {
       reviewLookup.set(folder,new Set(data.reviewed||[]));
     }catch(e){reviewLookup.set(folder,new Set());console.warn("Caption review status:",e.message);}
   }));
-  S.cap.studioReviewed=new Set(S.cap.items.filter(it=>reviewLookup.get(capItemFolder(it))?.has(it.name)).map(it=>it.path));
-  try{S.cap.liveStatus=await api("/api/captions/live_status?folder="+encodeURIComponent(S.imageFolder));}
-  catch(e){S.cap.liveStatus=null;}
+  if(!current())return;
+  const reviewed=new Set(items.filter(it=>reviewLookup.get(capItemFolder(it))?.has(it.name)).map(it=>it.path));
+  let liveStatus=null;
+  try{liveStatus=await api("/api/captions/live_status?folder="+encodeURIComponent(folderAtRequest));}
+  catch(e){liveStatus=null;}
+  if(!current()||String(S.imageFolder)!==folderAtRequest||capExt()!==ext)return;
+  S.cap.items=items;
+  S.cap.studioReviewed=reviewed;
+  S.cap.liveStatus=liveStatus;
   renderCaptions();
 }
 
