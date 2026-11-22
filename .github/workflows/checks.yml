@@ -25,11 +25,13 @@ jobs:
       - name: Compile Caption Studio changed Python modules
         run: |
           python -m py_compile src/fizgig/families/loss_watch.py src/fizgig/families/train.py src/fizgig/dataset/image_dataset.py
-          python -m py_compile src/fizgig/web/server.py src/fizgig/web/image_loss.py src/fizgig/web/image_edit.py src/fizgig/web/caption_review.py src/fizgig/web/caption_batch_edit.py src/fizgig/web/captions.py src/fizgig/web/removed_images.py src/fizgig/web/caption_duplicates.py
+          python -m py_compile src/fizgig/web/server.py src/fizgig/web/image_loss.py src/fizgig/web/image_edit.py src/fizgig/web/caption_review.py src/fizgig/web/caption_batch_edit.py src/fizgig/web/captions.py src/fizgig/web/removed_images.py src/fizgig/web/caption_duplicates.py src/fizgig/families/trigger_check.py src/fizgig/scripts/batch_caption.py src/fizgig/scripts/translate_captions.py
       - name: Web UI scripts parse
         run: for f in src/fizgig/web/static/*.js; do node --check "$f"; done
       - name: Caption Studio tag-query unit checks
         run: node checks/test_caption_studio_tags.cjs
+      - name: Caption Studio constellation and waterfall regression checks
+        run: node checks/test_caption_studio_viz.cjs
       - name: Caption Studio shared image editor wiring checks
         run: node checks/test_caption_studio_image.cjs
       - name: TagBench duplicate finder preserves native LaMa removal wiring
