@@ -3476,3 +3476,27 @@ label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; 
  #tab-captions .studio-host .studio-index{grid-column:auto}
  #tab-captions .studio-image-stage .studio-preview{min-height:240px}
 }
+
+
+/* TagBench 1.2 All Tags: search + sorting + dense single-column frequency list. */
+#tab-captions .studio-tag-index-pane > strong{font-size:17px;letter-spacing:-.025em}
+#tab-captions .studio-tag-sort{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+#tab-captions .studio-tag-sort select{flex:1;min-width:130px;max-width:none}
+#tab-captions .studio-tag-search{width:100%;min-width:0;flex:none;padding:9px 10px;
+  border-radius:8px;border:1px solid var(--accent-border);background:var(--bg-inset);
+  color:var(--text-primary);font-size:13px}
+#tab-captions .studio-tag-list{list-style:none;padding:6px;margin:0;max-height:none;
+  overflow:auto;flex:1 1 auto;min-height:130px;display:flex;flex-direction:column;gap:0;
+  background:var(--bg-inset);border:1px solid var(--border);border-radius:9px}
+#tab-captions .studio-tag-list-item{list-style:none;padding:0;margin:0;min-width:0;flex:none}
+#tab-captions .studio-tag-list-item .studio-index-tag{width:100%;display:block;text-align:left;
+  font-size:13px;line-height:1.4;font-weight:450;border:0;border-left:3px solid transparent;
+  border-radius:5px;background:transparent;padding:5px 8px;color:var(--text-primary);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#tab-captions .studio-tag-list-item .studio-index-tag:hover,
+#tab-captions .studio-tag-list-item .studio-index-tag:focus-visible{background:var(--bg-hover);outline:1px solid var(--accent-border)}
+#tab-captions .studio-tag-list-item .studio-index-tag.is-picked{background:var(--accent-subtle);
+  color:var(--accent-text);border-left-color:var(--accent)}
+#tab-captions .studio-tag-count{flex:none;padding:4px 2px;color:var(--text-primary);font-size:12px}
+#tab-captions .studio-view-selector{flex:none}
+#tab-captions .studio-tag-index-pane .studio-category-manager{flex:none}
