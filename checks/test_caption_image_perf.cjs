@@ -39,6 +39,17 @@ const forward=perf.restore(backward.inverse,mask);
 for(const {x,y} of changed)assert.equal(mask.data[(y*mask.width+x)*4+3],220);
 assert(forward.inverse.items.size===backward.inverse.items.size);
 assert.throws(()=>perf.restore(backward.inverse,fakeMask(20,20)),/dimensions changed/);
+const largeHistory=[
+  {width:1200,height:1200},{width:1200,height:1200},
+  {width:1200,height:1200}
+];
+const budget=12*1024*1024;
+const bytes=perf.trimHistory(largeHistory,20,budget);
+assert(largeHistory.length<=2);
+assert(bytes<=budget);
+assert.equal(perf.historyBytes(history),[...history.items.values()]
+  .reduce((sum,tile)=>sum+tile.data.data.byteLength,0));
+
 
 const closed=[];
 function bitmap(width,height,id){return {width,height,close(){closed.push(id);}};}
@@ -76,6 +87,7 @@ async function main(){
   assert.match(app,/mePush\(true\); meDab/);
   assert.match(app,/MaskEditorPerf\.capture\(m\.strokeHistory,m\.mask,x,y,r\)/);
   assert.match(app,/MaskEditorPerf\.restore\(top,m\.mask\)/);
+  assert.match(app,/MaskEditorPerf\.trimHistory\(m\.undo,ME_UNDO\)/);
   assert.match(app,/MaskEditorPerf\.pngDataURL\(m\.rm\)/);
   assert.match(app,/MaskEditorPerf\.pngDataURL\(out\)/);
   assert.match(app,/MaskEditorPerf\.previewSize\(m\.mask\.width,m\.mask\.height\)/);
