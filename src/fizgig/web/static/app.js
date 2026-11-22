@@ -13361,19 +13361,24 @@ function renderCaptionStudio(host,items,ext){
   if(!sizes){
     try{sizes=JSON.parse(localStorage.getItem("fizgig_caption_panel_sizes")||"null");}catch(e){}
     if(!sizes||!Number.isFinite(sizes.left)||!Number.isFinite(sizes.right))
-      sizes={left:15,right:36};
+      sizes={left:12,right:36};
     else if(sizes.left===19&&sizes.right===36){
-      // The previous unchanged defaults were 19/36. Migrate that pair to
-      // the new leftmost default; keep actual customized widths untouched.
-      sizes={...sizes,left:15};
+      // The previous unchanged defaults were 19/36. Reclaim room for the
+      // image, while retaining intentional customized widths.
+      sizes={...sizes,left:12};
+      localStorage.setItem("fizgig_caption_panel_sizes",JSON.stringify(sizes));
+    }else if(sizes.left===15&&sizes.right===36){
+      // 15/36 was the former default after migration. Keep intentional
+      // custom panel sizes, but reclaim some room for the image by default.
+      sizes={...sizes,left:12};
       localStorage.setItem("fizgig_caption_panel_sizes",JSON.stringify(sizes));
     }
     S.cap.studioPanelSizes=sizes;
   }
   const applySizes=()=>{
-    const leftWidth=Math.max(15,Math.min(30,sizes.left)),rightWidth=Math.max(28,Math.min(48,sizes.right));
+    const leftWidth=Math.max(6,Math.min(30,sizes.left)),rightWidth=Math.max(28,Math.min(48,sizes.right));
     layout.style.gridTemplateColumns=window.matchMedia("(max-width:1100px)").matches?"":
-      "minmax(195px,"+leftWidth+"%) 8px minmax(290px,1fr) 8px minmax(195px,"+rightWidth+"%)";
+      "minmax(96px,"+leftWidth+"%) 8px minmax(290px,1fr) 8px minmax(195px,"+rightWidth+"%)";
   };
   const divider=side=>{
     const grip=el("div",{class:"studio-splitter",role:"separator",tabindex:"0",
@@ -13381,7 +13386,7 @@ function renderCaptionStudio(host,items,ext){
       "aria-label":"Resize "+side+" Caption Studio panel"});
     let drag=null;
     const change=percentage=>{
-      const next=side==="left"?Math.max(15,Math.min(30,percentage)):Math.max(28,Math.min(48,percentage));
+      const next=side==="left"?Math.max(6,Math.min(30,percentage)):Math.max(28,Math.min(48,percentage));
       const opposite=side==="left"?"right":"left";
       sizes[side]=Math.min(next,75-sizes[opposite]);
       applySizes();
