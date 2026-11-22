@@ -169,16 +169,17 @@ class Watch:
                                                  if recaption_instruction_detailed
                                                  else '"Exhaustive detail" (as shipped)')
             logger.info(f"[auto-recaption] first try: {first}; second try: {second} (Qwen3-VL, Captions tab instructions)")
-        self.watch = PerImageLossWatch(output_dir, apply_lr=per_image_lr, write_jsonl=True,
-                                       dataset_dir=self.image_dir, caption_ext=self.caption_ext,
-                                       family=self.driver.description.key, folders=self.folders)
-        keys = set(_items(group))
-        self.watch.preflight(keys)
-        logger.info(f"[loss-watch] per-image loss watch ON (per_image_lr={per_image_lr})")
-        if warmup_look:
-            self._warmup(keys)
-        if resume and start_epoch > 0:
-            self._resume(start_epoch)
+        if log or per_image_lr or auto_recaption or warmup_look or env_on():
+            self.watch = PerImageLossWatch(output_dir, apply_lr=per_image_lr, write_jsonl=True,
+                                           dataset_dir=self.image_dir, caption_ext=self.caption_ext,
+                                           family=self.driver.description.key, folders=self.folders)
+            keys = set(_items(group))
+            self.watch.preflight(keys)
+            logger.info(f"[loss-watch] per-image loss watch ON (per_image_lr={per_image_lr})")
+            if warmup_look:
+                self._warmup(keys)
+            if resume and start_epoch > 0:
+                self._resume(start_epoch)
 
     # ---- setup helpers -------------------------------------------------------------------------------
     def _warmup(self, keys):

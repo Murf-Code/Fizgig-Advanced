@@ -8,6 +8,7 @@ writes the log, so it never has charts."""
 import json
 import os
 import re
+import threading
 
 LOG = os.path.join("loss_log", "per_image_loss.jsonl")
 REPORT = os.path.join("loss_log", "problem_images.json")
@@ -141,7 +142,7 @@ def read_caption(run, key, ext):
         return "", os.path.isdir(folder or "")
 
 
-_caption_queue_lock = __import__("threading").RLock()
+_caption_queue_lock = threading.RLock()
 
 
 def save_caption(run, key, caption, ext):
