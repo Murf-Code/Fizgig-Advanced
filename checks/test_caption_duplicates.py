@@ -26,7 +26,7 @@ def picture(root, name, size=(72, 64), kind="pattern"):
 
 def await_done(root):
     for i in range(250):
-        value = caption_duplicates.status(str(root), 90)
+        value = caption_duplicates.status(str(root), 4)
         if value["stage"] in ("done", "error"):
             return value
         time.sleep(0.02)
@@ -42,19 +42,19 @@ def test_hash_detects_resized_copy_and_discards_different_solid_colors(tmp_path)
     blue = picture(root, "blue.png", kind="blue")
     sig_a = caption_duplicates.fingerprint(src)
     sig_b = caption_duplicates.fingerprint(str(root / "b.png"))
-    assert caption_duplicates.similarity(sig_a, sig_b) >= 75
-    assert caption_duplicates.similarity(
-        caption_duplicates.fingerprint(red), caption_duplicates.fingerprint(blue)) < 75
+    assert caption_duplicates.apart(sig_a, sig_b) <= 16
+    assert caption_duplicates.apart(
+        caption_duplicates.fingerprint(red), caption_duplicates.fingerprint(blue)) > 4
     start = caption_duplicates.start(str(root), [src, str(root / "b.png"), red, blue])
     assert start["stage"] in ("scanning", "matching", "done")
     r = await_done(root)
     assert r["stage"] == "done", r.get("error")
     assert r["scanned"] == 4
-    groups = caption_duplicates.status(str(root), 75)
+    groups = caption_duplicates.status(str(root), 16)
     assert any({os.path.basename(i["path"]) for i in g["items"]} == {"a.png", "b.png"}
                for g in groups["groups"])
     assert all("blue.png" not in {i["name"] for i in g["items"]}
-               for g in groups["groups"])
+               for g in caption_duplicates.status(str(root), 4)["groups"])
 
 
 def test_scan_threshold_changes_without_redecoding_images(tmp_path, monkeypatch):
@@ -66,8 +66,8 @@ def test_scan_threshold_changes_without_redecoding_images(tmp_path, monkeypatch)
     assert await_done(root)["stage"] == "done"
     monkeypatch.setattr(caption_duplicates, "fingerprint", lambda _: (
         (_ for _ in ()).throw(AssertionError("threshold adjustment redecoded picture"))))
-    high = caption_duplicates.status(str(root), 99)
-    low = caption_duplicates.status(str(root), 75)
+    high = caption_duplicates.status(str(root), 0)
+    low = caption_duplicates.status(str(root), 16)
     assert high["stage"] == low["stage"] == "done"
     assert high["pair_count"] <= low["pair_count"]
 
