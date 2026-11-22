@@ -4642,3 +4642,16 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   #tab-captions .studio-tb-orb.is-popping .studio-tb-orb-core{animation:none}
   #tab-captions .studio-tb-orb-core,#tab-captions .studio-tb-orb-halo{transition:none}
 }
+
+/* An empty Caption Workbench still offers a direct dataset refresh.
+   Restoring removed files is handled on disk, not by an inline browser. */
+#tab-captions .studio-empty-captions{
+  display:flex;align-items:center;justify-content:center;flex-direction:column;
+  gap:14px;min-height:150px;padding:20px;border:1px solid var(--border);
+  border-radius:12px;background:var(--bg-surface);text-align:center;
+}
+#tab-captions .studio-empty-captions .btn{
+  padding:8px 16px;border-radius:9px;border:1px solid var(--accent-border);
+  background:var(--accent-subtle);color:var(--text-primary);cursor:pointer;
+}
+#tab-captions .studio-empty-captions .btn:hover{background:var(--bg-hover)}
