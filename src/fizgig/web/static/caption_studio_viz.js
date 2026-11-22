@@ -170,6 +170,457 @@ const CaptionStudioViz = (() => {
       " above-chance connections · drag to pan, scroll to zoom, click tag to filter";
     holder.append(svg,hint);return holder;
   }
-  return Object.freeze({buildGraph,waterfall,constellation,colorForTag});
+
+  // Adapted from the user-supplied TagBench 1.2 Explore.tsx. TagBench's
+  // "Waterfall" is a picture masonry gallery, not a frequency bar chart.
+  // Constellation uses its 120-node, link-weighted cluster/physics arrangement,
+  // count-bearing orbs, label colors, focus relationships and pan/zoom controls.
+  const TB_HUES=["#ff4d6d","#ff7a59","#f0b429","#d6e15a","#3ddc97",
+    "#2ee6c7","#3ec6ff","#5b8cff","#9b6bff","#ff7ab6"];
+  const TB_SPECIES=/wolf|fox|lion|feline|cat|dragon|horse|avian|bird|shark|rabbit|deer|tiger|leopard|anthro|feral|kobold|bear|otter|sergal/i;
+  const TB_FAMILIES=[
+    /\b(solo|duo|trio|group|multiple|couple|pair)\b/i,
+    /\bfur\b|\beyes?\b|sclera|pupil|iris|\bskin\b|marking|\b(black|brown|white|grey|gray|tan|pale|pink|red|blue|green|yellow|orange|purple|dark|light)\s+body\b/i,
+    /jewelry|piercing|bracelet|earring|anklet|necklace|\bring\b/i,
+    /cloth|shirt|dress|\bwear\b|loincloth|glove|topless|nude|\bpant|skirt|jacket|collar|outfit|clothed/i,
+    TB_SPECIES,
+    /look|smile|\bmouth\b|standing|sitting|holding|blush|gaze/i,
+    /\bmale\b|\bfemale\b|gender|\bboy\b|\bgirl\b/i,
+    /outdoor|indoor|\bnight\b|background|\bsky\b|outside|\blight\b/i,
+    /\b(book|bottle|cup|lamp|plant|container|fire|candle|box|bag|phone|camera|sword|spear|weapon|food|drink|chair|table|bed)\b/i,
+    /\bfull body\b|\bupper body\b|\blower body\b|\bbust\b|\bportrait\b|\bclose[- ]?up\b|\bcowboy shot\b/i,
+    /paw|claw|tail|whisker|fang|\bear\b|finger|toe|\bfeet\b|\bfoot\b|nipple|breast|pectoral|\babs\b|muscular|tuft|\bnose\b|muzzle|horn|wing|thigh|biped|\bbody\b|digitigrade|\bhair\b|navel|collarbone|eyebrow/i
+  ];
+  const tbFamily=tag=>{
+    const name=lower(tag).replace(/_/g," ");
+    const species=TB_SPECIES.test(name);
+    if(species&&name.includes("character"))return 11;
+    const i=TB_FAMILIES.findIndex(test=>test.test(name));
+    return i<0?null:i;
+  };
+  const tbStem=tag=>{
+    let w=lower(tag).replace(/[\s_]/g,"");
+    if(w.endsWith("ing")&&w.length>6)w=w.slice(0,-3);
+    else if(w.endsWith("ed")&&w.length>5)w=w.slice(0,-2);
+    else if(w.endsWith("es")&&w.length>4)w=w.slice(0,-2);
+    else if(w.endsWith("s")&&w.length>3)w=w.slice(0,-1);
+    return w;
+  };
+  const tbHue=id=>id<TB_HUES.length?TB_HUES[id]:
+    "hsl("+Math.round(id*137.508%360)+" 72% 62%)";
+  function tagbenchGraph(items) {
+    const counts=new Map(),pairs=new Map();
+    for(const it of items){
+      const tags=[...new Set((it.tags||[]).map(lower).filter(Boolean))];
+      for(const tag of tags)counts.set(tag,(counts.get(tag)||0)+1);
+      for(let i=0;i<tags.length;i++)for(let j=i+1;j<tags.length;j++){
+        const a=tags[i],b=tags[j],key=a<b?a+"\0"+b:b+"\0"+a;
+        pairs.set(key,(pairs.get(key)||0)+1);
+      }
+    }
+    const all=[...counts].map(([tag,count])=>({tag,count}))
+      .sort((a,b)=>b.count-a.count||a.tag.localeCompare(b.tag));
+    const top=all.slice(0,120),keep=new Set(top.map(x=>x.tag));
+    const edges=[...pairs].map(([key,w])=>{
+      const [a,b]=key.split("\0");return {a,b,w};
+    }).filter(e=>keep.has(e.a)&&keep.has(e.b)).sort((a,b)=>b.w-a.w);
+    const linkCounts=new Map();
+    for(const edge of edges){
+      linkCounts.set(edge.a,(linkCounts.get(edge.a)||0)+1);
+      linkCounts.set(edge.b,(linkCounts.get(edge.b)||0)+1);
+    }
+    return {all,top,edges,linkCounts};
+  }
+  // TagBench's co-occurrence-profile similarity groups unknown tags, while
+  // recognizable tag families remain aligned even on small datasets.
+  function tbGroups(tags,edges) {
+    const n=tags.length;
+    const at=new Map(tags.map((t,i)=>[t.tag,i]));
+    const shared=Array.from({length:n},()=>new Float64Array(n));
+    for(const e of edges){
+      const a=at.get(e.a),b=at.get(e.b);
+      if(a!==undefined&&b!==undefined){shared[a][b]=e.w;shared[b][a]=e.w;}
+    }
+    const distance=Array.from({length:n},()=>new Float64Array(n));
+    for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){
+      let dot=0,left=0,right=0;
+      for(let k=0;k<n;k++){
+        if(k===i||k===j||tags[k].count>tags[0].count*.5)continue;
+        const rare=Math.log((n+1)/(tags[k].count+1));
+        const a=shared[i][k]/Math.max(tags[i].count,1)*rare;
+        const b=shared[j][k]/Math.max(tags[j].count,1)*rare;
+        dot+=a*b;left+=a*a;right+=b*b;
+      }
+      distance[i][j]=distance[j][i]=1-(left&&right?dot/Math.sqrt(left*right):0);
+    }
+    const clusterAt=limit=>{
+      const group=tags.map((_,i)=>i);
+      const alive=tags.map(()=>true);
+      const dist=distance.map(row=>Float64Array.from(row));
+      for(let remaining=n;remaining>1;remaining--){
+        let keep=-1,drop=-1,best=Infinity;
+        for(let i=0;i<n;i++)if(alive[i])for(let j=i+1;j<n;j++){
+          if(alive[j]&&dist[i][j]<best){best=dist[i][j];keep=i;drop=j;}
+        }
+        if(keep<0||best>limit)break;
+        for(let k=0;k<n;k++)if(alive[k]&&k!==keep&&k!==drop)
+          dist[keep][k]=dist[k][keep]=Math.max(dist[keep][k],dist[drop][k]);
+        alive[drop]=false;
+        for(let i=0;i<n;i++)if(group[i]===drop)group[i]=keep;
+      }
+      return group;
+    };
+    // Original TagBench silhouette-driven cut selection (sampled at five levels).
+    const score=ids=>{
+      const groups=new Map();
+      ids.forEach((id,i)=>{if(!groups.has(id))groups.set(id,[]);groups.get(id).push(i);});
+      if(groups.size<2)return -1;
+      let total=0,used=0;
+      for(let i=0;i<n;i++){
+        const mine=groups.get(ids[i]);
+        if(mine.length<2)continue;
+        const near=mine.reduce((v,j)=>v+(j===i?0:distance[i][j]),0)/(mine.length-1);
+        let far=Infinity;
+        for(const [id,members] of groups)if(id!==ids[i])
+          far=Math.min(far,members.reduce((v,j)=>v+distance[i][j],0)/members.length);
+        total+=(far-near)/Math.max(near,far,1e-6);used++;
+      }
+      return used?total/used:-1;
+    };
+    let best=clusterAt(.45),bestScore=score(best);
+    for(const level of [.25,.35,.55,.7]){
+      const next=clusterAt(level),value=score(next);
+      if(value>bestScore){best=next;bestScore=value;}
+    }
+    const familyMap=new Map(),learnedMap=new Map();
+    let seq=20;
+    tags.forEach((row,i)=>{
+      const family=tbFamily(row.tag);
+      const id=family===null?"learned:"+best[i]:"family:"+family;
+      if(!learnedMap.has(id))learnedMap.set(id,seq++);
+      familyMap.set(row.tag,learnedMap.get(id));
+    });
+    const stems=new Map();
+    for(const row of tags){
+      const stem=tbStem(row.tag);
+      if(stem.length<4)continue;
+      if(!stems.has(stem))stems.set(stem,[]);
+      stems.get(stem).push(row);
+    }
+    const alike=[];
+    for(const members of stems.values()){
+      if(members.length<2)continue;
+      members.sort((a,b)=>b.count-a.count);
+      const first=members[0].tag;
+      for(const m of members){
+        familyMap.set(m.tag,familyMap.get(first));
+        if(m.tag!==first)alike.push({a:first,b:m.tag,w:0});
+      }
+    }
+    const ids=[...new Set(familyMap.values())],compact=new Map(ids.map((id,i)=>[id,i]));
+    for(const [tag,id] of familyMap)familyMap.set(tag,compact.get(id));
+    return {groups:familyMap,alike};
+  }
+  function tagbenchModel(items,categories) {
+    const graph=tagbenchGraph(items),{all,top,edges,linkCounts}=graph;
+    const {groups,alike}=tbGroups(top,edges);
+    const lookup=new Map(top.map((t,i)=>[t.tag,i]));
+    const neigh=new Map(top.map(t=>[t.tag,[]]));
+    for(const e of edges){neigh.get(e.a).push({tag:e.b,w:e.w});neigh.get(e.b).push({tag:e.a,w:e.w});}
+    const nodeGroup=new Map();
+    const pods=new Map();let podIndex=0;
+    for(const id of new Set(groups.values())){
+      const members=top.filter(t=>groups.get(t.tag)===id).map(t=>t.tag);
+      const left=new Set(members);
+      while(left.size){
+        const seed=[...left].sort()[0],chosen=[seed];left.delete(seed);
+        const ranked=members.filter(tag=>left.has(tag))
+          .map(tag=>({tag,w:neigh.get(seed).find(x=>x.tag===tag)?.w||0}))
+          .sort((a,b)=>b.w-a.w);
+        for(const next of ranked){if(chosen.length>=8)break;if(next.w<=0)continue;chosen.push(next.tag);left.delete(next.tag);}
+        for(const tag of chosen)pods.set(tag,podIndex);podIndex++;
+      }
+    }
+    const nodes=top.map(t=>({
+      tag:t.tag,count:t.count,links:linkCounts.get(t.tag)||0,
+      group:groups.get(t.tag),pod:pods.get(t.tag)||0,
+      x:0,y:0,color:null
+    }));
+    const groupIds=[...new Set(nodes.map(n=>n.group))];
+    const weights=new Map(groupIds.map(id=>[id,nodes.filter(n=>n.group===id).reduce((s,n)=>s+n.links,0)]));
+    groupIds.sort((a,b)=>weights.get(b)-weights.get(a)).forEach((id,i)=>{
+      const turn=i/Math.max(1,groupIds.length)*Math.PI*2-Math.PI/2;
+      nodes.filter(n=>n.group===id).sort((a,b)=>b.links-a.links||b.count-a.count)
+        .forEach((n,k)=>{
+          const angle=k*2.399,rad=k?18+Math.sqrt(k)*12:0;
+          n.x=Math.cos(turn)*210+Math.cos(angle)*rad;
+          n.y=Math.sin(turn)*170+Math.sin(angle)*rad;
+        });
+    });
+    const chosen=[],seen=new Set(),attract=[];
+    for(const node of nodes){
+      const related=edges.filter(e=>e.a===node.tag||e.b===node.tag);
+      const picked=related.filter(e=>groups.get(e.a)===groups.get(e.b)).slice(0,3)
+        .map(e=>({edge:e,inside:true}))
+        .concat(related.filter(e=>groups.get(e.a)!==groups.get(e.b)).slice(0,1)
+          .map(e=>({edge:e,inside:false})));
+      for(const item of picked){
+        const edge=item.edge,key=edge.a+"\0"+edge.b;
+        if(seen.has(key))continue;seen.add(key);
+        attract.push({i:lookup.get(edge.a),j:lookup.get(edge.b),
+          w:(.45+.55*(edge.w/Math.max(1,edges[0]?.w||1)))*(item.inside?1:.08)});
+        if(item.inside)chosen.push(edge);
+      }
+    }
+    const mass=nodes.map(n=>1+Math.sqrt(n.links)),linkValues=nodes.map(n=>n.links);
+    const minLinks=Math.min(...linkValues,0),maxLinks=Math.max(...linkValues,1);
+    const radius=links=>4+(maxLinks===minLinks?1:(links-minLinks)/(maxLinks-minLinks))*22;
+    for(let step=0;step<220;step++){
+      const fx=nodes.map(()=>0),fy=nodes.map(()=>0);
+      for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
+        const dx=nodes[i].x-nodes[j].x,dy=nodes[i].y-nodes[j].y;
+        const d=Math.hypot(dx,dy)||.01,fac=2*mass[i]*mass[j]/d/d;
+        fx[i]+=dx*fac;fy[i]+=dy*fac;fx[j]-=dx*fac;fy[j]-=dy*fac;
+      }
+      for(const e of attract){
+        const dx=nodes[e.i].x-nodes[e.j].x,dy=nodes[e.i].y-nodes[e.j].y;
+        const d=Math.hypot(dx,dy)||.01,fac=-3*e.w*Math.log1p(d)/d;
+        fx[e.i]+=dx*fac;fy[e.i]+=dy*fac;fx[e.j]-=dx*fac;fy[e.j]-=dy*fac;
+      }
+      let maxForce=1;
+      nodes.forEach((n,i)=>{
+        fx[i]-=n.x*.012*mass[i];fy[i]-=n.y*.012*mass[i];
+        maxForce=Math.max(maxForce,Math.hypot(fx[i],fy[i]));
+      });
+      const scale=Math.min(.35,(8*Math.pow(.99,step)+.6)/maxForce);
+      nodes.forEach((n,i)=>{n.x+=fx[i]*scale;n.y+=fy[i]*scale;});
+    }
+    for(let step=0;step<28;step++)for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
+      const a=nodes[i],b=nodes[j],dx=a.x-b.x,dy=a.y-b.y,d=Math.max(1,Math.hypot(dx,dy));
+      const minimum=radius(a.links)+radius(b.links)+14;
+      if(d>=minimum)continue;
+      const k=(minimum-d)/2/d;a.x+=dx*k;a.y+=dy*k;b.x-=dx*k;b.y-=dy*k;
+    }
+    const colors=new Map();
+    nodes.forEach(n=>{
+      n.x+=500;n.y+=360;
+      const category=categories?.tags?.[n.tag],manual=category&&categories.colors?.[category];
+      n.color=manual||tbHue(n.group);colors.set(n.tag,n.color);
+    });
+    for(const tag of all)if(!colors.has(tag.tag)){
+      const family=tbFamily(tag.tag),stem=tbStem(tag.tag);
+      const friend=nodes.find(n=>tbStem(n.tag)===stem&&stem.length>=4)
+        ||nodes.find(n=>family!==null&&tbFamily(n.tag)===family);
+      const category=categories?.tags?.[tag.tag],manual=category&&categories.colors?.[category];
+      if(manual||friend)colors.set(tag.tag,manual||friend.color);
+    }
+    return {...graph,nodes,chosen,alike,colors};
+  }
+  function tagbenchWaterfall(items,onSelect,onContextMenu,activePath,selection) {
+    const stage=document.createElement("div");stage.className="studio-tb-waterfall";
+    const flow=document.createElement("div");flow.className="studio-tb-flow";
+    const viewportWidth=Math.max(300,window.innerWidth-60);
+    const columns=Math.max(2,Math.floor(viewportWidth/228));
+    const cols=Array.from({length:columns},()=>{
+      const col=document.createElement("div");col.className="studio-tb-flow-column";flow.append(col);return col;
+    });
+    items.forEach((it,i)=>{
+      if(!it.size)return;
+      const tile=document.createElement("button");
+      tile.type="button";tile.className="studio-tb-flow-tile";
+      tile.setAttribute("aria-label",it.name);
+      if(it.path===activePath||selection?.has(it.path))tile.classList.add("is-picked");
+      const img=document.createElement("img");
+      img.loading="lazy";img.decoding="async";
+      img.src="/api/thumb?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(window.TOKEN||"");
+      img.alt="";
+      tile.append(img);
+      tile.addEventListener("click",event=>onSelect(it,event));
+      tile.addEventListener("contextmenu",event=>onContextMenu(event,it));
+      cols[i%columns].append(tile);
+    });
+    if(!items.length){const hint=document.createElement("p");hint.textContent="No images match the current dataset filter.";hint.className="field-hint";flow.append(hint);}
+    stage.append(flow);return stage;
+  }
+  function tagbenchConstellation(model,onPick,pickedTag=null) {
+    const stage=document.createElement("div");stage.className="studio-tb-constellation";
+    if(!model.nodes.length){stage.textContent="No tagged images in this dataset.";return stage;}
+    const NS="http://www.w3.org/2000/svg",svg=document.createElementNS(NS,"svg");
+    svg.setAttribute("role","group");svg.setAttribute("aria-label","TagBench-style interactive tag constellation");
+    const make=(type,attrs,parent=svg)=>{
+      const node=document.createElementNS(NS,type);
+      for(const [k,v] of Object.entries(attrs||{}))node.setAttribute(k,String(v));
+      parent.append(node);return node;
+    };
+    const zoomCtl=document.createElement("div");zoomCtl.className="studio-tb-zoom";
+    const search=document.createElement("div");search.className="studio-tb-search";
+    const input=document.createElement("input");input.placeholder="Search Tags";
+    input.setAttribute("aria-label","Search tags");
+    const matches=document.createElement("div");matches.className="studio-tb-suggest";
+    search.append(input,matches);
+    let zoom=1,pan={x:0,y:0},picked=pickedTag,drag=null,press=null;
+    const nodes=model.nodes.map(n=>({...n}));
+    const at=new Map(nodes.map(n=>[n.tag,n]));
+    const radius=n=>{
+      const vals=nodes.map(x=>x.links),lo=Math.min(...vals),hi=Math.max(...vals);
+      const base=4+(hi===lo?1:(n.links-lo)/(hi-lo))*22;
+      return base*(zoom>1?1/Math.pow(zoom,.22):1)/zoom;
+    };
+    const view=()=>{
+      const w=1000/zoom,h=700/zoom;
+      svg.setAttribute("viewBox",[500-w/2+pan.x,350-h/2+pan.y,w,h].join(" "));
+    };
+    const spotlight=document.createElement("aside");spotlight.className="studio-tb-cluster";spotlight.hidden=true;
+    const draw=()=>{
+      view();svg.replaceChildren();
+      make("rect",{x:-3000,y:-3000,width:7000,height:7000,fill:"transparent"});
+      for(const edge of model.chosen){
+        const a=at.get(edge.a),b=at.get(edge.b);if(!a||!b)continue;
+        if(picked&&(picked===a.tag||picked===b.tag))continue;
+        make("line",{x1:a.x,y1:a.y,x2:b.x,y2:b.y,stroke:a.color,
+          "stroke-opacity":picked?.08:.28,"stroke-width":.7,class:"studio-tb-edge"});
+      }
+      const shared=new Map();
+      if(picked)for(const edge of model.edges){
+        if(edge.a===picked)shared.set(edge.b,edge.w);
+        else if(edge.b===picked)shared.set(edge.a,edge.w);
+      }
+      for(const edge of model.alike){
+        const a=at.get(edge.a),b=at.get(edge.b);if(!a||!b)continue;
+        make("line",{x1:a.x,y1:a.y,x2:b.x,y2:b.y,stroke:"#ffffff",
+          "stroke-opacity":.9,"stroke-width":1.3/zoom,
+          "stroke-dasharray":5/zoom+" "+3/zoom});
+      }
+      if(picked&&at.has(picked)){
+        const self=at.get(picked);
+        for(const [key,w] of shared){
+          const n=at.get(key);if(!n)continue;
+          const closeness=w/Math.max(1,self.count),opacity=.14+(1-Math.pow(1-closeness,2))*.86;
+          const dx=n.x-self.x,dy=n.y-self.y,len=Math.hypot(dx,dy)||1,ux=dx/len,uy=dy/len;
+          const begin=radius(self)+1.2/zoom,end=radius(n)+2/zoom;
+          if(len<=begin+end+1)continue;
+          const x1=self.x+ux*begin,y1=self.y+uy*begin,x2=n.x-ux*end,y2=n.y-uy*end;
+          const px=-uy,py=ux,wa=.25/zoom,wb=(.45+closeness*5.6)/zoom;
+          make("path",{d:"M "+(x1+px*wa)+" "+(y1+py*wa)+" L "+(x2+px*wb)+" "+(y2+py*wb)+
+            " L "+(x2-px*wb)+" "+(y2-py*wb)+" L "+(x1-px*wa)+" "+(y1-py*wa)+" Z",
+            fill:n.color,"fill-opacity":opacity});
+        }
+      }
+      const drawLabel=(n,faded)=>{
+        const r=radius(n),sz=12*(zoom>1?1/Math.pow(zoom,.22):1)/zoom;
+        make("text",{x:n.x+r+6/zoom,y:n.y+sz*.3,fill:n.color,
+          "font-size":sz,"font-weight":700,opacity:faded?.4:1,
+          stroke:"#000","stroke-width":Math.max(sz*.28,2/zoom),
+          "paint-order":"stroke","pointer-events":"none"}).textContent=n.tag;
+      };
+      for(const n of nodes)if(picked&&picked!==n.tag&&!shared.has(n.tag))drawLabel(n,true);
+      for(const n of nodes){
+        const r=radius(n),active=n.tag===picked,near=!picked||active||shared.has(n.tag);
+        const g=make("g",{"data-tag":n.tag,role:"button",tabindex:"0",class:"studio-tb-orb"});
+        make("title",{},g).textContent=n.tag+" · "+n.links+" links";
+        if(active)make("circle",{cx:n.x,cy:n.y,r:r+6/zoom,fill:"none",stroke:"white","stroke-width":1.5/zoom},g);
+        make("circle",{cx:n.x,cy:n.y,r,fill:n.color,opacity:near?1:.12},g);
+        const displayed=picked&&n.tag!==picked?(shared.get(n.tag)??n.count):n.count;
+        make("text",{x:n.x,y:n.y,"text-anchor":"middle","dominant-baseline":"central",
+          fill:"#141416","font-size":r*(displayed>=100?.48:displayed>=10?.58:.7),
+          "font-weight":700,"pointer-events":"none",opacity:near?1:.35},g).textContent=String(displayed);
+        g.addEventListener("pointerdown",event=>{
+          event.stopPropagation();const p=svg.createSVGPoint();p.x=event.clientX;p.y=event.clientY;
+          const here=p.matrixTransform(svg.getScreenCTM().inverse());
+          drag={kind:"node",tag:n.tag,dx:here.x-n.x,dy:here.y-n.y,startX:event.clientX,startY:event.clientY,moved:false};
+          svg.setPointerCapture(event.pointerId);
+        });
+        g.addEventListener("keydown",event=>{
+          if(event.key==="Enter"||event.key===" "){event.preventDefault();choose(n.tag);}
+        });
+      }
+      for(const n of nodes)if(!picked||picked===n.tag||shared.has(n.tag))drawLabel(n,false);
+      spotlight.replaceChildren();
+      if(picked&&at.has(picked)){
+        const n=at.get(picked),headline=document.createElement("p");
+        headline.style.color=n.color;
+        const label=document.createElement("strong");label.textContent=n.tag;
+        const count=document.createElement("span");count.textContent=String(n.count);
+        headline.append(label,count);spotlight.append(headline);
+        const list=document.createElement("ul");
+        for(const [tag,w] of [...shared].sort((a,b)=>b[1]-a[1])){
+          const item=document.createElement("li"),b=document.createElement("button");
+          b.type="button";b.textContent=tag;b.style.color=at.get(tag)?.color||"";
+          b.addEventListener("click",()=>choose(tag));
+          const number=document.createElement("span");number.textContent=String(w);
+          item.append(b,number);list.append(item);
+        }
+        spotlight.append(list);spotlight.hidden=false;
+      }else spotlight.hidden=true;
+    };
+    const choose=tag=>{
+      picked=picked===tag?null:tag;
+      onPick?.(picked);
+      draw();
+    };
+    const zoomBy=(factor,clientX=null,clientY=null)=>{
+      const before=zoom,next=Math.min(5,Math.max(.35,zoom*factor));
+      if(next===before)return;
+      if(clientX!==null){
+        const rect=svg.getBoundingClientRect();
+        const mx=(clientX-rect.left)/rect.width,my=(clientY-rect.top)/rect.height;
+        const w=1000/before,h=700/before,nextW=1000/next,nextH=700/next;
+        const worldX=500-w/2+pan.x+mx*w,worldY=350-h/2+pan.y+my*h;
+        pan={x:worldX-mx*nextW-500+nextW/2,y:worldY-my*nextH-350+nextH/2};
+      }
+      zoom=next;draw();
+    };
+    for(const [name,factor] of [["+",1.2],["−",1/1.2]]){
+      const b=document.createElement("button");b.type="button";b.textContent=name;
+      b.setAttribute("aria-label",factor>1?"Zoom in":"Zoom out");
+      b.addEventListener("click",()=>zoomBy(factor));zoomCtl.append(b);
+    }
+    const searchMatches=()=>{
+      matches.replaceChildren();
+      const q=input.value.toLowerCase().trim();if(!q)return;
+      for(const n of nodes.filter(n=>n.tag.includes(q)).sort((a,b)=>b.links-a.links).slice(0,8)){
+        const b=document.createElement("button");b.textContent=n.tag;b.style.color=n.color;
+        b.addEventListener("click",()=>{
+          input.value=n.tag;pan={x:n.x-500,y:n.y-350};choose(n.tag);matches.replaceChildren();
+        });matches.append(b);
+      }
+    };
+    input.addEventListener("input",searchMatches);
+    input.addEventListener("keydown",e=>{
+      if(e.key==="Enter"){e.preventDefault();matches.querySelector("button")?.click();}
+    });
+    svg.addEventListener("pointerdown",e=>{
+      if(e.target.closest(".studio-tb-orb"))return;
+      drag={kind:"pan",x:e.clientX,y:e.clientY,px:pan.x,py:pan.y};
+      svg.setPointerCapture(e.pointerId);
+    });
+    svg.addEventListener("pointermove",e=>{
+      if(!drag)return;
+      if(drag.kind==="node"){
+        const distance=Math.hypot(e.clientX-drag.startX,e.clientY-drag.startY);
+        if(distance<4&&!drag.moved)return;
+        drag.moved=true;
+        const p=svg.createSVGPoint();p.x=e.clientX;p.y=e.clientY;
+        const here=p.matrixTransform(svg.getScreenCTM().inverse()),n=at.get(drag.tag);
+        n.x=here.x-drag.dx;n.y=here.y-drag.dy;draw();
+      }else{
+        const rect=svg.getBoundingClientRect();
+        pan={x:drag.px-(e.clientX-drag.x)*1000/zoom/rect.width,
+          y:drag.py-(e.clientY-drag.y)*700/zoom/rect.height};
+        view();
+      }
+    });
+    svg.addEventListener("pointerup",()=>{
+      if(drag?.kind==="node"&&!drag.moved)choose(drag.tag);
+      drag=null;
+    });
+    svg.addEventListener("pointercancel",()=>drag=null);
+    svg.addEventListener("dblclick",e=>{if(!e.target.closest(".studio-tb-orb"))choose(picked);});
+    svg.addEventListener("wheel",e=>{e.preventDefault();zoomBy(e.deltaY<0?1.12:1/1.12,e.clientX,e.clientY);},{passive:false});
+    stage.append(svg,search,zoomCtl,spotlight);draw();
+    return stage;
+  }
+
+  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,tagbenchModel,tagbenchWaterfall,tagbenchConstellation});
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = CaptionStudioViz;
