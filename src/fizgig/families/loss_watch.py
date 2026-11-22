@@ -406,6 +406,20 @@ class Watch:
                     for row in plain:
                         try:
                             activate(row, self.driver.encode_text(te, [row[4].caption])[0])
+                            if row[1] in admitted:
+                                from fizgig.dataset.tag_variants import settings_of, write_variants
+                                tag_settings = settings_of(row[0])
+                                if tag_settings is not None:
+                                    try:
+                                        write_variants(lambda caps: self.driver.encode_text(te, caps),
+                                                       row[4].text_encoder_output_cache_path,
+                                                       row[4].caption, tag_settings,
+                                                       arch=self.driver.description.arch_id,
+                                                       compact=getattr(self.driver.description,
+                                                                       "text_cache_trim", False))
+                                    except Exception:
+                                        logger.warning("[live-dataset] tag variants of %s failed; "
+                                                       "using its original caption", row[1], exc_info=True)
                         except Exception:
                             logger.warning("[live-dataset] deferred new image %s", row[1], exc_info=True)
                 finally:
