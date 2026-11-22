@@ -3379,3 +3379,45 @@ label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; 
   #tab-captions .studio-duplicate-results{grid-template-columns:1fr}
   #tab-captions .studio-duplicate-card>img{height:120px}
 }
+
+
+/* Advanced Caption Studio explorer: responsive resizing and scalable visual analytics. */
+#tab-captions .studio-resizable {grid-template-columns:minmax(195px,23%) 8px minmax(290px,1fr) 8px minmax(195px,25%)}
+#tab-captions .studio-splitter {touch-action:none;cursor:col-resize;position:relative;min-width:8px;border-radius:5px;
+  background:var(--bg-inset);border:1px solid transparent;align-self:stretch;outline-offset:3px}
+#tab-captions .studio-splitter::before {content:"";display:block;position:absolute;left:2px;top:calc(50% - 25px);
+  width:2px;height:50px;border-radius:2px;background:var(--border)}
+#tab-captions .studio-splitter:hover,#tab-captions .studio-splitter:focus-visible {background:var(--accent-subtle);
+  border-color:var(--accent-border)}
+#tab-captions .studio-splitter:hover::before,#tab-captions .studio-splitter:focus-visible::before {background:var(--accent)}
+#tab-captions .studio-explore {min-width:0;max-width:100%}
+#tab-captions .studio-waterfall {max-height:430px;overflow:auto;display:flex;flex-direction:column;gap:5px;padding:4px}
+#tab-captions .studio-waterfall-row {display:grid;grid-template-columns:minmax(65px,1fr) minmax(70px,2fr) 34px;
+  gap:8px;align-items:center;background:transparent;color:var(--text-primary);border:0;border-radius:6px;
+  padding:5px 7px;text-align:left;cursor:pointer;min-width:0}
+#tab-captions .studio-waterfall-row:hover,#tab-captions .studio-waterfall-row:focus-visible {background:var(--bg-hover)}
+#tab-captions .studio-waterfall-label {font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tab-captions .studio-waterfall-track {height:12px;background:var(--bg-inset);border-radius:4px;overflow:hidden}
+#tab-captions .studio-waterfall-bar {display:block;height:100%;border-radius:4px;background:var(--accent);
+  min-width:2px;transition:width .15s}
+#tab-captions .studio-waterfall-count {font-size:11px;text-align:right;font-variant-numeric:tabular-nums;color:var(--text-secondary)}
+#tab-captions .studio-constellation {min-width:0;max-width:100%}
+#tab-captions .studio-constellation svg {display:block;width:100%;height:auto;min-height:280px;max-height:520px;
+  background:var(--bg-inset);border:1px solid var(--border);border-radius:8px;touch-action:none}
+#tab-captions .studio-star-edge {stroke:var(--accent);opacity:.18;pointer-events:none}
+#tab-captions .studio-star-node {cursor:pointer;outline:none}
+#tab-captions .studio-star-node circle {fill:var(--accent);stroke:var(--bg-surface);stroke-width:1.5;opacity:.88}
+#tab-captions .studio-star-node text {fill:var(--text-primary);font-size:12px;paint-order:stroke;
+  stroke:var(--bg-inset);stroke-width:3px;stroke-linejoin:round;pointer-events:none}
+#tab-captions .studio-star-node:hover circle,#tab-captions .studio-star-node:focus-visible circle {
+  stroke:var(--text-primary);stroke-width:3;opacity:1}
+#tab-captions .studio-constellation .field-hint {font-size:11px;margin-top:6px}
+#tab-captions .studio-editor .field-row input.w-path {flex:1 1 160px;min-width:0}
+@media(max-width:1100px) {
+  #tab-captions .studio-resizable {grid-template-columns:1fr 2fr}
+  #tab-captions .studio-resizable>.studio-splitter {display:none}
+}
+@media(max-width:650px) {
+  #tab-captions .studio-resizable {grid-template-columns:1fr}
+  #tab-captions .studio-constellation svg {min-height:250px}
+}
