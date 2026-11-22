@@ -12561,23 +12561,13 @@ function renderCaptionStudio(host,items,ext){
     S.cap.studioQuery=S.cap.studioQuery===exact?"":exact;
     S.cap.page=0;renderCaptions();
   };
+  // Tag list remains the list; full-screen visualizations have their own
+  // workspace stage rather than replacing the All Tags panel with mini charts.
   const drawExplore=()=>{
-    S.cap.studioExploreMode=indexMode.value;
-    explore.replaceChildren();
+    explore.replaceChildren(index);
     const query=indexSearch.value.trim().toLocaleLowerCase();
-    const visible=sorted.filter(([tag])=>tag.toLocaleLowerCase().includes(query));
-    if(indexMode.value==="waterfall")
-      explore.append(CaptionStudioViz.waterfall(visible,pickTag,categoryState));
-    else if(indexMode.value==="constellation"){
-      // Use the same tag set and counts as the list and waterfall. Sampling
-      // captions may conceal meaningful links in smaller tag collections.
-      const candidates=visible.slice(0,48);
-      const wanted=new Set(candidates.map(([tag])=>tag.toLocaleLowerCase()));
-      const sampled=S.cap.items.filter(it=>studioCaptionMode(it)==="tags")
-        .map(it=>studioTokens(it.caption,"tags").filter(t=>wanted.has(t.toLocaleLowerCase())));
-      explore.append(CaptionStudioViz.constellation(candidates,sampled,pickTag,categoryState));
-    }else explore.append(index);
-    tagCount.textContent=visible.length+" / "+sorted.length+" Tags";
+    tagCount.textContent=sorted.filter(([tag])=>tag.toLocaleLowerCase().includes(query)).length+
+      " / "+sorted.length+" Tags";
   };
   indexMode.addEventListener("change",drawExplore);
   const exportWildcard=btn("Export caption wildcard",()=>{
@@ -13011,15 +13001,79 @@ function renderCaptionStudio(host,items,ext){
   const actionBar=el("nav",{class:"studio-top-actions","aria-label":"Caption Workbench tools"},
     settingsBtn,editMenu,dupBtn,autoCaptionBtn);
   if(existingWildcard)actionBar.append(existingWildcard);
+  // TagBench's Waterfall and Constellation replace the ENTIRE three-panel
+  // stage. The normal Tags button restores the caption editor and lists.
+  const fullStage=el("section",{class:"studio-tb-explore",hidden:true,
+    "aria-label":"Caption Workbench visual explorer"});
+  const openView=(mode)=>{
+    const view=["list","waterfall","constellation"].includes(mode)?mode:"list";
+    S.cap.studioExploreMode=view;
+    indexMode.value="list";
+    if(view==="list"){
+      fullStage.hidden=true;
+      layout.hidden=false;
+      fullStage.replaceChildren();
+      applySizes();
+    }else{
+      layout.hidden=true;
+      fullStage.hidden=false;
+      fullStage.replaceChildren();
+      if(view==="waterfall"){
+        const chooseImage=(it,event)=>{
+          const picked=S.cap.studioSelection||(S.cap.studioSelection=new Set());
+          if(event.ctrlKey||event.metaKey){
+            picked.has(it.path)?picked.delete(it.path):picked.add(it.path);
+          }else{picked.clear();picked.add(it.path);}
+          S.cap.studioPath=it.path;
+          for(const tile of fullStage.querySelectorAll(".studio-tb-flow-tile")){
+            const image=tile.dataset.path;
+            tile.classList.toggle("is-picked",picked.has(image)||image===it.path);
+          }
+        };
+        const flow=CaptionStudioViz.tagbenchWaterfall(items,chooseImage,openImageMenu,
+          S.cap.studioPath,S.cap.studioSelection);
+        fullStage.append(flow);
+        for(const tile of flow.querySelectorAll(".studio-tb-flow-tile")){
+          // dataset paths originate in the caption items, not user HTML
+          tile.dataset.path=tile.getAttribute("data-path")||"";
+        }
+      }else{
+        const revision=S.cap.studioRevision||0;
+        const cache=S.cap.studioTagbenchGraph;
+        const datasetKey=String(S.imageFolder||"")+"|"+ext;
+        let model;
+        if(cache?.key===datasetKey&&cache.items===S.cap.items&&cache.revision===revision)
+          model=cache.model;
+        else{
+          const allTags=S.cap.items.filter(it=>studioCaptionMode(it)==="tags")
+            .map(it=>({tags:studioTokens(it.caption,"tags")}));
+          model=CaptionStudioViz.tagbenchModel(allTags,categoryState);
+          S.cap.studioTagbenchGraph={key:datasetKey,items:S.cap.items,revision,model};
+        }
+        CaptionStudioViz.setTagbenchPalette(model.colors);
+        const network=CaptionStudioViz.tagbenchConstellation(model,tag=>{
+          S.cap.studioExplorePickedTag=tag;
+          const exact=tag?JSON.stringify(tag):"";
+          S.cap.studioQuery=exact;
+          if(tag){
+            const first=S.cap.items.find(it=>studioTokens(it.caption,studioCaptionMode(it))
+              .some(value=>value.toLocaleLowerCase()===tag));
+            if(first)S.cap.studioPath=first.path;
+          }
+        },S.cap.studioExplorePickedTag||null);
+        fullStage.append(network);
+      }
+    }
+    for(const button of viewButtons.querySelectorAll("button")){
+      const selected=button.dataset.view===view;
+      button.classList.toggle("is-on",selected);
+      button.setAttribute("aria-pressed",String(selected));
+    }
+  };
   const viewButtons=el("div",{class:"studio-view-rail",role:"group","aria-label":"Tag visualization"});
   [["list","Tags"],["waterfall","Waterfall"],["constellation","Constellation"]].forEach(([mode,label])=>{
-    const button=btn(label,()=>{
-      indexMode.value=mode;
-      drawExplore();
-      for(const b of viewButtons.querySelectorAll("button"))b.classList.toggle("is-on",b.dataset.view===mode);
-    });
+    const button=btn(label,()=>openView(mode));
     button.dataset.view=mode;
-    button.classList.toggle("is-on",indexMode.value===mode);
     viewButtons.append(button);
   });
   actionBar.append(viewButtons);
@@ -13172,8 +13226,8 @@ function renderCaptionStudio(host,items,ext){
   toolsRow.append(actionBar,removedPanel);
   layout.append(left,divider("left"),center,divider("right"),right);
   redraw();host.classList.add("studio-host");
-  host.append(liveStatus,toolsRow,layout);
-  applySizes();
+  host.append(liveStatus,toolsRow,layout,fullStage);
+  openView(S.cap.studioExploreMode||"list");
 }
 
 // the table view: one row a file, sorted by a click on a column's head (again: the other way)
