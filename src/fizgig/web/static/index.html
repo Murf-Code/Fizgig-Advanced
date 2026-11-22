@@ -586,17 +586,10 @@
                         </div>
                       </header>
                       <div class="me-dialog-content">
-                  <details class="me-dialog-guide">
-                    <summary>About masks, watermarks and saving</summary>
-                    <div class="field-hint">Paint over a mask that's wrong, or make one by hand. White is what the LoRA
-                    learns. Each picture's mask is saved beside it as photo-masklabel.png: when you press
-                    <b>Save now</b>, and on its own when you move to another picture, change the filter, close Image
-                    Editor or leave this tab. A mask saved all black is deleted (the picture then trains as normal).
-                    <b>Remove Tool</b> and <b>Crop Image</b> change the picture file itself (its mask is cropped with it, so they
-                    stay lined up); Ctrl+Z undoes them while Fizgig stays open. If you used <b>Mask watermarks too</b>
-                    or <b>Just hide the watermarks</b>, each picture's watermark area can be loaded into Remove Tool as a
-                    red stroke, edited, and filled, one picture or all of them.</div>
-                  </details>
+                  <div class="me-dialog-quick-note">
+                    Brush and Eraser edit the training mask (white trains, black excludes).
+                    Remove and Crop change the image. Changes are saved when switching images or closing the editor.
+                  </div>
                   <div class="me-bar">
                     <button class="btn btn-sm" id="mePrev" title="Previous picture (←)">←</button>
                     <span class="me-count" id="meCount"></span>
