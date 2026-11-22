@@ -120,9 +120,16 @@ const CaptionStudioTags = (() => {
         ...back.filter(x=>byKey.has(x)).map(x=>byKey.get(x))];
   }
 
+  // TagBench prompt wildcards contain one COMPLETE caption per image, rather
+  // than one distinct tag per line. Preserve dataset order and duplicates.
+  const captionWildcards = captions => {
+    const lines = captions.map(text => String(text || "").replace(/\s*\n\s*/g," ")
+      .replace(/\s+/g," ").trim()).filter(Boolean);
+    return lines.join("\n") + (lines.length ? "\n" : "");
+  };
   const wildcards = (values, delimiter = ",") => unique(values).sort((a, b) => a.localeCompare(b))
     .join("\n") + (values.length ? "\n" : "");
 
-  return Object.freeze({kind, tags, compose, unique, search, order, wildcards});
+  return Object.freeze({kind, tags, compose, unique, search, order, captionWildcards, wildcards});
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = CaptionStudioTags;
