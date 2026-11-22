@@ -437,7 +437,7 @@ const CaptionStudioViz = (() => {
     }
     return {...graph,nodes,chosen,alike,colors};
   }
-  function tagbenchWaterfall(items,onSelect,onContextMenu,activePath,selection,token) {
+  function tagbenchWaterfall(items,onSelect,onContextMenu,activePath,selection,token,onDecorate=null) {
     const stage=document.createElement("div");stage.className="studio-tb-waterfall";
     const flow=document.createElement("div");flow.className="studio-tb-flow";
     const pictures=items.filter(it=>it.size);
@@ -462,6 +462,7 @@ const CaptionStudioViz = (() => {
       img.src="/api/thumb?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(token||"");
       img.alt="";
       tile.append(img);
+      onDecorate?.(tile,it);
       tile.addEventListener("click",event=>onSelect(it,event));
       tile.addEventListener("contextmenu",event=>onContextMenu(event,it));
       return tile;

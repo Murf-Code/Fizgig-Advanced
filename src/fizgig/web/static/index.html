@@ -866,7 +866,9 @@
               <div class="field-row"><span class="field-label">Sort:</span>
                 <select id="capSort" class="w-combo" title="Smallest first finds pictures too small to train on.">
                   <option value="name">By file name</option><option value="small">By size, smallest first</option>
-                  <option value="large">By size, largest first</option></select></div>
+                  <option value="large">By size, largest first</option>
+                  <option value="loss-high">Relative loss, hardest first</option>
+                  <option value="loss-low">Relative loss, easiest first</option></select></div>
               <div class="field-row"><span class="field-label">View:</span>
                 <select id="capView" class="w-combo" title="Table: one row each, sortable by any column">
                   <option value="studio">Caption Studio</option><option value="cards">Cards</option><option value="table">Table</option></select></div>
@@ -2364,6 +2366,7 @@
   <script src="/caption_studio_selection.js" onerror="fizgigRetry(this)"></script>
   <script src="/caption_studio_training_picks.js" onerror="fizgigRetry(this)"></script>
   <script src="/caption_studio_viz.js" onerror="fizgigRetry(this)"></script>
+  <script src="/caption_studio_learning.js" onerror="fizgigRetry(this)"></script>
   <script src="/caption_theme.js" onerror="fizgigRetry(this)"></script>
   <script src="/app.js" onerror="fizgigRetry(this)"></script>
 </body>

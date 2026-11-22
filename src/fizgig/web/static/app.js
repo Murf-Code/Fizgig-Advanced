@@ -10909,6 +10909,9 @@ async function pollCaptions() {
       if(box){box.textContent=studioLiveSummary(status);box.classList.toggle("needs-attention",!!status.attention);}
     }).catch(()=>{});
   }
+  if(S.imageFolder&&$("capView")?.value==="studio"&&
+      document.querySelector("#tab-captions.active")&&captionLearningWanted())
+    captionLearningRefresh();
   if (busy || document.querySelector("#tab-captions.active")) S.cap.timer = setTimeout(pollCaptions, busy ? 1500 : 5000);
 }
 
@@ -10999,7 +11002,64 @@ async function loadCaptions() {
   renderCaptions();
 }
 
+const CAP_LEARNING_REFRESH_MS = 30000;
+// The loss watch already computes every verdict. Caption Workbench only reads
+// its small snapshot; one optional outline never changes the selected border.
+function captionLearningEnsureFolder() {
+  const folder=String(S.imageFolder||"");
+  if(S.cap.learningFolder!==folder) {
+    S.cap.learningFolder=folder;
+    S.cap.learningMap=new Map();
+    S.cap.learningAt=0;
+  }
+}
+function captionLearningDecorate(tile,item) {
+  CaptionStudioLearning.decorate(tile,
+    CaptionStudioLearning.forPath(S.cap.learningMap,item.path),
+    !!S.cap.studioLearningColors);
+}
+function captionLearningUpdateMounted() {
+  const host=$("captionsGrid");
+  if(!host?.classList.contains("studio-host"))return;
+  const byPath=new Map((S.cap.items||[])
+    .map(it=>[CaptionStudioLearning.pathKey(it.path),it]));
+  for(const tile of host.querySelectorAll(".studio-thumb-rail .studio-file[data-path], .studio-tb-flow-tile[data-path]")) {
+    const item=byPath.get(CaptionStudioLearning.pathKey(tile.dataset.path));
+    if(item)captionLearningDecorate(tile,item);
+  }
+}
+function captionLearningWanted() {
+  const sort=$("capSort")?.value;
+  return !!S.cap.studioLearningColors||sort==="loss-high"||sort==="loss-low";
+}
+function captionLearningRefresh() {
+  captionLearningEnsureFolder();
+  if(!S.imageFolder||!captionLearningWanted()||S.cap.learningRequest||
+      (S.cap.learningAt&&Date.now()-S.cap.learningAt<CAP_LEARNING_REFRESH_MS))return;
+  const folder=String(S.imageFolder);
+  S.cap.learningAt=Date.now();
+  S.cap.learningRequest=api("/api/captions/learning_status?folder="+encodeURIComponent(folder))
+    .then(data=>{
+      if(String(S.imageFolder||"")!==folder)return; // stale dataset switch
+      S.cap.learningMap=CaptionStudioLearning.index(data.images);
+      S.cap.learningRun=data.run||null;
+      const sort=$("capSort")?.value;
+      const resort=sort==="loss-high"||sort==="loss-low";
+      // Don't replace a live caption editor while the user is typing.
+      if(resort&&!document.activeElement?.closest?.("#captionsGrid .studio-editor"))
+        renderCaptions();
+      else captionLearningUpdateMounted();
+    })
+    .catch(error=>{S.cap.learningError=error.message;})
+    .finally(()=>{S.cap.learningRequest=null;});
+}
+
 function renderCaptions() {
+  if(typeof S.cap.studioLearningColors!=="boolean") {
+    try { S.cap.studioLearningColors=localStorage.getItem("fizgig.caption.learning_colors")==="1"; }
+    catch(e) { S.cap.studioLearningColors=false; }
+  }
+  captionLearningEnsureFolder();
   const host = $("captionsGrid");
   // Preserve the one real set of bound AI model/task controls across renders.
   // The workbench re-creates this host frequently (selection, filters, saves).
@@ -11013,7 +11073,10 @@ function renderCaptions() {
   if (filter === "missing") items = items.filter(i => i.caption === null);
   else if (filter === "captioned") items = items.filter(i => i.caption !== null);
   const sort = $("capSort").value, px = (i) => (i.size ? i.size[0] * i.size[1] : null);
-  if (sort !== "name") {                       // by pixel count; songs (no size) go last either way
+  if(captionLearningWanted()&&$("capView").value==="studio")captionLearningRefresh();
+  if(sort==="loss-high"||sort==="loss-low")
+    items=CaptionStudioLearning.sort(items,S.cap.learningMap,sort);
+  else if (sort !== "name") {                       // by pixel count; songs (no size) go last either way
     items = [...items].sort((a, b) => (px(a) == null) - (px(b) == null) ||
       (sort === "small" ? px(a) - px(b) : px(b) - px(a)) || a.name.localeCompare(b.name));
   }
@@ -12134,6 +12197,7 @@ function renderCaptionStudio(host,items,ext){
     const tile=el("button",{type:"button",
       class:"studio-file studio-thumb"+(isActive?" active":"")+(isPicked?" is-picked":"")+
         (S.cap.studioReviewed?.has(it.path)?" is-reviewed":""),
+      "data-path":it.path,
       title:it.name,
       "aria-label":it.name+(it.caption===null?", missing caption":"")+(isPicked?", selected":""),
       "aria-pressed":isPicked?"true":"false",
@@ -12142,6 +12206,7 @@ function renderCaptionStudio(host,items,ext){
         pickImage(it,e);
         renderCaptions();
       }},thumb);
+    captionLearningDecorate(tile,it);
     thumbs.append(el("div",{class:"studio-browser-row",role:"listitem"},tile));
   }
   left.append(thumbs,nav);
@@ -13156,7 +13221,7 @@ function renderCaptionStudio(host,items,ext){
           }
         };
         const flow=CaptionStudioViz.tagbenchWaterfall(items,chooseImage,openImageMenu,
-          S.cap.studioPath,S.cap.studioSelection,TOKEN);
+          S.cap.studioPath,S.cap.studioSelection,TOKEN,captionLearningDecorate);
         fullStage.append(flow);
       }else{
         const revision=S.cap.studioRevision||0;
@@ -13201,6 +13266,7 @@ function renderCaptionStudio(host,items,ext){
         fullStage.append(network);
       }
     }
+    learningToggle.hidden=view==="constellation";
     for(const button of viewButtons.querySelectorAll("button")){
       const selected=button.dataset.view===view;
       button.classList.toggle("is-on",selected);
@@ -13213,7 +13279,19 @@ function renderCaptionStudio(host,items,ext){
     button.dataset.view=mode;
     viewButtons.append(button);
   });
-  actionBar.append(viewButtons);
+  const learningCheck=el("input",{type:"checkbox","aria-label":"Learning colors"});
+  learningCheck.checked=!!S.cap.studioLearningColors;
+  learningCheck.addEventListener("change",()=>{
+    S.cap.studioLearningColors=learningCheck.checked;
+    try{localStorage.setItem("fizgig.caption.learning_colors",learningCheck.checked?"1":"0");}
+    catch(e){/* the toggle still works in private mode */}
+    captionLearningUpdateMounted();
+    if(learningCheck.checked)captionLearningRefresh();
+  });
+  const learningToggle=el("label",{class:"studio-learning-toggle",
+    title:"Show a second outline based on the latest matching run's per-image loss verdict. The selection ring remains unchanged."},
+    learningCheck,el("span",{text:"Learning colors"}));
+  actionBar.append(learningToggle,viewButtons);
   // TagBench shortcut parity. Only active inside Caption Workbench, and never
   // steals native typing shortcuts or Image Prep's own canvas bindings.
   const selectedForEdit=()=>imageTargets().filter(it=>!S.cap.studioReviewed?.has(it.path)&&

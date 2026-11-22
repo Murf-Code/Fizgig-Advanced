@@ -4100,6 +4100,12 @@ class Handler(BaseHTTPRequestHandler):
             if not p.lower().endswith(".safetensors") or not os.path.isfile(p):
                 return self.json({"error": "not a checkpoint"}, 404)
             return self._stream(p)
+        if path == "/api/captions/learning_status":
+            # Lightweight verdict snapshot for the optional image outlines.
+            # No per-epoch chart series or model work is sent to the browser.
+            from fizgig.web import caption_learning
+            return self.json(caption_learning.snapshot(
+                (qs.get("folder") or [""])[0], history.runs()[:200], get_family))
         if path == "/api/captions/live_status":
             folder = os.path.realpath((qs.get("folder") or [""])[0] or "")
             with _lock:

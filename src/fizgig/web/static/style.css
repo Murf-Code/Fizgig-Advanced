@@ -4893,3 +4893,30 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   border-color:var(--warning);outline-color:var(--warning);
 }
 #tab-captions .studio-empty-captions .studio-filter-bar{max-width:460px}
+
+
+/* Caption Workbench learning status: OUTER ring only. The selected-image
+   border, constellation colours and glass selection animation stay intact. */
+#tab-captions .studio-thumb-rail .studio-file[data-learning-status],
+#tab-captions .studio-tb-flow-tile[data-learning-status]{
+  outline:2px solid var(--caption-learning-ring);
+  outline-offset:2px;
+}
+#tab-captions [data-learning-status="stuck"]{--caption-learning-ring:var(--danger)}
+#tab-captions [data-learning-status="suspect"]{--caption-learning-ring:var(--warning-strong)}
+#tab-captions [data-learning-status="watch"]{--caption-learning-ring:var(--warning)}
+#tab-captions [data-learning-status="learning"]{--caption-learning-ring:var(--data-blue)}
+#tab-captions [data-learning-status="easy"]{--caption-learning-ring:var(--success)}
+#tab-captions [data-learning-status="exhausted"]{--caption-learning-ring:var(--data-teal)}
+#tab-captions [data-learning-status="warmup"]{--caption-learning-ring:var(--special)}
+#tab-captions [data-learning-status="excluded"]{--caption-learning-ring:var(--text-muted)}
+#tab-captions .studio-learning-toggle{
+  display:inline-flex;align-items:center;gap:7px;flex:none;
+  color:var(--text-secondary);font-size:12px;cursor:pointer;
+  padding:6px 9px;border:1px solid var(--border);border-radius:8px;
+  background:var(--bg-inset);
+}
+#tab-captions .studio-learning-toggle:hover{border-color:var(--accent-border)}
+#tab-captions .studio-learning-toggle input{accent-color:var(--accent);margin:0}
+#tab-captions .studio-learning-toggle:has(input:checked){color:var(--text-primary);border-color:var(--accent-border)}
+#tab-captions .studio-learning-toggle[hidden]{display:none}
