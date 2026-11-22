@@ -3338,3 +3338,44 @@ label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; 
   padding:9px;border:1px solid var(--border);border-radius:7px;min-width:0}
 #tab-captions .studio-removed-row>div{min-width:0;overflow-wrap:anywhere}
 #tab-captions .studio-removed-row .btn{flex:none}
+
+/* Perceptual duplicate review belongs to Caption Studio, never the training GPU. */
+#tab-captions .studio-duplicate-browser{border:1px solid var(--accent-border);border-radius:10px;
+  background:var(--bg-surface);padding:12px;margin:0 0 12px;min-width:0}
+#tab-captions .studio-duplicate-browser>summary{cursor:pointer;font-weight:650;color:var(--text-primary)}
+#tab-captions .studio-duplicate-browser[open]>summary{margin-bottom:9px}
+#tab-captions .studio-duplicate-controls{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+  padding:9px 0;margin:4px 0}
+#tab-captions .studio-duplicate-threshold{width:clamp(120px,24vw,270px);max-width:100%;accent-color:var(--accent)}
+#tab-captions .studio-duplicate-pages{gap:10px;justify-content:flex-end;flex-wrap:wrap;margin:8px 0}
+#tab-captions .studio-duplicate-results{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,450px),1fr));gap:12px}
+#tab-captions .studio-duplicate-group{min-width:0;border:1px solid var(--border);border-radius:9px;
+  background:var(--bg-inset);padding:10px;display:flex;flex-direction:column;gap:9px}
+#tab-captions .studio-duplicate-head{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;
+  justify-content:space-between}
+#tab-captions .studio-duplicate-head strong{font-size:12px;color:var(--text-primary)}
+#tab-captions .studio-duplicate-group .field-row{flex-wrap:wrap;gap:7px}
+#tab-captions .studio-duplicate-group select.w-path{flex:1 1 180px;width:auto;min-width:0}
+#tab-captions .studio-duplicate-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:9px}
+#tab-captions .studio-duplicate-card{min-width:0;border:1px solid var(--border);border-radius:8px;
+  overflow:hidden;background:var(--bg-surface)}
+#tab-captions .studio-duplicate-card.keeper{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent-border)}
+#tab-captions .studio-duplicate-card>img{width:100%;height:148px;object-fit:contain;display:block;
+  background:var(--bg-deep)}
+#tab-captions .studio-duplicate-card-info{display:flex;flex-direction:column;gap:5px;padding:8px;
+  overflow-wrap:anywhere}
+#tab-captions .studio-duplicate-card-info>strong{font-size:11px;max-width:100%}
+#tab-captions .studio-duplicate-caption{font-size:11px;color:var(--text-secondary);
+  max-height:72px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+#tab-captions .studio-duplicate-card-info .field-row{align-items:center}
+#tab-captions .studio-duplicate-actions{display:flex;gap:8px;flex-wrap:wrap}
+#tab-captions .studio-duplicate-merge-note{white-space:pre-wrap;overflow-wrap:anywhere}
+#tab-captions .studio-duplicate-merge-preview{display:flex;flex-direction:column;gap:8px}
+#tab-captions .studio-duplicate-caption-preview{padding:10px;margin:0;border:1px solid var(--border);
+  border-radius:7px;background:var(--bg-surface);white-space:pre-wrap;overflow-wrap:anywhere;
+  max-height:220px;overflow:auto;color:var(--text-primary);font-size:12px}
+@media(max-width:650px){
+  #tab-captions .studio-duplicate-browser{padding:9px}
+  #tab-captions .studio-duplicate-results{grid-template-columns:1fr}
+  #tab-captions .studio-duplicate-card>img{height:120px}
+}
