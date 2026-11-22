@@ -63,3 +63,20 @@ def test_unreadable_review_ledger_blocks_legacy_batch(tmp_path):
     with pytest.raises(ValueError):
         captions.find_replace(str(tmp_path), "before", "after", True)
     assert (tmp_path / "lion.txt").read_text() == "before"
+
+
+def test_ai_append_still_respects_review_locks(tmp_path):
+    from fizgig.scripts.batch_caption import _write_caption
+    folder = tmp_path / "dataset"
+    folder.mkdir()
+    image = folder / "lion.png"
+    image.write_bytes(b"placeholder")
+    _write_caption(str(image), "first")
+    _write_caption(str(image), "second", append=True)
+    assert (folder / "lion.txt").read_text() == "first\\nsecond".replace("\\\\n", "\\n")
+    _write_caption(str(image), "second", append=True)
+    assert (folder / "lion.txt").read_text().count("second") == 1
+    caption_review.mark(folder, image.name, True)
+    with pytest.raises(ValueError, match="review lock"):
+        _write_caption(str(image), "third", append=True)
+    assert "third" not in (folder / "lion.txt").read_text()
