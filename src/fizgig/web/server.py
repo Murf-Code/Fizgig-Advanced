@@ -5061,13 +5061,11 @@ class Handler(BaseHTTPRequestHandler):
                 cap = captioner_for(prefs)
                 model = str(b.get("model") or "")
                 _caption_gpu_check(captions.need_gb(model))
-                from fizgig.dataset import detail_crops     # the folder's files, or its largest detail crops
-                inside = {os.path.abspath(f) for f in captions.with_crops(folder)}
-                only = [p for p in (b.get("only") or []) if os.path.dirname(os.path.abspath(p)) in inside]
+                only = captions.selected_media(folder, b.get("only"))
                 return self.json(captions.ai_captions(
                     prefs, cap if cap and os.path.isfile(cap) else "", folder, model, str(b.get("task") or ""),
                     str(b.get("instruction") or ""), int(b.get("max_tokens") or 120), str(b.get("trigger") or ""),
-                    bool(b.get("overwrite")), clips, only=only or None, photos=photos,
+                    bool(b.get("overwrite")), clips, only=only, photos=photos,
                     ext=captions.caption_ext(b.get("ext")), tags=b.get("tags"),
                     threshold=float(b.get("threshold") or 0.35),
                     leave_out=str(b.get("leave_out") or ""), underscores=bool(b.get("underscores")),
