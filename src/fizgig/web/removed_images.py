@@ -46,16 +46,23 @@ def _clean_pairs(pairs):
     return out
 
 
-def _load(folder):
+def _load(folder, *, strict=False):
     try:
         with open(_journal(folder), encoding="utf-8") as stream:
             data = json.load(stream)
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return []
-    if not isinstance(data, list):
+    except (OSError, ValueError) as exc:
+        if strict:
+            raise ValueError("Removal journal is unreadable; no history was overwritten.") from exc
         return []
-    return [entry for entry in data if isinstance(entry, dict) and
-            isinstance(entry.get("id"), str) and isinstance(entry.get("moved"), list)]
+    if not isinstance(data, list) or any(
+            not isinstance(entry, dict) or not isinstance(entry.get("id"), str)
+            or not isinstance(entry.get("moved"), list) for entry in data):
+        if strict:
+            raise ValueError("Removal journal is invalid; no history was overwritten.")
+        return []
+    return data
 
 
 def _save(folder, entries):
@@ -72,7 +79,7 @@ def record(folder, moved):
     if not pairs:
         return ""
     with _LOCK:
-        rows = _load(folder)
+        rows = _load(folder, strict=True)
         ident = uuid.uuid4().hex
         rows.append({"id": ident, "name": pairs[0][0], "moved": pairs,
                      "time": time.time()})
@@ -128,7 +135,7 @@ def reconcile(folder, moved, restored):
         return
     pairs = {tuple(p) for p in _clean_pairs(moved) if p[0] in done}
     with _LOCK:
-        entries = _load(folder)
+        entries = _load(folder, strict=True)
         for entry in entries:
             entry["moved"] = [pair for pair in _clean_pairs(entry["moved"])
                               if tuple(pair) not in pairs]
