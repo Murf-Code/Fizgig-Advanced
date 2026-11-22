@@ -12822,10 +12822,9 @@ function renderCaptionStudio(host,items,ext){
     autoTasks.set(autoKey,autoTask);
   }
   autoTask.notify=message=>{
-    if(S.cap.studioPath!==current.path)return;
-    // Successful autosaves belong in the small status control, not a
-    // permanent explanatory row below the image.
-    if(note.isConnected)
+    // A save can finish after switching images. Update the global state
+    // indicator even if this message belongs to a different thumbnail.
+    if(S.cap.studioPath===current.path&&note.isConnected)
       note.textContent=/^(Save failed|Autosave blocked)/.test(message)?message:"";
     S.cap.studioStatusRefresh?.();
   };
@@ -13697,14 +13696,18 @@ function renderCaptionStudio(host,items,ext){
     el("span",{class:"studio-status-dot","aria-hidden":"true"}),liveLabel);
   const liveDetail=el("div",{class:"studio-status-detail"});
   liveStatus.append(liveSummary,liveDetail);
+  const datasetPaths=new Set(S.cap.items.map(it=>it.path));
   const refreshStatus=()=>{
     if(!liveStatus.isConnected)return;
     const status=S.cap.liveStatus;
     const pending=(Number(status?.pending_image_count)||0)+
       (Number(status?.pending_caption_count)||0);
-    const localDraft=drafts.has(current.path)&&drafts.get(current.path)!==autoTask.lastSaved;
+    const currentTasks=[...autoTasks.values()].filter(task=>datasetPaths.has(task.path));
+    const failedTask=currentTasks.find(task=>task.lastError);
+    const savingTask=currentTasks.some(task=>task.busy||task.pending);
+    const localDraft=[...drafts.keys()].some(path=>datasetPaths.has(path));
     let state="saved",label="Saved";
-    if(autoTask.lastError){state="attention";label="Save failed";}
+    if(failedTask){state="attention";label="Save failed";}
     else if(status?.attention){state="attention";label="Needs attention";}
     else if(S.cap.imageEditing?.inline&&meState().stepBusy){
       state="saving";label="Applying…";
@@ -13713,7 +13716,7 @@ function renderCaptionStudio(host,items,ext){
     }else if(S.cap.imageEditing?.inline&&meState().tool==="crop"&&
       meState().crop&&!meCropWhole()){
       state="editing";label="Apply crop";
-    }else if(autoTask.busy||autoTask.pending||localDraft||
+    }else if(savingTask||localDraft||
       (S.cap.imageEditing?.inline&&meState().dirty)){
       state="saving";label="Saving…";
     }else if(pending){
@@ -13722,9 +13725,10 @@ function renderCaptionStudio(host,items,ext){
     liveStatus.dataset.state=state;
     liveLabel.textContent=label;
     const details=studioLiveSummary(status);
-    liveDetail.textContent=autoTask.lastError?
-      "Caption save failed; the local draft is preserved and will retry. "+
-        autoTask.lastError.message+" "+details:details;
+    liveDetail.textContent=failedTask?
+      "Caption save failed for "+failedTask.name+
+      "; the local draft is preserved and will retry. "+
+      failedTask.lastError.message+" "+details:details;
     liveSummary.title=details;
   };
   S.cap.studioStatusRefresh=refreshStatus;
