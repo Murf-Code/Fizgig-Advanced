@@ -10916,6 +10916,17 @@ async function loadCaptions() {
   }
   pollCaptions();
   $("captionExt").value = capExt();         // the files this tab writes and reads are the ones training reads
+  const historyDataset=String(S.imageFolder||"")+"|"+capExt();
+  if(S.cap.studioDatasetKey!==historyDataset){
+    S.cap.studioDatasetKey=historyDataset;
+    S.cap.studioSelection?.clear();
+    S.cap.studioSelectionAnchor=null;
+    S.cap.studioPath=null;
+    S.cap.studioQuery="";
+    // Chronological history is scoped to one dataset/extension, never write to
+    // another dataset when the Start tab's folder changes.
+    S.cap.studioHistory={key:historyDataset,past:[],future:[],busy:false};
+  }
   const zipUrl = (caps) => `/api/datasets/zip?folder=${encodeURIComponent(S.imageFolder || "")}&captions=${caps ? 1 : 0}` +
     `&ext=${encodeURIComponent(capExt())}&t=${encodeURIComponent(TOKEN)}`;
   $("dsZip").href = zipUrl(false); $("dsZipCaps").href = zipUrl(true);
@@ -11440,7 +11451,10 @@ function captionDuplicatePanel(ext){
 // committed image steps. Each caption undo is optimistic: a concurrent external
 // edit or a new review lock stops the whole batch before any file is touched.
 function studioHistory(){
-  return S.cap.studioHistory||(S.cap.studioHistory={past:[],future:[],busy:false});
+  const key=String(S.imageFolder||"")+"|"+capExt();
+  if(S.cap.studioHistory?.key!==key)
+    S.cap.studioHistory={key,past:[],future:[],busy:false};
+  return S.cap.studioHistory;
 }
 function studioRecord(label,entry){
   const history=studioHistory();
