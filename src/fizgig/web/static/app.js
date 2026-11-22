@@ -3926,6 +3926,10 @@ function valPickRow(r, wrap) {
   };
   function save(names) { onValue(r, names); draw(); }
   wrap.append(el("div", {class: "field-row"}, el("span", {class: "field-label", text: r.label + ":"}), add, clear), list);
+  // External workbench menu updates must refresh this same validation picker.
+  const sync=el("input",{type:"hidden",id:"f_"+r.key});
+  sync._sync=draw;
+  wrap.append(sync);
   wrap.append(el("div", {class: "field-hint row-note", id: "note_" + r.key}));
   if (r.hint) wrap.append(el("div", {class: "field-hint", text: r.hint}));
   draw();
@@ -12007,6 +12011,46 @@ function renderCaptionStudio(host,items,ext){
     if(next)S.cap.studioPath=next.path;
     renderCaptions();
   };
+  const validTrainingPictures=target=>target.filter(x=>!x.crop&&!!x.size&&
+    /\.(png|jpe?g|webp|bmp|gif|tiff?|avif|jxl)$/i.test(x.name));
+  const setTrainingValue=(key,value)=>{
+    const row=(S.fam?.form?.sections||[]).flatMap(section=>section.rows||[])
+      .find(r=>r?.key===key);
+    if(row)onValue(row,value);
+    else{S.values[key]=value;saveStateSoon();refreshStateSoon();}
+    syncInputs([key]);
+  };
+  const toggleValidationImages=path=>{
+    const pictures=validTrainingPictures(imageTargets(path));
+    if(!pictures.length)return say("Select a training image (not a detail crop).");
+    const change=CaptionStudioTrainingPicks.toggleValidation(
+      S.values.VALIDATION_PICKED,pictures.map(it=>it.name));
+    setTrainingValue("VALIDATION_PICKED",change.picked);
+    say((change.remove?"Removed ":"Added ")+pictures.length+
+      " image(s) "+(change.remove?"from":"to")+" Image Validation.");
+  };
+  const toggleSampleImages=path=>{
+    const pictures=validTrainingPictures(imageTargets(path));
+    if(!pictures.length)return say("Select a training image (not a detail crop).");
+    const change=CaptionStudioTrainingPicks.toggleSamples(
+      S.values.SAMPLE_PROMPT||"",samplePairs(),pictures);
+    if(!change.changed.length){
+      return say(change.skipped.length
+        ? "Add captions before using these pictures as sample previews: "+change.skipped.join(", ")
+        : "No sample image pairings needed changing.");
+    }
+    if(!change.removing)S.values.SAMPLE_PAIRED=true;
+    // Previews use caption text as their prompt. Each generated prompt is tied
+    // to the source training picture through Fizgig's existing SAMPLE_PAIRS.
+    setTrainingValue("SAMPLE_PROMPT",change.prompts);
+    setPairs(change.pairs);
+    syncInputs(["SAMPLE_PAIRED"]);
+    if(change.skipped.length)
+      say("Updated "+change.changed.length+" sample image(s); "+change.skipped.length+
+        " skipped because their captions are empty.");
+    else say((change.removing?"Removed ":"Added ")+change.changed.length+
+      " image(s) "+(change.removing?"from":"to")+" Sample Previews.");
+  };
   const closeImageMenu=()=>{
     document.querySelectorAll(".studio-image-context-menu").forEach(node=>node.remove());
   };
@@ -12037,6 +12081,18 @@ function renderCaptionStudio(host,items,ext){
     action("Copy Tags","Ctrl+C",()=>copyImageTags(it.path),!count);
     action("Paste Tags","Ctrl+V",()=>pasteImageTags(it.path),!count);
     action("Copy File "+(count===1?"Name":"Names"),"Ctrl+Alt+C",()=>copyImageNames(it.path),!count);
+    separator();
+    const pictures=validTrainingPictures(targets);
+    const plural=pictures.length===1?"Image":"Images";
+    const inValidation=pictures.length>0&&pictures.every(x=>
+      CaptionStudioTrainingPicks.present(
+        CaptionStudioTrainingPicks.names(S.values.VALIDATION_PICKED),x.name));
+    const inSamples=pictures.length>0&&pictures.every(x=>
+      CaptionStudioTrainingPicks.hasPair(samplePairs(),x.name));
+    action(inValidation?"Remove "+plural+" from Validation Images":"Add "+plural+" to Validation Images",
+      "",()=>toggleValidationImages(it.path),!pictures.length);
+    action(inSamples?"Remove "+plural+" from Sample Images":"Add "+plural+" to Sample Images",
+      "",()=>toggleSampleImages(it.path),!pictures.length);
     separator();
     action("Delete "+(count===1?"Image":"Images"),"Ctrl+Del",()=>removeSelectedImages(it.path),!count);
     action("Open in New Tab","Ctrl+O",()=>openSelectedImage(it.path),!count||!targets[0]?.size);
