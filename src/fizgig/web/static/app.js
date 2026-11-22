@@ -13115,26 +13115,30 @@ function renderCaptionStudio(host,items,ext){
   applyImage.title="Apply the current Remove or Crop operation (Enter)";
   const goBack=btn("Undo",async()=>{
     try{
-      if(S.cap.imageEditing?.inline){
-        const history=studioHistory().past.at(-1);
-        if(history?.entry.kind!=="image"&&history){
-          await studioTravel("undo");
-        }else if(meState().undo.length){
+      const latest=studioHistory().past.at(-1);
+      if(latest?.entry.kind==="image"){
+        if(S.cap.imageEditing?.inline&&meState().undo.length)
           await meRestore(meState().undo,meState().redo);
-        }else await studioTravel("undo");
+        else await studioTravel("undo");
+      }else if(S.cap.imageEditing?.inline&&meState().undo.length){
+        await meRestore(meState().undo,meState().redo);
+      }else if(latest&&!hist.past.length){
+        await studioTravel("undo");
       }else historyStep("undo");
     }catch(e){say("Undo failed: "+e.message);}
   });
   goBack.classList.add("studio-image-undo");
   const goForward=btn("Redo",async()=>{
     try{
-      if(S.cap.imageEditing?.inline){
-        const history=studioHistory().future.at(-1);
-        if(history?.entry.kind!=="image"&&history){
-          await studioTravel("redo");
-        }else if(meState().redo.length){
+      const latest=studioHistory().future.at(-1);
+      if(latest?.entry.kind==="image"){
+        if(S.cap.imageEditing?.inline&&meState().redo.length)
           await meRestore(meState().redo,meState().undo);
-        }else await studioTravel("redo");
+        else await studioTravel("redo");
+      }else if(S.cap.imageEditing?.inline&&meState().redo.length){
+        await meRestore(meState().redo,meState().undo);
+      }else if(latest&&!hist.future.length){
+        await studioTravel("redo");
       }else historyStep("redo");
     }catch(e){say("Redo failed: "+e.message);}
   });
