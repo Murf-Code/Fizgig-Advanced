@@ -1,9 +1,10 @@
 """CPU-only near-duplicate explorer and conservative tag merging for Caption Studio.
 
 No training model, GPU, or network calls are used. Pictures are decoded one at
-a time by a background thread. The threshold uses a 63-bit perceptual DCT hash
-and a mean-color sanity check, so visually unrelated solid-color pictures are
-not mistakenly presented as exact duplicates. All matches require human review.
+a time by a background thread. Duplicate candidates follow TagBench 1.2's 64-bit difference-hash and 4×4
+RGB-grid matcher with its strictness slider 0–16. All matches require human review.
+This scanner is unrelated to object inpainting; Fizgig's original local LaMa
+implementation in web/image_edit.py remains the only Remove Tool.
 """
 from __future__ import annotations
 
@@ -381,3 +382,69 @@ def merge_tags(folder, keeper, donors, *, ext=".txt", delimiter=",",
         return {"keeper": keeper, "caption": merged_text, "added": added,
                 "added_count": len(added), "changed": merged_text != original,
                 "applied": bool(apply and merged_text != original)}
+
+
+def merge_group(folder, keepers, donors, *, ext=".txt", delimiter=",",
+                expected=None, copy_tags=True, apply=False):
+    """TagBench-style multiple keepers: optionally copy dropped-image tags to each.
+
+    All captions are previewed/validated before applying any. The pictures and
+    donor captions are never edited or deleted. Any file removals are a separate
+    action with its own explicit confirmation and review-lock checks.
+    """
+    from fizgig.web.image_edit import write_atomic
+
+    root = _root(folder)
+    if not isinstance(keepers, list) or not 1 <= len(keepers) <= 100:
+        raise ValueError("Select 1–100 pictures to keep.")
+    if not isinstance(donors, list) or len(donors) > 100:
+        raise ValueError("Select at most 100 discarded pictures.")
+    kpaths = [checked_path(root, p) for p in keepers]
+    dpaths = [checked_path(root, p) for p in donors]
+    if len(set(kpaths + dpaths)) != len(kpaths) + len(dpaths):
+        raise ValueError("Each picture must appear exactly once as a keeper or donor.")
+    if not isinstance(expected, dict) or any(p not in expected for p in kpaths + dpaths):
+        raise ValueError("All current caption snapshots are required.")
+    if not isinstance(copy_tags, bool):
+        raise ValueError("copy_tags must be true or false.")
+    with _WRITE_LOCK:
+        output = []
+        if copy_tags and dpaths:
+            for k in kpaths:
+                preview = merge_tags(root, k, dpaths, ext=ext,
+                    delimiter=delimiter, expected=expected, apply=False)
+                output.append(preview)
+        else:
+            # With merging off, read each keeper to show the original caption
+            # and assert that source snapshots have not changed on disk.
+            for p in kpaths + dpaths:
+                if _caption_text(p, ext) != expected[p]:
+                    raise ValueError("A caption changed since the scan. Refresh before applying.")
+            for p in kpaths:
+                output.append({"keeper": p, "caption": expected[p] or "",
+                               "added": [], "added_count": 0, "changed": False,
+                               "applied": False})
+        applied = []
+        if apply and copy_tags and dpaths:
+            # Atomic PER FILE; best-effort rollback for an unexpected mid-commit
+            # write failure. Source captions still remain untouched.
+            try:
+                for result in output:
+                    if result["changed"]:
+                        p = os.path.splitext(result["keeper"])[0] + ext
+                        write_atomic(p, result["caption"].encode("utf-8"))
+                        applied.append(result["keeper"])
+            except Exception:
+                for p in reversed(applied):
+                    old = expected[p]
+                    target = os.path.splitext(p)[0] + ext
+                    if old is None:
+                        try:
+                            os.remove(target)
+                        except OSError:
+                            pass
+                    else:
+                        write_atomic(target, old.encode("utf-8"))
+                raise
+        return {"keepers": output, "donors": dpaths, "applied": applied,
+                "updated_count": len(applied), "copy_tags": copy_tags}
