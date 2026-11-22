@@ -3293,3 +3293,11 @@ label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; 
 #tab-captions .studio-browser input.w-path{min-width:100px;max-width:100%}
 #tab-captions .caption-studio-panel .field-row{flex-wrap:wrap}
 @media(min-width:1300px){#tab-captions .studio-layout{grid-template-columns:minmax(210px,1fr) minmax(400px,2.35fr) minmax(230px,1fr)}}
+
+#tab-captions .studio-category-manager{border:1px solid var(--border);border-radius:8px;padding:9px}
+#tab-captions .studio-category-manager>summary{cursor:pointer;font-weight:600}
+#tab-captions .studio-category-manager>.field-row{margin:8px 0;align-items:center}
+#tab-captions .studio-category-manager input[type=color]{width:32px;min-width:32px;height:30px;border:0;background:transparent;cursor:pointer}
+#tab-captions .studio-category-index-row{display:flex;align-items:stretch;border-bottom:1px solid var(--border);min-width:0;gap:4px}
+#tab-captions .studio-category-index-row>.studio-index-tag{flex:1;min-width:0;overflow-wrap:anywhere;border-bottom:0}
+#tab-captions .studio-category-index-row>.studio-category-select{min-width:95px;max-width:125px;font-size:11px}
