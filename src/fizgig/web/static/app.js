@@ -11931,17 +11931,21 @@ function renderCaptionStudio(host,items,ext){
   const drafts=S.cap.studioDrafts||(S.cap.studioDrafts=new Map());
   const histories=S.cap.studioHistories||(S.cap.studioHistories=new Map());
   const ta=el("textarea",{class:"studio-caption",rows:7});
-  const modeSelect=el("select",{class:"w-combo",title:"Protect prose captions from tag operations"});
-  [["auto","Auto-detect"],["tags","Tag list · first line"],["prose","Natural-language prose"]].forEach(([value,label])=>modeSelect.append(el("option",{value,text:label})));
-  modeSelect.value=S.cap.studioModes?.get(current.path)||"auto";
-  modeSelect.addEventListener("change",()=>{
-    (S.cap.studioModes||(S.cap.studioModes=new Map())).set(current.path,modeSelect.value);
-    S.cap.studioRevision=(S.cap.studioRevision||0)+1;renderCaptions();
-  });
+  // TagBench uses an Image Tags list and a natural-language caption toggle,
+  // not a three-choice parser dropdown. Keep one canonical hidden textarea so
+  // existing save, history and training re-encoding continue to work.
   ta.value=drafts.has(current.path)?drafts.get(current.path):(current.caption||"");
-  if(modeSelect.value==="auto")captionMode=CaptionStudioTags.kind(ta.value,"auto",S.cap.studioDelimiter||",");
+  captionMode=CaptionStudioTags.kind(ta.value,S.cap.studioModes?.get(current.path)||"auto",
+    S.cap.studioDelimiter||",");
+  const naturalToggle=btn("Natural language",()=>{
+    if(locked)return say("Unlock this reviewed image to edit its caption.");
+    S.cap.studioNaturalMode=!(S.cap.studioNaturalMode??(captionMode==="prose"));
+    renderCaptions();
+  });
+  const naturalMode=S.cap.studioNaturalMode??(captionMode==="prose");
+  naturalToggle.classList.toggle("is-on",naturalMode);
+  naturalToggle.setAttribute("aria-pressed",String(naturalMode));
   ta.readOnly=locked;
-  modeSelect.disabled=locked;
   current._ta=ta;
   const hist=histories.get(current.path)||{past:[],future:[],value:ta.value};
   histories.set(current.path,hist);
@@ -11962,40 +11966,131 @@ function renderCaptionStudio(host,items,ext){
     ta.value=hist.value;drafts.set(current.path,ta.value);redraw();
   };
   const word=el("div",{class:"field-hint"});
-  const tags=el("div",{class:"studio-chips"});
+  const tags=el("ul",{class:"studio-image-tag-list",role:"list",
+    "aria-label":"Image Tags; click to select, double-click to rename, Delete to remove"});
+  const imageTagPicked=S.cap.studioImageTagPicked||(S.cap.studioImageTagPicked=new Set());
+  const captionText=el("textarea",{class:"studio-natural-caption",rows:3,
+    placeholder:"Freeform caption, saved on the line beneath the image tags"});
+  captionText.readOnly=locked;
+  const existingText=()=>{
+    const raw=ta.value||"";
+    if(captionMode==="prose")return raw;
+    const pos=raw.search(/\r?\n/);
+    return pos<0?"":raw.slice(pos).replace(/^\r?\n/,"");
+  };
+  captionText.value=existingText();
+  captionText.addEventListener("input",()=>{
+    if(locked)return;
+    if(captionMode==="prose"){ta.value=captionText.value;}
+    else{
+      const prefix=ta.value.split(/\r?\n/,1)[0];
+      ta.value=prefix+(captionText.value?"\n"+captionText.value:"");
+    }
+    remember();
+  });
+  const editImageTag=(original,next)=>{
+    if(locked)return say("Unlock this reviewed image first.");
+    if(captionMode==="prose")return say("This caption is prose; image tags are not modified.");
+    next=String(next||"").trim();
+    if(!next||next===original)return;
+    const parts=studioTokens(ta.value,"tags");
+    ta.value=studioCompose(ta.value,studioUnique(parts.map(t=>t===original?next:t)),"tags");
+    imageTagPicked.clear();remember();redraw();
+  };
+  const removePickedTags=()=>{
+    if(locked||captionMode==="prose")return;
+    const parts=studioTokens(ta.value,"tags");
+    if(!imageTagPicked.size)return;
+    ta.value=studioCompose(ta.value,parts.filter(t=>!imageTagPicked.has(t.toLowerCase())),"tags");
+    imageTagPicked.clear();remember();redraw();
+  };
+  const imageTagMenu=(event,tag)=>{
+    event.preventDefault();
+    if(locked||captionMode==="prose")return;
+    imageTagPicked.add(tag.toLowerCase());redraw();
+    document.querySelectorAll(".studio-tag-context-menu").forEach(n=>n.remove());
+    const menu=el("div",{class:"studio-image-context-menu studio-tag-context-menu",role:"menu"});
+    const menuAction=(name,fn)=>menu.append(el("button",{type:"button",role:"menuitem",text:name,
+      onclick:()=>{menu.remove();fn();}}));
+    menuAction("Rename tag",()=>{
+      const next=prompt("Rename image tag:",tag);if(next!==null)editImageTag(tag,next);
+    });
+    menuAction("Remove selected tags",removePickedTags);
+    document.body.append(menu);
+    const bounds=menu.getBoundingClientRect();
+    menu.style.left=Math.max(6,Math.min(event.clientX,window.innerWidth-bounds.width-8))+"px";
+    menu.style.top=Math.max(6,Math.min(event.clientY,window.innerHeight-bounds.height-8))+"px";
+  };
+  tags.addEventListener("keydown",e=>{
+    if((e.key==="Delete"||e.key==="Backspace")&&!e.ctrlKey&&!e.metaKey){
+      e.preventDefault();e.stopPropagation();removePickedTags();
+    }
+  });
   const redraw=()=>{
     word.textContent=String(ta.value.trim()?ta.value.trim().split(/\s+/).length:0)+" words · "+String(studioTokens(ta.value,captionMode).length)+" tags"+(captionMode==="prose"?" · prose protected from tag actions":"");
     tags.replaceChildren();
-    for(const t of studioUnique(studioTokens(ta.value,captionMode))){
-      const chip=el("button",{class:"studio-chip",text:t+" ×",title:"Click to remove; drag to reorder",onclick:()=>{
-        ta.value=editorCompose(studioTokens(ta.value,captionMode).filter(x=>x.toLowerCase()!==t.toLowerCase()));remember();redraw();
-      }});
+    const parts=captionMode==="prose"?[]:studioTokens(ta.value,"tags");
+    const distinct=studioUnique(parts);
+    for(const t of distinct){
+      const row=el("li",{class:"studio-image-tag-row",role:"listitem"});
+      const picked=imageTagPicked.has(t.toLowerCase());
+      const button=el("button",{type:"button",
+        class:"studio-image-tag"+(picked?" is-picked":""),
+        text:t,"aria-pressed":String(picked),
+        title:"Click to select · Ctrl-click for multiple · Shift-click for range · double-click to rename"});
       const category=categoryState.tags[t.toLowerCase()];
-      if(category&&categoryState.colors[category]){
-        chip.style.borderColor=categoryState.colors[category];
-        chip.style.boxShadow="inset 3px 0 0 "+categoryState.colors[category];
-        chip.title+=" · "+category;
-      }
-      chip.disabled=locked;
-      chip.draggable=!locked;
-      chip.addEventListener("dragstart",e=>e.dataTransfer.setData("text/plain",t));
-      chip.addEventListener("dragover",e=>e.preventDefault());
-      chip.addEventListener("drop",e=>{
-        e.preventDefault();
-        const from=e.dataTransfer.getData("text/plain"),arr=studioTokens(ta.value,captionMode);
-        const a=arr.findIndex(x=>x.toLowerCase()===from.toLowerCase());
-        const b=arr.findIndex(x=>x.toLowerCase()===t.toLowerCase());
-        if(a<0||b<0||a===b)return;
-        const moved=arr.splice(a,1)[0];arr.splice(a<b?b-1:b,0,moved);
-        ta.value=editorCompose(arr);remember();redraw();
+      if(category&&categoryState.colors[category])button.style.borderLeftColor=categoryState.colors[category];
+      button.addEventListener("click",e=>{
+        const key=t.toLowerCase();
+        if(e.shiftKey&&S.cap.studioImageTagAnchor){
+          const all=distinct.map(x=>x.toLowerCase()),start=all.indexOf(S.cap.studioImageTagAnchor),end=all.indexOf(key);
+          if(start>=0&&end>=0){
+            imageTagPicked.clear();
+            for(const name of all.slice(Math.min(start,end),Math.max(start,end)+1))imageTagPicked.add(name);
+          }
+        }else if(e.ctrlKey||e.metaKey){
+          imageTagPicked.has(key)?imageTagPicked.delete(key):imageTagPicked.add(key);
+        }else{imageTagPicked.clear();imageTagPicked.add(key);}
+        S.cap.studioImageTagAnchor=key;
+        for(const el of tags.querySelectorAll("button")){
+          const on=imageTagPicked.has(el.textContent.toLowerCase());
+          el.classList.toggle("is-picked",on);el.setAttribute("aria-pressed",String(on));
+        }
       });
-      tags.append(chip);
+      button.addEventListener("dblclick",()=>{
+        if(locked)return;
+        const input=el("input",{type:"text",class:"studio-inline-image-tag",value:t,
+          "aria-label":"Rename "+t});
+        row.replaceChildren(input);
+        let canceled=false;
+        input.addEventListener("keydown",e=>{
+          if(e.key==="Enter"){e.preventDefault();input.blur();}
+          if(e.key==="Escape"){e.preventDefault();canceled=true;input.blur();}
+        });
+        input.addEventListener("blur",()=>{
+          if(!canceled)editImageTag(t,input.value);
+          else redraw();
+        },{once:true});
+        input.focus();input.select();
+      });
+      button.addEventListener("contextmenu",e=>imageTagMenu(e,t));
+      button.draggable=!locked;
+      button.addEventListener("dragstart",e=>e.dataTransfer.setData("text/plain",t));
+      button.addEventListener("dragover",e=>e.preventDefault());
+      button.addEventListener("drop",e=>{
+        e.preventDefault();if(locked)return;
+        const from=e.dataTransfer.getData("text/plain"),arr=studioTokens(ta.value,"tags");
+        const a=arr.indexOf(from),b=arr.indexOf(t);
+        if(a<0||b<0||a===b)return;
+        arr.splice(a,1);arr.splice(b,0,from);
+        ta.value=studioCompose(ta.value,arr,"tags");remember();redraw();
+      });
+      row.append(button);tags.append(row);
     }
+    word.textContent=String(distinct.length)+" tags · "+String(ta.value.trim()?ta.value.trim().split(/\\s+/).length:0)+" words";
+    if(captionMode==="prose"||naturalMode)captionText.value=existingText();
   };
-  ta.addEventListener("input",()=>{
-    if(modeSelect.value==="auto")captionMode=CaptionStudioTags.kind(ta.value,"auto",S.cap.studioDelimiter||",");
-    remember();redraw();
-  });
+  ta.addEventListener("input",()=>{remember();redraw();});
   const save=async()=>{
     if(locked){say("Unlock this reviewed caption before saving.");return;}
     // Capture the exact submitted text; typing while a network save is pending
