@@ -5275,11 +5275,12 @@ class Handler(BaseHTTPRequestHandler):
                         result = image_edit.restore_original(folder, name)
                         result["queued"] = _notify_image_change(folder, name, "updated")
                         return self.json(result)
-                    for source in image_edit.step_targets(b.get("step")):
-                        if os.path.splitext(source)[1].lower() in _IMAGES and caption_review.is_locked(
-                                os.path.dirname(source), os.path.basename(source)):
-                            raise ValueError("Reviewed picture is locked. Unlock it before image undo/redo.")
-                    result = image_edit.step(b.get("step"), "redo" if b.get("redo") else "undo")
+                    with caption_review._lock:
+                        for source in image_edit.step_targets(b.get("step")):
+                            if os.path.splitext(source)[1].lower() in _IMAGES and caption_review.is_locked(
+                                    os.path.dirname(source), os.path.basename(source)):
+                                raise ValueError("Reviewed picture is locked. Unlock it before image undo/redo.")
+                        result = image_edit.step(b.get("step"), "redo" if b.get("redo") else "undo")
                     for source in result.pop("changed_images", []):
                         _notify_image_change(os.path.dirname(source), os.path.basename(source), "updated")
                     return self.json(result)
