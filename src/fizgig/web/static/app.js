@@ -7003,6 +7003,7 @@ async function meLoadWmStroke() {
   // paint the picture's watermark sidecar onto the Remove stroke (padded), unless the user already edited it
   const m = meState(), item = m.list.find((p) => p.name === m.name);
   if (!meLoadWmOn() || !item || !item.watermark || !m.mask) return;
+  meStopRemoveWorker();
   const q = `folder=${encodeURIComponent(m.folder || S.imageFolder)}&name=${encodeURIComponent(m.name)}&pad=${meWmPad()}&t=${encodeURIComponent(TOKEN)}`;
   const img = await meImage("/api/masks/edit/watermark?" + q + "&v=" + Date.now()).catch(() => null);
   if (!img || m.name !== item.name) return;
@@ -7036,6 +7037,8 @@ async function meRmSave(onlyWm) {
   // only when you leave it (onlyWm false), so a quick paint-and-Enter Remove stays as it was.
   const m = meState();
   const run = async () => {
+    // The bitmap worker is authoritative until all stroke patches arrive.
+    await meDrainRemoveWorker();
     const item = m.list.find((p) => p.name === m.name);
     if (!meLoadWmOn() || !m.rm || !m.mask || !item || (onlyWm && !item.watermark)) return true;
     const now = meCopy(m.rm), diff = meRmDiff(m.rmBase, now);
@@ -7120,6 +7123,7 @@ function meWorkCanvas(pic) {
 function meFresh() {
   // a new or changed picture: no Remove stroke waiting, the crop box back round the whole picture
   const m = meState();
+  meStopRemoveWorker();
   m.rm = null; m.rmBase = null; m.rmDirty = false; m.cropDrag = null; m.showBefore = false;
   // A new image must not briefly display the previous image's red marks
   // while its picture/watermark data is still loading.
@@ -7346,7 +7350,8 @@ function mePaint() {
   // when moving the pointer over an unchanged image.
 }
 function meAt(e) {
-  const m = meState(), r = $("meCanvas").getBoundingClientRect();
+  const m = meState(), r = arguments.length>1&&arguments[1]?
+    arguments[1]:$("meCanvas").getBoundingClientRect();
   const sx = (e.clientX - r.left) * ($("meCanvas").width / r.width), sy = (e.clientY - r.top) * ($("meCanvas").height / r.height);
   return {sx, sy, x: (sx - m.ox) / m.zoom, y: (sy - m.oy) / m.zoom,
     px:e.clientX-r.left,py:e.clientY-r.top,cssScale:r.width/$("meCanvas").width};
@@ -7426,7 +7431,9 @@ async function meRestore(from, to) {
 }
 function meDropPending() {
   const m = meState();
-  if (m.rm && m.rmDirty && !(m.rmFromWm && meLoadWmOn())) { m.rm = null; m.rmDirty = false; meImgBar(); meDraw(); return true; }
+  if (m.rm && m.rmDirty && !(m.rmFromWm && meLoadWmOn())) {
+    meStopRemoveWorker();m.rm=null;m.rmDirty=false;meImgBar();meDraw();return true;
+  }
   if (m.tool === "crop" && m.crop && !meCropWhole()) {
     m.crop = {l: 0, t: 0, r: m.mask.width, b: m.mask.height}; meCropFit(); meImgBar(); meDraw(); return true;
   }
@@ -7434,22 +7441,68 @@ function meDropPending() {
 }
 
 // ---- the picture tools: Remove (paint over a thing, Apply fills it from around it) and Crop (web/image_edit.py)
-function meRmLine(a, b) {
-  const m = meState();
-  if (!m.rm) m.rm = el("canvas", {width: m.mask.width, height: m.mask.height});
-  const c = m.rm.getContext("2d");
-  c.globalCompositeOperation = m.flip ? "destination-out" : "source-over";   // right-drag rubs the stroke out
-  c.strokeStyle = "#fff"; c.fillStyle = "#fff"; c.lineCap = "round"; c.lineJoin = "round";
-  c.lineWidth = Math.max(1, Number($("meSize").value) / m.zoom);
-  c.beginPath();
-  if (a.x === b.x && a.y === b.y) { c.arc(a.x, a.y, c.lineWidth / 2, 0, Math.PI * 2); c.fill(); }
-  else { c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); }
-  c.globalCompositeOperation = "source-over";
-  const radius=c.lineWidth/2;
-  // The path's bounding rectangle is enough to update the red overlay.
-  m.rmDirtyRect=meDirtyRect(m.rmDirtyRect,a.x,a.y,radius,m.rm.width,m.rm.height);
-  m.rmDirtyRect=meDirtyRect(m.rmDirtyRect,b.x,b.y,radius,m.rm.width,m.rm.height);
-  m.rmDirty = true;
+function meStopRemoveWorker(){
+  const m=meState();
+  m.removeBridge?.close();
+  m.removeBridge=null;
+}
+function meDrainRemoveWorker(){
+  return meState().removeBridge?.drain()||Promise.resolve();
+}
+function meRawRemoveSegment(segment){
+  const m=meState();
+  if(!m.rm)return;
+  const c=m.rm.getContext("2d");
+  c.globalCompositeOperation=segment.erase?"destination-out":"source-over";
+  c.strokeStyle="#fff";c.fillStyle="#fff";c.lineCap="round";c.lineJoin="round";
+  c.lineWidth=segment.width;c.beginPath();
+  if(segment.ax===segment.bx&&segment.ay===segment.by){
+    c.arc(segment.ax,segment.ay,segment.width/2,0,Math.PI*2);c.fill();
+  }else{
+    c.moveTo(segment.ax,segment.ay);c.lineTo(segment.bx,segment.by);c.stroke();
+  }
+  c.globalCompositeOperation="source-over";
+  const radius=segment.width/2;
+  m.rmDirtyRect=meDirtyRect(m.rmDirtyRect,segment.ax,segment.ay,radius,m.rm.width,m.rm.height);
+  m.rmDirtyRect=meDirtyRect(m.rmDirtyRect,segment.bx,segment.by,radius,m.rm.width,m.rm.height);
+  m.rmDirty=true;
+}
+function mePrepareRemoveWorker(){
+  const m=meState();
+  if(m.tool!=="remove"||!m.mask)return;
+  if(!m.rm)m.rm=el("canvas",{width:m.mask.width,height:m.mask.height});
+  if(m.removeBridge?.mask===m.rm&&!m.removeBridge.closed)return;
+  meStopRemoveWorker();
+  m.removeBridge=new RemoveStrokeBridge(m.rm,(rect,bitmap)=>{
+    if(m.rm!==m.removeBridge?.mask)return;
+    const c=m.rm.getContext("2d");
+    // A partial "copy" composite can clear pixels outside its rectangle.
+    // Clear just the patch area, then replace it in normal source-over mode.
+    c.clearRect(rect.l,rect.t,rect.r-rect.l,rect.b-rect.t);
+    c.drawImage(bitmap,rect.l,rect.t);
+    m.rmDirtyRect=meDirtyRect(m.rmDirtyRect,
+      (rect.l+rect.r)/2,(rect.t+rect.b)/2,
+      Math.max(rect.r-rect.l,rect.b-rect.t)/2,
+      m.rm.width,m.rm.height);
+    m.rmDirty=true;
+    meDrawRemove();
+  },segment=>{
+    meRawRemoveSegment(segment);meDrawRemove();
+  });
+}
+function meRmLine(a,b){
+  const m=meState();
+  if(!m.rm)m.rm=el("canvas",{width:m.mask.width,height:m.mask.height});
+  const segment={ax:a.x,ay:a.y,bx:b.x,by:b.y,
+    width:Math.max(1,Number($("meSize").value)/m.zoom),erase:!!m.flip};
+  // While the worker is starting, the old immediate path remains usable.
+  // Terminate a not-yet-ready worker before changing its source canvas.
+  if(!m.removeBridge||m.removeBridge.mask!==m.rm||
+      !m.removeBridge.enqueue(segment)){
+    if(m.removeBridge)meStopRemoveWorker();
+    meRawRemoveSegment(segment);
+  }
+  m.rmDirty=true;
 }
 function meRatio() {
   const m = meState(), v = m.ratio;
@@ -7627,6 +7680,7 @@ async function meApply() {
     maskInfo();
   } else if (m.tool === "remove" || (m.rmDirty && m.tool !== "crop")) {
     if (!m.rmDirty) { $("meState").textContent = "Paint over what to remove first."; return; }
+    await meDrainRemoveWorker();
     await meRmSave(true);                              // the watermark mask as you edited it, before it's filled
     const old = m.pic, fromWm = m.rmFromWm;
     const r = await mePicStep("/api/masks/edit/remove", {
@@ -7650,7 +7704,10 @@ async function meApply() {
 function meCancel() {
   const m = meState();
   if (m.tool === "crop") meTool(m.prevTool || "brush");  // Esc leaves crop mode, the picture as it was
-  else if (m.tool === "remove" || m.rmDirty) { m.rm = null; m.rmDirty = false; m.rmFromWm = false; meImgBar(); meDraw(); }
+  else if (m.tool === "remove" || m.rmDirty) {
+    meStopRemoveWorker();m.rm=null;m.rmDirty=false;m.rmFromWm=false;
+    meImgBar();meDraw();
+  }
 }
 function meSizeKey(k) {
   const s = $("meSize"), v = Number(s.value);
@@ -7808,7 +7865,7 @@ function meNativeBrushCursor(size){
 }
 function meWire() {
   const m = meState(), cv = $("meCanvas");
-  let last = null, pan = null, space = false;
+  let last = null, pan = null, space = false, pointerRect = null;
   const cursor=el("div",{class:"me-brush-cursor",hidden:true,"aria-hidden":"true"});
   $("meStage").append(cursor);
   let cursorSize=0;
@@ -7891,7 +7948,8 @@ function meWire() {
   cv.addEventListener("pointerdown", (e) => {
     if (!m.mask) return;
     cv.setPointerCapture(e.pointerId);
-    const p = meAt(e);
+    pointerRect=cv.getBoundingClientRect();
+    const p=meAt(e,pointerRect);
     if (e.button === 1 || space) { pan = {sx: p.sx, sy: p.sy, ox: m.ox, oy: m.oy}; m.panning = true; cursor.hidden=true; e.preventDefault(); return; }
     if (m.stepBusy) return;
     if (m.tool === "crop") {                           // grab a handle, the box, or draw a new one
@@ -7914,7 +7972,7 @@ function meWire() {
     mePush(true); meDab(p.x, p.y); last = p; m.dirty = true; meStateLine(); meDraw();
   });
   cv.addEventListener("pointermove", (e) => {
-    const p = meAt(e);
+    const p=meAt(e,pointerRect);
     moveCursor(p);
     if (pan) { m.ox = pan.ox + p.sx - pan.sx; m.oy = pan.oy + p.sy - pan.sy; }
     else if (m.cropDrag) { meCropMove(p); meImgBar(); }
@@ -7925,8 +7983,13 @@ function meWire() {
     else if(pan||m.cropDrag||last)meDraw();
   });
   const up = () => {
-    if (last && m.tool === "remove") meRmSave(true);  // stroke end: kept at once
-    last = null; pan = null; m.panning = false; m.flip = false; m.cropDrag = null;
+    if (last && m.tool === "remove")
+      void meDrainRemoveWorker().then(()=>meRmSave(true)).finally(()=>{
+        if(m.tool==="remove"&&m.mask&&!m.removeBridge?.active)
+          mePrepareRemoveWorker();
+      });  // save watermark only after all worker strokes commit
+    last = null; pan = null; pointerRect=null;
+    m.panning = false; m.flip = false; m.cropDrag = null;
     m.strokeHistory=null;
     meImgBar(); meDraw(); };
   cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
@@ -8040,6 +8103,7 @@ function meTool(t) {
   m.cropDrag = null;
   m.crop = t === "crop" && m.mask ? {l: 0, t: 0, r: m.mask.width, b: m.mask.height} : null;
   if (m.crop) meCropFit();
+  if(t==="remove")mePrepareRemoveWorker();
   $("meCanvas").style.cursor = t === "sam" || t === "crop" ? "crosshair" : "none";
   for (const id of ["meTool", "mePicTool"])
     $(id).querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.tool === t));
