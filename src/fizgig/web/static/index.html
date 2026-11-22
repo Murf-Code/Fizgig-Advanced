@@ -894,10 +894,10 @@
             <div id="captionImageEditorSlot"></div>
           </section>
           <div class="captions-grid" id="captionsGrid"></div>
-          <div class="section-card">
-            <div class="card-title">Log</div>
-            <div class="card-content"><pre class="console-terminal" id="capLog"></pre></div>
-          </div>
+          <!-- No standalone Log card: caption progress/errors stay in the
+               Auto-Captioner controls. Preserve the hidden log sink used by
+               pollCaptions(), avoiding changes to existing job polling. -->
+          <pre id="capLog" hidden aria-hidden="true" style="display:none"></pre>
         </section>
 
         <section id="tab-samples" class="tab-panel">

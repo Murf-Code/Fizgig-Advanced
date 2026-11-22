@@ -249,3 +249,17 @@ assert.match(app,/panel\?\.querySelector\("\.studio-ai-quick-settings"\)\?\.remo
 assert.match(app,/text:count\+" selected picture"/);
 assert.match(css,/#tab-captions \.studio-host \.studio-ai-caption-card\s*\{/);
 assert.match(css,/#tab-captions \.studio-host \.studio-ai-quick-settings\s*\{/);
+
+// The center image has a full-stage dark glass backdrop at wide aspect
+// ratios, but no image distortion or expensive fullscreen backdrop blur.
+assert.match(css,/#tab-captions \.studio-host \.studio-image-stage \.studio-preview\{/);
+assert.match(css,/#tab-captions\.caption-theme-glass \.studio-host \.studio-image-stage \.studio-preview\{/);
+assert.match(css,/\.studio-image-stage \.studio-preview::before\{/);
+assert.match(css,/\.studio-image-stage \.studio-preview > :is\(img,video,\.song-media\)/);
+assert.match(css,/object-fit:contain/);
+// Remove the redundant visible Log card while retaining the hidden log sink
+// still needed by the existing polling code.
+const html=fs.readFileSync("src/fizgig/web/static/index.html","utf8");
+assert.match(html,/<pre id="capLog" hidden aria-hidden="true" style="display:none"><\/pre>/);
+assert.doesNotMatch(html,/<div class="card-title">Log<\/div>/);
+assert.match(app,/const log = \$\("capLog"\)/);

@@ -5329,3 +5329,62 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
 @media(max-width:450px){
   #tab-captions .studio-host .studio-ai-quick-settings{grid-template-columns:1fr}
 }
+
+
+/* Full-width center image preview: deep glass behind the picture, including
+   the side bands revealed by narrow images and fullscreen window layouts.
+   The media itself stays unfiltered and uses its existing contain sizing.
+   Static translucent gradients avoid a large, continuously repainted
+   backdrop-filter during thumbnail and tag scrolling. */
+#tab-captions .studio-host .studio-editor{
+  background:
+    radial-gradient(ellipse at 50% 40%,rgba(40,45,72,.22),transparent 72%),
+    linear-gradient(145deg,rgba(17,19,30,.94),rgba(7,9,17,.98));
+}
+#tab-captions.caption-theme-glass .studio-host .studio-editor{
+  background:
+    radial-gradient(ellipse at 50% 42%,rgba(87,73,136,.14),transparent 74%),
+    linear-gradient(145deg,rgba(21,22,37,.90),rgba(7,9,18,.96));
+}
+#tab-captions .studio-host .studio-image-stage .studio-preview{
+  box-sizing:border-box;
+  position:relative;
+  isolation:isolate;
+  overflow:hidden;
+  border-radius:16px;
+  border:1px solid rgba(170,183,223,.14);
+  background:
+    radial-gradient(ellipse at 50% 45%,rgba(45,50,79,.24),transparent 67%),
+    linear-gradient(155deg,#141724,#080b13 78%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.06),
+    inset 0 -24px 50px rgba(0,0,0,.24),
+    0 10px 24px rgba(0,0,0,.18);
+}
+#tab-captions.caption-theme-glass .studio-host .studio-image-stage .studio-preview{
+  border-color:rgba(176,187,238,.22);
+  background:
+    radial-gradient(ellipse at 50% 45%,rgba(86,75,133,.19),transparent 67%),
+    linear-gradient(150deg,rgba(22,25,39,.96),rgba(7,9,18,.98));
+  box-shadow:
+    inset 0 1px 0 rgba(230,228,255,.10),
+    inset 0 0 0 1px rgba(255,255,255,.025),
+    inset 0 -30px 66px rgba(0,0,0,.24),
+    0 12px 28px rgba(0,0,0,.24);
+}
+/* Decorative illumination stays behind the image, never over captions,
+   transparency, or the picture content. */
+#tab-captions .studio-host .studio-image-stage .studio-preview::before{
+  content:"";
+  position:absolute;
+  inset:0;
+  z-index:0;
+  pointer-events:none;
+  background:
+    radial-gradient(ellipse at 50% 38%,rgba(184,178,255,.038),transparent 52%),
+    linear-gradient(90deg,rgba(0,0,0,.14),transparent 14%,transparent 86%,rgba(0,0,0,.14));
+}
+#tab-captions .studio-host .studio-image-stage .studio-preview > :is(img,video,.song-media){
+  position:relative;
+  z-index:1;
+}
