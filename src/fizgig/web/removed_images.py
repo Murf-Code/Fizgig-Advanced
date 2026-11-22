@@ -33,8 +33,14 @@ def _clean_pairs(pairs):
         if not isinstance(pair, (tuple, list)) or len(pair) != 2:
             continue
         orig, stored = pair
-        if not all(isinstance(p, str) and p and os.path.basename(p) == p
-                   and p not in (".", "..") for p in (orig, stored)):
+        def flat(name):
+            return (isinstance(name, str) and name and "/" not in name and
+                    "\\" not in name and name not in (".", ".."))
+        # Masks may live in <dataset>/masks, but removed/ is flat. Keep the
+        # original relative directory so restoring returns them correctly.
+        original_ok = flat(orig) or (isinstance(orig, str) and
+            orig.startswith("masks/") and orig.count("/") == 1 and flat(orig[6:]))
+        if not original_ok or not flat(stored):
             continue
         out.append([orig, stored])
     return out
