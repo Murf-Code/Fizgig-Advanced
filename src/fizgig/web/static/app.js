@@ -11077,6 +11077,16 @@ function renderCaptions() {
   }
   captionLearningEnsureFolder();
   const host = $("captionsGrid");
+  // Remember the full-length Tags rail's scroll position and loaded range
+  // before rebuilding the editor. Global per-page applies to Cards/Table only.
+  const priorRail=host.querySelector(".studio-thumb-rail");
+  S.cap.studioThumbObserver?.disconnect();
+  S.cap.studioThumbObserver=null;
+  if(priorRail){
+    S.cap.studioThumbRendered=Number(priorRail.dataset.rendered)||0;
+    S.cap.studioThumbScrollTop=priorRail.scrollTop;
+    S.cap.studioThumbViewKey=priorRail.dataset.viewKey||"";
+  }
   // Preserve the one real set of bound AI model/task controls across renders.
   // The workbench re-creates this host frequently (selection, filters, saves).
   captionAiControlsRestore();
@@ -11812,6 +11822,15 @@ function captionAiControlsRestore(){
   if(!slot)return;
   const {home,panels,anchor}=slot;
   if(!home?.isConnected)return;
+  const generation=panels.find(panel=>panel?.querySelector("#capAll"));
+  if(generation){
+    const title=generation.querySelector(".card-title");
+    if(title)title.textContent="Generate captions";
+    const desc=generation.querySelector(".card-desc");
+    if(desc)desc.textContent="Caption All writes captions for the dataset outside the workbench.";
+    const action=generation.querySelector("#capAll");
+    if(action){action.textContent="Caption All (AI)";action.title="Caption every image in the dataset";}
+  }
   for(const panel of panels){
     if(panel?.parentNode!==home)
       home.insertBefore(panel,anchor?.parentNode===home?anchor:null);
@@ -11835,7 +11854,13 @@ function captionAiControlsMount(target){
       const title=panel.querySelector(".card-title");if(title)title.textContent="Model & instructions";
     }
     if(panel===generation){
-      const title=panel.querySelector(".card-title");if(title)title.textContent="Whole dataset";
+      const title=panel.querySelector(".card-title");
+      if(title)title.textContent="Generate captions";
+      const desc=panel.querySelector(".card-desc");
+      if(desc)desc.textContent="Captions the images selected in Tags or Waterfall. Ctrl+A selects all images. The Overwrite option above controls whether existing captions are replaced.";
+      const action=panel.querySelector("#capAll");
+      if(action){action.textContent="Caption selected (AI)";
+        action.title="Caption only selected images. Ctrl+A selects the dataset.";}
     }
     group.append(panel);
   }
@@ -11909,10 +11934,12 @@ function renderCaptionStudio(host,items,ext){
   if(S.cap.studioJumpToPath){
     const index=items.findIndex(it=>it.path===S.cap.studioJumpToPath);
     if(index>=0)S.cap.page=Math.floor(index/CAP_PAGE);
+    S.cap.studioThumbRevealPath=S.cap.studioJumpToPath;
     S.cap.studioJumpToPath=null;
   }
-  const pageItems=items.slice(S.cap.page*CAP_PAGE,(S.cap.page+1)*CAP_PAGE);
-  const current=pageItems.find(i=>i.path===S.cap.studioPath)||pageItems[0]||items[0];
+  // Tags is a continuous, progressive rail; it does not obey Cards/Table
+  // pagination. The active image must remain valid even on a later batch.
+  const current=items.find(i=>i.path===S.cap.studioPath)||items[0];
   if(!current){
     host.append(el("div",{class:"studio-empty-captions"},
       createTagFilterBar(),
@@ -11948,6 +11975,9 @@ function renderCaptionStudio(host,items,ext){
     el("span",{class:"field-hint",text:String(items.length)})));
   left.append(createTagFilterBar());
   const thumbs=el("div",{class:"studio-thumb-rail",role:"list","aria-label":"Dataset thumbnails",tabindex:"0"});
+  const thumbViewKey=JSON.stringify([String(S.imageFolder||""),ext,
+    $("capSearch").value,$("capFilter").value,$("capSort").value,S.cap.studioQuery||""]);
+  thumbs.dataset.viewKey=thumbViewKey;
   const missingBtn=btn($("capFilter").value==="missing"?"Missing Tags ✓":"Missing Tags",()=>{
     $("capFilter").value=$("capFilter").value==="missing"?"all":"missing";
     S.cap.page=0;renderCaptions();
@@ -11961,7 +11991,7 @@ function renderCaptionStudio(host,items,ext){
     missingBtn,position,selectionCount);
   thumbs.addEventListener("keydown",e=>{
     if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="a"){
-      e.preventDefault();items.forEach(it=>selection.add(it.path));renderCaptions();
+      e.preventDefault();S.cap.items.forEach(it=>selection.add(it.path));renderCaptions();
     }
   });
   // TagBench image actions: select thumbnails directly, Delete to remove, or
@@ -12153,7 +12183,7 @@ function renderCaptionStudio(host,items,ext){
       menu.append(button);
     };
     const separator=()=>menu.append(el("div",{class:"studio-context-rule",role:"separator"}));
-    action("Select All Images","Ctrl+A",()=>{items.forEach(x=>selection.add(x.path));renderCaptions();});
+    action("Select All Images","Ctrl+A",()=>{S.cap.items.forEach(x=>selection.add(x.path));renderCaptions();});
     action("Invert Selection","Ctrl+I",invertImageSelection);
     action("Clear Selection","",()=>{selection.clear();renderCaptions();});
     separator();
@@ -12205,7 +12235,14 @@ function renderCaptionStudio(host,items,ext){
     document.removeEventListener("keydown",S.cap.studioDeleteKeyHandler);
     S.cap.studioDeleteKeyHandler=null;
   }
-  for(const it of pageItems){
+  // Render small batches on demand. Unlike the old 12-image page, the rail
+  // grows as you scroll while preserving selection and the editor's active path.
+  const thumbBatch=64;
+  const activeIndex=items.findIndex(it=>it.path===current.path);
+  const sameThumbView=S.cap.studioThumbViewKey===thumbViewKey;
+  let thumbRendered=CaptionStudioSelection.initialMountCount(items.length,
+    activeIndex,sameThumbView?(S.cap.studioThumbRendered||0):0,thumbBatch);
+  const createThumbRow=it=>{
     const isActive=it.path===current.path;
     const isPicked=selection.has(it.path);
     const thumb=it.size?el("img",{src:"/api/thumb?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(TOKEN),
@@ -12223,7 +12260,53 @@ function renderCaptionStudio(host,items,ext){
         renderCaptions();
       }},thumb);
     captionLearningDecorate(tile,it);
-    thumbs.append(el("div",{class:"studio-browser-row",role:"listitem"},tile));
+    return el("div",{class:"studio-browser-row",role:"listitem"},tile);
+  };
+  const moreThumbs=el("button",{type:"button",class:"btn btn-sm studio-thumb-load-more",
+    text:"Load more images","aria-label":"Load more dataset thumbnails"});
+  const appendThumbs=()=>{
+    const end=CaptionStudioSelection.nextMountCount(thumbRendered,items.length,thumbBatch);
+    const fragment=document.createDocumentFragment();
+    for(let i=thumbRendered;i<end;i++)fragment.append(createThumbRow(items[i]));
+    thumbs.insertBefore(fragment,moreThumbs);
+    thumbRendered=end;
+    thumbs.dataset.rendered=String(thumbRendered);
+    moreThumbs.hidden=thumbRendered>=items.length;
+    moreThumbs.textContent="Load more images ("+thumbRendered+" / "+items.length+")";
+  };
+  const initial=document.createDocumentFragment();
+  for(let i=0;i<thumbRendered;i++)initial.append(createThumbRow(items[i]));
+  thumbs.append(initial,moreThumbs);
+  thumbs.dataset.rendered=String(thumbRendered);
+  moreThumbs.hidden=thumbRendered>=items.length;
+  moreThumbs.textContent="Load more images ("+thumbRendered+" / "+items.length+")";
+  moreThumbs.addEventListener("click",appendThumbs);
+  // The rail is its own scroll container. IntersectionObserver only mounts
+  // the next batch near the bottom; a scroll fallback covers older browsers.
+  if(typeof IntersectionObserver!=="undefined"){
+    const observer=new IntersectionObserver(entries=>{
+      if(!thumbs.isConnected){observer.disconnect();return;}
+      if(entries.some(entry=>entry.isIntersecting)&&!moreThumbs.hidden)appendThumbs();
+    },{root:thumbs,rootMargin:"320px 0px"});
+    observer.observe(moreThumbs);
+    S.cap.studioThumbObserver?.disconnect();
+    S.cap.studioThumbObserver=observer;
+  }else{
+    thumbs.addEventListener("scroll",()=>{
+      if(!moreThumbs.hidden&&thumbs.scrollTop+thumbs.clientHeight>=thumbs.scrollHeight-320)
+        appendThumbs();
+    },{passive:true});
+  }
+  const revealActive=S.cap.studioThumbRevealPath===current.path;
+  if(revealActive)S.cap.studioThumbRevealPath=null;
+  if(sameThumbView||revealActive){
+    const savedTop=S.cap.studioThumbScrollTop||0;
+    requestAnimationFrame(()=>{
+      if(!thumbs.isConnected)return;
+      if(sameThumbView)thumbs.scrollTop=savedTop;
+      if(revealActive)thumbs.querySelector(".studio-file.active")
+        ?.scrollIntoView({block:"nearest"});
+    });
   }
   left.append(thumbs,nav);
   const drafts=S.cap.studioDrafts||(S.cap.studioDrafts=new Map());
@@ -12828,38 +12911,32 @@ function renderCaptionStudio(host,items,ext){
       renderCaptions();
     }catch(e){say("Batch ordering: "+e.message);}
   };
-  const aiChoice=el("select",{class:"w-combo",title:"Selected-image AI caption workflow"});
-  [["missing","Only images missing captions"],["replace","Replace selected captions"],
-    ["append","Append generated caption as a new line"]]
-    .forEach(([value,label])=>aiChoice.append(el("option",{value,text:label})));
-  aiChoice.value=S.cap.studioAiMode||"missing";
-  aiChoice.addEventListener("change",()=>S.cap.studioAiMode=aiChoice.value);
+  // All AI caption actions in the workbench use the shared image selection.
+  // The standard Overwrite checkbox remains the single source of truth.
   const captionSelected=async()=>{
-    const chosen=(selection.size?S.cap.items.filter(it=>selection.has(it.path)):[current])
-      .filter(it=>it.size && !S.cap.studioReviewed?.has(it.path) &&
-        /\.(png|jpe?g|webp|bmp|avif|jxl|mp4)$/i.test(it.name));
-    if(!chosen.length)return say("Select editable images. Reviewed images are protected.");
-    if(chosen.some(it=>drafts.has(it.path)&&drafts.get(it.path)!==it.caption))
+    if(!selection.size)return say("Select images to caption. Ctrl+A selects all images.");
+    const overwrite=$("capOverwrite").checked;
+    const targets=CaptionStudioSelection.captionTargets(
+      S.cap.items,selection,S.cap.studioReviewed,overwrite);
+    if(!targets.length)return say(overwrite?
+      "No editable images selected. Reviewed images are protected.":
+      "No selected images need captions. Enable Overwrite to replace existing captions.");
+    if(targets.some(it=>drafts.has(it.path)&&drafts.get(it.path)!==it.caption))
       return say("Save unsaved caption drafts before starting batch AI.");
-    const targets=aiChoice.value==="missing"?chosen.filter(it=>it.caption===null):chosen;
-    if(!targets.length)return say("All selected images already have captions.");
-    if(!confirm("AI caption "+targets.length+" images using the selected model and task? "+
-      (aiChoice.value==="replace"?"Existing captions will be replaced.":
-        aiChoice.value==="append"?"New captions will append as extra lines.":"Existing captions will be kept.")))return;
+    if(!confirm("AI caption "+targets.length+" selected image(s) using the current model and task? "+
+      (overwrite?"Existing captions will be replaced.":"Existing captions will be kept.")))return;
     say("AI captioning "+targets.length+" selected images…");
     try{
       const result=await capRun("/api/captions/ai",capJobBody({
-        only:targets.map(it=>it.path),overwrite:aiChoice.value==="replace",
-        append:aiChoice.value==="append"
+        only:targets.map(it=>it.path),overwrite
       }));
       if(result?.files)say("AI queued "+result.files+" selected images · progress appears in Captions tools.");
       else if(result?.error)say(result.error);
     }catch(e){say(e.message);}
   };
+  S.cap.studioCaptionSelected=captionSelected;
   bulk.append(el("strong",{text:"History & advanced tag ordering"}),undoGlobal,redoGlobal,
     btn("Order tags across selection",applyOrdering),
-    el("div",{class:"field-row studio-selected-ai"},el("span",{class:"field-label",text:"AI caption selection:"}),
-      aiChoice,btn("Run AI on selection",captionSelected)),
     el("span",{class:"field-hint studio-bulk-note"}));
   const liveStatus=el("div",{class:"studio-live-status field-hint",id:"studioLiveStatus",
     text:studioLiveSummary(S.cap.liveStatus)});
@@ -12932,6 +13009,7 @@ function renderCaptionStudio(host,items,ext){
     S.cap.studioPath=next.path;
     selection.clear();selection.add(next.path);
     S.cap.studioSelectionAnchor=next.path;
+    S.cap.studioThumbRevealPath=next.path;
     renderCaptions();
   };
   // Navigation uses arrow keys or the thumbnail rail. Keep only image actions
@@ -12970,15 +13048,8 @@ function renderCaptionStudio(host,items,ext){
   const showAi=btn("Auto-Captioner",()=>showTabs("ai"));
   showAll.setAttribute("role","tab");
   showAi.setAttribute("role","tab");
-  const redundantAiRow=bulk.querySelector(".studio-selected-ai");
-  if(redundantAiRow)redundantAiRow.remove();
-  const aiHint=el("div",{class:"field-hint",text:"Use the model and task below to caption selected images or the entire Start-tab dataset."});
-  const aiRun=btn("Caption selected images",captionSelected);
-  aiRun.classList.add("btn-primary");
-  const aiControls=el("div",{class:"studio-ai-controls"},aiChoice,aiRun);
-  aiPane.append(el("strong",{text:"Auto-Captioner"}),aiHint);
+  aiPane.append(el("strong",{text:"Auto-Captioner"}));
   captionAiControlsMount(aiPane);
-  aiPane.append(el("div",{class:"studio-ai-selection"},el("strong",{text:"Selected images"}),aiControls));
   rightDock.append(showAll,showAi);
   right.append(editorPane,rightDock,tagIndexPane,aiPane);
   showTabs(activeDock);
@@ -13452,7 +13523,7 @@ function renderCaptionStudio(host,items,ext){
       if(key==="/"){handled();left.querySelector(".studio-tag-query")?.focus();}
       return;
     }
-    if(key==="a"){handled();items.forEach(it=>selection.add(it.path));renderCaptions();}
+    if(key==="a"){handled();S.cap.items.forEach(it=>selection.add(it.path));renderCaptions();}
     else if(key==="i"){handled();invertImageSelection();}
     else if(key==="c"&&!window.getSelection()?.toString()){handled();copyImageTags();}
     else if(key==="v"){handled();void pasteImageTags();}
@@ -13631,7 +13702,13 @@ function wireCaptions() {
   $("capConcept").addEventListener("input", capSentShow);
   $("capInstrSave").addEventListener("click", () => saveInstr($("capInstr").value));
   $("capInstrReset").addEventListener("click", () => saveInstr(""));
-  $("capAll").addEventListener("click", () => capRun("/api/captions/ai", capJobBody()));
+  $("capAll").addEventListener("click", () => {
+    if($("capView").value==="studio"){
+      S.cap.studioCaptionSelected?.();
+      return;
+    }
+    capRun("/api/captions/ai", capJobBody());
+  });
   $("capStatic").addEventListener("click", async () => {
     const before=studioCaptionSnapshot();
     const r = await capRun("/api/captions/static", capJobBody());

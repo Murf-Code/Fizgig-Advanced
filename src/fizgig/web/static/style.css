@@ -4920,3 +4920,64 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
 #tab-captions .studio-learning-toggle input{accent-color:var(--accent);margin:0}
 #tab-captions .studio-learning-toggle:has(input:checked){color:var(--text-primary);border-color:var(--accent-border)}
 #tab-captions .studio-learning-toggle[hidden]{display:none}
+
+
+/* Image Tags uses the same compact tag-list treatment as All Tags.
+ * The two lists differ in behavior, not typography, spacing or selection UI. */
+#tab-captions .studio-host .studio-image-tag-list,
+#tab-captions .studio-host .studio-tag-index-pane .studio-tag-list{
+  padding:6px;gap:0;border:1px solid var(--border);border-radius:9px;
+  background:var(--bg-inset);
+}
+#tab-captions .studio-host .studio-image-tag-row{flex:none}
+#tab-captions .studio-host .studio-image-tag,
+#tab-captions .studio-host .studio-tag-list-item .studio-index-tag{
+  display:block;width:100%;box-sizing:border-box;
+  text-align:left;font-size:var(--caption-settings-font,13px);
+  line-height:1.4;font-weight:450;
+  border:0;border-left:3px solid var(--studio-tag-color,var(--accent));
+  border-radius:5px;background:transparent;padding:5px 8px;
+  color:var(--studio-tag-color,var(--text-primary));
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+#tab-captions .studio-host .studio-image-tag:hover,
+#tab-captions .studio-host .studio-tag-list-item .studio-index-tag:hover{
+  background:var(--bg-hover);
+}
+#tab-captions .studio-host .studio-image-tag:focus-visible,
+#tab-captions .studio-host .studio-tag-list-item .studio-index-tag:focus-visible{
+  background:var(--bg-hover);outline:1px solid var(--accent-border);
+}
+#tab-captions .studio-host .studio-image-tag.is-picked,
+#tab-captions .studio-host .studio-tag-list-item .studio-index-tag.is-picked{
+  background:var(--accent-subtle);
+  border-left-color:var(--studio-tag-color,var(--accent));
+  color:var(--studio-tag-color,var(--accent-text));
+}
+/* Glass appearance: matching small glowing tag tick, not tinted blocks. */
+#tab-captions.caption-theme-glass .studio-host .studio-image-tag,
+#tab-captions.caption-theme-glass .studio-host .studio-tag-list-item .studio-index-tag{
+  position:relative;background:transparent;border:0;
+  border-left:3px solid transparent;border-radius:0;
+  padding:5px 10px 5px 17px;box-shadow:none;backdrop-filter:none;
+  color:var(--studio-tag-color,var(--text-primary));
+}
+#tab-captions.caption-theme-glass .studio-host .studio-image-tag::before,
+#tab-captions.caption-theme-glass .studio-host .studio-tag-list-item .studio-index-tag::before{
+  content:"";position:absolute;left:5px;top:50%;width:4px;height:.9em;
+  transform:translateY(-50%);border-radius:999px;background:currentColor;
+  box-shadow:0 0 7px currentColor;
+}
+#tab-captions.caption-theme-glass .studio-host .studio-image-tag:hover,
+#tab-captions.caption-theme-glass .studio-host .studio-tag-list-item .studio-index-tag:hover{
+  background:rgba(255,255,255,.10);
+}
+#tab-captions.caption-theme-glass .studio-host .studio-image-tag.is-picked,
+#tab-captions.caption-theme-glass .studio-host .studio-tag-list-item .studio-index-tag.is-picked{
+  background:rgba(255,255,255,.14);
+  box-shadow:inset 0 0 0 1px currentColor,0 0 10px rgba(255,255,255,.15);
+}
+#tab-captions .studio-thumb-load-more{
+  display:block;width:85%;align-self:center;margin:6px auto 14px;
+}
+#tab-captions .studio-thumb-load-more[hidden]{display:none}

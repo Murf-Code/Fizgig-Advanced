@@ -58,4 +58,30 @@ assert.match(css,/#tab-captions \.studio-image-stage \.studio-preview\{[^}]*flex
 assert.match(css,/#tab-captions \.studio-image-stage \.studio-preview img,[\s\S]*?max-height:100%;[\s\S]*?object-fit:contain/);
 assert.doesNotMatch(css,/\.studio-image-stage \.studio-preview img[^\n]*max-height:min\(68vh,750px\)/);
 
+// The Tags rail is continuous and progressively mounted. Cards/Table alone
+// retain CAP_PAGE; arrow navigation and waterfall jumps reveal the active tile.
+assert.match(app,/const thumbBatch=64/);
+assert.match(app,/CaptionStudioSelection\.initialMountCount\(items\.length/);
+assert.match(app,/CaptionStudioSelection\.nextMountCount\(thumbRendered,items\.length,thumbBatch\)/);
+assert.match(app,/thumbs\.insertBefore\(fragment,moreThumbs\)/);
+assert.match(app,/new IntersectionObserver\(/);
+assert.doesNotMatch(app,/const pageItems=items\.slice\(S\.cap\.page\*CAP_PAGE/);
+assert.match(app,/S\.cap\.studioThumbRevealPath=next\.path/);
+
+// One AI caption action, automatically scoped to selected images, including
+// Ctrl+A across the full dataset. No redundant selector or Selected Images card.
+assert.match(app,/S\.cap\.studioCaptionSelected=captionSelected/);
+assert.match(app,/CaptionStudioSelection\.captionTargets\(/);
+assert.match(app,/if\(\$\("capView"\)\.value==="studio"\)/);
+assert.match(app,/S\.cap\.studioCaptionSelected\?\.\(\)/);
+assert.match(app,/S\.cap\.items\.forEach\(it=>selection\.add\(it\.path\)\)/);
+assert.doesNotMatch(app,/const aiChoice=el\("select"/);
+assert.doesNotMatch(app,/class:"studio-ai-selection"/);
+assert.match(app,/action\.textContent="Caption selected \(AI\)"/);
+
+// Image Tags and All Tags share density, colors, selection and glass markers.
+assert.match(css,/Image Tags uses the same compact tag-list treatment as All Tags/);
+assert.match(css,/#tab-captions \.studio-host \.studio-image-tag,[\s\S]*?#tab-captions \.studio-host \.studio-tag-list-item \.studio-index-tag\{/);
+assert.match(css,/#tab-captions\.caption-theme-glass \.studio-host \.studio-image-tag::before/);
+
 console.log("TagBench stacked sidebar and unchanged Tags/Waterfall/Constellation selector checks passed");

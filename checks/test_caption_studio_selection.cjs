@@ -47,4 +47,28 @@ assert.equal(restored.anchor,key(70));
 assert.deepEqual(Selection.prune([],next.selected,next.active,next.anchor),
   {selected:[],active:null,anchor:null},"empty dataset clears stale state");
 
+// A full scrolling Tags rail must not inherit the 12-image Cards/Table page.
+assert.equal(Selection.initialMountCount(162,0,0,64),64);
+assert.equal(Selection.nextMountCount(64,162,64),128);
+assert.equal(Selection.nextMountCount(128,162,64),162);
+assert.equal(Selection.nextMountCount(162,162,64),162);
+assert.equal(Selection.initialMountCount(162,124,0,64),128,
+  "switching from Waterfall to a later image mounts its thumbnail");
+assert.equal(Selection.initialMountCount(162,0,128,64),128,
+  "an editor rerender keeps already-loaded thumbnails");
+
+// AI captioning in Studio must use ONLY selected, editable media, across the
+// full dataset (including images outside the visible filtered list).
+const sample=[
+  {name:"a.png",path:"a",size:[512,512],caption:null},
+  {name:"b.jpg",path:"b",size:[512,512],caption:"old tags"},
+  {name:"c.webp",path:"c",size:[512,512],caption:null},
+  {name:"d.txt",path:"d",size:null,caption:null}
+];
+assert.deepEqual(Selection.captionTargets(sample,new Set(["a","b","c","d"]),new Set(["c"]),false)
+  .map(it=>it.path),["a"]);
+assert.deepEqual(Selection.captionTargets(sample,new Set(["a","b","c","d"]),new Set(["c"]),true)
+  .map(it=>it.path),["a","b"]);
+assert.deepEqual(Selection.captionTargets(sample,new Set(),new Set(),true),[],
+  "an empty selection is never interpreted as Caption All");
 console.log("Caption Workbench shared view-selection checks passed");

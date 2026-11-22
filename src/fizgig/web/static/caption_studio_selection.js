@@ -41,6 +41,27 @@ const CaptionStudioSelection = (() => {
     };
   }
 
-  return Object.freeze({pick, prune});
+  // The Tags rail loads thumbnails progressively and does not share the
+  // Cards/Table page size. Keep a far-away active image in the mounted range.
+  function initialMountCount(total, activeIndex, remembered=0, batch=64) {
+    const size=Math.max(1,Math.trunc(batch)||64);
+    const active=Math.max(0,Math.trunc(activeIndex)||0);
+    const keep=Math.max(0,Math.trunc(remembered)||0);
+    return Math.min(Math.max(0,Math.trunc(total)||0),
+      Math.max(size,keep,Math.ceil((active+1)/size)*size));
+  }
+  function nextMountCount(mounted,total,batch=64) {
+    return Math.min(Math.max(0,Math.trunc(total)||0),
+      Math.max(0,Math.trunc(mounted)||0)+Math.max(1,Math.trunc(batch)||64));
+  }
+
+  function captionTargets(items, selectedPaths, reviewedPaths, overwrite=false) {
+    const selected=new Set(selectedPaths||[]);
+    const reviewed=new Set(reviewedPaths||[]);
+    const eligible=(items||[]).filter(it=>selected.has(it.path)&&it.size&&
+      !reviewed.has(it.path)&&/\.(png|jpe?g|webp|bmp|avif|jxl|mp4)$/i.test(it.name));
+    return overwrite?eligible:eligible.filter(it=>it.caption===null);
+  }
+  return Object.freeze({pick, prune, initialMountCount, nextMountCount, captionTargets});
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = CaptionStudioSelection;
