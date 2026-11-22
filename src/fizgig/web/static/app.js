@@ -7639,6 +7639,13 @@ function meImgBar() {
   const m = meState(), t = m.tool, on = t === "crop" || t === "remove";
   const showRm = t === "remove" || (m.rmDirty && t !== "crop");
   $("meImgBar").style.display = on || showRm || m.before ? "" : "none";
+  // The floating editor uses the tool state to show only relevant actions.
+  // The same controls remain mounted for Caption Workbench's inline tools.
+  const windowPanel=$("meDialogWindow");
+  if(windowPanel){
+    windowPanel.dataset.tool=t==="erase"?"brush":t;
+    windowPanel.dataset.paint=t;
+  }
   $("meRatioWrap").style.display = t === "crop" ? "" : "none";
   $("meCropSize").style.display = t === "crop" ? "" : "none";
   $("meApply").style.display = $("meCancel").style.display = (on || showRm) ? "" : "none";
@@ -7910,6 +7917,12 @@ async function meDialogShow(){
     }
     requestAnimationFrame(()=>{
       if(!meDialogVisible())return;
+      // A previously selected crop/remove tool still opens in image-only view.
+      if((m.tool==="crop"||m.tool==="remove")&&m.view!=="pic"){
+        m.dialogMaskView=m.view;
+        m.view="pic";
+      }
+      meImgBar();
       meFit();
       if(m.tool==="remove")mePrepareRemoveWorker();
       $("meDialogClose").focus({preventScroll:true});
@@ -8022,6 +8035,10 @@ function meWire() {
   $("meFilter").addEventListener("change", () => meGo(0, true));
   $("meTool").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => meTool(b.dataset.tool)));
   $("mePicTool").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => meTool(b.dataset.tool)));
+  // Advanced tools may change stage height; re-fit after their layout settles.
+  $("meAdvancedPanel").addEventListener("toggle",()=>{
+    if(meDialogVisible())requestAnimationFrame(meFit);
+  });
   $("meRatio").addEventListener("change", () => { m.ratio = $("meRatio").value; meCropFit(); meImgBar(); meDraw(); });
   $("meLoadWm").checked = meLoadWmOn();
   $("meLoadWm").addEventListener("change", async () => {
@@ -8216,6 +8233,21 @@ function meTool(t) {
   if (t === was && t !== "crop") return meImgBar();
   if (t === "crop" && was === "crop") t = m.prevTool || "brush";   // C again leaves crop mode
   if (t === "crop") m.prevTool = was;
+  // Crop and Remove should show the actual photo, never a dark training-mask
+  // overlay. Restore the user's previous mask view on returning to mask tools.
+  if(meDialogVisible()){
+    const wasImageTool=was==="crop"||was==="remove";
+    const nextImageTool=t==="crop"||t==="remove";
+    if(!wasImageTool&&nextImageTool){
+      m.dialogMaskView=m.view;
+      m.view="pic";
+    }else if(wasImageTool&&!nextImageTool){
+      m.view=m.dialogMaskView||"over";
+      m.dialogMaskView=null;
+    }
+    $("meView").querySelectorAll("button").forEach(b=>
+      b.classList.toggle("active",b.dataset.view===m.view));
+  }
   m.tool = t;
   if (was === "remove" && t !== "remove" && !m.rmFromWm && !meLoadWmOn()) { m.rm = null; m.rmDirty = false; }   // a hand stroke not applied is dropped; a preloaded watermark stays
   m.cropDrag = null;
@@ -8224,8 +8256,26 @@ function meTool(t) {
   if(t==="remove")mePrepareRemoveWorker();
   $("meCanvas").style.cursor = t === "sam" || t === "crop" ? "crosshair" : "none";
   for (const id of ["meTool", "mePicTool"])
-    $(id).querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.tool === t));
+    $(id).querySelectorAll("button").forEach((b) => {
+      // E is retained for keyboard users; right-click Brush erases without
+      // switching modes, so a separate Eraser button is unnecessary.
+      const active=b.dataset.tool===t||(t==="erase"&&b.dataset.tool==="brush");
+      b.classList.toggle("active",active);
+      b.setAttribute("aria-pressed",String(active));
+    });
+  const brushButton=$("meTool").querySelector('[data-tool="brush"]');
+  if(brushButton){
+    brushButton.textContent=t==="erase"?"Eraser (E)":"Brush";
+    brushButton.title=t==="erase"?
+      "Keyboard Eraser active. Press B or click here for Brush; Brush right-click also erases.":
+      "Brush: left-click paints learned regions; right-click erases (B). Press E for keyboard Eraser.";
+  }
   meImgBar(); meDraw();
+  // Tool changes collapse or reveal controls; refit only on a mode change,
+  // never for mouse moves inside the crop selection.
+  if(meDialogVisible())requestAnimationFrame(()=>{
+    if(meDialogVisible())meFit();
+  });
   if(S.cap?.imageEditing?.inline)S.cap.inlineRefreshControls?.();
 }
 
