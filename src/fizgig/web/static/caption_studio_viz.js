@@ -3,6 +3,18 @@
  */
 const CaptionStudioViz = (() => {
   const lower = tag => String(tag).trim().toLocaleLowerCase();
+  // Stable, theme-derived tag hues. Category assignments can override these.
+  const tagPalette = ["--accent","--data-teal","--data-blue","--special",
+    "--data-green","--data-orange","--accent-hover","--special-soft"];
+  function colorForTag(tag, categories) {
+    const key=lower(tag);
+    const category=categories?.tags?.[key];
+    if(category&&categories?.colors?.[category])return categories.colors[category];
+    let hash=2166136261;
+    for(const character of key)hash=Math.imul(hash^character.codePointAt(0),16777619)>>>0;
+    return "var("+tagPalette[hash%tagPalette.length]+")";
+  }
+
 
   function buildGraph(index, captions, maxTags = 48) {
     const top = index.slice(0, Math.min(maxTags, index.length));
@@ -54,7 +66,7 @@ const CaptionStudioViz = (() => {
     return {nodes,edges};
   }
 
-  function waterfall(index, onPick) {
+  function waterfall(index, onPick, categories) {
     const root = document.createElement("div");
     root.className = "studio-waterfall";
     root.setAttribute("aria-label","Tag frequency waterfall");
@@ -69,6 +81,7 @@ const CaptionStudioViz = (() => {
     for(const [tag,count] of index.slice(0,75)) {
       const btn=document.createElement("button");
       btn.type="button";btn.className="studio-waterfall-row";
+      btn.style.setProperty("--studio-tag-color",colorForTag(tag,categories));
       const label=document.createElement("span");
       label.textContent=tag;label.className="studio-waterfall-label";
       const track=document.createElement("span");
@@ -87,7 +100,7 @@ const CaptionStudioViz = (() => {
     return root;
   }
 
-  function constellation(index, captions, onPick) {
+  function constellation(index, captions, onPick, categories) {
     const graph=buildGraph(index,captions);
     const holder=document.createElement("div");
     holder.className="studio-constellation";
@@ -119,7 +132,8 @@ const CaptionStudioViz = (() => {
     for(const node of graph.nodes) {
       const g=make("g",{class:"studio-star-node",role:"button",tabindex:"0"});
       const r=Math.min(18,6+Math.sqrt(node.count)*0.85);
-      make("circle",{cx:node.x,cy:node.y,r},g);
+      const circle=make("circle",{cx:node.x,cy:node.y,r},g);
+      circle.style.fill=colorForTag(node.tag,categories);
       make("text",{x:node.x+Math.min(r+4,23),y:node.y+4},g).textContent=node.tag;
       make("title",{},g).textContent=node.tag+" · "+node.count+" images";
       g.addEventListener("click",()=>onPick(node.tag));
@@ -156,6 +170,6 @@ const CaptionStudioViz = (() => {
       " above-chance connections · drag to pan, scroll to zoom, click tag to filter";
     holder.append(svg,hint);return holder;
   }
-  return Object.freeze({buildGraph,waterfall,constellation});
+  return Object.freeze({buildGraph,waterfall,constellation,colorForTag});
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = CaptionStudioViz;
