@@ -297,7 +297,8 @@ class Watch:
                     logger.warning("[live-dataset] %s needs a new bucket %s; restart to include this aspect ratio",
                                    key, bucket)
                     continue
-                if getattr(ds, "has_control", False) and not getattr(self.driver, "supports_references", False):
+                if (getattr(ds, "has_control", False) and not getattr(self.driver, "supports_references", False)
+                        and self.driver.description.key != "minimax"):
                     logger.warning("[live-dataset] %s uses a reference format this driver cannot live-encode", key)
                     continue
                 item = ItemInfo(key, read_caption(cap_path) if cap_path else "", im.size, bucket)
