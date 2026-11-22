@@ -11684,13 +11684,6 @@ function renderCaptionStudio(host,items,ext){
   const clearFilter=btn("×",()=>{S.cap.studioQuery="";renderCaptions();});
   clearFilter.title="Clear image tag filter";
   const filterBar=el("div",{class:"studio-filter-bar"},tagQuery,btn("Search",applyTagQuery),clearFilter);
-  const selectionMenu=el("details",{class:"studio-selection-menu"});
-  selectionMenu.append(el("summary",{text:"Selection options",title:"Select, invert or clear images"}),
-    el("div",{class:"studio-selection-actions"},
-      btn("Select all matches",()=>{items.forEach(i=>selection.add(i.path));renderCaptions();}),
-      btn("Select page",()=>{pageItems.forEach(i=>selection.add(i.path));renderCaptions();}),
-      btn("Invert page",()=>{pageItems.forEach(i=>selection.has(i.path)?selection.delete(i.path):selection.add(i.path));renderCaptions();}),
-      btn("Clear selection",()=>{selection.clear();renderCaptions();})));
   left.append(filterBar);
   const thumbs=el("div",{class:"studio-thumb-rail",role:"list","aria-label":"Dataset thumbnails",tabindex:"0"});
   const missingBtn=btn($("capFilter").value==="missing"?"Missing Tags ✓":"Missing Tags",()=>{
@@ -11860,6 +11853,7 @@ function renderCaptionStudio(host,items,ext){
     const separator=()=>menu.append(el("div",{class:"studio-context-rule",role:"separator"}));
     action("Select All Images","Ctrl+A",()=>{items.forEach(x=>selection.add(x.path));renderCaptions();});
     action("Invert Selection","Ctrl+I",invertImageSelection);
+    action("Clear Selection","",()=>{selection.clear();renderCaptions();});
     separator();
     action("Copy Tags","Ctrl+C",()=>copyImageTags(it.path),!count);
     action("Paste Tags","Ctrl+V",()=>pasteImageTags(it.path),!count);
@@ -11927,7 +11921,7 @@ function renderCaptionStudio(host,items,ext){
       }},thumb);
     thumbs.append(el("div",{class:"studio-browser-row",role:"listitem"},tile));
   }
-  left.append(thumbs,nav,selectionMenu);
+  left.append(thumbs,nav);
   const drafts=S.cap.studioDrafts||(S.cap.studioDrafts=new Map());
   const histories=S.cap.studioHistories||(S.cap.studioHistories=new Map());
   const ta=el("textarea",{class:"studio-caption",rows:7});
@@ -11937,14 +11931,17 @@ function renderCaptionStudio(host,items,ext){
   ta.value=drafts.has(current.path)?drafts.get(current.path):(current.caption||"");
   captionMode=CaptionStudioTags.kind(ta.value,S.cap.studioModes?.get(current.path)||"auto",
     S.cap.studioDelimiter||",");
-  const naturalToggle=btn("Natural language",()=>{
-    if(locked)return say("Unlock this reviewed image to edit its caption.");
-    S.cap.studioNaturalMode=!(S.cap.studioNaturalMode??(captionMode==="prose"));
+  const naturalMode=S.cap.studioNaturalMode??(captionMode==="prose");
+  const naturalCheckbox=el("input",{type:"checkbox",class:"studio-natural-check",
+    "aria-label":"Show natural-language caption"});
+  naturalCheckbox.checked=naturalMode;
+  naturalCheckbox.disabled=locked;
+  naturalCheckbox.addEventListener("change",()=>{
+    S.cap.studioNaturalMode=naturalCheckbox.checked;
     renderCaptions();
   });
-  const naturalMode=S.cap.studioNaturalMode??(captionMode==="prose");
-  naturalToggle.classList.toggle("is-on",naturalMode);
-  naturalToggle.setAttribute("aria-pressed",String(naturalMode));
+  const naturalToggle=el("label",{class:"studio-natural-toggle"},naturalCheckbox,
+    el("span",{text:"Natural language"}));
   ta.readOnly=locked;
   current._ta=ta;
   const hist=histories.get(current.path)||{past:[],future:[],value:ta.value};
@@ -12595,15 +12592,27 @@ function renderCaptionStudio(host,items,ext){
   if(tagHeading)tagHeading.textContent="Image Tags · Caption Editor";
   center.append(imageStage);
   const rightDock=el("div",{class:"studio-tag-dock"});
-  const showTags=btn("All Tags",()=>{tagIndexPane.hidden=false;aiPane.hidden=true;rightDock.dataset.active="tags";});
-  const showAI=btn("Auto-Captioner",()=>{tagIndexPane.hidden=true;aiPane.hidden=false;rightDock.dataset.active="ai";});
+  const aiPane=el("section",{class:"studio-ai-dock",hidden:true});
+  const activeDock=S.cap.studioDock==="ai"?"ai":"tags";
+  const showTabs=mode=>{
+    S.cap.studioDock=mode;
+    tagIndexPane.hidden=mode==="ai";
+    aiPane.hidden=mode!=="ai";
+    rightDock.dataset.active=mode;
+    showTags.setAttribute("aria-selected",String(mode==="tags"));
+    showAI.setAttribute("aria-selected",String(mode==="ai"));
+  };
+  const showTags=btn("All Tags",()=>showTabs("tags"));
+  const showAI=btn("Auto-Captioner",()=>showTabs("ai"));
   const redundantAiRow=bulk.querySelector(".studio-selected-ai");
   if(redundantAiRow)redundantAiRow.remove();
-  const aiPane=el("section",{class:"studio-ai-dock",hidden:true});
-  const aiHint=el("div",{class:"field-hint",text:"AI runs on your selected images using Fizgig's caption model settings."});
-  aiPane.append(aiHint,el("div",{class:"field-row"},aiChoice,btn("Run AI on selection",captionSelected)));
+  const aiHint=el("div",{class:"field-hint",text:"Caption selected images using the model and task configured in Caption generation settings."});
+  const aiRun=btn("Run on selected images",captionSelected);
+  aiRun.classList.add("btn-primary");
+  const aiControls=el("div",{class:"studio-ai-controls"},aiChoice,aiRun);
+  aiPane.append(el("strong",{text:"Auto-Captioner"}),aiHint,aiControls);
   rightDock.append(showTags,showAI);
-  rightDock.dataset.active="tags";
+  showTabs(activeDock);
   right.append(editorPane,rightDock,tagIndexPane,aiPane);
   // A single expandable Edit Tags menu replaces the permanently repeated bulk toolbar.
   const editMenu=el("details",{class:"studio-edit-menu"});
