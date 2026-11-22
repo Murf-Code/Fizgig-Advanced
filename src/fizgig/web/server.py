@@ -5802,7 +5802,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": "Removed picture not found"}, 404)
                 restored = restore_to_dataset(folder, entry["moved"])
                 for name in restored:
-                    if os.path.splitext(name)[1].lower() in _IMAGES:
+                    if os.path.splitext(name)[1].lower() in _IMAGES and not is_mask_file(name):
                         _notify_image_change(folder, name, "updated")
                 remaining = [p[0] for p in entry["moved"] if p[0] not in restored]
                 return self.json({"restored": restored, "remaining": remaining})
@@ -5810,7 +5810,7 @@ class Handler(BaseHTTPRequestHandler):
                 folder = str(b.get("folder") or "")
                 restored = restore_to_dataset(folder, b.get("moved") or [])
                 for name in restored:
-                    if os.path.splitext(name)[1].lower() in _IMAGES:
+                    if os.path.splitext(name)[1].lower() in _IMAGES and not is_mask_file(name):
                         _notify_image_change(folder, name, "updated")
                 return self.json({"restored": restored})
             if path == "/api/captions/batch_edit":
