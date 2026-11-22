@@ -7114,6 +7114,7 @@ async function meGo(i, force) {
     "Watermark area loaded in red. Press Enter to fill it in this picture's file (the original is saved first)." :
     (shown[i].mask ? "" : "No mask yet: paint one with the Brush.");
   meFit();
+  if(m.tool==="remove")mePrepareRemoveWorker();
 }
 function meWorkCanvas(pic) {
   // the working canvas: the picture's shape, at most ME_MAX_PX
@@ -7148,6 +7149,7 @@ async function meReload() {
   m.pic = pic; m.mask = mask; m.dirty = false;
   meRequestPreview(pic,q+"&v="+m.ver);
   meFresh(); await meLoadWmStroke(); meStateLine(); meWmBar(); meFit();
+  if(m.tool==="remove")mePrepareRemoveWorker();
   return true;
 }
 function meImage(src) {
