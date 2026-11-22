@@ -34,6 +34,8 @@ jobs:
         run: node checks/test_caption_studio_viz.cjs
       - name: Caption Studio cross-view selection regression checks
         run: node checks/test_caption_studio_selection.cjs
+      - name: Caption Studio validation/sample context menu checks
+        run: node checks/test_caption_studio_training_picks.cjs
       - name: Caption Studio shared image editor wiring checks
         run: node checks/test_caption_studio_image.cjs
       - name: TagBench duplicate finder preserves native LaMa removal wiring
