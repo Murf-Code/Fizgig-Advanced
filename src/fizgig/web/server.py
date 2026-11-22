@@ -4075,6 +4075,11 @@ class Handler(BaseHTTPRequestHandler):
                 except (OSError, ValueError):
                     pass
             return self.json(status)
+        if path == "/api/captions/duplicates/status":
+            from fizgig.web import caption_duplicates
+            folder = (qs.get("folder") or [""])[0]
+            return self.json(caption_duplicates.status(folder,
+                (qs.get("threshold") or ["92"])[0], (qs.get("offset") or ["0"])[0]))
         if path == "/api/captions/removed":
             from fizgig.web import removed_images
             folder = (qs.get("folder") or [""])[0]
@@ -5687,6 +5692,26 @@ class Handler(BaseHTTPRequestHandler):
                 if not uri:
                     raise ValueError("Could not read that picture.")
                 return self.json({"uri": uri})
+            if path == "/api/captions/duplicates/scan":
+                from fizgig.web import caption_duplicates
+                return self.json(caption_duplicates.start(b.get("folder"), b.get("paths")))
+            if path == "/api/captions/duplicates/merge":
+                from fizgig.web import caption_duplicates
+                from fizgig.web.image_loss import queue_for_folder
+                keeper = str(b.get("keeper") or "")
+                result = caption_duplicates.merge_tags(b.get("folder"), keeper, b.get("donors"),
+                    ext=captions.caption_ext(b.get("ext")),
+                    delimiter=b.get("delimiter", ","), expected=b.get("expected"),
+                    apply=b.get("apply") is True)
+                if result["applied"]:
+                    with _lock:
+                        active = dict(_run)
+                        running = active.get("proc") is not None and active["proc"].poll() is None
+                    run = history.get(active.get("history_id")) if running and active.get("history_id") else None
+                    result["queued"] = queue_for_folder(os.path.dirname(result["keeper"]),
+                        os.path.basename(result["keeper"]), result["caption"],
+                        captions.caption_ext(b.get("ext")), run)
+                return self.json(result)
             if path == "/api/captions/review":
                 from fizgig.web import caption_review
                 return self.json({"reviewed": caption_review.mark(b.get("folder"), b.get("name"),
