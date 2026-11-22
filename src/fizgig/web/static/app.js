@@ -12536,6 +12536,154 @@ function renderCaptionStudio(host,items,ext){
     viewButtons.append(button);
   });
   actionBar.append(importPanel,downloadBtn,viewButtons);
+  // TagBench shortcut parity. Only active inside Caption Workbench, and never
+  // steals native typing shortcuts or Image Prep's own canvas bindings.
+  const selectedForEdit=()=>imageTargets().filter(it=>!S.cap.studioReviewed?.has(it.path)&&
+    studioCaptionMode(it)==="tags");
+  const cleanTags=async(kind)=>{
+    const eligible=selectedForEdit();
+    if(!eligible.length)return say("No unlocked tag captions selected.");
+    if(eligible.length>1000)return say("Tag cleanup supports up to 1000 images per operation.");
+    if(eligible.some(it=>S.cap.studioDrafts?.has(it.path)&&
+        S.cap.studioDrafts.get(it.path)!==(it.caption??"")))
+      return say("Save caption drafts before tag cleanup.");
+    const changes=eligible.map(it=>{
+      const original=it.caption??"";
+      const tags=studioTokens(original,"tags");
+      const cleaned=kind==="duplicate"?studioUnique(tags):tags.filter(Boolean);
+      return {folder:capItemFolder(it),name:it.name,path:it.path,before:it.caption,
+        after:studioCompose(original,cleaned,"tags")};
+    }).filter(r=>r.after!==r.before);
+    if(!changes.length)return say("No "+(kind==="duplicate"?"duplicate":"empty")+" tags found.");
+    if(changes.length>1&&!confirm("Clean "+changes.length+" selected captions?"))return;
+    try{
+      await api("/api/captions/batch_edit",{ext,edits:changes.map(r=>({
+        folder:r.folder,name:r.name,expected:r.before,text:r.after
+      }))});
+      studioRecord("Clean "+kind+" tags",{kind:"captions",ext,rows:changes});
+      for(const row of changes){
+        const item=S.cap.items.find(it=>it.path===row.path);
+        if(item)item.caption=row.after;
+      }
+      S.cap.studioRevision=(S.cap.studioRevision||0)+1;
+      renderCaptions();
+    }catch(err){say(err.message);}
+  };
+  const deletePickedTags=async()=>{
+    const nameList=S.cap.studioTagFocus==="all"?[...selectionState]:[];
+    if(!nameList.length)return false;
+    if(!confirm("Delete "+nameList.length+" selected tag(s) from all unlocked dataset captions?"))return true;
+    const wanted=new Set(nameList.map(x=>x.toLowerCase()));
+    const eligible=S.cap.items.filter(it=>!S.cap.studioReviewed?.has(it.path)&&
+      studioCaptionMode(it)==="tags"&&
+      studioTokens(it.caption,"tags").some(t=>wanted.has(t.toLowerCase())));
+    if(eligible.length>1000){say("Limit this tag deletion to 1000 images.");return true;}
+    if(eligible.some(it=>S.cap.studioDrafts?.has(it.path)&&
+      S.cap.studioDrafts.get(it.path)!==(it.caption??""))){
+      say("Save caption drafts before deleting tags.");return true;
+    }
+    const rows=eligible.map(it=>({folder:capItemFolder(it),name:it.name,path:it.path,
+      before:it.caption,after:studioCompose(it.caption||"",
+        studioTokens(it.caption,"tags").filter(t=>!wanted.has(t.toLowerCase())),"tags")}));
+    if(!rows.length)return true;
+    try{
+      await api("/api/captions/batch_edit",{ext,edits:rows.map(r=>({
+        folder:r.folder,name:r.name,expected:r.before,text:r.after
+      }))});
+      studioRecord("Delete selected tags",{kind:"captions",ext,rows});
+      for(const row of rows){
+        const it=S.cap.items.find(x=>x.path===row.path);if(it)it.caption=row.after;
+      }
+      selectionState.clear();S.cap.studioRevision=(S.cap.studioRevision||0)+1;
+      renderCaptions();
+    }catch(e){say(e.message);}
+    return true;
+  };
+  if(S.cap.studioKeyHandler)document.removeEventListener("keydown",S.cap.studioKeyHandler);
+  S.cap.studioKeyHandler=e=>{
+    if(e.defaultPrevented||e.repeat||!$("tab-captions").classList.contains("active")||
+      $("capView").value!=="studio"||S.cap.imageEditing)return;
+    const target=e.target;
+    if(target?.closest?.("[role=dialog],[contenteditable=true]"))return;
+    const typing=!!target?.closest?.("input,textarea,select,[contenteditable]");
+    const cmd=e.ctrlKey||e.metaKey;
+    const key=e.key.toLowerCase();
+    const handled=()=>e.preventDefault();
+    const menu=document.querySelector(".studio-image-context-menu");
+    if(menu){
+      if(e.key==="Escape"){handled();closeImageMenu();}
+      return;
+    }
+    if(typing)return;
+    if(cmd&&e.altKey&&key==="s"){
+      handled();settingsBtn.click();return;
+    }
+    if(cmd&&e.altKey&&key==="c"){
+      handled();copyImageNames();return;
+    }
+    if(cmd&&!e.altKey&&!e.shiftKey&&["1","2","3"].includes(key)){
+      handled();
+      const mode={"1":"list","2":"waterfall","3":"constellation"}[key];
+      viewButtons.querySelector('[data-view="'+mode+'"]')?.click();return;
+    }
+    if(e.altKey&&!cmd){
+      const focus={f:tagQuery,a:newTag,s:indexSearch,i:tags};
+      if(key==="c"){handled();showAI.click();return;}
+      if(focus[key]){
+        handled();
+        if(key==="i")tags.querySelector("button")?.focus();
+        else focus[key].focus();
+        return;
+      }
+    }
+    if(cmd&&!e.altKey&&(key==="z"||key==="y")){
+      handled();
+      void studioTravel(key==="y"||e.shiftKey?"redo":"undo")
+        .catch(err=>say("Undo/Redo failed: "+err.message));
+      return;
+    }
+    if(cmd&&!e.altKey&&key==="k"){handled();void toggleImageReview();return;}
+    if((e.key==="Delete"||e.key==="Backspace")&&
+       S.cap.studioTagFocus==="all"&&selectionState.size){
+      handled();void deletePickedTags();return;
+    }
+    if((e.key==="Delete"||cmd&&key==="delete")&&!e.altKey){
+      handled();void removeSelectedImages();return;
+    }
+    if(e.key==="Backspace")return;
+    if(e.altKey)return;
+    if(["ArrowRight","ArrowDown","ArrowLeft","ArrowUp"].includes(e.key)){
+      handled();stepImage(["ArrowRight","ArrowDown"].includes(e.key)?1:-1);return;
+    }
+    if(!cmd){
+      if(key==="/"){handled();tagQuery.focus();}
+      return;
+    }
+    if(key==="a"){handled();items.forEach(it=>selection.add(it.path));renderCaptions();}
+    else if(key==="i"){handled();invertImageSelection();}
+    else if(key==="c"&&!window.getSelection()?.toString()){handled();copyImageTags();}
+    else if(key==="v"){handled();void pasteImageTags();}
+    else if(key==="j"){
+      handled();
+      const next=items.find(it=>!(it.caption||"").trim());
+      if(!next){say("Every picture has a caption.");return;}
+      S.cap.studioPath=next.path;
+      selection.clear();selection.add(next.path);
+      $("capFilter").value="missing";
+      S.cap.page=0;renderCaptions();
+    }
+    else if(key==="r"){
+      handled();
+      const drawer=document.querySelector("#tab-captions .caption-tools-drawer");
+      if(drawer)drawer.open=true;
+      $("frFind")?.focus();$("frFind")?.scrollIntoView({block:"nearest"});
+    }
+    else if(key==="b"){handled();editMenu.open=true;editMenu.scrollIntoView({block:"nearest"});}
+    else if(key==="d"){handled();void cleanTags("duplicate");}
+    else if(key==="e"){handled();void cleanTags("empty");}
+    else if(key==="o"){handled();openSelectedImage();}
+  };
+  document.addEventListener("keydown",S.cap.studioKeyHandler);
   toolsRow.append(actionBar,duplicatePanel,removedPanel);
   layout.append(left,divider("left"),center,divider("right"),right);
   redraw();host.classList.add("studio-host");
@@ -12732,37 +12880,8 @@ function wireCaptions() {
     if (!Number.isFinite(n)) return;
     S.cap.page = Math.max(0, n - 1); $("capGoto").value = ""; renderCaptions(); window.scrollTo(0, 0);
   };
-  // Workspace shortcuts never override editing text or Image Prep's own canvas shortcuts.
-  document.addEventListener("keydown",e=>{
-    if(!$("tab-captions").classList.contains("active")||$("capView").value!=="studio"||
-        S.cap.imageEditing||e.altKey)return;
-    if(e.target.closest("input,textarea,select,[contenteditable=true]"))return;
-    const mod=e.ctrlKey||e.metaKey,key=e.key.toLowerCase();
-    if(mod&&key==="z"){
-      e.preventDefault();studioTravel(e.shiftKey?"redo":"undo").catch(err=>alert(err.message));return;
-    }
-    if(mod&&key==="y"){
-      e.preventDefault();studioTravel("redo").catch(err=>alert(err.message));return;
-    }
-    if(mod&&key==="a"){
-      e.preventDefault();
-      S.cap.studioSelection ||= new Set();
-      S.cap.items.forEach(it=>S.cap.studioSelection.add(it.path));
-      renderCaptions();return;
-    }
-    if(mod||e.shiftKey)return;
-    if(key==="/"){e.preventDefault();$("capSearch").focus();return;}
-    if(key==="arrowright"||key==="arrowleft"){
-      const idx=S.cap.items.findIndex(it=>it.path===S.cap.studioPath);
-      if(idx<0)return;
-      const next=S.cap.items[Math.max(0,Math.min(S.cap.items.length-1,
-        idx+(key==="arrowright"?1:-1)))];
-      if(!next)return;
-      e.preventDefault();S.cap.studioPath=next.path;
-      S.cap.page=Math.floor(S.cap.items.indexOf(next)/CAP_PAGE);
-      renderCaptions();
-    }
-  });
+  // Caption Studio owns the unified TagBench keyboard handler, installed once per
+  // render below. Legacy card/table view retains only their local shortcuts.
   $("capGo").addEventListener("click", goto);
   $("capGoto").addEventListener("keydown", (e) => { if (e.key === "Enter") goto(); });
 }
