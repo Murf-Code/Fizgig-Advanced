@@ -140,3 +140,13 @@ assert.match(app,/const createLearningFilterSelect=\(\)=>/);
 assert.match(app,/actionBar\.append\(learningToggle,learningFilter,viewButtons\)/);
 assert.match(app,/const refilter=\(S\.cap\.studioLearningFilter\|\|"all"\)!=="all"/);
 assert.match(css,/#tab-captions \.studio-learning-filter-label\{/);
+
+// Zero missing tags must never discard the full workbench. Empty searches
+// get an explicit one-click recovery, including learning-status filters.
+assert.match(app,/if\(filter==="missing"&&missingTotal===0&&all\.length\)/);
+assert.match(app,/filter="all";/);
+assert.match(app,/missingTotal===0\?"Missing Tags \(0\)"/);
+assert.match(app,/class:"studio-missing-notice"/);
+assert.match(app,/text:"Show all images"/);
+assert.match(app,/S\.cap\.studioLearningFilter="all";/);
+assert.match(css,/\.studio-empty-actions\{/);

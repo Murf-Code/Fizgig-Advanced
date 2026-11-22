@@ -11099,7 +11099,16 @@ function renderCaptions() {
   const q = $("capSearch").value.trim().toLowerCase();
   const all = S.cap.items;
   let items = q ? all.filter((i) => i.name.toLowerCase().includes(q) || (i.caption || "").toLowerCase().includes(q)) : all;
-  const filter = $("capFilter").value;
+  let filter = $("capFilter").value;
+  const missingTotal=all.reduce((sum,it)=>sum+(it.caption===null?1:0),0);
+  if(filter==="missing"&&missingTotal===0&&all.length){
+    // Zero missing captions is a success state, not a reason to replace the
+    // whole three-panel editor with an empty screen. Also repairs saved state
+    // from older builds that entered the empty view.
+    $("capFilter").value="all";
+    S.cap.studioMissingNotice="All images already have captions — 0 missing tags.";
+    filter="all";
+  }
   if (filter === "missing") items = items.filter(i => i.caption === null);
   else if (filter === "captioned") items = items.filter(i => i.caption !== null);
   const sort = $("capSort").value, px = (i) => (i.size ? i.size[0] * i.size[1] : null);
@@ -11125,7 +11134,7 @@ function renderCaptions() {
       S.cap.studioLearningFilter||"all");
   const pages = Math.max(1, Math.ceil(items.length / CAP_PAGE));
   S.cap.page = Math.min(S.cap.page, pages - 1);
-  const missing = all.filter((i) => i.caption === null).length;
+  const missing = missingTotal;
   $("captionsSummary").textContent = `${all.length} files${missing ? `, ${missing} without a caption` : ""}` +
     (q ? ` · ${items.length} match` : "") + (pages > 1 ? ` · page ${S.cap.page + 1} of ${pages}` : "");
   $("capPrev").disabled = S.cap.page === 0; $("capNext").disabled = S.cap.page >= pages - 1;
@@ -12013,9 +12022,21 @@ function renderCaptionStudio(host,items,ext){
       createTagFilterBar(),
       el("label",{class:"studio-learning-filter-label"},
         el("span",{text:"Image status"}),createLearningFilterSelect()),
-      el("div",{class:"field-hint",text:"No matching images in this view. Change your filter or restore images to the dataset folder, then refresh."}),
-      el("button",{class:"btn btn-primary",type:"button",text:"Refresh dataset",
-        onclick:()=>void loadCaptions().catch(e=>alert("Refresh failed: "+e.message))})));
+      el("div",{class:"field-hint",text:"No images match these filters. Your dataset is unchanged."}),
+      el("div",{class:"studio-empty-actions"},
+        el("button",{class:"btn btn-primary",type:"button",text:"Show all images",
+          onclick:()=>{
+            $("capFilter").value="all";
+            $("capSearch").value="";
+            S.cap.studioQuery="";
+            S.cap.studioLearningFilter="all";
+            S.cap.studioMissingNotice="";
+            S.cap.page=0;
+            S.cap.studioExploreMode="list";
+            renderCaptions();
+          }}),
+        el("button",{class:"btn",type:"button",text:"Refresh dataset",
+          onclick:()=>void loadCaptions().catch(e=>alert("Refresh failed: "+e.message))}))));
     return;
   }
   S.cap.studioPath=current.path;
@@ -12060,7 +12081,16 @@ function renderCaptionStudio(host,items,ext){
     $("capSearch").value,$("capFilter").value,$("capSort").value,S.cap.studioQuery||"",
     S.cap.studioLearningFilter||"all"]);
   thumbs.dataset.viewKey=thumbViewKey;
-  const missingBtn=btn($("capFilter").value==="missing"?"Missing Tags ✓":"Missing Tags",()=>{
+  const missingTotal=S.cap.items.reduce((sum,it)=>sum+(it.caption===null?1:0),0);
+  const missingBtn=btn($("capFilter").value==="missing"?"Missing Tags ✓":
+    missingTotal===0?"Missing Tags (0)":"Missing Tags",()=>{
+    if($("capFilter").value!=="missing"&&missingTotal===0){
+      S.cap.studioMissingNotice="All images already have captions — 0 missing tags.";
+      missingNotice.hidden=false;
+      missingNotice.textContent=S.cap.studioMissingNotice;
+      return;
+    }
+    S.cap.studioMissingNotice="";
     $("capFilter").value=$("capFilter").value==="missing"?"all":"missing";
     S.cap.page=0;renderCaptions();
   });
@@ -12069,8 +12099,11 @@ function renderCaptionStudio(host,items,ext){
   missingBtn.title="Show only images without a caption";
   const position=el("span",{class:"studio-position",text:String(Math.max(0,items.findIndex(i=>i.path===current.path)+1))+" / "+items.length});
   const selectionCount=el("span",{class:"studio-selection-count",text:selection.size+" selected"});
+  const missingNotice=el("span",{class:"studio-missing-notice",role:"status",
+    text:S.cap.studioMissingNotice||"",hidden:!S.cap.studioMissingNotice});
   const nav=el("div",{class:"studio-thumb-footer"},
     missingBtn,position,selectionCount);
+  left.append(missingNotice);
   // Keep fine-grained touchpad gestures native. Speed up detented mouse
   // wheels only, without adding a smoothing animation or scroll lag.
   thumbs.addEventListener("wheel",e=>{

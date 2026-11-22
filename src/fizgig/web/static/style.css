@@ -5111,3 +5111,12 @@ body.caption-glass-ui .studio-image-context-menu .studio-tag-color-swatch{
 #tab-captions .studio-empty-captions .studio-learning-filter-label{
   align-self:flex-start;
 }
+
+/* Empty filter feedback is small and inline; a zero-missing dataset should
+   never replace its entire three-panel workbench. */
+#tab-captions .studio-host .studio-missing-notice{
+  font-size:11px;color:var(--success);line-height:1.4;
+  padding:0 2px;flex:none;
+}
+#tab-captions .studio-host .studio-missing-notice[hidden]{display:none!important}
+#tab-captions .studio-empty-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:10px}
