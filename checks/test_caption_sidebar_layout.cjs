@@ -61,12 +61,9 @@ assert.match(css,/#tab-captions \.studio-image-stage \.studio-preview\{[^}]*flex
 assert.match(css,/#tab-captions \.studio-image-stage \.studio-preview img,[\s\S]*?max-height:100%;[\s\S]*?object-fit:contain/);
 assert.doesNotMatch(css,/\.studio-image-stage \.studio-preview img[^\n]*max-height:min\(68vh,750px\)/);
 
-// Thumbnail wheel acceleration is limited to detented mouse wheels so
-// precision touchpads continue using native scrolling. Programmatic rail
-// repositioning must not animate when selecting or restoring an image.
-assert.match(app,/thumbs\.addEventListener\("wheel",e=>\{/);
-assert.match(app,/amount%100===0\|\|amount%120===0/);
-assert.match(app,/\},\{passive:false\}\);/);
+// Native Chromium wheel scrolling must not be blocked by JavaScript.
+assert.doesNotMatch(app,/thumbs\.addEventListener\("wheel"/);
+assert.match(app,/CaptionThumbRail\.reconcile\(windowRows,mountedThumbs/);
 assert.match(css,/#tab-captions \.studio-host \.studio-thumb-rail,[\s\S]*?scroll-behavior:auto;/);
 assert.doesNotMatch(css,/#tab-captions \.studio-host \.studio-thumb-rail,[\s\S]*?scroll-behavior:smooth;/);
 
@@ -75,7 +72,9 @@ assert.doesNotMatch(css,/#tab-captions \.studio-host \.studio-thumb-rail,[\s\S]*
 assert.match(app,/function studioThumbGeometry\(items,railWidth,gap=14\)/);
 assert.match(app,/function studioThumbIndex\(offsets,position\)/);
 assert.match(app,/const paintWindow=\(\)=>/);
-assert.match(app,/windowRows\.replaceChildren\(fragment\)/);
+assert.doesNotMatch(app,/windowRows\.replaceChildren\(fragment\)/);
+assert.match(app,/const mountedThumbs=new Map\(\)/);
+assert.match(app,/thumbPreloader\.prefetch\(it\.path,thumbUrl\(it\.path\)\)/);
 assert.match(app,/thumbs\.revealPath=path=>revealIndex\(/);
 assert.match(app,/new ResizeObserver\(/);
 assert.match(app,/thumbs\.addEventListener\("scroll",queueWindow,\{passive:true\}\)/);
