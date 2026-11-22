@@ -11739,26 +11739,129 @@ function renderCaptionStudio(host,items,ext){
     }
     if(failures.length)alert("Some images could not be removed:\\n"+failures.join("\\n"));
   };
-  const closeImageMenu=()=>document.querySelectorAll(".studio-image-context-menu").forEach(node=>node.remove());
-  const openImageMenu=(e,it)=>{
-    e.preventDefault();closeImageMenu();
-    const menu=el("div",{class:"studio-image-context-menu",role:"menu",
-      "aria-label":"Image actions"});
-    const action=(label,fn)=>{
-      const b=el("button",{type:"button",role:"menuitem",text:label,
-        onclick:()=>{closeImageMenu();fn();}});
-      menu.append(b);
-    };
-    const chosen=selection.has(it.path)?selection.size:1;
-    action("Select all images",()=>{items.forEach(x=>selection.add(x.path));renderCaptions();});
-    action("Invert selection",()=>{
-      for(const x of items)selection.has(x.path)?selection.delete(x.path):selection.add(x.path);
+  const imageTargets=path=>{
+    const paths=path?(selection.has(path)&&selection.size>0?[...selection]:[path]):
+      (selection.size?[...selection]:[current.path]);
+    const wanted=new Set(paths);
+    return S.cap.items.filter(it=>wanted.has(it.path));
+  };
+  const copyImageText=async(textValue,kind)=>{
+    try{
+      await navigator.clipboard.writeText(textValue);
+      say("Copied "+kind+".");
+    }catch(e){say("Clipboard write failed: "+e.message);}
+  };
+  const copyImageTags=path=>{
+    const chosen=imageTargets(path);
+    if(chosen.length)void copyImageText(chosen.map(it=>it.caption||"").join("\n"),
+      "tags from "+chosen.length+" image(s)");
+  };
+  const copyImageNames=path=>{
+    const chosen=imageTargets(path);
+    if(chosen.length)void copyImageText(chosen.map(it=>it.name).join("\n"),
+      chosen.length+" file name(s)");
+  };
+  const pasteImageTags=async(path)=>{
+    const targets=imageTargets(path);
+    if(!targets.length)return say("Select images before pasting tags.");
+    let raw;
+    try{raw=await navigator.clipboard.readText();}
+    catch(e){return say("Clipboard access failed: "+e.message);}
+    const pasted=studioUnique(raw.split(",").map(t=>t.trim()).filter(Boolean));
+    if(!pasted.length)return say("Clipboard does not contain comma-separated tags.");
+    if(targets.length>1000)return say("Select at most 1000 images for a single paste.");
+    const reviewed=targets.filter(it=>S.cap.studioReviewed?.has(it.path));
+    if(reviewed.length)return say("Unlock "+reviewed.length+" reviewed image(s) before pasting.");
+    if(targets.some(it=>studioCaptionMode(it)==="prose"))
+      return say("Paste Tags only supports tag captions; a prose caption is selected.");
+    const drafts=S.cap.studioDrafts;
+    if(targets.some(it=>drafts?.has(it.path)&&drafts.get(it.path)!==(it.caption??"")))
+      return say("Save caption drafts before pasting tags.");
+    const changes=targets.map(it=>({
+      folder:capItemFolder(it),name:it.name,path:it.path,before:it.caption,
+      after:studioCompose(it.caption||"",pasted,"tags")
+    })).filter(row=>row.after!==row.before);
+    if(!changes.length)return say("The selected images already contain those tags.");
+    if(changes.length>1&&!confirm("Replace tags on "+changes.length+
+      " selected images? Existing description lines will be preserved."))return;
+    try{
+      await api("/api/captions/batch_edit",{ext,edits:changes.map(c=>({
+        folder:c.folder,name:c.name,expected:c.before,text:c.after
+      }))});
+      studioRecord("Paste tags",{kind:"captions",ext,rows:changes});
+      for(const row of changes){
+        const item=S.cap.items.find(i=>i.path===row.path);
+        if(item)item.caption=row.after;
+      }
+      S.cap.studioRevision=(S.cap.studioRevision||0)+1;
       renderCaptions();
-    });
-    action("Clear selection",()=>{selection.clear();renderCaptions();});
-    menu.append(el("div",{class:"studio-context-rule",role:"separator"}));
-    action("Remove "+chosen+" image"+(chosen===1?"":"s")+" from dataset  ·  Del",
-      ()=>removeSelectedImages(it.path));
+    }catch(e){say("Paste Tags failed: "+e.message);}
+  };
+  const toggleImageReview=async(path)=>{
+    const chosen=imageTargets(path);
+    if(!chosen.length)return;
+    const reviewed=S.cap.studioReviewed||(S.cap.studioReviewed=new Set());
+    const mark=!chosen.every(it=>reviewed.has(it.path));
+    const drafts=S.cap.studioDrafts;
+    if(mark&&chosen.some(it=>drafts?.has(it.path)&&drafts.get(it.path)!==(it.caption??"")))
+      return say("Save unsaved caption drafts before marking images complete.");
+    const failures=[];
+    for(const it of chosen){
+      if(reviewed.has(it.path)===mark)continue;
+      try{
+        await api("/api/captions/review",{folder:capItemFolder(it),name:it.name,reviewed:mark});
+        if(mark)reviewed.add(it.path);else reviewed.delete(it.path);
+      }catch(e){failures.push(it.name+": "+e.message);}
+    }
+    if(failures.length)alert("Review update failed for some images:\n"+failures.join("\n"));
+    renderCaptions();
+  };
+  const openSelectedImage=path=>{
+    const chosen=imageTargets(path);
+    if(!chosen.length)return;
+    const url="/api/media?path="+encodeURIComponent(chosen[0].path)+"&t="+encodeURIComponent(TOKEN);
+    window.open(url,"_blank","noopener");
+  };
+  const invertImageSelection=()=>{
+    for(const it of items)selection.has(it.path)?selection.delete(it.path):selection.add(it.path);
+    const next=items.find(it=>selection.has(it.path));
+    if(next)S.cap.studioPath=next.path;
+    renderCaptions();
+  };
+  const closeImageMenu=()=>{
+    document.querySelectorAll(".studio-image-context-menu").forEach(node=>node.remove());
+  };
+  const openImageMenu=(e,it)=>{
+    e.preventDefault();
+    closeImageMenu();
+    const targets=imageTargets(it.path);
+    const count=targets.length, complete=targets.every(i=>S.cap.studioReviewed?.has(i.path));
+    const menu=el("div",{class:"studio-image-context-menu",role:"menu",
+      "aria-label":"TagBench image actions",tabindex:"-1"});
+    const action=(label,hint,fn,disabled=false)=>{
+      const button=el("button",{type:"button",role:"menuitem",disabled,
+        class:"studio-context-action"});
+      button.append(el("span",{text:label}));
+      if(hint)button.append(el("kbd",{text:hint}));
+      button.addEventListener("click",()=>{
+        closeImageMenu();
+        try{const result=fn();if(result?.catch)result.catch(err=>say(err.message));}
+        catch(err){say(err.message);}
+      });
+      menu.append(button);
+    };
+    const separator=()=>menu.append(el("div",{class:"studio-context-rule",role:"separator"}));
+    action("Select All Images","Ctrl+A",()=>{items.forEach(x=>selection.add(x.path));renderCaptions();});
+    action("Invert Selection","Ctrl+I",invertImageSelection);
+    separator();
+    action("Copy Tags","Ctrl+C",()=>copyImageTags(it.path),!count);
+    action("Paste Tags","Ctrl+V",()=>pasteImageTags(it.path),!count);
+    action("Copy File "+(count===1?"Name":"Names"),"Ctrl+Alt+C",()=>copyImageNames(it.path),!count);
+    separator();
+    action("Delete "+(count===1?"Image":"Images"),"Ctrl+Del",()=>removeSelectedImages(it.path),!count);
+    action("Open in New Tab","Ctrl+O",()=>openSelectedImage(it.path),!count||!targets[0]?.size);
+    action(complete?"Mark Incomplete":"Mark Complete","Ctrl+K",
+      ()=>toggleImageReview(it.path),!count);
     document.body.append(menu);
     const rect=menu.getBoundingClientRect();
     menu.style.left=Math.max(6,Math.min(e.clientX,window.innerWidth-rect.width-8))+"px";
@@ -11769,19 +11872,24 @@ function renderCaptionStudio(host,items,ext){
       closeImageMenu();document.removeEventListener("pointerdown",dismiss,true);
     };
     document.addEventListener("pointerdown",dismiss,true);
-    menu.addEventListener("keydown",event=>{if(event.key==="Escape"){closeImageMenu();event.preventDefault();}});
-    menu.querySelector("button")?.focus({preventScroll:true});
+    menu.addEventListener("keydown",event=>{
+      if(event.key==="Escape"){closeImageMenu();event.preventDefault();}
+      if(event.key==="ArrowDown"||event.key==="ArrowUp"){
+        event.preventDefault();
+        const buttons=[...menu.querySelectorAll("button:not(:disabled)")];
+        if(!buttons.length)return;
+        const idx=buttons.indexOf(document.activeElement);
+        buttons[(idx+(event.key==="ArrowDown"?1:-1)+buttons.length)%buttons.length].focus();
+      }
+    });
+    menu.querySelector("button:not(:disabled)")?.focus({preventScroll:true});
   };
-  if(S.cap.studioDeleteKeyHandler)
+  // Single keyboard handler per render. Replace old handler so shortcuts never
+  // close over a stale image or dataset.
+  if(S.cap.studioDeleteKeyHandler){
     document.removeEventListener("keydown",S.cap.studioDeleteKeyHandler);
-  S.cap.studioDeleteKeyHandler=e=>{
-    if(e.defaultPrevented||e.key!=="Delete"||e.repeat||e.altKey)return;
-    if(!document.querySelector("#tab-captions.active #captionsGrid.studio-host"))return;
-    if(e.target?.closest?.("input,textarea,select,[contenteditable=true],[role=dialog]"))return;
-    if(document.querySelector(".studio-image-context-menu"))return;
-    e.preventDefault();void removeSelectedImages();
-  };
-  document.addEventListener("keydown",S.cap.studioDeleteKeyHandler);
+    S.cap.studioDeleteKeyHandler=null;
+  }
   for(const it of pageItems){
     const isActive=it.path===current.path;
     const isPicked=selection.has(it.path);
