@@ -28,6 +28,29 @@ jobs:
       - name: Parse all Javascript sources
         run: |
           for f in $(find src -type f -name '*.js'); do node --check "$f"; done
+      - name: Audit undefined Python names across all sources (report only)
+        shell: bash
+        run: |
+          set +e
+          python -m pip install -q ruff
+          ruff check --select F821,F822,F823 --output-format concise src > /tmp/branch-ruff.log 2>&1
+          result=$?
+          head -n 180 /tmp/branch-ruff.log
+          echo "Undefined-name audit exit: $result"
+          exit 0
+      - name: Audit UI ID references against the HTML
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          html = Path("src/fizgig/web/static/index.html").read_text(encoding="utf-8")
+          app = Path("src/fizgig/web/static/app.js").read_text(encoding="utf-8")
+          ids = set(re.findall(r'\bid="([^"]+)"', html))
+          referenced = set(re.findall(r'\$\("([A-Za-z][\w-]*)"\)', app))
+          absent = sorted(referenced - ids)
+          print(f"{len(referenced)} literal DOM ID lookups; {len(absent)} without a static HTML ID")
+          print("Potential dynamically-created IDs or typos:", absent[:120])
+          PY
       - name: Find duplicate HTML IDs
         run: |
           python - <<'PY'
