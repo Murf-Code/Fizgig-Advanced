@@ -319,9 +319,10 @@ class Watch:
             # Select the dataset folder from the item's key prefix, not a filename guessed from the UI.
             folder = ""
             stem = str(k).rsplit("/", 1)[-1]
+            best = -1
             for prefix, d in self.folders.items():
-                if str(k).startswith(prefix) and len(prefix) >= len(folder):
-                    folder = d
+                if str(k).startswith(prefix) and len(prefix) > best:
+                    folder, best = d, len(prefix)
             if not folder:
                 folder = self.image_dir or ""
             source = _picture(folder, stem, listings)
@@ -350,8 +351,11 @@ class Watch:
             try:
                 for k, item, source in todo:
                     try:
-                        if getattr(item, "control_content", None):
-                            raise ValueError("paired image edits need a new cache run")
+                        # The still-image update path must not silently discard edit reference latents.
+                        from safetensors import safe_open
+                        with safe_open(item.latent_cache_path, framework="pt", device="cpu") as existing:
+                            if any(key.startswith("latent_control_") for key in existing.keys()):
+                                raise ValueError("Paired-reference cache requires a full recache")
                         # The old bucket is fixed for the active run, even if an edit changes aspect.
                         with torch.no_grad():
                             image = resize_image_to_bucket(open_upright(source), tuple(item.bucket_size))
