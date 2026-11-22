@@ -12117,20 +12117,6 @@ function renderCaptionStudio(host,items,ext){
       if(locked){say("Unlock the reviewed picture before editing its image.");return;}
       try{await captionImageOpen(current);}
       catch(e){say(e.message);}
-    }),
-    btn("Remove from dataset",async()=>{
-      if(locked){say("Unlock this reviewed picture before removing it.");return;}
-      if(current.crop){say("Remove detail crops from Image Prep.");return;}
-      if(!confirm("Move "+current.name+" and its caption into removed/? You can undo this removal."))return;
-      try{
-        if(S.cap.imageEditing?.path===current.path && !(await captionImageClose()))return;
-        const folder=capItemFolder(current);
-        const result=await api("/api/captions/remove",{folder,name:current.name,ext});
-        studioRecord("Remove image",{kind:"remove",folder,name:current.name,ext,moved:result.moved});
-        S.cap.studioLastRemoval={folder,moved:result.moved};
-        S.cap.items=S.cap.items.filter(it=>it.path!==current.path);
-        drafts.delete(current.path);renderCaptions();
-      }catch(e){say(e.message);}
     })
   );
   const reviewBtn=btn(locked?"✓ Reviewed · unlock":"Mark reviewed ✓",async()=>{
