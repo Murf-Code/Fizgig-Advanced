@@ -6980,7 +6980,7 @@ async function meDoRestoreOrig() {
   if (m.stepBusy || !m.pic || !meHasBackup()) return;
   m.stepBusy = true; meBusy("Restoring…"); meRestoreBtn();
   try {
-    if (m.dirty && !(await meSave())) return;
+    if (m.dirty && (!(await meSave()) || m.dirty)) return;
     const r = await api("/api/masks/edit/restore_original", {folder: m.folder || S.imageFolder, name: m.name});
     const item = m.list.find((p) => p.name === m.name);
     if (item) { item.mask = !!r.mask; item.watermark = !!r.watermark; item.backup = true; }
@@ -7070,7 +7070,7 @@ async function meOpen(requestedName=null) {
   const m = meState(), folder=m.studioFolder || S.imageFolder;
   if (!folder) { $("meState").textContent = "Choose the training folder on the Start tab first."; return; }
   if (m.folder && m.folder !== folder) {             // preserve unsaved masks on another dataset
-    if(m.dirty && !(await meSave())) return;
+    if(m.dirty && (!(await meSave()) || m.dirty)) return;
     if(!(await meRmSave(false))) return;
     m.rm = null; m.rmBase = null; m.rmDirty = false;
   }
@@ -7091,7 +7091,7 @@ async function meGo(i, force) {
   }
   i = (i + shown.length) % shown.length;
   if (!force && shown[i].name === m.name) return;
-  if (m.dirty && !(await meSave())) return;           // moving on saves the one you were on
+  if (m.dirty && (!(await meSave()) || m.dirty)) return;           // moving on saves the one you were on
   if (!(await meRmSave(false))) return;               // and its red Remove edits
   m.at = i; m.name = shown[i].name;
   $("meCount").textContent = `${i + 1} of ${shown.length}`;
@@ -7656,7 +7656,7 @@ async function mePicStep(path, body, what, busy) {
   if (m.stepBusy || !m.pic) return null;
   m.stepBusy = true; meImgBar(); meBusy(busy);
   try {
-    if (m.dirty && !(await meSave())) return null;
+    if (m.dirty && (!(await meSave()) || m.dirty)) return null;
     const r = await api(path, {folder: m.folder || S.imageFolder, name: m.name, ...body});
     m.undo.push({step: r.step, what}); if (m.undo.length > ME_UNDO * 2) m.undo.shift();
     m.redo = [];
@@ -11676,7 +11676,7 @@ async function captionImageFinishPending(){
     $("captionImageWorkspaceNote").textContent="Finish the current image operation first.";
     return false;
   }
-  if(m.dirty&&!(await meSave()))return false;
+  if(m.dirty&&(!(await meSave())||m.dirty))return false;
   if(!(await meRmSave(false)))return false;
   return true;
 }
