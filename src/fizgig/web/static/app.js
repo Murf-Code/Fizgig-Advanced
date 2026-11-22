@@ -13081,6 +13081,8 @@ function renderCaptionStudio(host,items,ext){
   const sizeValue=el("span",{class:"studio-image-size-value",text:sizeInput.value+" px"});
   const sizeLabel=el("label",{class:"studio-image-brush-size"},
     el("span",{text:"Brush size"}),sizeInput,sizeValue);
+  // Hidden until the Remove button is activated.
+  sizeLabel.hidden=true;
   sizeInput.addEventListener("input",()=>{
     $("meSize").value=sizeInput.value;
     sizeValue.textContent=sizeInput.value+" px";
@@ -13104,6 +13106,7 @@ function renderCaptionStudio(host,items,ext){
       refreshInlineButtons();
     }catch(e){say("Image edit failed: "+e.message);}
   });
+  applyImage.hidden=true;
   applyImage.classList.add("studio-image-apply","btn-primary");
   applyImage.title="Apply the current Remove or Crop operation (Enter)";
   const goBack=btn("Undo",async()=>{
