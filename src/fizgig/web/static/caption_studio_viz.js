@@ -17,10 +17,16 @@ const CaptionStudioViz = (() => {
           links.set(key, (links.get(key) || 0) + 1);
         }
     }
+    // Rank links by how much more often two tags occur together than chance.
+    // Raw co-occurrence counts would connect virtually every common tag.
+    const frequencies=new Map(top.map(([tag,count])=>[lower(tag),count]));
+    const total=Math.max(1,captions.length);
     const edges = [...links].map(([pair,count]) => {
-      const [a,b] = pair.split("\u0000");
-      return {a,b,count};
-    }).filter(x => x.count >= 2).sort((a,b) => b.count-a.count).slice(0,180);
+      const [a,b] = pair.split("\\u0000");
+      const expected=(frequencies.get(a)||0)*(frequencies.get(b)||0)/total;
+      return {a,b,count,strength:count/Math.max(1,expected)};
+    }).filter(x=>x.count>=2&&x.strength>1.05)
+      .sort((a,b)=>b.strength-a.strength||b.count-a.count).slice(0,90);
     const nodes = top.map(([tag,count],i) => {
       const angle = i * 2.399963229728653;
       const radius = 46 + 235 * Math.sqrt((i+1)/Math.max(top.length,1));
@@ -52,6 +58,13 @@ const CaptionStudioViz = (() => {
     const root = document.createElement("div");
     root.className = "studio-waterfall";
     root.setAttribute("aria-label","Tag frequency waterfall");
+    if(!index.length){
+      const empty=document.createElement("p");
+      empty.className="field-hint";
+      empty.textContent="No matching tags. Clear Search Tags to see frequencies.";
+      root.append(empty);
+      return root;
+    }
     const max = Math.max(1,...index.slice(0,75).map(x=>x[1]));
     for(const [tag,count] of index.slice(0,75)) {
       const btn=document.createElement("button");
@@ -78,8 +91,15 @@ const CaptionStudioViz = (() => {
     const graph=buildGraph(index,captions);
     const holder=document.createElement("div");
     holder.className="studio-constellation";
+    if(!graph.nodes.length){
+      const empty=document.createElement("p");
+      empty.className="field-hint";
+      empty.textContent="No matching tags. Clear Search Tags to view the constellation.";
+      holder.append(empty);
+      return holder;
+    }
     const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
-    svg.setAttribute("role","img");svg.setAttribute("aria-label","Interactive tag co-occurrence constellation");
+    svg.setAttribute("role","group");svg.setAttribute("aria-label","Interactive tag co-occurrence constellation");
     const ns="http://www.w3.org/2000/svg";
     const make=(name,attrs={},parent=svg)=>{
       const el=document.createElementNS(ns,name);
@@ -133,7 +153,7 @@ const CaptionStudioViz = (() => {
     const hint=document.createElement("div");
     hint.className="field-hint";
     hint.textContent=graph.nodes.length+" tags · "+graph.edges.length+
-      " co-occurrences · drag to pan, scroll to zoom, click tag to filter";
+      " above-chance connections · drag to pan, scroll to zoom, click tag to filter";
     holder.append(svg,hint);return holder;
   }
   return Object.freeze({buildGraph,waterfall,constellation});
