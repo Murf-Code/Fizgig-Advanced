@@ -9,6 +9,14 @@ assert.equal(T.compose("First sentence, second sentence.", ["wrong"]), "First se
 assert.deepEqual(T.tags("lion; cosmic mane; blue", "tags", ";"), ["lion", "cosmic mane", "blue"]);
 assert.equal(T.compose("lion; blue\nBright sunset", ["blue", "lion"], "tags", ";"), "blue; lion\nBright sunset");
 assert.equal(T.search(["red hair", "blue eyes"], '"red hair" AND NOT "green eyes"'), true);
+// Compiled filter must behave exactly like one-off evaluation while reusing the
+// parsed query across thousands of images in the same dataset.
+const compiled=T.compileSearch('("red hair" OR lion) AND NOT "green eyes"');
+assert.equal(compiled(["red hair","blue eyes"]),true);
+assert.equal(compiled(["lion","green eyes"]),false);
+assert.equal(compiled(["Lion","blue eyes"]),true);
+assert.equal(compiled(["pink hair"]),false);
+assert.throws(()=>T.compileSearch("wolf AND ("),/Expected a tag|Missing closing parenthesis/);
 assert.equal(T.search(["red hair", "blue eyes"], '("red hair" OR "black hair") AND blue'), false);
 assert.equal(T.search(["red hair", "blue eyes"], '("red hair" OR "black hair") AND "blue eyes"'), true);
 assert.equal(T.search(["red hair"], 'NOT missing AND red'), false);
