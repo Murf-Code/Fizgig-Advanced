@@ -5768,3 +5768,10 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
 @media(max-width:850px){
   #tab-captions .studio-thumb-rail.is-windowed .studio-thumb-window{gap:14px}
 }
+
+#tab-captions .studio-workspace-status[data-state="editing"] .studio-status-dot{
+  background:var(--warning);
+}
+#tab-captions .studio-workspace-status[data-state="editing"] .studio-status-label{
+  color:var(--text-primary);
+}
