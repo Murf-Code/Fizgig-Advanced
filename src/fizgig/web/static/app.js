@@ -11797,11 +11797,33 @@ function renderCaptionStudio(host,items,ext){
     });
     index.append(el("div",{class:"studio-category-index-row"},tagBtn,categorySelect));
   }
-  right.append(el("div",{class:"field-row"},sortSelect,btn("Export wildcard",()=>{
+  const indexMode=el("select",{class:"w-combo",title:"Explore tag frequencies and co-occurrences"});
+  [["list","Tag list"],["waterfall","Frequency waterfall"],["constellation","Tag constellation"]]
+    .forEach(([value,label])=>indexMode.append(el("option",{value,text:label})));
+  indexMode.value=S.cap.studioExploreMode||"list";
+  const explore=el("div",{class:"studio-explore"});
+  const pickTag=tag=>{S.cap.studioQuery=JSON.stringify(tag);S.cap.page=0;renderCaptions();};
+  const drawExplore=()=>{
+    S.cap.studioExploreMode=indexMode.value;
+    explore.replaceChildren();
+    if(indexMode.value==="waterfall")
+      explore.append(CaptionStudioViz.waterfall(tagIndex.sorted,pickTag));
+    else if(indexMode.value==="constellation"){
+      const sampleStep=Math.max(1,Math.ceil(S.cap.items.length/3000));
+      const sampled=S.cap.items.filter((_,i)=>i%sampleStep===0&&studioCaptionMode(S.cap.items[i])==="tags")
+        .map(it=>studioTokens(it.caption,"tags"));
+      explore.append(CaptionStudioViz.constellation(tagIndex.sorted,sampled,pickTag));
+      if(sampleStep>1)explore.append(el("div",{class:"field-hint",text:
+        "Large dataset: co-occurrence links use every "+sampleStep+"th caption; displayed tag frequencies use all images."}));
+    }else explore.append(index);
+  };
+  indexMode.addEventListener("change",drawExplore);
+  right.append(el("div",{class:"field-row"},sortSelect,indexMode,btn("Export wildcard",()=>{
     const txt=CaptionStudioTags.wildcards(sorted.map(x=>x[0]));
     const url=URL.createObjectURL(new Blob([txt],{type:"text/plain;charset=utf-8"}));
     const a=document.createElement("a");a.href=url;a.download="fizgig_tags.txt";a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
-  })),index);
+  })),explore);
+  drawExplore();
   const bulk=el("div",{class:"studio-bulk"});
   const apply=async(mode)=>{
     const old=prompt("Tag to "+mode+":");if(!old||!old.trim())return;
