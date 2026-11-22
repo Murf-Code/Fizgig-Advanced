@@ -46,6 +46,21 @@ const MaskEditorPerf=(()=>{
     }
     return {inverse:other,rect};
   }
+  function historyBytes(entry){
+    if(entry?.kind==="tiles"){
+      let bytes=0;
+      for(const tile of entry.items.values())bytes+=tile.data.data.byteLength;
+      return bytes;
+    }
+    return entry?.step?0:Math.max(0,(entry?.width||0)*(entry?.height||0)*4);
+  }
+  function trimHistory(history,maxEntries=20,limit=128*1024*1024){
+    let bytes=history.reduce((sum,item)=>sum+historyBytes(item),0);
+    while(history.length>1&&(history.length>maxEntries||bytes>limit)){
+      bytes-=historyBytes(history.shift());
+    }
+    return Math.max(0,bytes);
+  }
   function pngDataURL(canvas){
     // toBlob performs compression asynchronously in Chromium; FileReader then
     // converts to the JSON-compatible payload expected by Fizgig's API.
@@ -97,6 +112,7 @@ const MaskEditorPerf=(()=>{
       resizeHeight:Math.max(1,Math.floor(height*scale)),
       resizeQuality:"high"};
   }
-  return {tiles,capture,restore,pngDataURL,PreviewCache,previewSize,TILE};
+  return {tiles,capture,restore,historyBytes,trimHistory,
+    pngDataURL,PreviewCache,previewSize,TILE};
 })();
 if(typeof module!=="undefined"&&module.exports)module.exports=MaskEditorPerf;
