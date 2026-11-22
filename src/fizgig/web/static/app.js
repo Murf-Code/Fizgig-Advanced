@@ -12119,17 +12119,6 @@ function renderCaptionStudio(host,items,ext){
       catch(e){say(e.message);}
     })
   );
-  const reviewBtn=btn(locked?"✓ Reviewed · unlock":"Mark reviewed ✓",async()=>{
-    if(!locked&&drafts.has(current.path)&&drafts.get(current.path)!==current.caption){
-      say("Save your caption draft before marking it reviewed.");return;
-    }
-    try{
-      await api("/api/captions/review",{folder:capItemFolder(current),name:current.name,reviewed:!locked});
-      const reviewed=S.cap.studioReviewed||(S.cap.studioReviewed=new Set());
-      if(locked)reviewed.delete(current.path);else reviewed.add(current.path);
-      renderCaptions();
-    }catch(e){say(e.message);}
-  });
   const orderKey="fizgig_caption_order:"+String(S.imageFolder||"");
   let orderSettings=S.cap.studioOrderSettings;
   if(!orderSettings||orderSettings.key!==orderKey){
@@ -12165,7 +12154,7 @@ function renderCaptionStudio(host,items,ext){
   const saveBtn=el("button",{class:"btn btn-primary",text:"Save caption",onclick:save});
   center.append(
     el("div",{class:"field-row studio-caption-head"},
-      el("strong",{text:"Caption"}),reviewBtn),
+      el("strong",{text:"Caption"})),
     el("div",{class:"studio-preview"},mediaFor(current,true)),
     el("div",{class:"caption-card-title",text:mediaLabel(current)}),
     ta,word,
