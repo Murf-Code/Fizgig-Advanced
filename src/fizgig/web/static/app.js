@@ -11807,10 +11807,15 @@ async function captionImageClose(){
 }
 function captionImageChanged(){
   if(!S.cap?.imageEditing)return;
-  // Existing live dataset re-encoding and image/caption synchronization apply.
+  // Bust only the changed thumbnail's browser URL; the server already keys
+  // decoded bytes by filesystem mtime, but the browser caches by URL.
+  const path=S.cap.imageEditing.path;
+  const versions=S.cap.studioThumbRevisions||
+    (S.cap.studioThumbRevisions=new Map());
+  versions.set(path,(versions.get(path)||0)+1);
+  S.cap.studioThumbPreloader?.forget(path);
   loadCaptions().catch(e=>console.warn("Caption Studio image refresh:",e));
 }
-
 function studioCategories(){
   const key="fizgig_caption_categories:"+String(S.imageFolder||"");
   if(S.cap.studioCategories?.key===key)return S.cap.studioCategories;
@@ -12705,23 +12710,8 @@ function renderCaptionStudio(host,items,ext){
   const nav=el("div",{class:"studio-thumb-footer"},
     missingBtn,position,selectionCount);
   left.append(missingNotice);
-  // Keep fine-grained touchpad gestures native. Speed up detented mouse
-  // wheels only, without adding a smoothing animation or scroll lag.
-  thumbs.addEventListener("wheel",e=>{
-    if(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey||e.deltaX||!e.deltaY)return;
-    if(thumbs.scrollHeight<=thumbs.clientHeight)return;
-    const amount=Math.abs(e.deltaY);
-    const notched=(e.deltaMode===1&&Number.isInteger(amount))||
-      (e.deltaMode===0&&amount>=80&&Number.isInteger(amount)&&
-        (amount%100===0||amount%120===0));
-    if(!notched)return;
-    const pixels=e.deltaMode===1?e.deltaY*16:e.deltaY;
-    const destination=Math.max(0,Math.min(thumbs.scrollHeight-thumbs.clientHeight,
-      thumbs.scrollTop+pixels*1.6));
-    if(destination===thumbs.scrollTop)return;
-    e.preventDefault();
-    thumbs.scrollTop=destination;
-  },{passive:false});
+  // Native compositor scrolling handles touchpads, wheels, scrollbar drags,
+  // and inertial gestures. Do not intercept wheel events on this rail.
   thumbs.addEventListener("keydown",e=>{
     if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="a"){
       e.preventDefault();S.cap.items.forEach(it=>selection.add(it.path));renderCaptions();
@@ -12975,11 +12965,35 @@ function renderCaptionStudio(host,items,ext){
   const activeIndex=items.findIndex(it=>it.path===current.path);
   const sameThumbView=S.cap.studioThumbViewKey===thumbViewKey;
   thumbs.classList.add("is-windowed");
+  const thumbPreloader=S.cap.studioThumbPreloader||
+    (S.cap.studioThumbPreloader=new CaptionThumbRail.ThumbPreloader(40));
+  thumbPreloader.reset(String(S.imageFolder||""));
+  const thumbUrl=path=>"/api/thumb?path="+encodeURIComponent(path)+
+    "&t="+encodeURIComponent(TOKEN)+"&v="+
+    (S.cap.studioThumbRevisions?.get(path)||0);
+  const mountedThumbs=new Map();
+  const syncMountedSelection=()=>{
+    for(const [index,row] of mountedThumbs){
+      const it=items[index],tile=row.querySelector(".studio-file");
+      if(!tile)continue;
+      const chosen=selection.has(it.path);
+      tile.classList.toggle("is-picked",chosen);
+      tile.classList.toggle("active",it.path===S.cap.studioPath);
+      tile.setAttribute("aria-pressed",String(chosen));
+      tile.setAttribute("aria-label",it.name+
+        (it.caption===null?", missing caption":"")+
+        (chosen?", selected":""));
+    }
+    selectionCount.textContent=selection.size+" selected";
+    const at=items.findIndex(it=>it.path===S.cap.studioPath);
+    position.textContent=(at<0?0:at+1)+" / "+items.length;
+  };
   const createThumbRow=(it,index,height)=>{
     const isActive=it.path===current.path;
     const isPicked=selection.has(it.path);
-    const thumb=it.size?el("img",{src:"/api/thumb?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(TOKEN),
-      loading:"lazy",alt:"",decoding:"async"}):el("span",{class:"studio-thumb-placeholder",text:"♪"});
+    const thumb=it.size?el("img",{src:thumbUrl(it.path),
+      loading:"lazy",alt:"",decoding:"async"}):
+      el("span",{class:"studio-thumb-placeholder",text:"♪"});
     const tile=el("button",{type:"button",
       class:"studio-file studio-thumb"+(isActive?" active":"")+(isPicked?" is-picked":"")+
         (S.cap.studioReviewed?.has(it.path)?" is-reviewed":""),
@@ -12988,7 +13002,12 @@ function renderCaptionStudio(host,items,ext){
       "aria-label":it.name+(it.caption===null?", missing caption":"")+(isPicked?", selected":""),
       "aria-pressed":isPicked?"true":"false",
       oncontextmenu:e=>openImageMenu(e,it),
-      onclick:e=>{pickImage(it,e);renderCaptions();}},thumb);
+      onclick:e=>{
+        const previous=S.cap.studioPath;
+        if(!pickImage(it,e))return;
+        if(S.cap.studioPath===previous)syncMountedSelection();
+        else renderCaptions();
+      }},thumb);
     captionLearningDecorate(tile,it);
     const row=el("div",{class:"studio-browser-row",role:"listitem"},tile);
     row.style.height=height+"px";
@@ -12999,22 +13018,34 @@ function renderCaptionStudio(host,items,ext){
   const bottomSpace=el("div",{class:"studio-thumb-spacer","aria-hidden":"true"});
   thumbs.append(topSpace,windowRows,bottomSpace);
   let geometry=null,paintStart=-1,paintEnd=-1,railWidth=0,queued=false;
-  let pendingResizePosition=null;
+  let pendingResizePosition=null,previousPaintTop=null,prefetchTimer=null;
   const rebuildGeometry=()=>{
     const width=thumbs.clientWidth||S.cap.studioThumbWidth||180;
     if(geometry&&Math.abs(width-railWidth)<1)return;
-    // Resizing the split rail changes row heights. Anchor to the image at
-    // the top of the viewport rather than jumping to a different index.
+    // Preserve the top visible image and relative position when resizing.
     const old=geometry,scroll=pendingResizePosition??thumbs.scrollTop;
     const anchor=old?studioThumbIndex(old.offsets,scroll):0;
     const fraction=old?Math.max(0,Math.min(1,
       (scroll-old.offsets[anchor])/Math.max(1,old.heights[anchor]))):0;
     railWidth=width;S.cap.studioThumbWidth=width;
     geometry=studioThumbGeometry(items,width);
-    // Apply the new scroll position after updating spacer heights; assigning
-    // it against the old scroll range would clamp near the dataset's end.
+    // Row identities survive resizing; only their fixed heights change.
+    for(const [index,row] of mountedThumbs)
+      row.style.height=geometry.heights[index]+"px";
     if(old)pendingResizePosition=geometry.offsets[anchor]+fraction*geometry.heights[anchor];
     paintStart=paintEnd=-1;
+  };
+  const prefetchNear=(start,end,direction)=>{
+    clearTimeout(prefetchTimer);
+    prefetchTimer=setTimeout(()=>{
+      if(!thumbs.isConnected)return;
+      const [first,last]=CaptionThumbRail.prefetchRange(
+        start,end,items.length,direction,8);
+      for(let i=first;i<last;i++){
+        const it=items[i];
+        if(it.size)thumbPreloader.prefetch(it.path,thumbUrl(it.path));
+      }
+    },90); // Do background decoding only after the user pauses scrolling.
   };
   const paintWindow=()=>{
     if(!thumbs.isConnected)return;
@@ -13024,18 +13055,28 @@ function renderCaptionStudio(host,items,ext){
     const bottom=top+Math.max(100,thumbs.clientHeight);
     const start=Math.max(0,studioThumbIndex(offsets,top)-7);
     const end=Math.min(items.length,studioThumbIndex(offsets,bottom)+10);
-    if(start===paintStart&&end===paintEnd)return;
+    if(start===paintStart&&end===paintEnd){
+      if(pendingResizePosition!==null){
+        thumbs.scrollTop=pendingResizePosition;
+        pendingResizePosition=null;
+      }
+      return;
+    }
+    const direction=previousPaintTop!==null&&top<previousPaintTop?-1:1;
+    previousPaintTop=top;
     paintStart=start;paintEnd=end;
-    const fragment=document.createDocumentFragment();
-    for(let i=start;i<end;i++)fragment.append(createThumbRow(items[i],i,heights[i]));
+    // Unlike replaceChildren(), this retains surviving rows and their img
+    // decoding state. Only newly exposed rows are created.
+    CaptionThumbRail.reconcile(windowRows,mountedThumbs,start,end,
+      i=>createThumbRow(items[i],i,heights[i]));
     topSpace.style.height=offsets[start]+"px";
     bottomSpace.style.height=Math.max(0,total-offsets[end]+(end<items.length?gap:0))+"px";
-    windowRows.replaceChildren(fragment);
     if(pendingResizePosition!==null){
       thumbs.scrollTop=pendingResizePosition;
       pendingResizePosition=null;
     }
-    thumbs.dataset.rendered=String(end-start);
+    thumbs.dataset.rendered=String(mountedThumbs.size);
+    prefetchNear(start,end,direction);
   };
   const queueWindow=()=>{
     if(queued)return;
