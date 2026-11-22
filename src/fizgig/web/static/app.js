@@ -12109,8 +12109,28 @@ function captionsTable(items, ext) {
   return el("table", {class: "captions-table"}, head, ...rows);
 }
 
+// Capture effects of the original Captions tab batch tools so Studio's shared
+// history can reverse those complete writes, including large multiline captions.
+function studioCaptionSnapshot(){
+  return new Map((S.cap.items||[]).map(item=>[item.path,{
+    folder:capItemFolder(item),name:item.name,path:item.path,text:item.caption
+  }]));
+}
+function studioRecordLegacyBatch(previous,label,ext){
+  if(!previous)return;
+  const rows=[];
+  for(const item of S.cap.items||[]){
+    const prior=previous.get(item.path);
+    if(!prior || prior.text===item.caption)continue;
+    rows.push({folder:prior.folder,name:prior.name,path:item.path,
+      before:prior.text,after:item.caption});
+  }
+  if(rows.length)studioRecord(label,{kind:"captions",ext,rows});
+}
+
 async function addText(apply) {
   const host = $("frChanges");
+  const before=apply?studioCaptionSnapshot():null;
   try {
     const r = await api("/api/captions/add", {family: S.family, folder: capFolder(), start: $("frStart").value,
       end: $("frEnd").value, trigger: $("capTrigger").value, apply, ext: capExt()});
@@ -12120,7 +12140,7 @@ async function addText(apply) {
     if (!apply) for (const c of r.changes.slice(0, 100)) host.append(el("div", {class: "checkpoint-row"},
       el("span", {class: "checkpoint-name", text: c.name}),
       el("span", {class: "field-hint", text: "Before: " + c.old}), el("span", {class: "field-hint", text: "After: " + c.new})));
-    if (apply) loadCaptions();
+    if (apply) { await loadCaptions(); studioRecordLegacyBatch(before,"Add text to captions",capExt()); }
   } catch (e) { $("frStatus").textContent = e.message; }
 }
 
@@ -12145,6 +12165,7 @@ async function capRemove(it, card, status) {
 
 async function findReplace(apply) {
   const host = $("frChanges");
+  const before=apply?studioCaptionSnapshot():null;
   try {
     const r = await api("/api/captions/replace", {family: S.family, folder: capFolder(), find: $("frFind").value,
       replace: $("frReplace").value, apply, ext: capExt()});
@@ -12154,7 +12175,7 @@ async function findReplace(apply) {
     if (!apply) for (const c of r.changes.slice(0, 100)) host.append(el("div", {class: "checkpoint-row"},
       el("span", {class: "checkpoint-name", text: c.name}),
       el("span", {class: "field-hint", text: "Before: " + c.old}), el("span", {class: "field-hint", text: "After: " + c.new})));
-    if (apply) loadCaptions();
+    if (apply) { await loadCaptions(); studioRecordLegacyBatch(before,"Find and replace captions",capExt()); }
   } catch (e) { $("frStatus").textContent = e.message; }
 }
 
@@ -12203,12 +12224,16 @@ function wireCaptions() {
   $("capInstrReset").addEventListener("click", () => saveInstr(""));
   $("capAll").addEventListener("click", () => capRun("/api/captions/ai", capJobBody()));
   $("capStatic").addEventListener("click", async () => {
+    const before=studioCaptionSnapshot();
     const r = await capRun("/api/captions/static", capJobBody());
-    if (r && !r.error) { $("capStatus").textContent = `${r.written} written, ${r.skipped} kept.`; loadCaptions(); }
+    if (r && !r.error) { $("capStatus").textContent = `${r.written} written, ${r.skipped} kept.`;
+      await loadCaptions();studioRecordLegacyBatch(before,"Static captions",capExt()); }
   });
   $("capSongs").addEventListener("click", async () => {
+    const before=studioCaptionSnapshot();
     const r = await capRun("/api/captions/songs", capJobBody({words: $("capSongWords").value}));
-    if (r && !r.error) { $("capStatus").textContent = `${r.written} songs captioned "${r.caption}", ${r.skipped} kept.`; loadCaptions(); }
+    if (r && !r.error) { $("capStatus").textContent = `${r.written} songs captioned "${r.caption}", ${r.skipped} kept.`;
+      await loadCaptions();studioRecordLegacyBatch(before,"Static song captions",capExt()); }
   });
   $("capTranslate").addEventListener("click", () =>
     capRun("/api/captions/translate", capJobBody({skip_existing: $("capSkipCjk").checked})));
