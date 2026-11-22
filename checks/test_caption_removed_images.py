@@ -71,3 +71,35 @@ def test_corrupt_journal_fails_to_legacy_listing_without_overwrite(tmp_path):
     items = removed_images.listing(folder)
     assert len(items) == 1 and items[0]["legacy"]
     assert (rem / ".fizgig_caption_removals.json").read_text() == "{garbage"
+
+
+def test_server_removal_and_restore_are_lossless_with_masks(tmp_path):
+    from fizgig.web.server import remove_from_dataset, restore_to_dataset
+    root = tmp_path / "subject"
+    root.mkdir()
+    Image.new("RGB", (24, 24), (25, 50, 75)).save(root / "cat.png")
+    (root / "cat.txt").write_text("one cat, portrait", encoding="utf-8")
+    Image.new("L", (24, 24), 255).save(root / "cat-masklabel.png")
+    initial = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
+    moved = remove_from_dataset(str(root), "cat.png", ".txt")
+    assert not (root / "cat.png").exists()
+    assert not (root / "cat.txt").exists()
+    rows = removed_images.listing(root)
+    assert len(rows) == 1 and rows[0]["moved"] == moved
+    restored = restore_to_dataset(str(root), moved)
+    assert set(restored) == set(initial)
+    assert {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()} == initial
+    assert removed_images.listing(root) == []
+
+
+def test_server_restore_refuses_collision_and_leaves_original_removed(tmp_path):
+    from fizgig.web.server import remove_from_dataset, restore_to_dataset
+    root = tmp_path / "subject"
+    root.mkdir()
+    Image.new("RGB", (16, 16), "red").save(root / "photo.png")
+    moved = remove_from_dataset(str(root), "photo.png", ".txt")
+    Image.new("RGB", (16, 16), "blue").save(root / "photo.png")
+    assert restore_to_dataset(str(root), moved) == []
+    with Image.open(root / "photo.png") as image:
+        assert image.getpixel((0, 0)) == (0, 0, 255)
+    assert removed_images.listing(root)[0]["moved"] == moved
