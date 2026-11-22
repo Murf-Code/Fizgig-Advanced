@@ -11185,7 +11185,12 @@ function studioCategories(){
     tags:raw.tags&&typeof raw.tags==="object"?raw.tags:{}};
   S.cap.studioCategories=state;return state;
 }
-function studioSaveCategories(state){localStorage.setItem(state.key,JSON.stringify({colors:state.colors,tags:state.tags}));}
+function studioSaveCategories(state){
+  localStorage.setItem(state.key,JSON.stringify({colors:state.colors,tags:state.tags}));
+  // Recompute learned Constellation colors when a manual category/color changes.
+  S.cap.studioTagbenchGraph=null;
+  CaptionStudioViz.setTagbenchPalette(null);
+}
 function captionRemovedPanel(ext) {
   const panel=el("details",{class:"studio-removed-browser"});
   const summary=el("summary",{text:"Removed images · restore from dataset"});
