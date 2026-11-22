@@ -586,74 +586,74 @@
                         </div>
                       </header>
                       <div class="me-dialog-content">
-                  <div class="me-dialog-quick-note">
-                    Brush and Eraser edit the training mask (white trains, black excludes).
-                    Remove and Crop change the image. Changes are saved when switching images or closing the editor.
-                  </div>
-                  <div class="me-bar">
-                    <button class="btn btn-sm" id="mePrev" title="Previous picture (←)">←</button>
+                  <div class="me-bar me-navigation" aria-label="Image navigation">
+                    <button class="btn btn-sm" id="mePrev" title="Previous picture (←)" aria-label="Previous picture">←</button>
                     <span class="me-count" id="meCount"></span>
-                    <button class="btn btn-sm" id="meNext" title="Next picture (→)">→</button>
-                    <select id="meFilter" class="w-combo st-small-select">
+                    <button class="btn btn-sm" id="meNext" title="Next picture (→)" aria-label="Next picture">→</button>
+                    <select id="meFilter" class="w-combo st-small-select" aria-label="Filter pictures">
                       <option value="all">All pictures</option><option value="mask">With a mask</option>
-                      <option value="none">Without a mask</option>
-                      <option value="wm">With a watermark</option></select>
+                      <option value="none">Without a mask</option><option value="wm">With a watermark</option></select>
                     <span class="me-name" id="meName"></span>
                   </div>
-                  <div class="me-bar me-wmbar" id="meWmBar">
-                    <label class="checkbox-label me-wmload" title="When you open a picture that has a watermark mask, paint that area in red in Remove Tool, ready to edit or fill"><input type="checkbox" id="meLoadWm" checked> Load watermark masks into Remove Tool</label>
-                    <label class="me-slider" id="meWmPadWrap" title="Extra pixels around the watermark when it's loaded into Remove Tool">Pad <input type="range" id="meWmPad" min="2" max="5" value="3"><span id="meWmPadVal">3</span> px</label>
-                    <button class="btn btn-sm" id="meWmAll" title="Fills in every red watermark area (plus the pad) with LaMa, changing the picture files. Originals are copied to removed_watermarks first. Training masks stop blacking out those spots. Pictures without a watermark mask are skipped.">Remove all watermarks</button>
-                    <button class="btn btn-sm" id="meWmStop" style="display:none">Stop</button>
-                    <span class="field-hint" id="meWmState"></span>
+                  <div class="me-bar me-primary-toolbar" id="mePrimaryToolbar" aria-label="Image editing tools">
+                    <span class="seg" id="meTool"><button class="btn btn-sm active" data-tool="brush" title="Brush: left-click paints learned regions; right-click erases (B)" aria-pressed="true">Brush</button><button
+                      class="btn btn-sm" data-tool="sam" title="Click a subject to add it to the mask; right-click or Alt+click takes it away (S)" aria-pressed="false">SAM click</button></span>
+                    <span class="seg" id="mePicTool"><button class="btn btn-sm" data-tool="remove" title="Remove objects from the image with LaMa; right-click clears the red selection (J)" aria-pressed="false">Remove</button><button
+                      class="btn btn-sm" data-tool="crop" title="Crop image and associated mask (C)" aria-pressed="false">Crop</button></span>
+                    <span class="me-brush-controls" id="meBrushControls">
+                      <label class="me-slider me-size-control" title="Brush size ([ and ])">Size <input type="range" id="meSize" min="2" max="400" value="40"></label>
+                      <label class="me-slider me-soft-control" title="Soft edges: 0 is a hard edge">Softness <input type="range" id="meSoft" min="0" max="100" value="30"></label>
+                      <label class="me-slider me-strength-control" title="How white each stroke paints: below 100 paints grey (learned partly)">Strength <input type="range" id="meStrength" min="5" max="100" value="100"></label>
+                    </span>
+                    <span class="me-imgbar" id="meImgBar" style="display:none" aria-label="Crop and remove actions">
+                      <span class="me-imgbar-what" id="meImgWhat"></span>
+                      <label class="me-slider" id="meRatioWrap" title="Keep the crop box to this shape">Shape
+                        <select id="meRatio" class="w-combo st-small-select">
+                          <option value="free">Free</option><option value="orig">Original</option><option value="1:1">1:1</option>
+                          <option value="4:3">4:3</option><option value="3:4">3:4</option><option value="16:9">16:9</option>
+                          <option value="9:16">9:16</option><option value="2:3">2:3</option><option value="3:2">3:2</option></select></label>
+                      <span class="me-cropsize" id="meCropSize"></span>
+                      <button class="btn btn-primary btn-sm" id="meApply" title="Apply (Enter)">Apply</button>
+                      <button class="btn btn-sm" id="meCancel" title="Cancel (Esc)">Cancel</button>
+                      <button class="btn btn-sm" id="meBefore" style="display:none" title="Hold to see the image before the last Remove operation">Hold for before</button>
+                    </span>
                   </div>
-                  <div class="me-bar">
-                    <span class="seg" id="meTool"><button class="btn btn-sm active" data-tool="brush" title="Paint white: learned (B). Right-click paints black">Brush</button><button
-                      class="btn btn-sm" data-tool="erase" title="Paint black: not learned (E). Right-click paints white">Eraser</button><button
-                      class="btn btn-sm" data-tool="sam" title="Click a thing to add it to the mask, right-click or Alt+click to take it away (S). Needs SAM 3.1, downloaded on this card">SAM click</button></span>
-                    <span class="seg" id="mePicTool"><button class="btn btn-sm" data-tool="remove" title="Paint over a thing to take it out of the picture, then press Enter or Remove it (J). Right-click rubs the stroke out; the mouse wheel sizes the brush">Remove Tool</button><button
-                      class="btn btn-sm" data-tool="crop" title="Crop the picture, and its mask with it (C). Drag the corners or edges, drag inside to move; Enter crops, Esc cancels">Crop Image</button></span>
-                    <label class="me-slider" title="Brush size ([ and ])">Size <input type="range" id="meSize" min="2" max="400" value="40"></label>
-                    <label class="me-slider" title="Soft edges: 0 is a hard edge">Softness <input type="range" id="meSoft" min="0" max="100" value="30"></label>
-                    <label class="me-slider" title="How white each stroke paints: below 100 paints grey (learned partly)">Strength <input type="range" id="meStrength" min="5" max="100" value="100"></label>
-                  </div>
-                  <div class="me-bar me-imgbar" id="meImgBar" style="display:none">
-                    <span class="me-imgbar-what" id="meImgWhat"></span>
-                    <label class="me-slider" id="meRatioWrap" title="Keep the crop box to this shape">Shape
-                      <select id="meRatio" class="w-combo st-small-select">
-                        <option value="free">Free</option><option value="orig">Original</option><option value="1:1">1:1</option>
-                        <option value="4:3">4:3</option><option value="3:4">3:4</option><option value="16:9">16:9</option>
-                        <option value="9:16">9:16</option><option value="2:3">2:3</option><option value="3:2">3:2</option></select></label>
-                    <span class="me-cropsize" id="meCropSize"></span>
-                    <button class="btn btn-primary btn-sm" id="meApply" title="Enter">Apply</button>
-                    <button class="btn btn-sm" id="meCancel" title="Esc">Cancel</button>
-                    <button class="btn btn-sm" id="meBefore" style="display:none" title="Hold to see the picture as it was before the last Remove Tool">Hold for before</button>
-                  </div>
-                  <div class="me-bar">
-                    <span class="seg" id="meView"><button class="btn btn-sm active" data-view="over">Picture + mask</button><button
-                      class="btn btn-sm" data-view="mask">Mask only</button><button class="btn btn-sm" data-view="pic">Picture only</button></span>
-                    <label class="me-slider" title="How strongly the mask shows over the picture">Mask shows <input type="range" id="meShow" min="10" max="90" value="55"></label>
-                    <button class="btn btn-sm" id="meFit" title="Fit the picture (0)">Fit</button>
-                    <button class="btn btn-sm" id="meUndo" title="Undo (Ctrl+Z)">Undo</button>
-                    <button class="btn btn-sm" id="meRedo" title="Redo (Ctrl+Y)">Redo</button>
-                    <button class="btn btn-sm" id="meRestoreOrig" style="display:none" title="Puts this picture back the way it was before Remove, from the copy in removed_watermarks. The training mask is put back too, if one was saved. Click again to confirm.">Restore Original Image</button>
-                    <button class="btn btn-sm" id="meFill" title="The whole picture white">Fill</button>
-                    <button class="btn btn-sm" id="meClear" title="The whole picture black">Clear</button>
-                    <button class="btn btn-sm" id="meInvert" title="Swap white and black">Invert</button>
-                  </div>
+                  <details class="me-advanced-panel" id="meAdvancedPanel">
+                    <summary>Mask, view &amp; watermark options</summary>
+                    <div class="me-advanced-content">
+                      <div class="me-bar me-wmbar" id="meWmBar">
+                        <label class="checkbox-label me-wmload" title="Load the saved watermark selection into the Remove tool"><input type="checkbox" id="meLoadWm" checked> Load watermark masks into Remove</label>
+                        <label class="me-slider" id="meWmPadWrap" title="Extra pixels around the watermark">Pad <input type="range" id="meWmPad" min="2" max="5" value="3"><span id="meWmPadVal">3</span> px</label>
+                        <button class="btn btn-sm" id="meWmAll" title="Remove every detected watermark with LaMa after confirmation">Remove all watermarks</button>
+                        <button class="btn btn-sm" id="meWmStop" style="display:none">Stop</button>
+                        <span class="field-hint" id="meWmState"></span>
+                      </div>
+                      <div class="me-bar me-viewbar" id="meViewBar">
+                        <span class="seg" id="meView"><button class="btn btn-sm active" data-view="over">Picture + mask</button><button
+                          class="btn btn-sm" data-view="mask">Mask only</button><button class="btn btn-sm" data-view="pic">Picture only</button></span>
+                        <label class="me-slider" title="How strongly the mask shows over the picture">Mask shows <input type="range" id="meShow" min="10" max="90" value="55"></label>
+                        <button class="btn btn-sm" id="meFit" title="Fit the picture (0)">Fit</button>
+                        <button class="btn btn-sm" id="meUndo" title="Undo (Ctrl+Z)">Undo</button>
+                        <button class="btn btn-sm" id="meRedo" title="Redo (Ctrl+Y)">Redo</button>
+                        <button class="btn btn-sm" id="meRestoreOrig" style="display:none" title="Restore image from the backup made before removing an object">Restore Original Image</button>
+                        <button class="btn btn-sm" id="meFill" title="The whole picture white">Fill</button>
+                        <button class="btn btn-sm" id="meClear" title="The whole picture black">Clear</button>
+                        <button class="btn btn-sm" id="meInvert" title="Swap white and black">Invert</button>
+                      </div>
+                    </div>
+                  </details>
                   <div class="me-stage" id="meStage"><canvas id="meCanvas"></canvas>
                     <div class="me-busy" id="meBusy" style="display:none"><span class="me-spin"></span><span id="meBusyText"></span></div></div>
-                  <div class="me-bar">
+                  <div class="me-bar me-footer">
                     <span class="me-saved" id="meSaved"></span>
                     <button class="btn btn-primary btn-sm" id="meSave" disabled>Save now</button>
                     <button class="btn btn-sm" id="meRevert" title="Throw away the changes since the last save" disabled>Revert</button>
                     <span class="field-hint" id="meState"></span>
                   </div>
-                  <div class="field-hint">Scroll to zoom, hold Space and drag (or drag with the middle button) to move
-                    around. Keys: B brush, E eraser, S SAM click, J remove, C crop, [ ] size, Enter apply, Esc cancel, Ctrl+Z / Ctrl+Y,
-                    0 fit, ← → pictures. With Remove Tool the mouse wheel sizes the brush (Ctrl+scroll zooms), and with
-                    the mask brushes Alt+scroll does. Right-click with the Brush erases, with the Eraser paints. SAM click: click
-                    something to add it to the mask, right-click or Alt+click to take it away.</div>
+                  <details class="me-shortcuts">
+                    <summary>Keyboard &amp; mouse shortcuts</summary>
+                    <div class="field-hint">B Brush, E keyboard Eraser, S SAM, J Remove, C Crop. Right-click with Brush to erase, with Remove to clear the selection, or with SAM to subtract. Enter applies Crop or Remove; Esc cancels. Ctrl+Z / Ctrl+Y undo and redo, 0 fits the picture, arrow keys change images. Scroll zooms, hold Space or middle-click to pan, [ and ] adjust brush size. In Remove, scroll adjusts brush size and Ctrl+scroll zooms.</div>
+                  </details>
                       </div>
                     </section>
                   </div>
