@@ -149,6 +149,10 @@ class Watch:
         self.folders = _folders(group, self.image_dir)
         if self.folders and not self.image_dir:
             self.image_dir = next(iter(self.folders.values()))
+        # Baseline the source files at trainer startup. The GUI queue covers immediate
+        # edits; these fingerprints additionally catch AI captions, bulk tools and
+        # external file edits that bypass the Caption Studio save route.
+        self._source_snapshot = self._source_state()
         if auto_recaption and not self.image_dir:
             logger.warning("[auto-recaption] image_directory not found in the dataset config - auto-recaption off")
             auto_recaption = False
@@ -214,6 +218,48 @@ class Watch:
         except Exception:
             pass
         self.watch.resume_from_jsonl(up_to_epoch=start_epoch, resets=resets)
+
+    def _source_state(self):
+        """Current source-file fingerprints, using the same item keys as cached training."""
+        seen, listings = {}, {}
+        for key in _items(self.group):
+            folder, stem, best = "", str(key).rsplit("/", 1)[-1], -1
+            for prefix, directory in self.folders.items():
+                if str(key).startswith(prefix) and len(prefix) > best:
+                    folder, best = directory, len(prefix)
+                    stem = str(key)[len(prefix):].rsplit("/", 1)[-1]
+            if not folder:
+                folder = self.image_dir or ""
+            pic = _picture(folder, stem, listings) if folder else ""
+            caption = os.path.splitext(pic)[0] + self.caption_ext if pic else os.path.join(folder, stem + self.caption_ext)
+            def stamp(path):
+                try:
+                    st = os.stat(path)
+                    return (os.path.realpath(path), st.st_size, st.st_mtime_ns)
+                except OSError:
+                    return ("", 0, 0)
+            seen[str(key)] = (stamp(pic), stamp(caption), caption)
+        return seen
+
+    def _scan_sources(self):
+        """Detect file edits independently of how they were made; no GPU work here."""
+        previous = getattr(self, "_source_snapshot", {})
+        latest = self._source_state()
+        changed_images, changed_text = {}, {}
+        for key, (picture, cap, caption_path) in latest.items():
+            before = previous.get(key)
+            if before is None:
+                continue
+            if picture != before[0]:
+                changed_images[key] = "updated" if picture[0] else "removed"
+            if cap != before[1]:
+                try:
+                    from fizgig.dataset.caption_file import read_caption
+                    changed_text[key] = read_caption(caption_path) if cap[0] else ""
+                except OSError:
+                    changed_text[key] = ""
+        self._source_snapshot = latest
+        return changed_images, changed_text
 
     # ---- per step --------------------------------------------------------------------------------------
     def excluded(self, batch):
@@ -284,26 +330,36 @@ class Watch:
         if self.watch is not None:
             self.watch.epoch_boundary(epoch)
         try:
-            self._images(epoch, dit, device, parkable)
+            changed_images, changed_text = self._scan_sources()
+        except Exception:
+            logger.warning("[live-dataset] source scan failed; queued UI edits still apply", exc_info=True)
+            changed_images, changed_text = {}, {}
+        try:
+            self._images(epoch, dit, device, parkable, changed_images)
         except Exception:
             logger.warning("[image-fix] image refresh failed this boundary - training continues", exc_info=True)
         try:
-            self._captions(epoch, dit, device, parkable)
+            self._captions(epoch, dit, device, parkable, changed_text)
         except Exception:
             logger.warning("[caption-fix] caption repair failed this boundary - training continues", exc_info=True)
 
-    def _images(self, epoch, dit, device, parkable):
+    def _images(self, epoch, dit, device, parkable, detected=None):
         """Rebuild only edited still-image latents at the boundary, retaining their training bucket."""
         path = os.path.join(self.output_dir, "loss_log", "image_updates.json")
         processing = path + ".processing"
-        if not os.path.exists(path):
+        if not os.path.exists(path) and not detected:
             return
-        os.replace(path, processing)
+        has_file = os.path.exists(path)
+        if has_file:
+            os.replace(path, processing)
         try:
-            with open(processing, encoding="utf-8") as f:
-                updates = json.load(f)
+            updates = {}
+            if has_file:
+                with open(processing, encoding="utf-8") as f:
+                    updates = json.load(f)
             if not isinstance(updates, dict):
                 raise ValueError("Image queue must be a mapping")
+            updates = {**(detected or {}), **updates}
         except Exception:
             logger.warning("[image-fix] could not read queued images; queue preserved", exc_info=True)
             return
@@ -392,7 +448,7 @@ class Watch:
         else:
             _remove(processing)
 
-    def _captions(self, epoch, dit, device, parkable):
+    def _captions(self, epoch, dit, device, parkable, detected=None):
         path = os.path.join(self.output_dir, "loss_log", "caption_updates.json")
         processing = path + ".processing"
         updates = {}
@@ -404,6 +460,7 @@ class Watch:
             except Exception:
                 logger.warning("[caption-fix] could not read caption_updates.json - skipping", exc_info=True)
                 return
+        updates = {**(detected or {}), **updates}
         auto = []
         if self.auto_recaption and self.watch is not None and self.image_dir:
             listings = {}
