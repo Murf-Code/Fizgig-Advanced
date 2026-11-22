@@ -12239,6 +12239,8 @@ function renderCaptionStudio(host,items,ext){
   // pagination. The active image must remain valid even on a later batch.
   const current=items.find(i=>i.path===S.cap.studioPath)||items[0];
   if(!current){
+    if(S.cap.imageEditing?.inline)
+      void captionImageClose().catch(e=>console.warn("Closing image tool:",e));
     host.append(el("div",{class:"studio-empty-captions"},
       createTagFilterBar(),
       el("label",{class:"studio-learning-filter-label",
@@ -14349,11 +14351,19 @@ function renderCaptionStudio(host,items,ext){
     }else{
       // Thumbnail navigation keeps editing in place, saving the previous
       // image before loading the next. Do this after the new stage mounts.
+      // Non-editable media and reviewed pictures close safely.
       const wanted=current.path;
+      const editable=!locked&&!!current.size&&
+        /\.(png|jpe?g|webp|bmp|avif|jxl)$/i.test(current.name);
       const tool=meState().tool==="crop"?"crop":"remove";
       requestAnimationFrame(()=>{
-        if(!host.isConnected||S.cap.studioPath!==wanted||!S.cap.imageEditing?.inline)return;
-        void captionImageOpen(current,tool).catch(e=>say("Image tools: "+e.message));
+        if(!host.contains(layout)||S.cap.studioPath!==wanted||
+           !S.cap.imageEditing?.inline)return;
+        if(!editable){
+          void captionImageClose().catch(e=>say("Image tools: "+e.message));
+        }else{
+          void captionImageOpen(current,tool).catch(e=>say("Image tools: "+e.message));
+        }
       });
     }
   }
