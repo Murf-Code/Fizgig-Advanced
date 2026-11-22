@@ -485,7 +485,7 @@ const CaptionStudioViz = (() => {
     input.setAttribute("aria-label","Search tags");
     const matches=document.createElement("div");matches.className="studio-tb-suggest";
     search.append(input,matches);
-    let zoom=1,pan={x:0,y:0},picked=pickedTag,drag=null,press=null;
+    let zoom=1,pan={x:0,y:0},picked=pickedTag,drag=null,popping=null;
     const nodes=model.nodes.map(n=>({...n}));
     const at=new Map(nodes.map(n=>[n.tag,n]));
     const radius=n=>{
@@ -543,10 +543,23 @@ const CaptionStudioViz = (() => {
       for(const n of nodes)if(picked&&picked!==n.tag&&!shared.has(n.tag))drawLabel(n,true);
       for(const n of nodes){
         const r=radius(n),active=n.tag===picked,near=!picked||active||shared.has(n.tag);
-        const g=make("g",{"data-tag":n.tag,role:"button",tabindex:"0",class:"studio-tb-orb"});
+        const g=make("g",{"data-tag":n.tag,role:"button",tabindex:"0",
+          class:"studio-tb-orb"+(popping===n.tag?" is-popping":"")});
         make("title",{},g).textContent=n.tag+" · "+n.links+" links";
+        const halo=make("circle",{cx:n.x,cy:n.y,r:r*1.55,fill:n.color,
+          opacity:0,"pointer-events":"none",class:"studio-tb-orb-halo"},g);
         if(active)make("circle",{cx:n.x,cy:n.y,r:r+6/zoom,fill:"none",stroke:"white","stroke-width":1.5/zoom},g);
-        make("circle",{cx:n.x,cy:n.y,r,fill:n.color,opacity:near?1:.12},g);
+        const main=make("circle",{cx:n.x,cy:n.y,r,fill:n.color,opacity:near?1:.12,
+          class:"studio-tb-orb-core"},g);
+        g.addEventListener("pointerenter",()=>{
+          if(!near)return;
+          halo.setAttribute("opacity",".24");
+          main.setAttribute("r",String(r*1.16));
+        });
+        g.addEventListener("pointerleave",()=>{
+          halo.setAttribute("opacity","0");
+          main.setAttribute("r",String(r));
+        });
         const displayed=picked&&n.tag!==picked?(shared.get(n.tag)??n.count):n.count;
         make("text",{x:n.x,y:n.y,"text-anchor":"middle","dominant-baseline":"central",
           fill:"#141416","font-size":r*(displayed>=100?.48:displayed>=10?.58:.7),
@@ -582,8 +595,14 @@ const CaptionStudioViz = (() => {
     };
     const choose=tag=>{
       picked=picked===tag?null:tag;
+      popping=tag;
       onPick?.(picked);
       draw();
+      setTimeout(()=>{
+        popping=null;
+        for(const node of svg.querySelectorAll(".studio-tb-orb.is-popping"))
+          node.classList.remove("is-popping");
+      },320);
     };
     const zoomBy=(factor,clientX=null,clientY=null)=>{
       const before=zoom,next=Math.min(5,Math.max(.35,zoom*factor));
