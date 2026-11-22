@@ -4903,7 +4903,7 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   outline:2px solid var(--caption-learning-ring);
   outline-offset:2px;
 }
-#tab-captions [data-learning-status="stuck"]{--caption-learning-ring:var(--danger)}
+#tab-captions [data-learning-status="stuck"]{--caption-learning-ring:#ff3344}
 #tab-captions [data-learning-status="suspect"]{--caption-learning-ring:var(--warning-strong)}
 #tab-captions [data-learning-status="watch"]{--caption-learning-ring:var(--warning)}
 #tab-captions [data-learning-status="learning"]{--caption-learning-ring:var(--data-blue)}
@@ -5387,4 +5387,54 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
 #tab-captions .studio-host .studio-image-stage .studio-preview > :is(img,video,.song-media){
   position:relative;
   z-index:1;
+}
+
+/* Caption Workbench: consume the available notebook height rather than ending
+   at 82dvh/950px. The notebook remains scrollable on short displays, while
+   the thumbnail rail and both tag lists scroll independently inside the stage.
+   Scoped to desktop three-column layout; narrow/stacked layouts are unchanged. */
+@media (min-width:1101px) {
+  .notebook-pane:has(> #tab-captions.active) {
+    display:flex;
+    flex-direction:column;
+    padding-bottom:0;
+  }
+  #tab-captions.active {
+    flex:1 1 auto;
+    min-height:0;
+  }
+  #tab-captions.active #captionsGrid.studio-host {
+    display:flex!important;
+    flex:1 1 auto;
+    min-height:0;
+    flex-direction:column;
+  }
+  #tab-captions.active #captionsGrid.studio-host > .studio-layout {
+    flex:1 1 auto;
+    min-height:min(540px,70dvh);
+    height:auto;
+  }
+  #tab-captions.active #captionsGrid.studio-host > .studio-layout > :is(.studio-browser,.studio-editor,.studio-index) {
+    height:auto;
+    min-height:0;
+    max-height:none;
+    align-self:stretch;
+  }
+  #tab-captions.active #captionsGrid.studio-host > .studio-layout > .studio-browser {
+    display:flex;
+    flex-direction:column;
+  }
+  #tab-captions.active #captionsGrid.studio-host > .studio-tb-explore:not([hidden]) {
+    flex:1 1 auto;
+    height:auto;
+    min-height:min(520px,70dvh);
+  }
+}
+
+/* Default left rail width before the saved/user-selected splitter size loads.
+   During dragging app.js supplies the live grid widths, down to 96px. */
+@media (min-width:1101px) {
+  #tab-captions .studio-host .studio-resizable {
+    grid-template-columns:minmax(96px,12%) 8px minmax(290px,1fr) 8px minmax(195px,36%);
+  }
 }
