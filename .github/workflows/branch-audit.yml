@@ -1,7 +1,5 @@
 name: Branch-wide audit
 on:
-  push:
-    branches: [test/caption-workbench]
   workflow_dispatch:
 
 jobs:
