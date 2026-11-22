@@ -7564,6 +7564,7 @@ function meCancel() {
 function meSizeKey(k) {
   const s = $("meSize"), v = Number(s.value);
   s.value = Math.max(2, Math.min(400, Math.round(k === "[" ? v / 1.2 : v * 1.2 + 1))); meDraw();
+  S.cap?.inlineRefreshControls?.();
 }
 function meDab(x, y) {
   // one stamp of the brush on the mask: white with the strength's opacity, or that much taken away
@@ -7798,8 +7799,16 @@ function meWire() {
         document.activeElement.type !== "range") return;
     const k = e.key;
     if (k === " ") { space = true; e.preventDefault(); }
-    else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === "z") { e.preventDefault(); meRestore(m.undo, m.redo); }
-    else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === "y") { e.preventDefault(); meRestore(m.redo, m.undo); }
+    else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === "z") {
+      e.preventDefault();
+      if(S.cap?.imageEditing?.inline)document.querySelector("#captionsGrid .studio-image-undo")?.click();
+      else meRestore(m.undo,m.redo);
+    }
+    else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === "y") {
+      e.preventDefault();
+      if(S.cap?.imageEditing?.inline)document.querySelector("#captionsGrid .studio-image-redo")?.click();
+      else meRestore(m.redo,m.undo);
+    }
     else if (k === "ArrowLeft") { e.preventDefault();
       if(S.cap?.imageEditing?.inline)S.cap.studioStepImage?.(-1);
       else meGo(m.at - 1);
@@ -11407,7 +11416,9 @@ async function captionImageOpen(it,tool="remove"){
       await meGo(index,true);
     }
     if(sequence!==S.cap.inlineOpenSequence)return;
-    meTool(tool);
+    // meTool("crop") normally toggles Crop off when clicked twice. A
+    // thumbnail change is not a second click, so preserve active Crop.
+    if(m.tool!==tool)meTool(tool);
     meFit();
     S.cap.inlineRefreshControls?.();
   });
@@ -13105,6 +13116,7 @@ function renderCaptionStudio(host,items,ext){
       }else historyStep("undo");
     }catch(e){say("Undo failed: "+e.message);}
   });
+  goBack.classList.add("studio-image-undo");
   const goForward=btn("Redo",async()=>{
     try{
       if(S.cap.imageEditing?.inline){
@@ -13117,6 +13129,7 @@ function renderCaptionStudio(host,items,ext){
       }else historyStep("redo");
     }catch(e){say("Redo failed: "+e.message);}
   });
+  goForward.classList.add("studio-image-redo");
   const refreshInlineButtons=()=>{
     if(!pictureActions.isConnected)return;
     const active=!!S.cap.imageEditing?.inline&&S.cap.imageEditing.path===current.path;
@@ -13134,6 +13147,9 @@ function renderCaptionStudio(host,items,ext){
     }else if(tool==="crop")applyImage.disabled=!!meState().stepBusy;
   };
   const selectInlineTool=async(tool)=>{
+    if(meState().stepBusy||meState().samBusy){
+      say("Finish the current image operation first.");return;
+    }
     if(!canEditPicture){say(locked?"Unlock this reviewed image to edit it.":"Select a still image to edit.");return;}
     if(S.cap.imageEditing?.inline&&S.cap.imageEditing.path===current.path&&meState().tool===tool){
       if(tool==="remove"&&meState().rmDirty){
@@ -14326,7 +14342,7 @@ function renderCaptionStudio(host,items,ext){
   redraw();host.classList.add("studio-host");
   host.append(liveStatus,toolsRow,layout,fullStage);
   openView(S.cap.studioExploreMode||"list");
-  if(S.cap.imageEditing?.inline&&(S.cap.studioExploreMode||"list")==="list"){
+  if(host.contains(layout)&&S.cap.imageEditing?.inline&&(S.cap.studioExploreMode||"list")==="list"){
     if(S.cap.imageEditing.path===current.path){
       captionInlineSyncStage(preview);
       refreshInlineButtons();
