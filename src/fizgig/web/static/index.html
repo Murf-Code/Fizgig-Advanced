@@ -571,8 +571,24 @@
                   deleted (the picture then trains as normal).</div>
                 <pre class="console-terminal prep-log" id="maskLog" style="display:none"></pre>
                 <details class="mask-edit" id="maskEdit">
-                  <summary><span class="me-sum-title">4. Image Editor</span><span class="me-sum-sub">Fix masks by hand (paint, erase, or click with SAM), remove things from a picture, or crop it</span></summary>
-                  <div class="field-hint">Paint over a mask that's wrong, or make one by hand. White is what the LoRA
+                  <summary title="Open the Image Prep editor in a floating glass workspace"><span class="me-sum-title">4. Image Editor</span><span class="me-sum-sub">Paint masks, remove watermarks and crop images in the glass editor</span><span class="me-launch-icon" aria-hidden="true">↗</span></summary>
+                  <div class="me-dialog-backdrop" id="meDialogBackdrop">
+                    <section class="me-dialog-window" id="meDialogWindow" role="dialog" aria-modal="true" aria-labelledby="meDialogTitle" tabindex="-1">
+                      <header class="me-dialog-heading">
+                        <div class="me-dialog-heading-left">
+                          <span class="me-dialog-overline">FIZGIG / IMAGE PREP</span>
+                          <h2 id="meDialogTitle">Image Editor</h2>
+                          <p>Paint masks, remove watermarks and crop images. All edits use Fizgig's existing editor.</p>
+                        </div>
+                        <div class="me-dialog-heading-right">
+                          <span class="me-dialog-live"><span aria-hidden="true"></span> Shared editor</span>
+                          <button class="btn me-dialog-close" id="meDialogClose" type="button" aria-label="Close Image Editor and save changes">✕ <span>Done</span></button>
+                        </div>
+                      </header>
+                      <div class="me-dialog-content">
+                  <details class="me-dialog-guide">
+                    <summary>About masks, watermarks and saving</summary>
+                    <div class="field-hint">Paint over a mask that's wrong, or make one by hand. White is what the LoRA
                     learns. Each picture's mask is saved beside it as photo-masklabel.png: when you press
                     <b>Save now</b>, and on its own when you move to another picture, change the filter, close Image
                     Editor or leave this tab. A mask saved all black is deleted (the picture then trains as normal).
@@ -580,6 +596,7 @@
                     stay lined up); Ctrl+Z undoes them while Fizgig stays open. If you used <b>Mask watermarks too</b>
                     or <b>Just hide the watermarks</b>, each picture's watermark area can be loaded into Remove Tool as a
                     red stroke, edited, and filled, one picture or all of them.</div>
+                  </details>
                   <div class="me-bar">
                     <button class="btn btn-sm" id="mePrev" title="Previous picture (←)">←</button>
                     <span class="me-count" id="meCount"></span>
@@ -644,6 +661,9 @@
                     0 fit, ← → pictures. With Remove Tool the mouse wheel sizes the brush (Ctrl+scroll zooms), and with
                     the mask brushes Alt+scroll does. Right-click with the Brush erases, with the Eraser paints. SAM click: click
                     something to add it to the mask, right-click or Alt+click to take it away.</div>
+                      </div>
+                    </section>
+                  </div>
                 </details>
               </div>
             </div>
