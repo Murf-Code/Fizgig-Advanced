@@ -12195,8 +12195,7 @@ function renderCaptionStudio(host,items,ext){
         class:"studio-image-tag"+(picked?" is-picked":""),
         text:t,"aria-pressed":String(picked),
         title:"Click to select · Ctrl-click for multiple · Shift-click for range · double-click to rename"});
-      const category=categoryState.tags[t.toLowerCase()];
-      if(category&&categoryState.colors[category])button.style.borderLeftColor=categoryState.colors[category];
+      button.style.setProperty("--studio-tag-color",CaptionStudioViz.colorForTag(t,categoryState));
       button.addEventListener("click",e=>{
         const key=t.toLowerCase();
         if(e.shiftKey&&S.cap.studioImageTagAnchor){
@@ -12473,10 +12472,7 @@ function renderCaptionStudio(host,items,ext){
       const tagBtn=el("button",{class:"studio-index-tag"+(selected?" is-picked":""),
         type:"button",text:tag+" ("+n+")",title:"Click to filter images · Ctrl-click to select tags · Right-click for tag category",
         "aria-pressed":selected?"true":"false"});
-      if(category&&categoryState.colors[category]){
-        tagBtn.style.borderLeftColor=categoryState.colors[category];
-        tagBtn.style.color=categoryState.colors[category];
-      }
+      tagBtn.style.setProperty("--studio-tag-color",CaptionStudioViz.colorForTag(tag,categoryState));
       tagBtn.addEventListener("click",e=>{
         if(e.detail>1)return;
         if(e.ctrlKey||e.metaKey){
@@ -12519,7 +12515,7 @@ function renderCaptionStudio(host,items,ext){
     const query=indexSearch.value.trim().toLocaleLowerCase();
     const visible=sorted.filter(([tag])=>tag.toLocaleLowerCase().includes(query));
     if(indexMode.value==="waterfall")
-      explore.append(CaptionStudioViz.waterfall(visible,pickTag));
+      explore.append(CaptionStudioViz.waterfall(visible,pickTag,categoryState));
     else if(indexMode.value==="constellation"){
       // Use the same tag set and counts as the list and waterfall. Sampling
       // captions may conceal meaningful links in smaller tag collections.
@@ -12527,7 +12523,7 @@ function renderCaptionStudio(host,items,ext){
       const wanted=new Set(candidates.map(([tag])=>tag.toLocaleLowerCase()));
       const sampled=S.cap.items.filter(it=>studioCaptionMode(it)==="tags")
         .map(it=>studioTokens(it.caption,"tags").filter(t=>wanted.has(t.toLocaleLowerCase())));
-      explore.append(CaptionStudioViz.constellation(candidates,sampled,pickTag));
+      explore.append(CaptionStudioViz.constellation(candidates,sampled,pickTag,categoryState));
     }else explore.append(index);
     tagCount.textContent=visible.length+" / "+sorted.length+" Tags";
   };
