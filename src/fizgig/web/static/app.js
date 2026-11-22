@@ -12711,8 +12711,138 @@ function renderCaptionStudio(host,items,ext){
   showTabs(activeDock);
   right.append(editorPane,rightDock,tagIndexPane,aiPane);
   // A single expandable Edit Tags menu replaces the permanently repeated bulk toolbar.
+  // TagBench Find & Replace: literal, case-sensitive text replacement in the
+  // filtered image view. Review-locked images are never edited. All accepted
+  // changes use Fizgig's optimistic batch API and one dataset undo entry.
+  const openFindReplace=()=>{
+    editMenu.open=false;
+    document.querySelector(".caption-find-backdrop")?.remove();
+    const previousFocus=document.activeElement;
+    const overlay=el("div",{class:"caption-settings-backdrop caption-find-backdrop"});
+    const dialog=el("section",{class:"caption-settings-modal caption-find-modal",
+      role:"dialog","aria-modal":"true","aria-label":"Find and Replace",tabindex:"-1"});
+    const findInput=el("input",{type:"text",placeholder:"Find",autocomplete:"off",
+      "aria-label":"Find exact text"});
+    const replaceInput=el("input",{type:"text",placeholder:"Replace with",
+      autocomplete:"off","aria-label":"Replace with"});
+    const status=el("p",{class:"caption-find-status",role:"status"});
+    const preview=el("div",{class:"caption-find-preview"});
+    const title=el("h2",{text:"Find and Replace"});
+    const close=()=>{
+      overlay.remove();
+      document.body.classList.remove("caption-settings-open");
+      if(previousFocus?.isConnected)previousFocus.focus({preventScroll:true});
+    };
+    const closeButton=el("button",{class:"btn btn-sm caption-settings-close",type:"button",
+      text:"✕","aria-label":"Close Find and Replace",onclick:close});
+    const findLabel=el("label",{class:"caption-find-field"},
+      el("span",{text:"Find"}),findInput);
+    const replaceLabel=el("label",{class:"caption-find-field"},
+      el("span",{text:"Replace with"}),replaceInput);
+    const summary=el("p",{class:"caption-find-desc",text:
+      "Replace exact matching text in the current filtered image view. Completed/review-locked images are skipped."});
+    const previewBtn=el("button",{class:"btn",type:"button",text:"Preview changes"});
+    const applyBtn=el("button",{class:"btn btn-primary",type:"button",text:"Replace in view"});
+    const fields=el("div",{class:"caption-find-fields"},findLabel,replaceLabel,summary,status,preview);
+    const buttons=el("footer",{class:"caption-settings-footer caption-find-actions"},previewBtn,applyBtn,
+      el("button",{class:"btn",type:"button",text:"Close",onclick:close}));
+    dialog.append(el("header",{class:"caption-settings-heading"},title,closeButton),fields,buttons);
+    overlay.append(dialog);
+    document.body.append(overlay);
+    document.body.classList.add("caption-settings-open");
+    const chosen=()=>items.filter(it=>!S.cap.studioReviewed?.has(it.path));
+    let prepared=null;
+    const compute=()=>{
+      const needle=findInput.value;
+      if(!needle)return {rows:[],skipped:0,error:"Enter text to find."};
+      const editable=chosen();
+      const draftMap=S.cap.studioDrafts;
+      const problem=editable.find(it=>draftMap?.has(it.path)&&
+        draftMap.get(it.path)!==(it.caption??"")&&(it.caption||"").includes(needle));
+      if(problem)return {rows:[],skipped:0,error:
+        "Save or discard the unsaved caption draft for "+problem.name+" first."};
+      const changed=editable.filter(it=>(it.caption||"").includes(needle)).map(it=>({
+        folder:capItemFolder(it),name:it.name,path:it.path,
+        before:it.caption,after:(it.caption||"").split(needle).join(replaceInput.value)
+      })).filter(row=>row.before!==row.after);
+      const lockedCount=items.filter(it=>S.cap.studioReviewed?.has(it.path)&&
+        (it.caption||"").includes(needle)).length;
+      return {rows:changed,skipped:lockedCount,error:changed.length>1000?
+        "Found "+changed.length+" captions. Select a smaller view (maximum 1000 changes per batch).":""};
+    };
+    const refresh=(showPreview=false)=>{
+      prepared=compute();
+      preview.replaceChildren();
+      applyBtn.disabled=!!prepared.error||!prepared.rows.length;
+      previewBtn.disabled=!findInput.value.trim();
+      if(prepared.error){status.textContent=prepared.error;return;}
+      status.textContent=prepared.rows.length+" caption"+(prepared.rows.length===1?"":"s")+
+        " will change"+(prepared.skipped?" · "+prepared.skipped+" reviewed image(s) skipped":"")+".";
+      if(showPreview){
+        if(!prepared.rows.length){
+          preview.append(el("div",{class:"field-hint",text:"No matching captions in the current view."}));
+        }else{
+          for(const row of prepared.rows.slice(0,35)){
+            preview.append(el("div",{class:"caption-find-result"},
+              el("strong",{text:row.name}),
+              el("div",{class:"caption-find-before",text:"Before: "+String(row.before||"").slice(0,220)}),
+              el("div",{class:"caption-find-after",text:"After: "+String(row.after||"").slice(0,220)})));
+          }
+          if(prepared.rows.length>35)preview.append(el("div",{class:"field-hint",
+            text:"Showing 35 of "+prepared.rows.length+" changes."}));
+        }
+      }
+    };
+    const apply=async()=>{
+      const result=compute();
+      if(result.error){status.textContent=result.error;return;}
+      if(!result.rows.length){refresh(true);return;}
+      if(result.rows.length>1&&!confirm("Replace text in "+result.rows.length+
+        " caption files? This operation is undoable as one group."))return;
+      applyBtn.disabled=previewBtn.disabled=true;
+      status.textContent="Applying "+result.rows.length+" caption change(s)…";
+      try{
+        await api("/api/captions/batch_edit",{ext,edits:result.rows.map(row=>({
+          folder:row.folder,name:row.name,expected:row.before,text:row.after
+        }))});
+        studioRecord("Find and Replace",{kind:"captions",ext,rows:result.rows});
+        for(const row of result.rows){
+          const it=S.cap.items.find(x=>x.path===row.path);
+          if(it)it.caption=row.after;
+        }
+        S.cap.studioRevision=(S.cap.studioRevision||0)+1;
+        close();
+        renderCaptions();
+      }catch(err){
+        status.textContent="Could not replace: "+err.message;
+        applyBtn.disabled=false;previewBtn.disabled=false;
+      }
+    };
+    previewBtn.addEventListener("click",()=>refresh(true));
+    applyBtn.addEventListener("click",apply);
+    findInput.addEventListener("input",()=>refresh(false));
+    replaceInput.addEventListener("input",()=>refresh(false));
+    overlay.addEventListener("pointerdown",e=>{if(e.target===overlay)close();});
+    overlay.addEventListener("keydown",e=>{
+      if(e.key==="Escape"){e.preventDefault();e.stopPropagation();close();return;}
+      if(e.key!=="Tab")return;
+      const targets=[...dialog.querySelectorAll("button:not(:disabled),input:not(:disabled)")];
+      if(!targets.length)return;
+      if(e.shiftKey&&document.activeElement===targets[0]){
+        e.preventDefault();targets.at(-1).focus();
+      }else if(!e.shiftKey&&document.activeElement===targets.at(-1)){
+        e.preventDefault();targets[0].focus();
+      }
+    });
+    refresh();
+    findInput.focus({preventScroll:true});
+  };
   const editMenu=el("details",{class:"studio-edit-menu"});
-  editMenu.append(el("summary",{text:"Edit Tags",title:"Dataset undo, redo and tag ordering"}),bulk);
+  const findAndReplaceButton=el("button",{type:"button",class:"btn btn-sm studio-find-replace-action",
+    text:"Find and Replace…",title:"Replace text in the current filtered caption view (Ctrl+R)",
+    onclick:openFindReplace});
+  editMenu.append(el("summary",{text:"Edit Tags",title:"Find and replace, undo/redo and tag ordering"}),
+    findAndReplaceButton,bulk);
   // The dropdown floats above the workbench instead of expanding the toolbar.
   // Register a single dismiss listener, replacing the previous render's handler.
   if(S.cap.studioEditMenuDismiss){
@@ -12894,9 +13024,7 @@ function renderCaptionStudio(host,items,ext){
     }
     else if(key==="r"){
       handled();
-      captionWorkbenchSettingsOpen(true);
-      $("frFind")?.focus({preventScroll:true});
-      $("frFind")?.scrollIntoView({block:"nearest"});
+      openFindReplace();
     }
     else if(key==="b"){handled();editMenu.open=true;editMenu.scrollIntoView({block:"nearest"});}
     else if(key==="d"){handled();void cleanTags("duplicate");}
