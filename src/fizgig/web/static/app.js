@@ -11717,13 +11717,19 @@ function renderCaptionStudio(host,items,ext){
   });
   const save=async()=>{
     if(locked){say("Unlock this reviewed caption before saving.");return;}
-    try{const x=await api("/api/captions/save",{folder:capItemFolder(current),name:current.name,text:ta.value,ext});
-      if(current.caption!==ta.value)studioRecord("Save caption",{kind:"captions",ext,rows:[{
-        folder:capItemFolder(current),name:current.name,path:current.path,before:current.caption,after:ta.value
+    // Capture the exact submitted text; typing while a network save is pending
+    // must not lie to history or silently discard a newer unsaved draft.
+    const submitted=ta.value,previous=current.caption;
+    try{const x=await api("/api/captions/save",{folder:capItemFolder(current),name:current.name,text:submitted,ext});
+      if(previous!==submitted)studioRecord("Save caption",{kind:"captions",ext,rows:[{
+        folder:capItemFolder(current),name:current.name,path:current.path,before:previous,after:submitted
       }]});
-      current.caption=ta.value;drafts.delete(current.path);
+      current.caption=submitted;
+      if(ta.value===submitted)drafts.delete(current.path);
+      else drafts.set(current.path,ta.value);
       S.cap.studioRevision=(S.cap.studioRevision||0)+1;
-      say(x.queued?"Saved; queued for next epoch":"Saved");}
+      say(ta.value===submitted?(x.queued?"Saved; queued for next epoch":"Saved"):
+        "Saved submitted text; your newer edits are still an unsaved draft.");}
     catch(e){say(e.message);}
   };
   const pictureActions=el("div",{class:"field-row"},
