@@ -7160,24 +7160,83 @@ function meFit() {
   }
   meDraw();
 }
-function meLayers() {
-  // the mask as two layers over the picture: blue where it's learned, black where it isn't (each as much as the mask)
-  const m = meState(), w = m.mask.width, h = m.mask.height;
-  if (!m.tint || m.tint.width !== w || m.tint.height !== h) {
-    m.tint = el("canvas", {width: w, height: h}); m.dim = el("canvas", {width: w, height: h});
+// Recompose only the area changed by the brush instead of two full 4MP
+// overlay canvases for every mouse movement.
+function meDirtyRect(old,x,y,radius,w,h){
+  const pad=Math.ceil(Math.max(1,radius))+3;
+  const l=Math.max(0,Math.floor(x-pad)),t=Math.max(0,Math.floor(y-pad));
+  const right=Math.min(w,Math.ceil(x+pad)),bottom=Math.min(h,Math.ceil(y+pad));
+  if(right<=l||bottom<=t)return old;
+  return old?{l:Math.min(old.l,l),t:Math.min(old.t,t),
+    r:Math.max(old.r,right),b:Math.max(old.b,bottom)}:{l,t,r:right,b:bottom};
+}
+function meMarkMaskDirty(x,y,radius){
+  const m=meState();
+  if(!Number.isFinite(x)||!Number.isFinite(y)||!Number.isFinite(radius)){
+    m.maskDirtyFull=true;m.maskDirtyRect=null;return;
   }
-  const t = m.tint.getContext("2d");
-  t.globalCompositeOperation = "copy"; t.drawImage(m.mask, 0, 0);
-  t.globalCompositeOperation = "source-in"; t.fillStyle = themeColor("--pic-mask"); t.fillRect(0, 0, w, h);
-  t.globalCompositeOperation = "source-over";
-  const d = m.dim.getContext("2d");
-  d.globalCompositeOperation = "copy"; d.fillStyle = themeColor("--pic-shade"); d.fillRect(0, 0, w, h);
-  d.globalCompositeOperation = "destination-out"; d.drawImage(m.mask, 0, 0);
-  d.globalCompositeOperation = "source-over";
-  return [m.tint, m.dim];
+  if(m.mask&&!m.maskDirtyFull)
+    m.maskDirtyRect=meDirtyRect(m.maskDirtyRect,x,y,radius,m.mask.width,m.mask.height);
+}
+function meMaskThemeKey(){
+  return document.documentElement.getAttribute("data-theme")+"|"+
+    document.body.className+"|"+$("tab-captions").className;
+}
+function meCompositeRegion(canvas,mask,color,invert,rect){
+  const c=canvas.getContext("2d"),w=rect.r-rect.l,h=rect.b-rect.t;
+  if(w<=0||h<=0)return;
+  c.save();c.beginPath();c.rect(rect.l,rect.t,w,h);c.clip();
+  c.globalCompositeOperation="copy";
+  if(invert){c.fillStyle=color;c.fillRect(rect.l,rect.t,w,h);}
+  else c.drawImage(mask,rect.l,rect.t,w,h,rect.l,rect.t,w,h);
+  c.globalCompositeOperation=invert?"destination-out":"source-in";
+  if(invert)c.drawImage(mask,rect.l,rect.t,w,h,rect.l,rect.t,w,h);
+  else{c.fillStyle=color;c.fillRect(rect.l,rect.t,w,h);}
+  c.restore();
+}
+function meLayers(){
+  const m=meState(),w=m.mask.width,h=m.mask.height,theme=meMaskThemeKey();
+  const full=!m.tint||m.tint.width!==w||m.tint.height!==h||
+    m.overlaySource!==m.mask||m.overlayTheme!==theme||m.maskDirtyFull;
+  if(full){
+    if(!m.tint||m.tint.width!==w||m.tint.height!==h){
+      m.tint=el("canvas",{width:w,height:h});m.dim=el("canvas",{width:w,height:h});
+    }
+    m.overlaySource=m.mask;m.overlayTheme=theme;
+    m.overlayMaskColor=themeColor("--pic-mask");
+    m.overlayShadeColor=themeColor("--pic-shade");
+  }
+  const rect=full?{l:0,t:0,r:w,b:h}:m.maskDirtyRect;
+  if(rect){
+    meCompositeRegion(m.tint,m.mask,m.overlayMaskColor,false,rect);
+    meCompositeRegion(m.dim,m.mask,m.overlayShadeColor,true,rect);
+  }
+  m.maskDirtyRect=null;m.maskDirtyFull=false;
+  return [m.tint,m.dim];
+}
+function meRemoveLayer(){
+  const m=meState(),w=m.rm.width,h=m.rm.height,theme=meMaskThemeKey();
+  const full=!m.rmTint||m.rmTint.width!==w||m.rmTint.height!==h||
+    m.rmOverlaySource!==m.rm||m.rmOverlayTheme!==theme;
+  if(full){
+    if(!m.rmTint||m.rmTint.width!==w||m.rmTint.height!==h)
+      m.rmTint=el("canvas",{width:w,height:h});
+    m.rmOverlaySource=m.rm;m.rmOverlayTheme=theme;
+    m.rmOverlayColor=themeColor("--pic-remove");
+  }
+  const rect=full?{l:0,t:0,r:w,b:h}:m.rmDirtyRect;
+  if(rect)meCompositeRegion(m.rmTint,m.rm,m.rmOverlayColor,false,rect);
+  m.rmDirtyRect=null;
+  return m.rmTint;
+}
+// Batch pointer, zoom and animation invalidations to one canvas paint per frame.
+let mePaintFrame=0;
+function meDraw(){
+  if(mePaintFrame)return;
+  mePaintFrame=requestAnimationFrame(()=>{mePaintFrame=0;mePaint();});
 }
 // the mask's own pixels stay white (learned) and black (not): they are the mask, not the theme
-function meDraw() {
+function mePaint() {
   const m = meState(), cv = $("meCanvas"), c = cv.getContext("2d");
   c.setTransform(1, 0, 0, 1, 0, 0);
   c.fillStyle = themeColor("--bg-inset"); c.fillRect(0, 0, cv.width, cv.height);
@@ -7197,12 +7256,7 @@ function meDraw() {
     }
   }
   if (m.rm && m.rmDirty && !m.showBefore) {           // Remove: what will be taken out, red over the picture
-    if (!m.rmTint || m.rmTint.width !== w || m.rmTint.height !== h) m.rmTint = el("canvas", {width: w, height: h});
-    const t = m.rmTint.getContext("2d");
-    t.globalCompositeOperation = "copy"; t.drawImage(m.rm, 0, 0);
-    t.globalCompositeOperation = "source-in"; t.fillStyle = themeColor("--pic-remove"); t.fillRect(0, 0, w, h);
-    t.globalCompositeOperation = "source-over";
-    c.globalAlpha = 0.6; c.drawImage(m.rmTint, 0, 0); c.globalAlpha = 1;
+    c.globalAlpha = 0.6; c.drawImage(meRemoveLayer(), 0, 0); c.globalAlpha = 1;
   }
   if (m.tool === "crop" && m.crop) meDrawCrop(c, w, h);
   if (m.samAt) {                                       // SAM at work: a ring pulsing at the click
