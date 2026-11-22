@@ -11925,7 +11925,7 @@ function renderCaptionStudio(host,items,ext){
       studioSaveCategories(categoryState);renderCaptions();
     })));
   }
-  right.append(catPanel);
+  // Keep category management available, but below the main TagBench-style list.
   const sortSelect=el("select",{class:"w-combo"});
   [["frequency","Frequency ↓"],["frequency-asc","Frequency ↑"],["alpha","Name A–Z"],["alpha-desc","Name Z–A"],
     ["token-asc","Tokenizer pieces ↑"],["token-desc","Tokenizer pieces ↓"]]
@@ -12027,7 +12027,7 @@ function renderCaptionStudio(host,items,ext){
     if(!txt){say("No captions to export as a prompt wildcard.");return;}
     const url=URL.createObjectURL(new Blob([txt],{type:"text/plain;charset=utf-8"}));
     const a=document.createElement("a");a.href=url;a.download="fizgig_captions.txt";a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
-  })),explore,tagCount);
+  })),explore,tagCount,catPanel);
   drawExplore();
   const bulk=el("div",{class:"studio-bulk"});
   const apply=async(mode)=>{
