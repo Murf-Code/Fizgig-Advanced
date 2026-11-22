@@ -20,4 +20,14 @@ assert.throws(() => T.search([], 'red AND (blue'), /Missing closing parenthesis/
 assert.throws(() => T.search([], 'red OR'), /Expected a tag/);
 assert.deepEqual(T.unique(["cat", "Cat", "lion"]), ["cat", "lion"]);
 assert.equal(T.wildcards(["lion", "cat", "cat"]), "cat\nlion\n");
+assert.deepEqual(T.order(["z", "a", "b"], {rule:"alpha"}), ["a", "b", "z"]);
+assert.deepEqual(T.order(["z", "a", "b"], {rule:"reverse"}), ["b", "a", "z"]);
+assert.deepEqual(T.order(["z", "a", "b"], {rule:"frequency",
+  counts:new Map([["a",10],["z",1],["b",5]])}), ["a", "b", "z"]);
+assert.deepEqual(T.order(["z", "a", "b"], {rule:"token-asc",
+  tokens:new Map([["a",4],["z",1],["b",2]])}), ["z", "b", "a"]);
+assert.deepEqual(T.order(["z", "a", "b"], {rule:"alpha",front:["b"],back:["z"]}),
+  ["b", "a", "z"]);
+assert.deepEqual(T.order(["z", "a", "b", "A"], {rule:"alpha"}), ["a", "b", "z"]);
+
 console.log("Caption Studio tag parsing and Boolean filter checks passed");
