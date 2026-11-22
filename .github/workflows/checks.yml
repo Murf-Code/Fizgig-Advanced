@@ -32,6 +32,8 @@ jobs:
         run: node checks/test_caption_studio_tags.cjs
       - name: Caption Studio shared image editor wiring checks
         run: node checks/test_caption_studio_image.cjs
+      - name: TagBench duplicate finder preserves native LaMa removal wiring
+        run: node checks/test_caption_studio_duplicates.cjs
       - name: Caption Studio regression checks
         run: python -m pytest checks/test_caption_studio_sync.py checks/test_caption_live_images.py checks/test_live_dataset_admission.py checks/test_live_reference_pairs.py checks/test_h3_live_media.py checks/test_caption_live_masks.py checks/test_caption_review.py checks/test_caption_removed_images.py checks/test_caption_duplicates.py checks/test_caption_formats.py checks/test_image_edit.py -q
       # The upstream full suite is blocked by pre-existing syntax errors in
