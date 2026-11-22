@@ -11481,14 +11481,96 @@ async function studioTravel(direction){
   }finally{history.busy=false;}
 }
 
+// Use the Start tab's existing resumable 8 MB upload pipeline. Drops create a
+// separate dataset folder rather than overwriting the active training folder.
+function captionStudioImportPanel(){
+  const panel=el("details",{class:"studio-import-panel"});
+  panel.open=!!S.cap.studioImportOpen;
+  panel.addEventListener("toggle",()=>S.cap.studioImportOpen=panel.open);
+  const summary=el("summary",{text:"Import images, captions or a ZIP · drop files or folders"});
+  const folderName=el("input",{type:"text",class:"w-path",placeholder:"New dataset folder name"});
+  folderName.value=S.cap.studioImportName||"caption-studio-import";
+  folderName.addEventListener("input",()=>S.cap.studioImportName=folderName.value);
+  const info=el("div",{class:"field-hint",text:"Creates a new dataset in Training Data. "+
+    "Uses Fizgig's resumable uploader; your current training folder is never overwritten."});
+  const status=el("div",{class:"field-hint",role:"status"});
+  const fileInput=el("input",{type:"file",multiple:true,hidden:true,
+    accept:"image/*,.txt,.json,.zip,.mp4,.wav,.mp3,.flac,.m4a"});
+  const folderInput=el("input",{type:"file",multiple:true,webkitdirectory:true,hidden:true});
+  const button=label=>el("button",{class:"btn btn-sm",text:label});
+  const chooseFiles=button("Choose files / ZIP…"),chooseFolder=button("Choose a folder…");
+  chooseFiles.addEventListener("click",()=>fileInput.click());
+  chooseFolder.addEventListener("click",()=>folderInput.click());
+  const drop=el("div",{class:"studio-dropzone",tabindex:"0",
+    text:"Drop images, paired caption files, a ZIP archive or a dataset folder here"});
+  const load=async files=>{
+    if(S.cap.studioImporting)return;
+    if(!files?.length)return;
+    const name=tidyName(folderName.value.trim());
+    if(!name)return status.textContent="Enter a new dataset folder name.";
+    S.cap.studioImporting=true;drop.classList.add("busy");
+    chooseFiles.disabled=chooseFolder.disabled=true;
+    try{
+      await uploadFiles(files,{name,
+        say:(message,bad)=>{status.textContent=message;status.classList.toggle("bad",!!bad);},
+        done:folder=>{
+          status.textContent+=" Opened imported dataset: "+folder;
+          $("imageFolder").value=folder;
+          $("imageFolder").dispatchEvent(new Event("change"));
+        }});
+    }finally{
+      S.cap.studioImporting=false;drop.classList.remove("busy");
+      chooseFiles.disabled=chooseFolder.disabled=false;
+    }
+  };
+  [fileInput,folderInput].forEach(input=>input.addEventListener("change",()=>{
+    const picked=[...input.files];input.value="";load(picked).catch(e=>status.textContent=e.message);
+  }));
+  const fromDrop=async e=>{
+    const entries=[...(e.dataTransfer?.items||[])].map(item=>item.webkitGetAsEntry?.()).filter(Boolean);
+    if(!entries.length)return [...(e.dataTransfer?.files||[])];
+    const found=[];
+    const walk=async(entry,parent="")=>{
+      if(entry.isFile){
+        const file=await new Promise((resolve,reject)=>entry.file(resolve,reject));
+        file.rel=parent+entry.name;
+        found.push(file);return;
+      }
+      if(entry.isDirectory){
+        const reader=entry.createReader();
+        while(true){
+          const children=await new Promise((resolve,reject)=>reader.readEntries(resolve,reject));
+          if(!children.length)break;
+          for(const child of children)await walk(child,parent+entry.name+"/");
+        }
+      }
+    };
+    for(const entry of entries)await walk(entry);
+    return found;
+  };
+  drop.addEventListener("dragover",e=>{e.preventDefault();drop.classList.add("dragging");});
+  drop.addEventListener("dragleave",()=>drop.classList.remove("dragging"));
+  drop.addEventListener("drop",async e=>{
+    e.preventDefault();drop.classList.remove("dragging");
+    try{await load(await fromDrop(e));}catch(err){status.textContent=err.message;}
+  });
+  drop.addEventListener("keydown",e=>{
+    if(e.key==="Enter"||e.key===" "){e.preventDefault();fileInput.click();}
+  });
+  panel.append(summary,info,el("div",{class:"field-row"},
+    el("span",{class:"field-label",text:"New folder:"}),folderName,chooseFiles,chooseFolder,
+    fileInput,folderInput),drop,status);
+  return panel;
+}
+
 function renderCaptionStudio(host,items,ext){
   const selection=S.cap.studioSelection||(S.cap.studioSelection=new Set());
   S.cap.studioDelimiter=S.cap.studioDelimiter||localStorage.getItem("fizgig_caption_separator")||",";
   const pageItems=items.slice(S.cap.page*CAP_PAGE,(S.cap.page+1)*CAP_PAGE);
   const current=pageItems.find(i=>i.path===S.cap.studioPath)||pageItems[0]||items[0];
   if(!current){
-    host.append(captionDuplicatePanel(ext),captionRemovedPanel(ext),
-      el("div",{class:"field-hint",text:"No matching images. Review duplicate scans or restore a removed image above, or change your filter."}));
+    host.append(captionStudioImportPanel(),captionDuplicatePanel(ext),captionRemovedPanel(ext),
+      el("div",{class:"field-hint",text:"No matching images. Import a dataset, review duplicate scans, restore a removed image or change your filter."}));
     return;
   }
   S.cap.studioPath=current.path;
@@ -11972,7 +12054,7 @@ function renderCaptionStudio(host,items,ext){
   };
   layout.append(left,divider("left"),center,divider("right"),right);
   redraw();host.classList.add("studio-host");
-  host.append(liveStatus,bulk,captionDuplicatePanel(ext),captionRemovedPanel(ext),layout);
+  host.append(liveStatus,bulk,captionStudioImportPanel(),captionDuplicatePanel(ext),captionRemovedPanel(ext),layout);
   applySizes();
 }
 
