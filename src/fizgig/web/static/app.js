@@ -7332,6 +7332,7 @@ async function meRestore(from, to) {
   if (snap.width !== m.mask.width || snap.height !== m.mask.height) { m.mask.width = snap.width; m.mask.height = snap.height; }
   const c = m.mask.getContext("2d");
   c.globalCompositeOperation = "copy"; c.drawImage(snap, 0, 0); c.globalCompositeOperation = "source-over";
+  meMarkMaskDirty();
   m.dirty = true; meStateLine(); meDraw();
 }
 function meDropPending() {
@@ -7355,6 +7356,10 @@ function meRmLine(a, b) {
   if (a.x === b.x && a.y === b.y) { c.arc(a.x, a.y, c.lineWidth / 2, 0, Math.PI * 2); c.fill(); }
   else { c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); }
   c.globalCompositeOperation = "source-over";
+  const radius=c.lineWidth/2;
+  // The path's bounding rectangle is enough to update the red overlay.
+  m.rmDirtyRect=meDirtyRect(m.rmDirtyRect,a.x,a.y,radius,m.rm.width,m.rm.height);
+  m.rmDirtyRect=meDirtyRect(m.rmDirtyRect,b.x,b.y,radius,m.rm.width,m.rm.height);
   m.rmDirty = true;
 }
 function meRatio() {
@@ -7572,6 +7577,7 @@ function meDab(x, y) {
   c.fillStyle = soft > 0 ? g : `rgba(255,255,255,${a})`;
   c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
   c.globalCompositeOperation = "source-over";
+  meMarkMaskDirty(x,y,r);
 }
 function meStroke(from, to) {
   const m = meState(), r = Math.max(0.5, Number($("meSize").value) / 2 / m.zoom);
@@ -7705,7 +7711,7 @@ function meWire() {
   $("meUndo").addEventListener("click", () => meRestore(m.undo, m.redo));
   $("meRedo").addEventListener("click", () => meRestore(m.redo, m.undo));
   $("meRestoreOrig").addEventListener("click", meRestoreOrigClick);
-  const whole = (fn) => () => { if (!m.mask) return; mePush(); fn(m.mask.getContext("2d")); m.dirty = true; meStateLine(); meDraw(); };
+  const whole = (fn) => () => { if (!m.mask) return; mePush(); fn(m.mask.getContext("2d")); meMarkMaskDirty(); m.dirty = true; meStateLine(); meDraw(); };
   $("meFill").addEventListener("click", whole((c) => { c.fillStyle = "#fff"; c.fillRect(0, 0, m.mask.width, m.mask.height); }));
   $("meClear").addEventListener("click", whole((c) => c.clearRect(0, 0, m.mask.width, m.mask.height)));
   $("meInvert").addEventListener("click", whole((c) => {
@@ -7812,6 +7818,7 @@ async function meSamClick(p, takeAway) {
     c.globalCompositeOperation = takeAway ? "destination-out" : "source-over";
     c.drawImage(found, 0, 0);
     c.globalCompositeOperation = "source-over";
+    meMarkMaskDirty();
     m.dirty = true; m.samLoaded = true; meStateLine();
     $("meState").textContent = takeAway ? "Taken away." : "Added.";
   } catch (e) { $("meState").textContent = e.message; }
