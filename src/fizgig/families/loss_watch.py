@@ -907,8 +907,9 @@ class Watch:
                     vae.load_state_dict({k: f.get_tensor(k) for k in f.keys()}, strict=False)
                 vae = vae.to(device, torch.float32).eval()
                 h3_cache._encode_clip(vae, scratch, audio_vae, device, torch.float32,
-                                      clip_still=str(getattr(self.driver, "options", {})
-                                                     .get("clip_still_as_photo") or "") == "1")
+                                      clip_still=("still_latent" in old_keys or
+                                                  str(getattr(self.driver, "options", {})
+                                                      .get("clip_still_as_photo") or "") == "1"))
             else:
                 h3_cache._encode_audio_item(scratch, audio_vae)
             if stamps() != signature:
@@ -1026,7 +1027,8 @@ class Watch:
                             had_controls = any(key.startswith("latent_control_") for key in existing.keys())
                         ds = self._owner_dataset(k)
                         paired = bool(getattr(ds, "has_control", False) or had_controls)
-                        if paired and not getattr(self.driver, "supports_references", False):
+                        if paired and not getattr(self.driver, "supports_references", False) \
+                                and self.driver.description.key != "minimax":
                             raise ValueError("The driver cannot live-refresh paired references")
                         def signature(paths):
                             return tuple((p, os.stat(p).st_size, os.stat(p).st_mtime_ns) for p in paths)
