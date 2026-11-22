@@ -4079,7 +4079,7 @@ class Handler(BaseHTTPRequestHandler):
             from fizgig.web import caption_duplicates
             folder = (qs.get("folder") or [""])[0]
             return self.json(caption_duplicates.status(folder,
-                (qs.get("threshold") or ["92"])[0], (qs.get("offset") or ["0"])[0]))
+                (qs.get("strictness") or ["4"])[0], (qs.get("offset") or ["0"])[0]))
         if path == "/api/captions/removed":
             from fizgig.web import removed_images
             folder = (qs.get("folder") or [""])[0]
