@@ -5400,6 +5400,11 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:                     # the tokenizer couldn't be fetched (offline, first use)
                     r = {"error": f"Couldn't load this model's tokenizer: {e}"}
                 return self.json(r, 400 if r.get("error") else 200)
+            if path == "/api/captions/tag_tokens":
+                from fizgig.families.trigger_check import count_tag_tokens
+                tags = b.get("tags")
+                counts = count_tag_tokens(str(b.get("family") or ""), tags)
+                return self.json({"counts": counts})
             if path == "/api/captions/static":
                 _, folder, clips, photos, voice = _caption_args(b)
                 return self.json(captions.static_captions(folder, str(b.get("trigger") or ""),
