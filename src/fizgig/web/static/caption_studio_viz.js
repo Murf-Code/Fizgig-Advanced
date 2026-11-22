@@ -422,7 +422,7 @@ const CaptionStudioViz = (() => {
     }
     return {...graph,nodes,chosen,alike,colors};
   }
-  function tagbenchWaterfall(items,onSelect,onContextMenu,activePath,selection) {
+  function tagbenchWaterfall(items,onSelect,onContextMenu,activePath,selection,token) {
     const stage=document.createElement("div");stage.className="studio-tb-waterfall";
     const flow=document.createElement("div");flow.className="studio-tb-flow";
     const viewportWidth=Math.max(300,window.innerWidth-60);
@@ -439,7 +439,7 @@ const CaptionStudioViz = (() => {
       if(it.path===activePath||selection?.has(it.path))tile.classList.add("is-picked");
       const img=document.createElement("img");
       img.loading="lazy";img.decoding="async";
-      img.src="/api/thumb?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(window.TOKEN||"");
+      img.src="/api/thumb?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(token||"");
       img.alt="";
       tile.append(img);
       tile.addEventListener("click",event=>onSelect(it,event));
