@@ -11248,99 +11248,105 @@ function captionDuplicatePanel(ext){
       const pictures=group.items.filter(i=>items.has(i.path));
       if(pictures.length<2)continue;
       let choice=state.choices.get(group.id);
-      if(!choice){
-        const best=[...pictures].sort((a,b)=>b.width*b.height-a.width*a.height)[0];
-        choice={keeper:best.path,checked:new Set(pictures.map(i=>i.path).filter(p=>p!==best.path))};
+      if(!choice?.kept){
+        // TagBench chooses the most richly captioned picture as the initial keeper.
+        const best=[...pictures].sort((a,b)=>{
+          const tagsA=studioTokens(items.get(a.path)?.caption||"").length;
+          const tagsB=studioTokens(items.get(b.path)?.caption||"").length;
+          return tagsB-tagsA||(b.width*b.height-a.width*a.height);
+        })[0];
+        choice={kept:new Set([best.path])};
         state.choices.set(group.id,choice);
       }
-      if(!pictures.some(p=>p.path===choice.keeper))choice.keeper=pictures[0].path;
+      choice.kept=new Set([...choice.kept].filter(p=>pictures.some(pic=>pic.path===p)));
+      if(!choice.kept.size)choice.kept.add(pictures[0].path);
       const card=el("div",{class:"studio-duplicate-group"});
       const header=el("div",{class:"studio-duplicate-head"},
-        el("strong",{text:"Likely matches · differing by up to "+group.distance+(group.identical?" · identical files":"")}),
-        el("span",{class:"field-hint",text:group.count+" images · choose which to keep"}));
-      const keeper=el("select",{class:"w-path",title:"Select the image whose caption will receive merged tags"});
-      for(const pic of pictures)keeper.append(el("option",{value:pic.path,
-        text:pic.name+" ("+pic.width+"×"+pic.height+")"}));
-      keeper.value=choice.keeper;
+        el("strong",{text:"Potential duplicates · up to "+group.distance+" difference"+
+          (group.identical?" · identical files":"")}),
+        el("span",{class:"field-hint",text:group.count+" images · click Keep on one or more images"}));
       const pickers=el("div",{class:"studio-duplicate-cards"});
       const detail=el("div",{class:"studio-duplicate-merge-note field-hint"});
       const preview=el("div",{class:"studio-duplicate-merge-preview"});
       const actions=el("div",{class:"field-row studio-duplicate-actions"});
-      const selected=()=>pictures.filter(p=>p.path!==choice.keeper&&choice.checked.has(p.path));
+      const selected=()=>pictures.filter(p=>!choice.kept.has(p.path));
       const refreshChoice=()=>{
         pickers.replaceChildren();preview.replaceChildren();detail.textContent="";
         for(const pic of pictures){
           const it=items.get(pic.path);
-          const isKeep=pic.path===choice.keeper;
+          const isKeep=choice.kept.has(pic.path);
           const locked=!!S.cap.studioReviewed?.has(pic.path);
           const tick=el("input",{type:"checkbox"});
-          tick.checked=!isKeep&&choice.checked.has(pic.path);
-          tick.disabled=isKeep;
-          tick.setAttribute("aria-label","Include "+pic.name+" as a duplicate");
+          tick.checked=isKeep;
+          tick.setAttribute("aria-label","Keep "+pic.name);
           tick.addEventListener("change",()=>{
-            if(tick.checked)choice.checked.add(pic.path);
-            else choice.checked.delete(pic.path);
-            preview.replaceChildren();
+            if(tick.checked)choice.kept.add(pic.path);
+            else if(choice.kept.size>1)choice.kept.delete(pic.path);
+            else {tick.checked=true;detail.textContent="Keep at least one image in each group.";return;}
+            refreshChoice();
           });
           const thumb=el("img",{loading:"lazy",alt:pic.name,
             src:"/api/thumb?path="+encodeURIComponent(pic.path)+"&t="+encodeURIComponent(TOKEN)});
           const status=el("div",{class:"field-hint",text:
-            (isKeep?"KEEPER · ":"")+(locked?"REVIEW LOCKED · ":"")+
-            pic.width+"×"+pic.height});
-          const open=el("button",{class:"btn btn-sm",text:"Open in editor",onclick:()=>{
+            (isKeep?"KEEP · ":"DROP · ")+(locked?"REVIEW LOCKED · ":"")+
+            pic.width+"×"+pic.height+" · "+studioTokens(it.caption||"").length+" tags"});
+          const open=el("button",{class:"btn btn-sm",text:"View caption",onclick:()=>{
             S.cap.studioPath=pic.path;renderCaptions();
           }});
           pickers.append(el("div",{class:"studio-duplicate-card"+(isKeep?" keeper":"")},
             thumb,el("div",{class:"studio-duplicate-card-info"},
               el("strong",{text:pic.name}),status,
               el("div",{class:"studio-duplicate-caption",text:it.caption||"No caption"}),
-              el("div",{class:"field-row"},tick,open))));
+              el("label",{class:"field-row"},tick," Keep this image"),open)));
         }
       };
-      keeper.addEventListener("change",()=>{
-        const old=choice.keeper;
-        choice.keeper=keeper.value;
-        choice.checked.delete(choice.keeper);
-        if(old!==choice.keeper)choice.checked.add(old);
-        refreshChoice();
-      });
       const snapshot=()=>{
-        const source=[choice.keeper,...selected().map(x=>x.path)];
-        if(source.length<2)throw new Error("Select at least one image to merge tags from.");
-        if(S.cap.studioReviewed?.has(choice.keeper))
-          throw new Error("This keeper is reviewed/locked. Unlock it before merging.");
-        if(draftExists(source))
-          throw new Error("Save unsaved caption drafts before merging tags.");
-        if(source.some(p=>studioCaptionMode(items.get(p))==="prose"))
-          throw new Error("A selected caption is prose. Merge its text manually to avoid breaking sentences.");
+        const keepers=[...choice.kept],drop=selected().map(p=>p.path);
+        const paths=[...keepers,...drop];
+        if(!keepers.length)throw new Error("Choose at least one keeper.");
+        if(state.copyTags && drop.length &&
+            keepers.some(p=>S.cap.studioReviewed?.has(p)))
+          throw new Error("Unlock reviewed keepers before copying tags onto them.");
+        if(draftExists(paths))
+          throw new Error("Save unsaved caption drafts before copying tags or removing images.");
+        if(state.copyTags && drop.length &&
+            paths.some(p=>studioCaptionMode(items.get(p))==="prose"))
+          throw new Error("One or more captions use prose; use the caption editor to merge them manually.");
         const expected={};
-        for(const p of source)expected[p]=items.get(p).caption??null;
-        return {folder:S.imageFolder,keeper:choice.keeper,donors:source.slice(1),
+        for(const p of paths)expected[p]=items.get(p).caption??null;
+        return {folder:S.imageFolder,keepers,donors:drop,copy_tags:state.copyTags,
           ext,delimiter:S.cap.studioDelimiter||",",expected};
       };
-      const mergeBtn=el("button",{class:"btn btn-sm",text:"Preview tag merge",onclick:async()=>{
-        preview.replaceChildren();detail.textContent="Comparing captions…";
+      const mergeBtn=el("button",{class:"btn btn-sm",text:"Preview copied tags",onclick:async()=>{
+        preview.replaceChildren();detail.textContent="Comparing keeper captions…";
         try{
           const payload=snapshot();
-          const result=await api("/api/captions/duplicates/merge",{...payload,apply:false});
-          detail.textContent=result.added_count+" unique tag(s) to add to the keeper.";
-          const text=el("pre",{class:"studio-duplicate-caption-preview",text:result.caption||"(empty caption)"});
-          const confirmBtn=el("button",{class:"btn btn-primary btn-sm",text:"Apply merged caption",
+          if(!payload.copy_tags||!payload.donors.length){
+            detail.textContent=payload.copy_tags?"No dropped images to copy tags from.":
+              "Copy tags is off. Your keeper captions will not be modified.";
+            return;
+          }
+          const result=await api("/api/captions/duplicates/merge_group",{...payload,apply:false});
+          const changed=result.keepers.filter(k=>k.changed);
+          detail.textContent=changed.length+" keeper caption(s) would change. "+
+            "Preview each caption before applying.";
+          for(const entry of result.keepers){
+            preview.append(el("strong",{text:items.get(entry.keeper).name+" · +"+entry.added_count+" tags"}),
+              el("pre",{class:"studio-duplicate-caption-preview",text:entry.caption||"(empty caption)"}));
+          }
+          const confirmBtn=el("button",{class:"btn btn-primary btn-sm",text:"Apply copied tags to keepers",
             onclick:async()=>{
               confirmBtn.disabled=true;
               try{
-                const done=await api("/api/captions/duplicates/merge",{...payload,apply:true});
-                detail.textContent=done.applied?"Merged "+done.added_count+" tags into "+
-                  items.get(payload.keeper).name+
-                  (done.queued?" · queued for next epoch":""):"No changes needed.";
+                const done=await api("/api/captions/duplicates/merge_group",{...payload,apply:true});
+                detail.textContent="Updated "+done.updated_count+" keeper caption(s). "+
+                  "Images were not deleted. You may separately move the dropped images to removed/.";
                 preview.replaceChildren();
                 await loadCaptions();
               }catch(e){detail.textContent=e.message;confirmBtn.disabled=false;}
             }});
-          confirmBtn.disabled=!result.changed;
-          preview.append(el("div",{class:"field-hint",text:
-            "Preview of the keeper caption. No source captions or image files are changed."}),
-            text,confirmBtn);
+          confirmBtn.disabled=!changed.length;
+          preview.append(confirmBtn);
         }catch(e){detail.textContent=e.message;}
       }});
       const removeBtn=el("button",{class:"btn btn-sm",text:"Move checked duplicates to removed/",onclick:async()=>{
@@ -11375,8 +11381,7 @@ function captionDuplicatePanel(ext){
         }catch(e){console.warn("Duplicate refresh:",e);}
       }});
       actions.append(mergeBtn,removeBtn);
-      card.append(header,el("div",{class:"field-row"},el("span",{class:"field-label",text:"Keep:"}),keeper),
-        pickers,actions,detail,preview);
+      card.append(header,pickers,actions,detail,preview);
       results.append(card);
       refreshChoice();
     }
