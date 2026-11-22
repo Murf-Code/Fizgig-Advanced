@@ -4620,3 +4620,25 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   #tab-captions .studio-tb-flow-tile,
   #tab-captions .studio-tb-orb circle{transition:none}
 }
+
+/* TagBench's orb pulse and hover treatment, preserved at full-stage scale. */
+#tab-captions .studio-tb-orb-core{
+  transition:r .13s ease,opacity .13s ease;
+}
+#tab-captions .studio-tb-orb-halo{
+  transition:opacity .15s ease;
+}
+#tab-captions .studio-tb-orb.is-popping .studio-tb-orb-core{
+  transform-box:fill-box;transform-origin:center;
+  animation:studio-tb-orb-pop 320ms cubic-bezier(.2,.8,.2,1);
+}
+@keyframes studio-tb-orb-pop{
+  0%{transform:scale(1)}
+  32%{transform:scale(.84)}
+  68%{transform:scale(1.18)}
+  100%{transform:scale(1)}
+}
+@media(prefers-reduced-motion:reduce){
+  #tab-captions .studio-tb-orb.is-popping .studio-tb-orb-core{animation:none}
+  #tab-captions .studio-tb-orb-core,#tab-captions .studio-tb-orb-halo{transition:none}
+}
