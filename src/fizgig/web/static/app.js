@@ -7503,6 +7503,7 @@ function meImgBar() {
       "Remove Tool: press Enter (or Remove it) to fill in the red area in this picture's file. The original is saved first. Add or erase with the mouse if you want." :
       (m.rmDirty ? "Remove Tool: press Enter (or Remove it) to take out what's red." :
         "Remove Tool: paint over what to take out. Right-click rubs the stroke out.")) : "Last Remove Tool:";
+  if(S.cap?.imageEditing?.inline&&!m.cropDrag)S.cap.studioStatusRefresh?.();
 }
 async function mePicStep(path, body, what, busy) {
   // Crop or Remove: the mask is saved first (so a crop crops it as it is), then the picture changes on the server
