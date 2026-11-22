@@ -11529,8 +11529,10 @@ async function studioTravel(direction){
     }
     from.pop();to.push(op);
     S.cap.studioRevision=(S.cap.studioRevision||0)+1;
-    await loadCaptions();
   }finally{history.busy=false;}
+  // Render after clearing the busy state so Undo/Redo buttons do not stay
+  // permanently disabled following the first successful history operation.
+  await loadCaptions();
 }
 
 // Use the Start tab's existing resumable 8 MB upload pipeline. Drops create a
