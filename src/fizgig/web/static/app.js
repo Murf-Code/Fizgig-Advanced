@@ -11056,6 +11056,10 @@ function captionLearningRefresh() {
         S.cap.studioLearningColors=true;
         const check=document.querySelector("#captionsGrid .studio-learning-toggle input");
         if(check)check.checked=true;
+        // Auto-enabled watched runs must reveal the dropdown too, without
+        // forcing an editor rebuild while captions are being edited.
+        const filterLabel=document.querySelector("#captionsGrid .studio-learning-filter-label");
+        if(filterLabel)filterLabel.hidden=S.cap.studioExploreMode==="constellation";
       }
       const sort=$("capSort")?.value;
       const resort=sort==="loss-high"||sort==="loss-low";
@@ -11129,7 +11133,8 @@ function renderCaptions() {
     items = items.filter(it => studioCaptionMode(it) === "tags" &&
       match(studioTokens(it.caption, "tags")));
   }
-  if($("capView").value==="studio")
+  // Never apply a hidden status filter when Loss Status is switched off.
+  if($("capView").value==="studio"&&S.cap.studioLearningColors)
     items=CaptionStudioLearning.filterByVerdict(items,S.cap.learningMap,
       S.cap.studioLearningFilter||"all");
   const pages = Math.max(1, Math.ceil(items.length / CAP_PAGE));
@@ -11932,8 +11937,8 @@ function renderCaptionStudio(host,items,ext){
   // the filter independent from colored selection rings.
   const createLearningFilterSelect=()=>{
     const select=el("select",{class:"studio-learning-filter",
-      "aria-label":"Filter images by learning status",
-      title:"Show images with a loss-watch verdict. Statuses come from the latest available per-image loss report."});
+      "aria-label":"Filter images by loss status",
+      title:"Filter by the latest Loss Watch verdict for each image."});
     for(const [value,label] of CaptionStudioLearning.statusOptions)
       select.append(el("option",{value,text:label}));
     select.value=S.cap.studioLearningFilter||"all";
@@ -12020,7 +12025,8 @@ function renderCaptionStudio(host,items,ext){
   if(!current){
     host.append(el("div",{class:"studio-empty-captions"},
       createTagFilterBar(),
-      el("label",{class:"studio-learning-filter-label"},
+      el("label",{class:"studio-learning-filter-label",
+        hidden:!S.cap.studioLearningColors},
         el("span",{text:"Image status"}),createLearningFilterSelect()),
       el("div",{class:"field-hint",text:"No images match these filters. Your dataset is unchanged."}),
       el("div",{class:"studio-empty-actions"},
@@ -13666,6 +13672,7 @@ function renderCaptionStudio(host,items,ext){
       }
     }
     learningToggle.hidden=view==="constellation";
+    learningFilter.hidden=view==="constellation"||!learningCheck.checked;
     for(const button of viewButtons.querySelectorAll("button")){
       const selected=button.dataset.view===view;
       button.classList.toggle("is-on",selected);
@@ -13678,10 +13685,16 @@ function renderCaptionStudio(host,items,ext){
     button.dataset.view=mode;
     viewButtons.append(button);
   });
-  const learningCheck=el("input",{type:"checkbox","aria-label":"Learning colors"});
+  const learningCheck=el("input",{type:"checkbox","aria-label":"Loss Status"});
   learningCheck.checked=!!S.cap.studioLearningColors;
   learningCheck.addEventListener("change",()=>{
+    const wasFiltered=(S.cap.studioLearningFilter||"all")!=="all";
     S.cap.studioLearningColors=learningCheck.checked;
+    // Switching off the visibility control must never leave images filtered
+    // by a now-hidden dropdown.
+    if(!learningCheck.checked)S.cap.studioLearningFilter="all";
+    learningFilter.hidden=!learningCheck.checked||
+      S.cap.studioExploreMode==="constellation";
     if(S.cap.learningAutoActive&&S.cap.learningRun?.id){
       // Manual off wins until a different watched run starts.
       S.cap.learningManualOffRun=learningCheck.checked?"":S.cap.learningRun.id;
@@ -13693,11 +13706,16 @@ function renderCaptionStudio(host,items,ext){
     }catch(e){/* the toggle still works in private mode */}
     captionLearningUpdateMounted();
     if(learningCheck.checked)captionLearningRefresh();
+    if(!learningCheck.checked&&wasFiltered){
+      S.cap.page=0;
+      renderCaptions();
+    }
   });
   const learningToggle=el("label",{class:"studio-learning-toggle",
-    title:"Show a second outline based on the latest matching run's per-image loss verdict. The selection ring remains unchanged."},
-    learningCheck,el("span",{text:"Learning colors"}));
-  const learningFilter=el("label",{class:"studio-learning-filter-label"},
+    title:"Show Loss Watch status rings and enable filtering images by their training verdict. Selected-image rings remain unchanged."},
+    learningCheck,el("span",{text:"Loss Status"}));
+  const learningFilter=el("label",{class:"studio-learning-filter-label",
+    hidden:!learningCheck.checked},
     el("span",{text:"Image status"}),createLearningFilterSelect());
   actionBar.append(learningToggle,learningFilter,viewButtons);
   // TagBench shortcut parity. Only active inside Caption Workbench, and never

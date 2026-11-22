@@ -165,3 +165,15 @@ assert.match(css,/\.studio-tag-list\.is-scrolling \.studio-index-tag:hover:not\(
 assert.match(css,/scrollbar-gutter:stable/);
 assert.match(css,/contain:paint/);
 assert.match(css,/\.studio-file:is\(\.is-picked,\.active\) \{\s*animation:none;\s*filter:none;/);
+
+// The loss status selector follows the Loss Status toggle rather than
+// remaining visible (and potentially filtering invisibly) when switched off.
+assert.match(app,/aria-label":"Loss Status"/);
+assert.match(app,/el\("span",\{text:"Loss Status"\}\)/);
+assert.doesNotMatch(app,/el\("span",\{text:"Learning colors"\}\)/);
+assert.match(app,/learningFilter\.hidden=view==="constellation"\|\|!learningCheck\.checked/);
+assert.match(app,/if\(!learningCheck\.checked\)S\.cap\.studioLearningFilter="all"/);
+assert.match(app,/if\(!learningCheck\.checked&&wasFiltered\)\{/);
+assert.match(app,/if\(\$\("capView"\)\.value==="studio"&&S\.cap\.studioLearningColors\)/);
+assert.match(app,/filterLabel\.hidden=S\.cap\.studioExploreMode==="constellation"/);
+assert.match(css,/#tab-captions \.studio-learning-filter-label\[hidden\]\{display:none!important\}/);

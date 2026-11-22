@@ -5149,3 +5149,7 @@ body.caption-glass-ui .studio-image-context-menu .studio-tag-color-swatch{
   animation:none;
   filter:none;
 }
+
+/* Loss Status controls both the per-image verdict rings and its filter.
+   The label is an inline flex container, so enforce the hidden attribute. */
+#tab-captions .studio-learning-filter-label[hidden]{display:none!important}
