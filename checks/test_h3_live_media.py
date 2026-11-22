@@ -105,3 +105,15 @@ def test_clip_refresh_preserves_still_cache(tmp_path, monkeypatch):
     assert observed == [True]
     assert "still_latent" in load_file(item.latent_cache_path)
     assert "clip" not in watch.removed_keys
+
+
+def test_h3_live_text_uses_native_training_cache_format(tmp_path):
+    from fizgig.families.loss_watch import _save_live_text
+    item=SimpleNamespace(item_key="clip",caption="a cinematic scene",
+        text_encoder_output_cache_path=str(tmp_path/"clip_minimaxh3_te.safetensors"))
+    desc=SimpleNamespace(key="minimax",arch_id="minimaxh3")
+    _save_live_text(desc,item,{"hidden_states":torch.ones(3,8)})
+    tensors=load_file(item.text_encoder_output_cache_path)
+    assert set(tensors)=={"hidden_states","attention_mask"}
+    assert tensors["hidden_states"].shape==(3,8)
+    assert tensors["attention_mask"].tolist()==[True,True,True]
