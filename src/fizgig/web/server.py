@@ -3510,7 +3510,8 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/app.js", "/caption_studio_tags.js", "/caption_studio_viz.js",
                     "/caption_studio_learning.js",
                     "/caption_studio_selection.js", "/caption_studio_training_picks.js",
-                    "/caption_theme.js", "/style.css", "/qrcode.js"):
+                    "/caption_theme.js", "/caption_image_perf.js", "/mask_stroke_worker.js",
+                    "/style.css", "/qrcode.js"):
             return self._file(os.path.join(STATIC_DIR, path[1:]),
                               "application/javascript; charset=utf-8" if path.endswith(".js") else "text/css")
         if path == "/icon.png":
