@@ -11018,7 +11018,7 @@ function renderCaptions() {
   $("capPrev").disabled = S.cap.page === 0; $("capNext").disabled = S.cap.page >= pages - 1;
   host.classList.toggle("captions-as-table", $("capView").value === "table");
   host.classList.toggle("studio-host", $("capView").value === "studio");
-  if ($("capView").value === "studio") { renderCaptionStudio(host, items, ext); return; }
+  if ($("capView").value === "studio") { captionWorkbenchSettingsOpen(false,true); renderCaptionStudio(host, items, ext); return; }
   if ($("capView").value === "table") {
     host.append(captionsTable(items.slice(S.cap.page * CAP_PAGE, (S.cap.page + 1) * CAP_PAGE), ext));
     fitTexts(host);
@@ -11648,7 +11648,7 @@ function captionStudioImportPanel(){
 // drawer is moved into its Advanced section: no duplicated model controls, lost
 // event handlers, or separate state that could diverge from the training options.
 let captionSettingsDialog=null;
-function captionWorkbenchSettingsOpen(advanced=false){
+function captionWorkbenchSettingsOpen(advanced=false,initializeOnly=false){
   const tab=$("tab-captions");
   if(!tab)return;
   if(!captionSettingsDialog){
@@ -11760,7 +11760,7 @@ function captionWorkbenchSettingsOpen(advanced=false){
         close.focus({preventScroll:true});
       }};
   }
-  captionSettingsDialog.open(advanced);
+  if(!initializeOnly)captionSettingsDialog.open(advanced);
 }
 
 function renderCaptionStudio(host,items,ext){
