@@ -12725,7 +12725,11 @@ function renderCaptionStudio(host,items,ext){
     event.preventDefault();
     if(!locked&&captionMode!=="prose"){
       const before=new Set(imageTagPicked);
+      // Right-clicking a selected tag preserves a multi-selection. Right-
+      // clicking an unselected one starts a new, single-tag selection.
+      if(!imageTagPicked.has(tag.toLowerCase()))imageTagPicked.clear();
       imageTagPicked.add(tag.toLowerCase());
+      S.cap.studioTagFocus="image";
       syncImageTagSelection(before);
     }
     document.querySelectorAll(".studio-tag-context-menu").forEach(n=>n.remove());
@@ -12747,7 +12751,9 @@ function renderCaptionStudio(host,items,ext){
       imageTagPicked.delete(tag.toLowerCase());
       remember(true);redraw();
     },!editable);
-    menuAction("Delete Tag",()=>void apply("remove",tag,"all"),!editable);
+    // Delete Tag operates on highlighted Image Tags only; selecting every
+    // tag clears this image's tag line, not any other image's captions.
+    menuAction("Delete Tag",removePickedTags,!editable);
     separator();
     studioTagColorMenu(menu,tag,categoryState,renderCaptions);
     document.body.append(menu);
@@ -12783,6 +12789,7 @@ function renderCaptionStudio(host,items,ext){
       imageTagButtons.set(t.toLowerCase(),button);
       button.addEventListener("click",e=>{
         const key=t.toLowerCase();
+        S.cap.studioTagFocus="image";
         const before=new Set(imageTagPicked);
         if(e.shiftKey&&S.cap.studioImageTagAnchor){
           const all=distinct.map(x=>x.toLowerCase()),start=all.indexOf(S.cap.studioImageTagAnchor),end=all.indexOf(key);
@@ -13047,6 +13054,19 @@ function renderCaptionStudio(host,items,ext){
   };
   const openTagActions=(e,tag,row)=>{
     e.preventDefault();
+    // A selected All Tags group survives right click; otherwise the clicked
+    // tag alone becomes selected, mirroring the Image Tags behavior.
+    if(!selectionState.has(tag)){
+      selectionState.clear();
+      selectionState.add(tag);
+      for(const btn of index.querySelectorAll(".studio-index-tag")){
+        const label=btn.dataset.tag;
+        const picked=selectionState.has(label);
+        btn.classList.toggle("is-picked",picked);
+        btn.setAttribute("aria-pressed",String(picked));
+      }
+    }
+    S.cap.studioTagFocus="all";
     document.querySelectorAll(".studio-tag-context-menu").forEach(n=>n.remove());
     const menu=el("div",{class:"studio-image-context-menu studio-tag-context-menu",role:"menu"});
     const addAction=(name,fn)=>menu.append(el("button",{type:"button",role:"menuitem",text:name,
@@ -13057,7 +13077,7 @@ function renderCaptionStudio(host,items,ext){
     addAction("Add to Filter (OR)",()=>filterByTag(tag,"or"));
     separator();
     addAction('Remove "'+tag+'"',()=>void apply("remove",tag,selection.size?"selection":"image"));
-    addAction("Delete Tag",()=>void apply("remove",tag,"all"));
+    addAction("Delete Tag",()=>void deletePickedTags(tag));
     separator();
     studioTagColorMenu(menu,tag,categoryState,renderCaptions);
     document.body.append(menu);
@@ -13082,10 +13102,12 @@ function renderCaptionStudio(host,items,ext){
       const row=el("li",{class:"studio-tag-list-item"});
       const selected=selectionState.has(tag);
       const tagBtn=el("button",{class:"studio-index-tag"+(selected?" is-picked":""),
-        type:"button",text:tag+" ("+n+")",title:"Click to filter images · Ctrl-click to select tags · Right-click for tag category",
+        type:"button",text:tag+" ("+n+")",title:"Click to filter images · Ctrl-click to select tags · Right-click for tag actions",
+        "data-tag":tag,
         "aria-pressed":selected?"true":"false"});
       tagBtn.style.setProperty("--studio-tag-color",CaptionStudioViz.colorForTag(tag,categoryState));
       tagBtn.addEventListener("click",e=>{
+        S.cap.studioTagFocus="all";
         if(e.detail>1)return;
         if(e.ctrlKey||e.metaKey){
           selectionState.has(tag)?selectionState.delete(tag):selectionState.add(tag);
@@ -13840,34 +13862,51 @@ function renderCaptionStudio(host,items,ext){
       renderCaptions();
     }catch(err){say(err.message);}
   };
-  const deletePickedTags=async()=>{
-    const nameList=S.cap.studioTagFocus==="all"?[...selectionState]:[];
-    if(!nameList.length)return false;
-    if(!confirm("Delete "+nameList.length+" selected tag(s) from all unlocked dataset captions?"))return true;
-    const wanted=new Set(nameList.map(x=>x.toLowerCase()));
-    const eligible=S.cap.items.filter(it=>!S.cap.studioReviewed?.has(it.path)&&
-      studioCaptionMode(it)==="tags"&&
-      studioTokens(it.caption,"tags").some(t=>wanted.has(t.toLowerCase())));
-    if(eligible.length>1000){say("Limit this tag deletion to 1000 images.");return true;}
-    if(eligible.some(it=>S.cap.studioDrafts?.has(it.path)&&
-      S.cap.studioDrafts.get(it.path)!==(it.caption??""))){
-      say("Save caption drafts before deleting tags.");return true;
+  // Delete Tag removes the *selected tags* from the *selected images*
+  // (or the active image if no images are selected). It never assumes an
+  // entire dataset as the deletion scope. Ctrl-click allows multiple tags.
+  const deletePickedTags=async(contextTag=null)=>{
+    const picked=contextTag&&selectionState.has(contextTag)?
+      [...selectionState]:contextTag?[contextTag]:[...selectionState];
+    const wanted=new Set(picked.map(tag=>tag.toLowerCase()));
+    if(!wanted.size)return false;
+    const chosen=imageTargets();
+    if(!chosen.length)return say("Select an image before deleting its tags.");
+    if(chosen.length>1000){
+      say("Select at most 1000 images for one tag deletion.");return true;
     }
-    const rows=eligible.map(it=>({folder:capItemFolder(it),name:it.name,path:it.path,
-      before:it.caption,after:studioCompose(it.caption||"",
-        studioTokens(it.caption,"tags").filter(t=>!wanted.has(t.toLowerCase())),"tags")}));
-    if(!rows.length)return true;
+    if(chosen.some(it=>S.cap.studioReviewed?.has(it.path))){
+      say("Unlock reviewed images before deleting their tags.");return true;
+    }
+    if(chosen.some(it=>studioCaptionMode(it)==="prose")){
+      say("Selected prose captions are protected from tag deletion.");return true;
+    }
+    const drafts=S.cap.studioDrafts;
+    if(chosen.some(it=>drafts?.has(it.path)&&drafts.get(it.path)!==(it.caption??""))){
+      say("Save caption drafts before deleting selected tags.");return true;
+    }
+    const changes=chosen.map(it=>({
+      folder:capItemFolder(it),name:it.name,path:it.path,before:it.caption,
+      after:studioCompose(it.caption||"",
+        studioTokens(it.caption,"tags").filter(tag=>!wanted.has(tag.toLowerCase())),"tags")
+    })).filter(row=>row.after!==(row.before||""));
+    if(!changes.length){say("None of the selected images contain those tags.");return true;}
+    if(!confirm("Delete "+wanted.size+" selected tag"+(wanted.size===1?"":"s")+
+      " from "+changes.length+" selected image"+(changes.length===1?"":"s")+
+      "? This can be undone."))return true;
     try{
-      await api("/api/captions/batch_edit",{ext,edits:rows.map(r=>({
-        folder:r.folder,name:r.name,expected:r.before,text:r.after
+      await api("/api/captions/batch_edit",{ext,edits:changes.map(row=>({
+        folder:row.folder,name:row.name,expected:row.before,text:row.after
       }))});
-      studioRecord("Delete selected tags",{kind:"captions",ext,rows});
-      for(const row of rows){
-        const it=S.cap.items.find(x=>x.path===row.path);if(it)it.caption=row.after;
+      studioRecord("Delete selected tags",{kind:"captions",ext,rows:changes});
+      for(const row of changes){
+        const item=S.cap.items.find(it=>it.path===row.path);
+        if(item)item.caption=row.after;
       }
-      selectionState.clear();S.cap.studioRevision=(S.cap.studioRevision||0)+1;
+      selectionState.clear();
+      S.cap.studioRevision=(S.cap.studioRevision||0)+1;
       renderCaptions();
-    }catch(e){say(e.message);}
+    }catch(error){say("Delete selected tags: "+error.message);}
     return true;
   };
   if(S.cap.studioKeyHandler)document.removeEventListener("keydown",S.cap.studioKeyHandler);

@@ -208,8 +208,18 @@ assert.match(app,/menuAction\("Add to Filter"/);
 assert.match(app,/addAction\("Add to Filter"/);
 assert.match(app,/menuAction\("Exclude from Filter"/);
 assert.match(app,/addAction\("Exclude from Filter"/);
-assert.match(app,/menuAction\("Delete Tag",\(\)=>void apply\("remove",tag,"all"\)/);
-assert.match(app,/addAction\("Delete Tag",\(\)=>void apply\("remove",tag,"all"\)/);
+assert.match(app,/menuAction\("Delete Tag",removePickedTags,!editable\)/);
+assert.match(app,/addAction\("Delete Tag",\(\)=>void deletePickedTags\(tag\)\)/);
 assert.match(app,/Delete tag "'\+old\.trim\(\)\+'" from all eligible dataset captions/);
 assert.match(app,/const category=el\("details",\{class:"studio-tag-color-category"\}\)/);
 assert.match(css,/\.studio-tag-context-menu \.studio-tag-color-category>summary\{/);
+
+// Selected-tag deletion is scoped to one active/selected image group. Image
+// Tags can remove any number of selected tags, including the entire tag list.
+assert.match(app,/menuAction\("Delete Tag",removePickedTags,!editable\)/);
+assert.match(app,/const deletePickedTags=async\(contextTag=null\)=>/);
+assert.match(app,/const chosen=imageTargets\(\);/);
+assert.match(app,/Delete .*selected tag/);
+assert.doesNotMatch(app,/Delete .*selected tag\(s\) from all unlocked dataset captions/);
+assert.match(app,/if\(!imageTagPicked\.has\(tag\.toLowerCase\(\)\)\)imageTagPicked\.clear\(\)/);
+assert.match(app,/if\(!selectionState\.has\(tag\)\)\{/);
