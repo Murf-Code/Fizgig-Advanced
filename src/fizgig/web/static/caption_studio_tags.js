@@ -38,14 +38,13 @@ const CaptionStudioTags = (() => {
     });
   }
 
-  // Exact, case-insensitive tag matching. Supports quoted multiword tags,
-  // parentheses, NOT, AND, OR and implied AND between adjacent tag clauses.
-  function search(values, expression) {
+  // Parse the Boolean filter once per render rather than once per image.
+  // The compiled predicate retains TagBench's exact-tag AND/OR/NOT semantics.
+  function compileSearch(expression) {
     const raw = String(expression || "").trim();
-    if (!raw) return true;
+    if (!raw) return () => true;
     const lex = raw.match(/\(|\)|"(?:[^"\\]|\\.)*"|'[^']*'|[^\s()]+/g) || [];
     const tokens = lex.map(t => /^(AND|OR|NOT)$/i.test(t) ? t.toUpperCase() : t);
-    const have = new Set(values.map(v => v.trim().toLocaleLowerCase()));
     let at = 0;
     function atom() {
       const token = tokens[at++];
@@ -58,13 +57,14 @@ const CaptionStudioTags = (() => {
         throw new Error("Expected a tag");
       const stripped = token.replace(/^['"]|['"]$/g, "").replace(/\\"/g, '"');
       if (!stripped.trim()) throw new Error("Empty tag");
-      return have.has(stripped.toLocaleLowerCase());
+      const key = stripped.toLocaleLowerCase();
+      return have => have.has(key);
     }
     function not() {
-      if (tokens[at] === "NOT") { at++; return !not(); }
+      if (tokens[at] === "NOT") { at++; const value=not(); return have=>!value(have); }
       if (tokens[at]?.startsWith("-") && tokens[at].length > 1) {
         tokens[at] = tokens[at].slice(1);
-        return !not();
+        const value=not(); return have=>!value(have);
       }
       return atom();
     }
@@ -72,8 +72,8 @@ const CaptionStudioTags = (() => {
       let value = not();
       while (at < tokens.length && tokens[at] !== ")" && tokens[at] !== "OR") {
         if (tokens[at] === "AND") at++;
-        const right = not();  // always parse RHS, even when LHS is false
-        value = value && right;
+        const left=value,right=not();
+        value=have=>left(have)&&right(have);
       }
       return value;
     }
@@ -81,14 +81,20 @@ const CaptionStudioTags = (() => {
       let value = and();
       while (tokens[at] === "OR") {
         at++;
-        const right = and();
-        value = value || right;
+        const left=value,right=and();
+        value=have=>left(have)||right(have);
       }
       return value;
     }
-    const result = or();
+    const predicate=or();
     if (at !== tokens.length) throw new Error("Unexpected search token: " + tokens[at]);
-    return result;
+    return values => {
+      const have=new Set(values.map(v=>v.trim().toLocaleLowerCase()));
+      return predicate(have);
+    };
+  }
+  function search(values, expression) {
+    return compileSearch(expression)(values);
   }
 
   // Deterministic tag ordering. Front/back pins preserve user-supplied priority,
@@ -130,6 +136,6 @@ const CaptionStudioTags = (() => {
   const wildcards = (values, delimiter = ",") => unique(values).sort((a, b) => a.localeCompare(b))
     .join("\n") + (values.length ? "\n" : "");
 
-  return Object.freeze({kind, tags, compose, unique, search, order, captionWildcards, wildcards});
+  return Object.freeze({kind, tags, compose, unique, search, compileSearch, order, captionWildcards, wildcards});
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = CaptionStudioTags;
