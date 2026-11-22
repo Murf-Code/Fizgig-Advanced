@@ -4,6 +4,14 @@ Fizgig Advanced is Fizgig with extra features. It's kept up to date with upstrea
 
 **Caption Workbench UI inspiration:** Thanks to **TagGUI** for inspiring the image-browsing, tag-management and visual-exploration interface. Fizgig Advanced adapts these ideas to its own training and caption systems. This acknowledgment is for design inspiration and does not imply affiliation or endorsement.
 
+**Upstream contributions incorporated in `test/caption-workbench`:** Thanks to **[@spaghettified26](https://github.com/spaghettified26)** for investigating and submitting both improvements to [shootthesound/Fizgig](https://github.com/shootthesound/Fizgig). Fizgig Advanced has adapted their work in this experimental branch:
+
+- **[Upstream PR #398 — Upgrade to Pillow 13.0.0 to solve defect](https://github.com/shootthesound/Fizgig/pull/398):** Updates Pillow to 13.0.0 to address the costly, potentially malicious PNG EXIF parsing issue. Credit: @spaghettified26.
+- **[Upstream PR #399 — Captions: avoid slow getexif() on PNGs without it](https://github.com/shootthesound/Fizgig/pull/399):** Avoids fully decoding ordinary PNGs just to read their dimensions when no EXIF orientation metadata is present, while preserving EXIF-aware fallback behavior. Credit: @spaghettified26.
+
+These changes were adapted from upstream proposals; their original analysis, fixes, and test cases belong to their contributor. This acknowledgment does not imply the upstream PRs were merged there or that their contributor endorses this fork.
+
+
 **How it differs from upstream**
 - **More optimizers:** Prodigy, Muon, Automagic V4 and PoLoRA. Adaptive LR steps aside for optimizers that set their own rate.
 - **Training tools:** fixed Image Validation loss, loss graph trend views, early stopping, Adaptive LR that can follow validation loss, Save & stop on a second Pause, two-click Stop, faster Blocks Swap for Krea 2 and MOSS-Image LoRAs, Timestep focus presets, tag shuffle.
