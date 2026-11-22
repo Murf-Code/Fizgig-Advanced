@@ -160,6 +160,7 @@ class Watch:
         self._unscheduled_last = None
         self._pending_reference_text = {}
         self.unsupported_media_keys = set()
+        self.stale_caption_keys = set()
         if auto_recaption and not self.image_dir:
             logger.warning("[auto-recaption] image_directory not found in the dataset config - auto-recaption off")
             auto_recaption = False
@@ -488,7 +489,8 @@ class Watch:
         # per-item losses. Skipping the whole batch is safer than training stale pixels.
         keys_to_check = keys if isinstance(keys, (list, tuple)) else [keys]
         if any(str(k) in self.removed_keys or str(k) in getattr(self, "invalid_mask_keys", ())
-               or str(k) in getattr(self, "unsupported_media_keys", ()) for k in keys_to_check):
+               or str(k) in getattr(self, "unsupported_media_keys", ())
+               or str(k) in getattr(self, "stale_caption_keys", ()) for k in keys_to_check):
             return True
         if self.watch is None or self._reg_only(keys):
             return False
@@ -498,7 +500,7 @@ class Watch:
 
     def multiplier(self, batch):
         keys = batch.get("item_keys")
-        blocked = self.removed_keys | getattr(self, "invalid_mask_keys", set()) | getattr(self, "unsupported_media_keys", set())
+        blocked = self.removed_keys | getattr(self, "invalid_mask_keys", set()) | getattr(self, "unsupported_media_keys", set()) | getattr(self, "stale_caption_keys", set())
         if (isinstance(keys, (list, tuple)) and len(keys) == 1 and str(keys[0]) in blocked):
             return 0.0
         if not isinstance(keys, (list, tuple)) and str(keys) in blocked:
@@ -525,7 +527,7 @@ class Watch:
         if per is None or len(keys) < 2 or int(per.shape[0]) != len(keys):
             return None
         raw = info.get("per_raw") or [float(x) for x in per.detach().float().cpu()]
-        blocked = self.removed_keys | getattr(self, "invalid_mask_keys", set()) | getattr(self, "unsupported_media_keys", set())
+        blocked = self.removed_keys | getattr(self, "invalid_mask_keys", set()) | getattr(self, "unsupported_media_keys", set()) | getattr(self, "stale_caption_keys", set())
         out = [k in blocked or (self.watch is not None and k not in self.reg and self.watch.is_excluded([k])) for k in keys]
         kept = [i for i, o in enumerate(out) if not o]
         mult = [0.0 if out[i] else float(reg_mult) if reg_keys and k in reg_keys else
@@ -737,7 +739,10 @@ class Watch:
             except Exception:
                 logger.warning("[caption-fix] could not read caption_updates.json - skipping", exc_info=True)
                 raise
-        updates = {**(detected or {}), **updates}
+        updates = {**getattr(self, "_pending_reference_text", {}), **(detected or {}), **updates}
+        if not hasattr(self, "stale_caption_keys"):
+            self.stale_caption_keys = set()
+        self.stale_caption_keys.update(updates)
         auto = []
         if self.auto_recaption and self.watch is not None and self.image_dir:
             listings = {}
@@ -778,43 +783,83 @@ class Watch:
             if not todo:        # every stuck image failed to caption: nothing to re-encode, they retry next time
                 _remove(processing)
                 return
-            te = self.driver.load_text_encoder(self.te_path, device)
-            try:
-                desc = self.driver.description
-                for i in range(0, len(todo), 4):
-                    chunk = todo[i:i + 4]
-                    for (_, item, cap, _), cond in zip(chunk, self.driver.encode_text(te, [c for _, _, c, _ in chunk])):
-                        import copy
-                        scratch = copy.copy(item)
-                        scratch.caption = cap
-                        scratch.text_encoder_output_cache_path = item.text_encoder_output_cache_path + ".live-update"
+            from safetensors import safe_open
+            import copy
+            desc = self.driver.description
+            tag_sets = _tag_settings(self.group)
+            plain_rows, paired_rows = [], []
+            for row in todo:
+                k, item, cap, attempt = row
+                ds = self._owner_dataset(k)
+                use_reference_text = False
+                if ds and getattr(ds, "has_control", False):
+                    with safe_open(item.text_encoder_output_cache_path, framework="pt", device="cpu") as f:
+                        use_reference_text = bool((f.metadata() or {}).get("reference_sizes"))
+                (paired_rows if use_reference_text else plain_rows).append(row)
+
+            def write(row, cond, refs=""):
+                k, item, cap, _attempt = row
+                scratch = copy.copy(item)
+                scratch.caption = cap
+                scratch.text_encoder_output_cache_path = item.text_encoder_output_cache_path + ".live-update"
+                try:
+                    cache.save_cond(desc, scratch, cond, refs=refs,
+                                    encoder=cache.encoder_stamp(self.te_path))
+                    os.replace(scratch.text_encoder_output_cache_path,
+                               item.text_encoder_output_cache_path)
+                finally:
+                    _remove(scratch.text_encoder_output_cache_path)
+                item.caption = cap
+                self.stale_caption_keys.discard(k)
+                self.removed_keys.discard(k)
+                getattr(self, "_pending_reference_text", {}).pop(k, None)
+
+            if plain_rows:
+                te = self.driver.load_text_encoder(self.te_path, device)
+                try:
+                    for i in range(0, len(plain_rows), 4):
+                        rows = plain_rows[i:i + 4]
+                        conds = self.driver.encode_text(te, [r[2] for r in rows])
+                        if len(conds) != len(rows):
+                            raise ValueError("Text encoder returned the wrong number of captions")
+                        for row, cond in zip(rows, conds):
+                            write(row, cond)
+                    # Tag variants are text-only and cannot represent vision references.
+                    for k, item, cap, _ in plain_rows:
+                        ts = tag_sets.get(k)
+                        if ts is None:
+                            continue
                         try:
-                            cache.save_cond(desc, scratch, cond, encoder=cache.encoder_stamp(self.te_path))
-                            os.replace(scratch.text_encoder_output_cache_path, item.text_encoder_output_cache_path)
-                        finally:
-                            _remove(scratch.text_encoder_output_cache_path)
-                        item.caption = cap
-                ok = True
-                # tag shuffle / caption dropout: the old caption's variants no longer apply (the loader already
-                # ignores them - their source caption differs); the new caption's are made now, with the encoder here
-                tag_sets = _tag_settings(self.group)
-                for k, item, cap, _ in todo:
-                    ts = tag_sets.get(k)
-                    if ts is None:
-                        continue
-                    try:
-                        from fizgig.dataset.tag_variants import write_variants
-                        write_variants(lambda caps: self.driver.encode_text(te, caps),
-                                       item.text_encoder_output_cache_path, cap, ts, arch=desc.arch_id,
-                                       compact=getattr(desc, "text_cache_trim", False))
-                    except Exception:
-                        logger.warning(f"[caption-fix] could not remake the tag variants of {k} - it trains on its "
-                                       "new caption as written", exc_info=True)
-            finally:
-                self.driver.unload_text_encoder(te)
-                del te
-                gc.collect()
-                torch.cuda.empty_cache()
+                            from fizgig.dataset.tag_variants import write_variants
+                            write_variants(lambda caps: self.driver.encode_text(te, caps),
+                                           item.text_encoder_output_cache_path, cap, ts, arch=desc.arch_id,
+                                           compact=getattr(desc, "text_cache_trim", False))
+                        except Exception:
+                            logger.warning("[caption-fix] could not rebuild tag variants of %s", k, exc_info=True)
+                finally:
+                    self.driver.unload_text_encoder(te)
+                    del te
+                    gc.collect()
+                    torch.cuda.empty_cache()
+
+            if paired_rows:
+                if not getattr(self.driver, "supports_references", False):
+                    raise ValueError("Reference-aware captions cannot refresh with this driver")
+                ref_te = self.driver.load_reference_text_encoder(self.te_path, device)
+                try:
+                    for row in paired_rows:
+                        k, item, cap, _ = row
+                        source = self._source_for_key(k)
+                        refs = (getattr(item, "control_content", None) or
+                                self._reference_images(k, source, tuple(item.bucket_size)))
+                        cond = self.driver.encode_text_with_references(ref_te, [cap], [refs])[0]
+                        write(row, cond, cache._ref_sizes(type("References", (), {"control_content": refs})()))
+                finally:
+                    self.driver.unload_text_encoder(ref_te)
+                    del ref_te
+                    gc.collect()
+                    torch.cuda.empty_cache()
+            ok = True
         finally:
             if parkable:
                 quant.move(dit, device)
