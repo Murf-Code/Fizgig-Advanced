@@ -12841,8 +12841,8 @@ function renderCaptionStudio(host,items,ext){
   const findAndReplaceButton=el("button",{type:"button",class:"btn btn-sm studio-find-replace-action",
     text:"Find and Replace…",title:"Replace text in the current filtered caption view (Ctrl+R)",
     onclick:openFindReplace});
-  editMenu.append(el("summary",{text:"Edit Tags",title:"Find and replace, undo/redo and tag ordering"}),
-    findAndReplaceButton,bulk);
+  bulk.prepend(findAndReplaceButton);
+  editMenu.append(el("summary",{text:"Edit Tags",title:"Find and replace, undo/redo and tag ordering"}),bulk);
   // The dropdown floats above the workbench instead of expanding the toolbar.
   // Register a single dismiss listener, replacing the previous render's handler.
   if(S.cap.studioEditMenuDismiss){
