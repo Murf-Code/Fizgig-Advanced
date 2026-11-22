@@ -12491,19 +12491,34 @@ function renderCaptionStudio(host,items,ext){
       studioSaveCategories(categoryState);renderCaptions();
     })));
   }
-  // Keep category management available, but below the main TagBench-style list.
-  const sortSelect=el("select",{class:"w-combo"});
-  [["frequency","Frequency ↓"],["frequency-asc","Frequency ↑"],["alpha","Name A–Z"],["alpha-desc","Name Z–A"],
-    ["token-asc","Tokenizer pieces ↑"],["token-desc","Tokenizer pieces ↓"]]
+  // TagBench's All Tags separates the sort field and direction into two
+  // compact dropdowns. Preserve Fizgig's six existing sort values internally.
+  const sortSelect=el("select",{class:"w-combo","aria-label":"Sort All Tags by"});
+  [["frequency","Frequency"],["alpha","Name"],["token","Tokenizer pieces"]]
     .forEach(([value,label])=>sortSelect.append(el("option",{value,text:label})));
-  sortSelect.value=S.cap.studioTagSort||"frequency";
-  sortSelect.addEventListener("change",async()=>{
-    if(sortSelect.value.startsWith("token-")){
+  const sortDirection=el("select",{class:"w-combo studio-tag-direction","aria-label":"All Tags sort direction"});
+  [["desc","Desc"],["asc","Asc"]]
+    .forEach(([value,label])=>sortDirection.append(el("option",{value,text:label})));
+  const previousSort=S.cap.studioTagSort||"frequency";
+  sortSelect.value=previousSort.startsWith("alpha")?"alpha":
+    previousSort.startsWith("token")?"token":"frequency";
+  sortDirection.value=previousSort==="frequency-asc"||previousSort==="alpha"||
+    previousSort==="token-asc"?"asc":"desc";
+  const currentSort=()=>sortSelect.value==="frequency"?
+    (sortDirection.value==="asc"?"frequency-asc":"frequency"):
+    sortSelect.value==="alpha"?(sortDirection.value==="asc"?"alpha":"alpha-desc"):
+    (sortDirection.value==="asc"?"token-asc":"token-desc");
+  const updateTagSort=async()=>{
+    const next=currentSort();
+    if(next.startsWith("token-")){
       try{await getTokenCounts();}catch(e){say("Tokenizer unavailable: "+e.message);return;}
     }
-    S.cap.studioTagSort=sortSelect.value;renderCaptions();
-  });
-  const sorting=sortSelect.value;
+    S.cap.studioTagSort=next;
+    renderCaptions();
+  };
+  sortSelect.addEventListener("change",updateTagSort);
+  sortDirection.addEventListener("change",updateTagSort);
+  const sorting=currentSort();
   const tokenMap=S.cap.studioTokenCounts?.family===S.family&&
     S.cap.studioTokenCounts.items===S.cap.items&&S.cap.studioTokenCounts.rev===rev?
     S.cap.studioTokenCounts.counts:new Map();
@@ -12657,7 +12672,7 @@ function renderCaptionStudio(host,items,ext){
   });
   advancedTags.append(catPanel);
   right.append(el("div",{class:"studio-tag-search-wrap"},indexSearch),
-    el("div",{class:"studio-tag-sort"},el("span",{class:"field-label",text:"Sort by"}),sortSelect),
+    el("div",{class:"studio-tag-sort"},el("span",{class:"field-label",text:"Sort by"}),sortSelect,sortDirection),
     explore,tagCount);
   drawExplore();
   const bulk=el("div",{class:"studio-bulk"});
@@ -12835,34 +12850,39 @@ function renderCaptionStudio(host,items,ext){
   // Navigation uses arrow keys or the thumbnail rail. Keep only image actions
   // below the preview, without duplicating the image's filename.
   imageStage.append(pictureActions);
-  while(center.firstChild)editorPane.append(center.firstChild);
+  // TagBench keeps Image Tags and All Tags stacked and independently
+  // scrollable, not hidden behind a mutually exclusive pair of tabs.
+  // Move the existing live controls (and all their handlers) rather than
+  // rebuilding them or duplicating state.
+  for(const node of [
+    right.querySelector(".studio-image-tags-heading"),
+    right.querySelector(".studio-add-tag"),tags,word,naturalEditor,suggestions
+  ])if(node)editorPane.append(node);
   while(right.firstChild)tagIndexPane.append(right.firstChild);
+  while(center.firstChild)editorPane.append(center.firstChild);
+  editorPane.querySelector(".studio-caption-head")?.remove();
+  editorPane.append(advancedTags);
   const listHeading=el("div",{class:"studio-pane-heading"},el("strong",{text:"All Tags"}));
   tagIndexPane.prepend(listHeading);
-  editorPane.append(advancedTags);
-  const tagHeading=editorPane.querySelector("strong");
-  if(tagHeading)tagHeading.textContent="Image Tags · Caption Editor";
   center.append(imageStage);
+  // Lower selector changes only the second section. Image Tags stays at the
+  // top, as in TagBench, even while the Auto-Captioner is open.
   const rightDock=el("div",{class:"studio-tag-dock",role:"tablist",
-    "aria-label":"Caption tag lists"});
+    "aria-label":"All Tags or Auto-Captioner"});
   const aiPane=el("section",{class:"studio-ai-dock",hidden:true});
-  // Image Tags is the top/default view. Dataset-wide tags occupy a separate
-  // tab; AI captioning remains reachable through its own toolbar action.
-  const activeDock=["image","all","ai"].includes(S.cap.studioDock)?
-    S.cap.studioDock:"image";
+  const activeDock=S.cap.studioDock==="ai"?"ai":"all";
   const showTabs=mode=>{
-    S.cap.studioDock=mode;
-    editorPane.hidden=mode!=="image";
-    tagIndexPane.hidden=mode!=="all";
-    aiPane.hidden=mode!=="ai";
-    rightDock.dataset.active=mode;
-    showImage.setAttribute("aria-selected",String(mode==="image"));
-    showAll.setAttribute("aria-selected",String(mode==="all"));
+    S.cap.studioDock=mode==="ai"?"ai":"all";
+    tagIndexPane.hidden=S.cap.studioDock!=="all";
+    aiPane.hidden=S.cap.studioDock!=="ai";
+    rightDock.dataset.active=S.cap.studioDock;
+    showAll.setAttribute("aria-selected",String(S.cap.studioDock==="all"));
+    showAi.setAttribute("aria-selected",String(S.cap.studioDock==="ai"));
   };
-  const showImage=btn("Image Tags",()=>showTabs("image"));
   const showAll=btn("All Tags",()=>showTabs("all"));
-  showImage.setAttribute("role","tab");
+  const showAi=btn("Auto-Captioner",()=>showTabs("ai"));
   showAll.setAttribute("role","tab");
+  showAi.setAttribute("role","tab");
   const redundantAiRow=bulk.querySelector(".studio-selected-ai");
   if(redundantAiRow)redundantAiRow.remove();
   const aiHint=el("div",{class:"field-hint",text:"Use the model and task below to caption selected images or the entire Start-tab dataset."});
@@ -12872,8 +12892,8 @@ function renderCaptionStudio(host,items,ext){
   aiPane.append(el("strong",{text:"Auto-Captioner"}),aiHint);
   captionAiControlsMount(aiPane);
   aiPane.append(el("div",{class:"studio-ai-selection"},el("strong",{text:"Selected images"}),aiControls));
-  rightDock.append(showImage,showAll);
-  right.append(rightDock,editorPane,tagIndexPane,aiPane);
+  rightDock.append(showAll,showAi);
+  right.append(editorPane,rightDock,tagIndexPane,aiPane);
   showTabs(activeDock);
   // A single expandable Edit Tags menu replaces the permanently repeated bulk toolbar.
   // TagBench Find & Replace: literal, case-sensitive text replacement in the
@@ -13086,9 +13106,8 @@ function renderCaptionStudio(host,items,ext){
     });
     dialog.focus({preventScroll:true});
   });
-  const autoCaptionBtn=btn("Auto-Captioner",()=>showTabs("ai"));
   const actionBar=el("nav",{class:"studio-top-actions","aria-label":"Caption Workbench tools"},
-    settingsBtn,refreshBtn,editMenu,dupBtn,autoCaptionBtn);
+    settingsBtn,refreshBtn,editMenu,dupBtn);
   if(existingWildcard)actionBar.append(existingWildcard);
   // TagBench's Waterfall and Constellation replace the ENTIRE three-panel
   // stage. The normal Tags button restores the caption editor and lists.
