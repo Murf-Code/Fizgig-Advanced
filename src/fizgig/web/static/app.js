@@ -12084,6 +12084,75 @@ function renderCaptionStudio(host,items,ext){
   left.append(thumbs,nav);
   const drafts=S.cap.studioDrafts||(S.cap.studioDrafts=new Map());
   const histories=S.cap.studioHistories||(S.cap.studioHistories=new Map());
+  // Autosaves outlive this render: navigating to another image must not cancel
+  // a pending caption write. Each path has one serialized, debounced queue.
+  const autoTasks=S.cap.studioAutosaves||(S.cap.studioAutosaves=new Map());
+  const autoKey=JSON.stringify([capItemFolder(current),current.path,ext]);
+  let autoTask=autoTasks.get(autoKey);
+  if(!autoTask){
+    const target={folder:capItemFolder(current),name:current.name,path:current.path,ext};
+    autoTask={...target,pending:false,busy:false,timer:null,notify:null,
+      lastSaved:current.caption??"",lastError:null};
+    autoTask.flush=async()=>{
+      if(autoTask.busy||!autoTask.pending)return;
+      autoTask.pending=false;
+      const latest=drafts.get(target.path);
+      if(latest===undefined||latest===autoTask.lastSaved){
+        if(latest===autoTask.lastSaved)drafts.delete(target.path);
+        return;
+      }
+      if(S.cap.studioReviewed?.has(target.path)){
+        autoTask.notify?.("Autosave blocked: unlock this reviewed caption.");
+        return;
+      }
+      autoTask.busy=true;
+      autoTask.notify?.("Saving caption…");
+      const previous=autoTask.lastSaved;
+      try{
+        const saved=await api("/api/captions/save",{
+          folder:target.folder,name:target.name,text:latest,ext:target.ext
+        });
+        autoTask.lastSaved=latest;
+        autoTask.lastError=null;
+        const matching=S.cap.items.find(it=>it.path===target.path);
+        if(matching)matching.caption=latest;
+        if(current.path===target.path)current.caption=latest;
+        if(previous!==latest)studioRecord("Autosave caption",{
+          kind:"captions",ext:target.ext,rows:[{
+            folder:target.folder,name:target.name,path:target.path,
+            before:previous,after:latest
+          }]
+        });
+        if(drafts.get(target.path)===latest)drafts.delete(target.path);
+        S.cap.studioRevision=(S.cap.studioRevision||0)+1;
+        autoTask.notify?.(drafts.has(target.path)?"Newer edits pending…":
+          (saved.queued?"Saved; queued for next epoch":"Saved"));
+      }catch(error){
+        autoTask.lastError=error;
+        autoTask.notify?.("Autosave failed: "+error.message+" — edit again to retry.");
+      }finally{
+        autoTask.busy=false;
+        // A newer edit submitted during the request must save afterward, never
+        // race the earlier write or get overwritten by its completion.
+        if(autoTask.pending){
+          clearTimeout(autoTask.timer);
+          autoTask.timer=setTimeout(()=>void autoTask.flush(),650);
+        }
+      }
+    };
+    autoTasks.set(autoKey,autoTask);
+  }
+  autoTask.notify=message=>{
+    if(S.cap.studioPath===current.path&&note.isConnected)note.textContent=message;
+  };
+  const queueAutosave=()=>{
+    if(locked)return;
+    autoTask.pending=true;
+    autoTask.lastError=null;
+    autoTask.notify?.("Unsaved changes · autosaving…");
+    clearTimeout(autoTask.timer);
+    autoTask.timer=setTimeout(()=>void autoTask.flush(),650);
+  };
   const ta=el("textarea",{class:"studio-caption",rows:7});
   // TagBench uses an Image Tags list and a natural-language caption toggle,
   // not a three-choice parser dropdown. Keep one canonical hidden textarea so
@@ -12113,6 +12182,7 @@ function renderCaptionStudio(host,items,ext){
     hist.future=[];
     hist.value=ta.value;
     drafts.set(current.path,ta.value);
+    queueAutosave();
   };
   const historyStep=direction=>{
     if(locked){say("Unlock this reviewed caption before editing.");return;}
@@ -12120,7 +12190,7 @@ function renderCaptionStudio(host,items,ext){
     const to=direction==="undo"?hist.future:hist.past;
     if(!from.length)return;
     to.push(hist.value);hist.value=from.pop();
-    ta.value=hist.value;drafts.set(current.path,ta.value);redraw();
+    ta.value=hist.value;drafts.set(current.path,ta.value);queueAutosave();redraw();
   };
   const word=el("div",{class:"field-hint"});
   const tags=el("ul",{class:"studio-image-tag-list",role:"list",
@@ -12247,29 +12317,14 @@ function renderCaptionStudio(host,items,ext){
     if(captionMode==="prose"||naturalMode)captionText.value=existingText();
   };
   ta.addEventListener("input",()=>{remember();redraw();});
-  const save=async()=>{
-    if(locked){say("Unlock this reviewed caption before saving.");return;}
-    // Capture the exact submitted text; typing while a network save is pending
-    // must not lie to history or silently discard a newer unsaved draft.
-    const submitted=ta.value,previous=current.caption;
-    try{const x=await api("/api/captions/save",{folder:capItemFolder(current),name:current.name,text:submitted,ext});
-      if(previous!==submitted)studioRecord("Save caption",{kind:"captions",ext,rows:[{
-        folder:capItemFolder(current),name:current.name,path:current.path,before:previous,after:submitted
-      }]});
-      current.caption=submitted;
-      if(ta.value===submitted)drafts.delete(current.path);
-      else drafts.set(current.path,ta.value);
-      S.cap.studioRevision=(S.cap.studioRevision||0)+1;
-      say(ta.value===submitted?(x.queued?"Saved; queued for next epoch":"Saved"):
-        "Saved submitted text; your newer edits are still an unsaved draft.");}
-    catch(e){say(e.message);}
-  };
   const pictureActions=el("div",{class:"field-row"},
     btn("Edit image / crop",async()=>{
       if(locked){say("Unlock the reviewed picture before editing its image.");return;}
       try{await captionImageOpen(current);}
       catch(e){say(e.message);}
-    })
+    }),
+    btn("Undo",()=>historyStep("undo")),
+    btn("Redo",()=>historyStep("redo"))
   );
   const orderKey="fizgig_caption_order:"+String(S.imageFolder||"");
   let orderSettings=S.cap.studioOrderSettings;
@@ -12303,15 +12358,12 @@ function renderCaptionStudio(host,items,ext){
     }),mode);
   };
   ta.hidden=true; // Canonical caption value for current Fizgig save/undo APIs.
-  const saveBtn=el("button",{class:"btn btn-primary",text:"Save caption",onclick:save});
   center.append(
     el("div",{class:"field-row studio-caption-head"},
       el("strong",{text:"Caption"})),
     el("div",{class:"studio-preview"},mediaFor(current,true)),
     el("div",{class:"caption-card-title",text:mediaLabel(current)}),
     ta,word,
-    el("div",{class:"field-row studio-caption-actions"},
-      saveBtn,btn("Undo",()=>historyStep("undo")),btn("Redo",()=>historyStep("redo"))),
     pictureActions,note);
   const newTag=el("input",{placeholder:"Add tag",type:"text",class:"w-path"});
   newTag.disabled=captionMode==="prose"||locked;
