@@ -180,3 +180,14 @@ def test_new_photo_with_optional_missing_caption_is_admitted(tmp_path):
     item = next(x for x in pool if x.item_key == "new")
     assert item.caption == ""
     assert (tmp_path / "cache" / "new_krea2_te.safetensors").exists()
+
+
+def test_live_admission_does_not_train_mask_as_image(tmp_path):
+    root, ds, watch = live_setup(tmp_path)
+    ds.datasource.captions_optional = True
+    Image.new("L", (256, 256), 255).save(root / "old-masklabel.png")
+    assert watch._new_image_sources() == []
+    assert watch._unscheduled_inputs() == []
+    watch._admit_new_images(1, None, torch.device("cpu"), False)
+    assert "old-masklabel" not in {item.item_key for pool in ds.batch_manager.live_pools.values()
+                                    for item in pool}
