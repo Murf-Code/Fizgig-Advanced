@@ -11066,6 +11066,7 @@ function renderCaptionStudio(host,items,ext){
     S.cap.studioRevision=(S.cap.studioRevision||0)+1;renderCaptions();
   });
   ta.value=drafts.has(current.path)?drafts.get(current.path):(current.caption||"");
+  if(modeSelect.value==="auto")captionMode=CaptionStudioTags.kind(ta.value,"auto",S.cap.studioDelimiter||",");
   ta.readOnly=locked;
   modeSelect.disabled=locked;
   current._ta=ta;
