@@ -176,3 +176,15 @@ def check(family, trigger, cls="woman", others=()):
     v["encoder"] = (f"{d.display_name}'s text encoder" + (f" ({d.text_encoder_label})" if getattr(d, "text_encoder_label", "")
                                                          else "")) if d else family
     return v
+
+
+def count_tag_tokens(family, tags):
+    """CPU-only token counts for Caption Studio, using the selected model's real tokenizer."""
+    if family not in _SPECS:
+        raise ValueError("This training family's tokenizer is not supported.")
+    if not isinstance(tags, list) or len(tags) > 500 or any(
+            not isinstance(tag, str) or len(tag) > 250 for tag in tags):
+        raise ValueError("Provide up to 500 tags of at most 250 characters.")
+    tokenizer = _tokenizer(family)
+    return {tag: len(tokenizer(" " + tag.strip(), add_special_tokens=False)["input_ids"])
+            for tag in tags if tag.strip()}
