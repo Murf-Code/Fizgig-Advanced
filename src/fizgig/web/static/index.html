@@ -617,6 +617,11 @@
                       <button class="btn btn-sm" id="meCancel" title="Cancel (Esc)">Cancel</button>
                       <button class="btn btn-sm" id="meBefore" style="display:none" title="Hold to see the image before the last Remove operation">Hold for before</button>
                     </span>
+                    <span class="me-toolbar-history" aria-label="Image navigation and history">
+                      <button class="btn btn-sm" id="meFit" title="Fit picture to window (0)">Fit</button>
+                      <button class="btn btn-sm" id="meUndo" title="Undo (Ctrl+Z)">Undo</button>
+                      <button class="btn btn-sm" id="meRedo" title="Redo (Ctrl+Y)">Redo</button>
+                    </span>
                   </div>
                   <details class="me-advanced-panel" id="meAdvancedPanel">
                     <summary>Mask, view &amp; watermark options</summary>
@@ -632,9 +637,9 @@
                         <span class="seg" id="meView"><button class="btn btn-sm active" data-view="over">Picture + mask</button><button
                           class="btn btn-sm" data-view="mask">Mask only</button><button class="btn btn-sm" data-view="pic">Picture only</button></span>
                         <label class="me-slider" title="How strongly the mask shows over the picture">Mask shows <input type="range" id="meShow" min="10" max="90" value="55"></label>
-                        <button class="btn btn-sm" id="meFit" title="Fit the picture (0)">Fit</button>
-                        <button class="btn btn-sm" id="meUndo" title="Undo (Ctrl+Z)">Undo</button>
-                        <button class="btn btn-sm" id="meRedo" title="Redo (Ctrl+Y)">Redo</button>
+
+
+
                         <button class="btn btn-sm" id="meRestoreOrig" style="display:none" title="Restore image from the backup made before removing an object">Restore Original Image</button>
                         <button class="btn btn-sm" id="meFill" title="The whole picture white">Fill</button>
                         <button class="btn btn-sm" id="meClear" title="The whole picture black">Clear</button>
