@@ -277,6 +277,19 @@ def _review_locked(path):
     return caption_review.is_caption_locked(path)
 
 
+def _write_unreviewed(media, target, text, expected=None):
+    """Avoid review-state races and stale overwrites from Caption tab batch tools."""
+    from fizgig.web import caption_review
+    from fizgig.web.image_edit import write_atomic
+    with caption_review._lock:
+        if caption_review.is_caption_locked(target):
+            return False
+        if expected is not None and (not os.path.isfile(target) or read_text(target) != expected):
+            raise ValueError("Caption changed during the batch; refresh before applying more edits.")
+        write_atomic(target, text.encode("utf-8"))
+    return True
+
+
 def static_captions(folder, trigger, overwrite, clips, photos=True, voice=False, ext=".txt"):
     """The trigger word as every file's caption (only files without one unless overwrite); a family that trains on
     recordings gets them too, and so do the folder's detail crops."""
@@ -291,8 +304,9 @@ def static_captions(folder, trigger, overwrite, clips, photos=True, voice=False,
         if os.path.exists(cap) and not overwrite:
             skipped += 1
             continue
-        with open(cap, "w", encoding="utf-8") as f:
-            f.write(trigger.strip())
+        if not _write_unreviewed(p, cap, trigger.strip()):
+            skipped += 1
+            continue
         made += 1
     _mirror_crops([folder], ext)
     _log(f"Static captions: {made} written, {skipped} kept (they had one)")
@@ -319,8 +333,9 @@ def song_captions(folder, trigger, words, overwrite, ext=".txt"):
         if os.path.exists(cap) and not overwrite:
             skipped += 1
             continue
-        with open(cap, "w", encoding="utf-8") as f:
-            f.write(caption)
+        if not _write_unreviewed(os.path.join(folder, n), cap, caption):
+            skipped += 1
+            continue
         made += 1
     _log(f"Song captions: {made} written ({caption}), {skipped} kept (they had one)")
     return {"written": made, "skipped": skipped, "caption": caption}
@@ -353,10 +368,9 @@ def find_replace(folder, find, replace, apply, ext=".txt"):
         if not pat.search(old):
             continue
         new = pat.sub(lambda _m: replace, old)
+        if apply and not _write_unreviewed(fp, fp, new, expected=old):
+            continue
         changes.append({"name": _caption_name(folder, fp), "old": old[:300], "new": new[:300]})
-        if apply:
-            with open(fp, "w", encoding="utf-8") as f:
-                f.write(new)
     if apply:
         _mirror_crops([folder], ext)
         _log(f"Find & Replace: '{find}' -> '{replace}' in {len(changes)} captions")
@@ -388,10 +402,9 @@ def add_text(folder, start, end, trigger, apply, ext=".txt"):
             new = (new.rstrip(" .,") + ", " if new else "") + end
         if new == old.strip():
             continue
+        if apply and not _write_unreviewed(fp, fp, new, expected=old):
+            continue
         changes.append({"name": _caption_name(folder, fp), "old": old[:300], "new": new[:300]})
-        if apply:
-            with open(fp, "w", encoding="utf-8") as f:
-                f.write(new)
     if apply:
         _mirror_crops([folder], ext)
         _log(f"Added to {len(changes)} captions" + (f": '{start}' at the start" if start else "")
