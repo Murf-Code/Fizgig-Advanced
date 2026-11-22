@@ -323,6 +323,7 @@ class Watch:
             for prefix, d in self.folders.items():
                 if str(k).startswith(prefix) and len(prefix) > best:
                     folder, best = d, len(prefix)
+                    stem = str(k)[len(prefix):].rsplit("/", 1)[-1]
             if not folder:
                 folder = self.image_dir or ""
             source = _picture(folder, stem, listings)
