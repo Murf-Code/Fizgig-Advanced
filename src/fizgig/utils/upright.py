@@ -88,7 +88,8 @@ def png_carries_orientation(path) -> bool:
     PNG files without eXIf or text chunks can return their header dimensions
     without causing Pillow's getexif() to decode the entire image. A suspect,
     corrupt or unexpectedly structured file retains the original safe path.
-    Based on upstream Fizgig PR #399 by spaghettified26.
+    Adapted from upstream Fizgig PR #399 by @spaghettified26:
+    https://github.com/shootthesound/Fizgig/pull/399
     """
     try:
         with open(path, "rb") as stream:
