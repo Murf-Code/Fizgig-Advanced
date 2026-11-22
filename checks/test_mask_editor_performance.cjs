@@ -70,4 +70,74 @@ layers.meRemoveLayer();assert.equal(calls.length,9);
 state.rmDirtyRect={l:12,t:15,r:55,b:70};
 layers.meRemoveLayer();assert.equal(calls.length,10);
 assert.equal(calls[9][4].l,12);
-console.log("Image editor cached overlays, dirty regions and frame scheduling passed.");
+// A soft brush reuses one gradient raster instead of recomputing it for
+// every interpolated dab; editing brush settings invalidates the stamp.
+const brushCalls={gradients:0,offscreen:0,maskContexts:0,blits:[],dirty:0};
+const brushControls={meSize:{value:"48"},meSoft:{value:"60"},meStrength:{value:"80"}};
+const makeGradient=()=>({addColorStop(){}});
+const maskContext={
+  globalCompositeOperation:"source-over",
+  createRadialGradient(){brushCalls.gradients++;return makeGradient();},
+  drawImage(){brushCalls.blits.push(this.globalCompositeOperation);},
+  beginPath(){},arc(){},fill(){}
+};
+const brushState={mask:{getContext(){brushCalls.maskContexts++;return maskContext;}},
+  zoom:1,tool:"brush",flip:false};
+const brushVm={
+  meState:()=>brushState,
+  meMarkMaskDirty:()=>{brushCalls.dirty++;},
+  $:name=>brushControls[name],Number,Math,
+  el:(tag,opts)=>{
+    assert.equal(tag,"canvas");brushCalls.offscreen++;
+    return {...opts,getContext:()=>({
+      createRadialGradient(){brushCalls.gradients++;return makeGradient();},
+      beginPath(){},arc(){},fill(){}
+    })};
+  }
+};
+vm.runInNewContext(source("function meBrushStamp(","function meStateLine()"),brushVm);
+for(let i=0;i<30;i++)brushVm.meDab(i,50);
+assert.equal(brushCalls.offscreen,1);
+assert.equal(brushCalls.gradients,1);
+assert.equal(brushCalls.blits.length,30);
+assert.equal(brushCalls.dirty,30);
+brushVm.meStroke({x:0,y:10},{x:100,y:10});
+assert.equal(brushCalls.gradients,1);
+assert(brushCalls.blits.length>40);
+brushControls.meSoft.value="75";
+brushVm.meDab(20,20);
+assert.equal(brushCalls.gradients,2);
+brushState.tool="erase";
+brushVm.meDab(22,20);
+assert.equal(brushCalls.blits.at(-1),"destination-out");
+// Very large stamps should not allocate huge temporary canvases.
+const offscreenBefore=brushCalls.offscreen;
+brushControls.meSize.value="400";brushState.zoom=.1;
+brushVm.meDab(20,20);
+assert.equal(brushCalls.offscreen,offscreenBefore);
+assert.equal(brushCalls.gradients,3);
+
+// Repeated resize/fit notifications must not zero and reallocate an
+// unchanged canvas backing store (especially with inline Tags mounted).
+let reallocations=0,fitDraws=0;
+const stage={clientWidth:800,clientHeight:500};
+const canvas={_width:800,_height:500,
+  get width(){return this._width;},set width(n){reallocations++;this._width=n;},
+  get height(){return this._height;},set height(n){reallocations++;this._height=n;}
+};
+const fitState={mask:{width:400,height:200},zoom:1,ox:0,oy:0};
+const fitVm={
+  meState:()=>fitState,$:name=>name==="meCanvas"?canvas:stage,
+  S:{cap:{imageEditing:{inline:true}}},window:{innerHeight:900},
+  Math,meDraw:()=>{fitDraws++;}
+};
+vm.runInNewContext(source("function meFit() {","// Recompose only"),fitVm);
+fitVm.meFit();fitVm.meFit();
+assert.equal(reallocations,0);
+assert.equal(fitDraws,2);
+stage.clientWidth=950;
+fitVm.meFit();
+assert.equal(reallocations,1);
+assert.equal(canvas.width,950);
+
+console.log("Image editor cached overlays, brush stamps, resize safety and frame scheduling passed.");
