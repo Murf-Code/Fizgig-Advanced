@@ -3301,3 +3301,6 @@ label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; 
 #tab-captions .studio-category-index-row{display:flex;align-items:stretch;border-bottom:1px solid var(--border);min-width:0;gap:4px}
 #tab-captions .studio-category-index-row>.studio-index-tag{flex:1;min-width:0;overflow-wrap:anywhere;border-bottom:0}
 #tab-captions .studio-category-index-row>.studio-category-select{min-width:95px;max-width:125px;font-size:11px}
+
+#tab-captions .studio-live-status{border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;overflow-wrap:anywhere}
+#tab-captions .studio-live-status.needs-attention{border-style:dashed;border-color:var(--accent-border);font-weight:600}
