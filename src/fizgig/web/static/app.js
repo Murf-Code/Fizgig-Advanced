@@ -12501,27 +12501,35 @@ function renderCaptionStudio(host,items,ext){
     }
     tagCount.textContent=matched.length+" / "+sorted.length+" Tags";
   };
-  indexSearch.addEventListener("input",tagRows);
+  indexSearch.addEventListener("input",()=>{tagRows();drawExplore();});
   tagRows();
   const indexMode=el("select",{class:"w-combo",title:"Explore tag frequencies and co-occurrences"});
   [["list","Tag list"],["waterfall","Frequency waterfall"],["constellation","Tag constellation"]]
     .forEach(([value,label])=>indexMode.append(el("option",{value,text:label})));
   indexMode.value=S.cap.studioExploreMode||"list";
   const explore=el("div",{class:"studio-explore"});
-  const pickTag=tag=>{S.cap.studioQuery=JSON.stringify(tag);S.cap.page=0;renderCaptions();};
+  const pickTag=tag=>{
+    const exact=JSON.stringify(tag);
+    S.cap.studioQuery=S.cap.studioQuery===exact?"":exact;
+    S.cap.page=0;renderCaptions();
+  };
   const drawExplore=()=>{
     S.cap.studioExploreMode=indexMode.value;
     explore.replaceChildren();
+    const query=indexSearch.value.trim().toLocaleLowerCase();
+    const visible=sorted.filter(([tag])=>tag.toLocaleLowerCase().includes(query));
     if(indexMode.value==="waterfall")
-      explore.append(CaptionStudioViz.waterfall(tagIndex.sorted,pickTag));
+      explore.append(CaptionStudioViz.waterfall(visible,pickTag));
     else if(indexMode.value==="constellation"){
-      const sampleStep=Math.max(1,Math.ceil(S.cap.items.length/3000));
-      const sampled=S.cap.items.filter((_,i)=>i%sampleStep===0&&studioCaptionMode(S.cap.items[i])==="tags")
-        .map(it=>studioTokens(it.caption,"tags"));
-      explore.append(CaptionStudioViz.constellation(tagIndex.sorted,sampled,pickTag));
-      if(sampleStep>1)explore.append(el("div",{class:"field-hint",text:
-        "Large dataset: co-occurrence links use every "+sampleStep+"th caption; displayed tag frequencies use all images."}));
+      // Use the same tag set and counts as the list and waterfall. Sampling
+      // captions may conceal meaningful links in smaller tag collections.
+      const candidates=visible.slice(0,48);
+      const wanted=new Set(candidates.map(([tag])=>tag.toLocaleLowerCase()));
+      const sampled=S.cap.items.filter(it=>studioCaptionMode(it)==="tags")
+        .map(it=>studioTokens(it.caption,"tags").filter(t=>wanted.has(t.toLocaleLowerCase())));
+      explore.append(CaptionStudioViz.constellation(candidates,sampled,pickTag));
     }else explore.append(index);
+    tagCount.textContent=visible.length+" / "+sorted.length+" Tags";
   };
   indexMode.addEventListener("change",drawExplore);
   const exportWildcard=btn("Export caption wildcard",()=>{
