@@ -7777,7 +7777,9 @@ function meWire() {
       if(!cursor.hidden)cursor.hidden=true;
       return;
     }
-    if(cv.style.cursor!=="none")cv.style.cursor="none";
+    // Very large outlines exceed reliable OS cursor limits. Keep a native
+    // crosshair responsive while the larger guide follows on its CSS layer.
+    if(cv.style.cursor!=="crosshair")cv.style.cursor="crosshair";
     if(cursorSize!==size){
       cursorSize=size;
       cursor.style.width=size+"px";cursor.style.height=size+"px";
