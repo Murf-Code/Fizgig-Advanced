@@ -1,5 +1,6 @@
 """CPU-only checks for safely adding dataset pictures to a running fixed-step schedule."""
 import random
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -59,8 +60,9 @@ def live_setup(tmp_path):
         extra_extensions=(), datasource=SimpleNamespace(captions_optional=False),
     )
     dataset.get_latent_cache_path = lambda item: str(cache / (
-        f"{item.item_key}_{item.original_size[0]:04d}x{item.original_size[1]:04d}_krea2.safetensors"))
-    dataset.get_text_encoder_output_cache_path = lambda item: str(cache / f"{item.item_key}_krea2_te.safetensors")
+        f"{os.path.splitext(os.path.basename(item.item_key))[0]}_{item.original_size[0]:04d}x{item.original_size[1]:04d}_krea2.safetensors"))
+    dataset.get_text_encoder_output_cache_path = lambda item: str(
+        cache / f"{os.path.splitext(os.path.basename(item.item_key))[0]}_krea2_te.safetensors")
     watch = loss_watch.Watch.__new__(loss_watch.Watch)
     watch.group = SimpleNamespace(datasets=[dataset])
     watch.driver = FakeDriver()
@@ -136,3 +138,19 @@ def test_media_and_pair_edits_are_detected_for_secondary_dataset(tmp_path):
     changes, txt = watch._scan_sources()
     assert changes == {"s2:old": "updated"}
     assert txt == {}
+
+
+def test_secondary_subject_new_cache_name_has_no_training_prefix(tmp_path):
+    root, ds, watch = live_setup(tmp_path)
+    ds.item_prefix = "s2:"
+    for it in ds.batch_manager.buckets[(256, 256)]:
+        it.item_key = "s2:old"
+    watch._owner_cache = None
+    watch._source_snapshot = watch._source_state()
+    Image.new("RGB", (256, 256), "orange").save(root / "new.png")
+    watch._admit_new_images(1, None, torch.device("cpu"), False)
+    keys = {it.item_key for it in ds.batch_manager.live_pools[(256, 256)]}
+    assert "s2:new" in keys
+    new_item = next(it for it in ds.batch_manager.live_pools[(256, 256)] if it.item_key == "s2:new")
+    assert os.path.basename(new_item.latent_cache_path) == "new_0256x0256_krea2.safetensors"
+    assert os.path.basename(new_item.text_encoder_output_cache_path) == "new_krea2_te.safetensors"
