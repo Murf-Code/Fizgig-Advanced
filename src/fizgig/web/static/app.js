@@ -11123,9 +11123,11 @@ function captionRemovedPanel(ext) {
   const panel=el("details",{class:"studio-removed-browser"});
   const summary=el("summary",{text:"Removed images · restore from dataset"});
   const folders=[...new Set([S.imageFolder,...S.cap.items.map(capItemFolder)].filter(Boolean))];
-  const folder=el("select",{class:"w-path",title:"Dataset folder containing removed images"});
-  for(const path of folders)folder.append(el("option",{value:path,text:path}));
-  folder.value=folders.includes(S.cap.studioRemovedFolder)?S.cap.studioRemovedFolder:folders[0]||"";
+  const folder=el("input",{type:"text",class:"w-path",list:"captionRemovedFolderSuggestions",
+    placeholder:"Dataset folder (including an empty subfolder)",title:"Folder containing removed/ images"});
+  const suggestions=el("datalist",{id:"captionRemovedFolderSuggestions"});
+  for(const path of folders)suggestions.append(el("option",{value:path}));
+  folder.value=S.cap.studioRemovedFolder||folders[0]||"";
   S.cap.studioRemovedFolder=folder.value;
   const info=el("span",{class:"field-hint",text:"Removed pictures stay in the removed/ folder; restoring never overwrites an existing file."});
   const entries=el("div",{class:"studio-removed-list"});
@@ -11166,8 +11168,10 @@ function captionRemovedPanel(ext) {
     }catch(e){entries.replaceChildren(el("span",{class:"field-hint",text:e.message}));}
   };
   folder.addEventListener("change",()=>{S.cap.studioRemovedFolder=folder.value;refresh();});
-  panel.append(summary,el("div",{class:"field-row"},folder,
-    el("button",{class:"btn btn-sm",text:"Refresh",onclick:refresh})),
+  panel.append(summary,el("div",{class:"field-row"},folder,suggestions,
+    el("button",{class:"btn btn-sm",text:"Refresh",onclick:()=>{
+      S.cap.studioRemovedFolder=folder.value;refresh();
+    }})),
     info,entries);
   panel.open=!!S.cap.studioRemovedOpen;
   panel.addEventListener("toggle",()=>{S.cap.studioRemovedOpen=panel.open;if(panel.open)refresh();});
