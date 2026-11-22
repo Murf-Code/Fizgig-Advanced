@@ -93,6 +93,9 @@ def _load_image_list(list_file: str) -> list[str]:
 
 
 def _write_caption(path: str, caption: str, ext: str = ".txt") -> None:
+    from fizgig.web import caption_review
+    if caption_review.is_locked(os.path.dirname(path), os.path.basename(path)):
+        raise ValueError("Caption review lock: unlock the picture before AI captioning.")
     with open(os.path.splitext(path)[0] + (ext or ".txt"), "w", encoding="utf-8") as f:
         f.write(caption)
 
