@@ -73,7 +73,7 @@ def test_ai_append_still_respects_review_locks(tmp_path):
     image.write_bytes(b"placeholder")
     _write_caption(str(image), "first")
     _write_caption(str(image), "second", append=True)
-    assert (folder / "lion.txt").read_text() == "first\\nsecond".replace("\\\\n", "\\n")
+    assert (folder / "lion.txt").read_text() == "first\nsecond"
     _write_caption(str(image), "second", append=True)
     assert (folder / "lion.txt").read_text().count("second") == 1
     caption_review.mark(folder, image.name, True)
