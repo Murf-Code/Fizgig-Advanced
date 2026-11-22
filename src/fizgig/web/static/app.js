@@ -7062,7 +7062,7 @@ async function meRefreshFlags(name) {
     if (now && item) { item.mask = now.mask; item.watermark = now.watermark; item.backup = now.backup; }
   } catch (e) { /* keep what we had */ }
 }
-async function meOpen() {
+async function meOpen(requestedName=null) {
   const m = meState(), folder=m.studioFolder || S.imageFolder;
   if (!folder) { $("meState").textContent = "Choose the training folder on the Start tab first."; return; }
   if (m.folder && m.folder !== folder) {             // preserve unsaved masks on another dataset
@@ -7075,7 +7075,7 @@ async function meOpen() {
     m.list = r.pictures; m.folder = folder; meWmBar();
   } catch (e) { $("meState").textContent = e.message; return; }
   const shown = meShown();
-  const keep = shown.findIndex((p) => p.name === m.name);
+  const keep = shown.findIndex((p) => p.name === (requestedName||m.name));
   await meGo(keep >= 0 ? keep : 0, true);
 }
 async function meGo(i, force) {
@@ -11397,17 +11397,19 @@ async function captionImageOpen(it,tool="remove"){
     if(!preview||S.cap.studioPath!==it.path)return;
     S.cap.imageEditing={folder,name:it.name,path:it.path,inline:true};
     const m=meState();
+    if(!current?.inline)S.cap.inlinePreviousView=m.view;
+    m.view="pic"; // Crop and Remove should not inherit a dim training-mask view.
     m.studioFolder=folder;
     $("meFilter").value="all";
     captionInlineStageMount(preview);
     editor.open=true;
     const cached=m.folder===folder&&m.list.some(p=>p.name===it.name);
     if(!cached){
-      await meOpen();
+      await meOpen(it.name);
     }else if(m.name!==it.name||!m.pic){
       const index=meShown().findIndex(p=>p.name===it.name);
       if(index>=0)await meGo(index,true);
-      else await meOpen();
+      else await meOpen(it.name);
     }
     if(sequence!==S.cap.inlineOpenSequence)return;
     if(m.name!==it.name){
@@ -11451,6 +11453,8 @@ async function captionImageClose(){
       home.parent.insertBefore(editor,home.next?.parentNode===home.parent?home.next:null);
     const m=meState();
     m.studioFolder=null;
+    if(S.cap.inlinePreviousView)m.view=S.cap.inlinePreviousView;
+    S.cap.inlinePreviousView=null;
     S.cap.imageEditing=null;
     S.cap.inlineRefreshControls=null;
     if(editor)editor.open=false;
