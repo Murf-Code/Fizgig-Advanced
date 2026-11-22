@@ -11048,9 +11048,24 @@ function renderCaptionStudio(host,items,ext){
   const redraw=()=>{
     word.textContent=String(ta.value.trim()?ta.value.trim().split(/\s+/).length:0)+" words · "+String(studioTokens(ta.value).length)+" tags";
     tags.replaceChildren();
-    for(const t of studioUnique(studioTokens(ta.value)))tags.append(el("button",{class:"studio-chip",text:t+" ×",onclick:()=>{
-      ta.value=studioCompose(ta.value,studioTokens(ta.value).filter(x=>x.toLowerCase()!==t.toLowerCase()));remember();redraw();
-    }}));
+    for(const t of studioUnique(studioTokens(ta.value))){
+      const chip=el("button",{class:"studio-chip",text:t+" ×",title:"Click to remove; drag to reorder",onclick:()=>{
+        ta.value=studioCompose(ta.value,studioTokens(ta.value).filter(x=>x.toLowerCase()!==t.toLowerCase()));remember();redraw();
+      }});
+      chip.draggable=true;
+      chip.addEventListener("dragstart",e=>e.dataTransfer.setData("text/plain",t));
+      chip.addEventListener("dragover",e=>e.preventDefault());
+      chip.addEventListener("drop",e=>{
+        e.preventDefault();
+        const from=e.dataTransfer.getData("text/plain"),arr=studioTokens(ta.value);
+        const a=arr.findIndex(x=>x.toLowerCase()===from.toLowerCase());
+        const b=arr.findIndex(x=>x.toLowerCase()===t.toLowerCase());
+        if(a<0||b<0||a===b)return;
+        arr.splice(b,0,arr.splice(a,1)[0]);
+        ta.value=studioCompose(ta.value,arr);remember();redraw();
+      });
+      tags.append(chip);
+    }
   };
   ta.addEventListener("input",()=>{remember();redraw();});
   const save=async()=>{
@@ -11100,7 +11115,7 @@ function renderCaptionStudio(host,items,ext){
       btn("Undo",()=>historyStep("undo")),btn("Redo",()=>historyStep("redo")),
       btn("Deduplicate",()=>{ta.value=studioCompose(ta.value,studioUnique(studioTokens(ta.value)));remember();redraw();}),
       btn("Sort tags",()=>{ta.value=studioCompose(ta.value,studioUnique(studioTokens(ta.value)).sort((a,b)=>a.localeCompare(b)));remember();redraw();}),
-      btn("Strip artist tags",()=>{ta.value=studioCompose(ta.value,studioTokens(ta.value).filter(t=>!/^artist\s*:/i.test(t)));remember();redraw();})),
+      btn("Strip artist tags",()=>{ta.value=studioCompose(ta.value,studioTokens(ta.value).filter(t=>!/^(@|artist\s*:)/i.test(t)));remember();redraw();})),
     pictureActions,note);
   const newTag=el("input",{placeholder:"Add tag",type:"text",class:"w-path"});
   right.append(el("strong",{text:"Image tags"}),tags,el("div",{class:"field-row"},newTag,btn("Add",()=>{
