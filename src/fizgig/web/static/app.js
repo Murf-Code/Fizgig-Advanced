@@ -6953,10 +6953,6 @@ function meRestoreOrigOutside(e) {
 function meRestoreOrigClick() {
   const m = meState();
   if (m.stepBusy || !meHasBackup()) return;
-  if (S.run && (S.run.running || S.run.state === "starting")) {
-    $("meState").textContent = "A run is training: restore when it finishes.";
-    return;
-  }
   if (!ME_RESTORE.timer) {
     const b = $("meRestoreOrig");
     b.textContent = "Confirm";
@@ -6971,10 +6967,6 @@ function meRestoreOrigClick() {
 async function meDoRestoreOrig() {
   const m = meState();
   if (m.stepBusy || !m.pic || !meHasBackup()) return;
-  if (S.run && (S.run.running || S.run.state === "starting")) {
-    $("meState").textContent = "A run is training: restore when it finishes.";
-    return;
-  }
   m.stepBusy = true; meBusy("Restoring…"); meRestoreBtn();
   try {
     if (m.dirty && !(await meSave())) return;
@@ -7528,10 +7520,6 @@ async function meSave() {
 async function meRemoveAllWm() {
   const m = meState();
   if (m.wmBusy || m.stepBusy) return;
-  if (S.run && (S.run.running || S.run.state === "starting")) {
-    $("meWmState").textContent = "A run is training: remove watermarks when it finishes.";
-    return;
-  }
   if (!(await meRmSave(false))) return;               // the red edits on this picture count too
   const names = m.list.filter((p) => p.watermark).map((p) => p.name);
   if (!names.length) { meWmBar(); return; }
@@ -7568,10 +7556,6 @@ async function meRemoveAllWm() {
 function meWmAllClick() {
   // first click is the confirm (30 s, or click elsewhere), like training Stop and Make masks' Stop
   if (meState().wmBusy || meState().stepBusy) return;
-  if (S.run && (S.run.running || S.run.state === "starting")) {
-    $("meWmState").textContent = "A run is training: remove watermarks when it finishes.";
-    return;
-  }
   const n = meWmCount();
   if (!n) { meWmBar(); return; }
   if (!ME_WM_ALL.timer) {

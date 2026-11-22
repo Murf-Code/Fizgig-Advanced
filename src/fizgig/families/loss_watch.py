@@ -219,9 +219,10 @@ class Watch:
     def excluded(self, batch):
         """The step is skipped: its picture is excluded (a batch's: every one of them)."""
         keys = batch.get("item_keys")
-        if isinstance(keys, (list, tuple)) and keys and all(str(k) in self.removed_keys for k in keys):
-            return True
-        if not isinstance(keys, (list, tuple)) and str(keys) in self.removed_keys:
+        # Never train a removed image, including a mixed batch whose family lacks
+        # per-item losses. Skipping the whole batch is safer than training stale pixels.
+        keys_to_check = keys if isinstance(keys, (list, tuple)) else [keys]
+        if any(str(k) in self.removed_keys for k in keys_to_check):
             return True
         if self.watch is None or self._reg_only(keys):
             return False
@@ -363,7 +364,14 @@ class Watch:
                         with torch.no_grad():
                             image = resize_image_to_bucket(open_upright(source), tuple(item.bucket_size))
                             encoded = self.driver.encode_images(vae, [image])[0]
-                            cache.save_latents(self.driver.description, item, encoded)
+                            import copy
+                            scratch = copy.copy(item)
+                            scratch.latent_cache_path = item.latent_cache_path + ".live-update"
+                            try:
+                                cache.save_latents(self.driver.description, scratch, encoded)
+                                os.replace(scratch.latent_cache_path, item.latent_cache_path)
+                            finally:
+                                _remove(scratch.latent_cache_path)
                         self.removed_keys.discard(k)
                         logger.info("[image-fix] epoch %s: %s latent re-encoded at %s", epoch, k, item.bucket_size)
                     except Exception:

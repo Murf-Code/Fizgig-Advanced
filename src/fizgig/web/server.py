@@ -5219,7 +5219,7 @@ class Handler(BaseHTTPRequestHandler):
                         result["queued"] = _notify_image_change(folder, name, "updated")
                         return self.json(result)
                     if path == "/api/masks/edit/remove_watermark":
-                        result = image_edit.remove_watermark(folder, name, b.get("pad"))
+                        result = image_edit.remove_watermark(folder, name, b.get("pad"), gpu=not _gpu_training())
                         result["queued"] = _notify_image_change(folder, name, "updated")
                         return self.json(result)
                     if path == "/api/masks/edit/restore_original":
