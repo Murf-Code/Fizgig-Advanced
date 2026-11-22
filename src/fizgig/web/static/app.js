@@ -11030,7 +11030,7 @@ function renderCaptionStudio(host,items,ext){
   const current=pageItems.find(i=>i.path===S.cap.studioPath)||pageItems[0]||items[0];
   if(!current){host.textContent="No matching images.";return;}
   S.cap.studioPath=current.path;
-  const captionMode=studioCaptionMode(current);
+  let captionMode=studioCaptionMode(current);
   const locked=!!S.cap.studioReviewed?.has(current.path);
   const categoryState=studioCategories();
   const editorCompose=tags=>editorCompose(tags,captionMode);
@@ -11118,7 +11118,10 @@ function renderCaptionStudio(host,items,ext){
       tags.append(chip);
     }
   };
-  ta.addEventListener("input",()=>{remember();redraw();});
+  ta.addEventListener("input",()=>{
+    if(modeSelect.value==="auto")captionMode=CaptionStudioTags.kind(ta.value,"auto",S.cap.studioDelimiter||",");
+    remember();redraw();
+  });
   const save=async()=>{
     if(locked){say("Unlock this reviewed caption before saving.");return;}
     try{const x=await api("/api/captions/save",{folder:capItemFolder(current),name:current.name,text:ta.value,ext});
@@ -11186,7 +11189,9 @@ function renderCaptionStudio(host,items,ext){
     pictureActions,note);
   const newTag=el("input",{placeholder:"Add tag",type:"text",class:"w-path"});
   newTag.disabled=captionMode==="prose"||locked;
-  right.append(el("strong",{text:"Image tags"}),tags,el("div",{class:"field-row"},newTag,btn("Add",()=>{
+  right.append(el("strong",{text:"Image tags"}),tags,
+    el("div",{class:"field-hint",text:"Category colors are saved in this browser for this dataset. Review locks are stored with the dataset."}),
+    el("div",{class:"field-row"},newTag,btn("Add",()=>{
     if(locked){say("Unlock before adding tags.");return;}
     if(captionMode==="prose"){say("Choose Tag list mode to edit tags in this prose caption.");return;}
     if(newTag.value.trim()){ta.value=editorCompose(studioUnique([...studioTokens(ta.value,captionMode),newTag.value.trim()]));newTag.value="";remember();redraw();}
