@@ -11354,16 +11354,16 @@ function captionDuplicatePanel(ext){
           preview.append(confirmBtn);
         }catch(e){detail.textContent=e.message;}
       }});
-      const removeBtn=el("button",{class:"btn btn-sm",text:"Move checked duplicates to removed/",onclick:async()=>{
+      const removeBtn=el("button",{class:"btn btn-sm",text:"Move unkept images to removed/",onclick:async()=>{
         const donors=selected();
-        if(!donors.length){detail.textContent="Select images to remove first.";return;}
+        if(!donors.length){detail.textContent="All images are marked Keep; uncheck any you want to move out of training.";return;}
         if(draftExists(donors.map(d=>d.path))){
           detail.textContent="Save unsaved caption drafts before removing images.";return;
         }
         if(donors.some(d=>S.cap.studioReviewed?.has(d.path))){
           detail.textContent="One or more duplicates are reviewed/locked. Uncheck or unlock them first.";return;
         }
-        if(!confirm("Move "+donors.length+" selected picture(s) to removed/, with their captions and masks? "+
+        if(!confirm("Move "+donors.length+" unkept picture(s) to removed/, with their captions and masks? "+
           "This is SEPARATE from tag merging. Merge first if you want to preserve their unique tags. "+
           "Nothing is permanently deleted."))return;
         removeBtn.disabled=true;
