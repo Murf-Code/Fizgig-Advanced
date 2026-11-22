@@ -327,6 +327,7 @@ class Watch:
             gc.collect()
             torch.cuda.empty_cache()
         latent_prepared = []
+        admitted = []
         try:
             vae = self.driver.load_vae(self.vae_path, device)
             try:
@@ -382,6 +383,7 @@ class Watch:
                     os.replace(item.latent_cache_path + ".live-update", item.latent_cache_path)
                     os.replace(text_tmp.text_encoder_output_cache_path, item.text_encoder_output_cache_path)
                     if ds.batch_manager.add_live_item(tuple(item.bucket_size), item, ds.num_repeats):
+                        admitted.append(key)
                         logger.info("[live-dataset] epoch %s: admitted new image %s (fixed steps/epoch)", epoch, key)
                 finally:
                     _remove(text_tmp.text_encoder_output_cache_path)
@@ -416,8 +418,11 @@ class Watch:
                     del rte
                     gc.collect()
                     torch.cuda.empty_cache()
-            # Refresh the baselines now that new keys belong to the live pool.
-            self._source_snapshot = self._source_state()
+            # Baseline ONLY newly admitted keys. Rebaselining existing keys could
+            # erase an edit made while the encoder was occupied.
+            if admitted:
+                fresh = self._source_state()
+                self._source_snapshot.update({k: fresh[k] for k in admitted if k in fresh})
         finally:
             for row in latent_prepared:
                 _remove(row[4].latent_cache_path + ".live-update")
