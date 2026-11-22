@@ -502,7 +502,7 @@ def _popen(cmd, prefs, stdin=False):
 
 def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_tokens, trigger, overwrite, clips,
                 only=None, photos=True, ext=".txt", threshold=0.35, leave_out="", underscores=False,
-                tags=None, models_dir=None):
+                tags=None, models_dir=None, append=False):
     """Caption the folder's pictures (and clips) with a captioner from the registry (`model` is its label or key), or
     just `only` (a re-caption). The worker loads once and stays loaded for the next batch. A registry tagger keeps the
     tags scoring `threshold` or more, minus `leave_out` (comma-separated), underscores as spaces unless `underscores`.
@@ -532,7 +532,7 @@ def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_to
         raise ValueError("Nothing here for the AI to caption: this model trains on recordings. Use Static Caption All "
                          "or Caption every song." if not photos and not clips else
                          "No pictures or clips in the training folder.")
-    if not only and not overwrite:
+    if not overwrite and not append:
         images = [p for p in images if not os.path.exists(os.path.splitext(p)[0] + ext)]
     images, roots = _crop_images(images, overwrite or bool(only), ext)    # detail crops: at each size they have
     if not images:
@@ -566,7 +566,7 @@ def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_to
     except OSError:
         pass
     job = {"list_file": list_file, "max_new_tokens": int(max_tokens or 120), "trigger": trigger.strip(),
-           "stop_file": stop_file, "caption_ext": ext}
+           "stop_file": stop_file, "caption_ext": ext, "append": bool(append)}
     if tid:
         job["tags"] = tags
     elif desc.instruction:
