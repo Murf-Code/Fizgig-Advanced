@@ -100,3 +100,48 @@ def test_reviewed_detail_crop_is_not_overwritten_by_caption_mirror(tmp_path):
     assert detail_crops.share_captions(str(tmp_path)) == 1
     assert (small / "lion.txt").read_text() == "reviewed text"
     assert (small / "cat.txt").read_text() == "updated"
+
+
+def test_general_write_all_skips_reviewed_images(tmp_path):
+    from PIL import Image
+    from fizgig.web.server import write_all_captions
+    for name in ("lion", "cat"):
+        Image.new("RGB", (12, 12)).save(tmp_path / (name + ".png"))
+        (tmp_path / (name + ".txt")).write_text("before")
+    caption_review.mark(tmp_path, "lion.png", True)
+    result = write_all_captions("after", str(tmp_path), ".txt", overwrite=True)
+    assert result["written"] == 1
+    assert result["reviewed_skipped"] == 1
+    assert (tmp_path / "lion.txt").read_text() == "before"
+    assert (tmp_path / "cat.txt").read_text() == "after"
+
+
+def test_problem_images_caption_editor_respects_review_lock(tmp_path):
+    from fizgig.web.image_loss import save_caption
+    (tmp_path / "lion.png").write_bytes(b"image")
+    (tmp_path / "lion.txt").write_text("original")
+    run = {"image_folder": str(tmp_path), "result": "completed"}
+    caption_review.mark(tmp_path, "lion.png", True)
+    with pytest.raises(ValueError, match="reviewed"):
+        save_caption(run, "lion", "tampered", ".txt")
+    assert (tmp_path / "lion.txt").read_text() == "original"
+
+
+def test_selected_ai_media_must_never_fall_back_to_all(tmp_path):
+    from fizgig.web.captions import selected_media
+    root = tmp_path / "dataset"
+    root.mkdir()
+    (root / "lion.png").write_bytes(b"image")
+    assert selected_media(str(root), None) is None
+    assert selected_media(str(root), [str(root / "lion.png")]) == [str(root / "lion.png")]
+    with pytest.raises(ValueError, match="Choose"):
+        selected_media(str(root), [])
+    with pytest.raises(ValueError, match="missing or outside"):
+        selected_media(str(root), [str(root / "no-such.png")])
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"image")
+    with pytest.raises(ValueError, match="missing or outside"):
+        selected_media(str(root), [str(outside)])
+    (root / "outside.png").symlink_to(outside)
+    with pytest.raises(ValueError, match="missing or outside"):
+        selected_media(str(root), [str(root / "outside.png")])
