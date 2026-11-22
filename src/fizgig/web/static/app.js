@@ -12178,31 +12178,30 @@ function renderCaptionStudio(host,items,ext){
       counts:new Map(tagIndex.sorted),tokens
     }),mode);
   };
-  center.append(el("div",{class:"field-row"},el("strong",{text:"Caption editor"}),reviewBtn),el("div",{class:"field-row"},
-      el("span",{class:"field-label",text:"Caption format:"}),modeSelect),el("div",{class:"studio-preview"},mediaFor(current,true)),
-    el("div",{class:"caption-card-title",text:mediaLabel(current)}),ta,word,
-    el("div",{class:"field-row"},el("button",{class:"btn btn-primary",text:"Save caption",onclick:save}),
-      btn("Undo draft",()=>historyStep("undo")),btn("Redo draft",()=>historyStep("redo")),
-      btn("Deduplicate",()=>{if(locked)return say("Unlock before editing.");ta.value=editorCompose(studioUnique(studioTokens(ta.value,captionMode)));remember();redraw();}),
-      btn("Apply tag order",async()=>{
-        if(locked)return say("Unlock before editing.");
-        if(captionMode==="prose")return say("Prose captions are not tag-sorted.");
-        try{ta.value=await sortTagList(ta.value,captionMode);remember();redraw();}
-        catch(e){say("Tag ordering: "+e.message);}
-      }),
-      btn("Strip artist tags",()=>{if(locked)return say("Unlock before editing.");ta.value=editorCompose(studioTokens(ta.value,captionMode).filter(t=>!/^(@|artist\s*:)/i.test(t)));remember();redraw();})),
-    el("div",{class:"field-row"},el("span",{class:"field-label",text:"Ordering:"}),orderSelect,
-      frontTags,backTags),
+  ta.hidden=true; // Canonical caption value for current Fizgig save/undo APIs.
+  const saveBtn=el("button",{class:"btn btn-primary",text:"Save caption",onclick:save});
+  center.append(
+    el("div",{class:"field-row studio-caption-head"},
+      el("strong",{text:"Caption"}),reviewBtn),
+    el("div",{class:"studio-preview"},mediaFor(current,true)),
+    el("div",{class:"caption-card-title",text:mediaLabel(current)}),
+    ta,word,
+    el("div",{class:"field-row studio-caption-actions"},
+      saveBtn,btn("Undo",()=>historyStep("undo")),btn("Redo",()=>historyStep("redo"))),
     pictureActions,note);
   const newTag=el("input",{placeholder:"Add tag",type:"text",class:"w-path"});
   newTag.disabled=captionMode==="prose"||locked;
-  right.append(el("strong",{text:"Image tags"}),tags,
-    el("div",{class:"field-hint",text:"Category colors are saved in this browser for this dataset. Review locks are stored with the dataset."}),
-    el("div",{class:"field-row"},newTag,btn("Add",()=>{
+  const naturalEditor=el("section",{class:"studio-natural-pane"},
+    el("strong",{text:"Caption"}),captionText);
+  naturalEditor.hidden=!naturalMode&&captionMode!=="prose";
+  right.append(
+    el("div",{class:"studio-image-tags-heading"},
+      el("strong",{text:"Image Tags"}),naturalToggle),
+    el("div",{class:"field-row studio-add-tag"},newTag,btn("Add",()=>{
     if(locked){say("Unlock before adding tags.");return;}
     if(captionMode==="prose"){say("Choose Tag list mode to edit tags in this prose caption.");return;}
     if(newTag.value.trim()){ta.value=editorCompose(studioUnique([...studioTokens(ta.value,captionMode),newTag.value.trim()]));newTag.value="";remember();redraw();}
-  })));
+  })),tags,word,naturalEditor);
   const rev=S.cap.studioRevision||0;
   const sepSelect=el("select",{class:"w-combo"});
   [[",","Commas"],[";","Semicolons"],["|","Pipes"]].forEach(([value,label])=>sepSelect.append(el("option",{value,text:label})));
