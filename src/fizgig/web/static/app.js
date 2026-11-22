@@ -11644,6 +11644,125 @@ function captionStudioImportPanel(){
   return panel;
 }
 
+// TagBench-style Settings dialog. The single existing Fizgig caption-settings
+// drawer is moved into its Advanced section: no duplicated model controls, lost
+// event handlers, or separate state that could diverge from the training options.
+let captionSettingsDialog=null;
+function captionWorkbenchSettingsOpen(advanced=false){
+  const tab=$("tab-captions");
+  if(!tab)return;
+  if(!captionSettingsDialog){
+    const original=tab.querySelector(".caption-tools-drawer")||
+      document.querySelector(".caption-settings-modal .caption-tools-drawer");
+    if(!original)return;
+    const key="fizgig.caption-workbench.settings.v1";
+    let prefs={};
+    try{prefs=JSON.parse(localStorage.getItem(key)||"{}")||{};}catch(_){}
+    const savePref=(name,value)=>{
+      prefs[name]=value;
+      try{localStorage.setItem(key,JSON.stringify(prefs));}catch(_){}
+    };
+    const overlay=el("div",{class:"caption-settings-backdrop",hidden:true});
+    const dialog=el("section",{class:"caption-settings-modal",role:"dialog",
+      "aria-modal":"true","aria-label":"Caption Workbench Settings",tabindex:"-1"});
+    const title=el("h2",{text:"Settings"});
+    const close=el("button",{class:"btn btn-sm caption-settings-close",type:"button",
+      text:"✕","aria-label":"Close Settings"});
+    const heading=el("header",{class:"caption-settings-heading"},title,close);
+    const fields=el("div",{class:"caption-settings-fields"});
+    const row=(name,control,hint)=>{
+      const label=el("label",{class:"caption-settings-field"},
+        el("span",{text:name}),control);
+      if(hint)label.append(el("small",{text:hint}));
+      fields.append(label);
+    };
+    const setPx=(name,value,minimum,maximum)=>{
+      const v=Math.round(Number(value));
+      if(!Number.isFinite(v))return null;
+      const n=Math.max(minimum,Math.min(maximum,v));
+      tab.style.setProperty(name,n+"px");
+      return n;
+    };
+    const font=el("input",{type:"number",min:"10",max:"24",step:"1",
+      value:String(prefs.fontSize||13)});
+    font.value=String(setPx("--caption-settings-font",prefs.fontSize||13,10,24));
+    font.addEventListener("change",()=>{
+      const n=setPx("--caption-settings-font",font.value,10,24);
+      if(n!==null){font.value=String(n);savePref("fontSize",n);}
+    });
+    row("Font size (px)",font,"Tag rows and image caption text");
+    const preview=el("input",{type:"number",min:"160",max:"720",step:"10",
+      value:String(prefs.previewHeight||360)});
+    preview.value=String(setPx("--caption-settings-preview-height",prefs.previewHeight||360,160,720));
+    preview.addEventListener("change",()=>{
+      const n=setPx("--caption-settings-preview-height",preview.value,160,720);
+      if(n!==null){preview.value=String(n);savePref("previewHeight",n);}
+    });
+    row("Image preview max height (px)",preview,"Controls the large thumbnail stack");
+    const sep=el("select",{"aria-label":"Tag separator"});
+    [[",","Commas"],[";","Semicolons"],["|","Pipes"]]
+      .forEach(([value,text])=>sep.append(el("option",{value,text})));
+    sep.value=S.cap.studioDelimiter||localStorage.getItem("fizgig_caption_separator")||",";
+    sep.addEventListener("change",()=>{
+      S.cap.studioDelimiter=sep.value;
+      localStorage.setItem("fizgig_caption_separator",sep.value);
+      S.cap.studioRevision=(S.cap.studioRevision||0)+1;
+      renderCaptions();
+    });
+    row("Tag separator",sep,"How tags are separated in caption files");
+    const autocomplete=el("input",{type:"checkbox"});
+    autocomplete.checked=prefs.autocomplete!==false;
+    autocomplete.addEventListener("change",()=>{
+      savePref("autocomplete",autocomplete.checked);
+      renderCaptions();
+    });
+    row("Show tag autocomplete suggestions",autocomplete,"Uses known tags in the active dataset");
+    const advancedPanel=el("details",{class:"caption-settings-advanced"});
+    const advancedSummary=el("summary",{text:"Advanced Fizgig tools"});
+    original.open=false;
+    advancedPanel.append(advancedSummary,original);
+    const actions=el("footer",{class:"caption-settings-footer"},
+      el("span",{class:"field-hint",text:"Changes apply to this Caption Workbench."}),
+      el("button",{class:"btn btn-primary",type:"button",text:"Close",onclick:()=>hide()}));
+    dialog.append(heading,fields,advancedPanel,actions);
+    overlay.append(dialog);
+    document.body.append(overlay);
+    let lastFocus=null;
+    const hide=()=>{
+      if(overlay.hidden)return;
+      overlay.hidden=true;
+      original.open=false;
+      advancedPanel.open=false;
+      document.body.classList.remove("caption-settings-open");
+      if(lastFocus?.isConnected)lastFocus.focus({preventScroll:true});
+    };
+    close.addEventListener("click",hide);
+    overlay.addEventListener("pointerdown",e=>{if(e.target===overlay)hide();});
+    overlay.addEventListener("keydown",e=>{
+      if(e.key==="Escape"){e.stopPropagation();e.preventDefault();hide();return;}
+      if(e.key!=="Tab")return;
+      const focusables=[...dialog.querySelectorAll(
+        'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary,[tabindex="0"]')]
+        .filter(node=>node.getClientRects().length>0);
+      if(!focusables.length){e.preventDefault();dialog.focus();return;}
+      const first=focusables[0],last=focusables.at(-1);
+      if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
+      else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
+    });
+    captionSettingsDialog={overlay,dialog,advancedPanel,original,sep,
+      open(openAdvanced){
+        lastFocus=document.activeElement;
+        sep.value=S.cap.studioDelimiter||",";
+        overlay.hidden=false;
+        document.body.classList.add("caption-settings-open");
+        advancedPanel.open=!!openAdvanced;
+        original.open=!!openAdvanced;
+        close.focus({preventScroll:true});
+      }};
+  }
+  captionSettingsDialog.open(advanced);
+}
+
 function renderCaptionStudio(host,items,ext){
   const selection=S.cap.studioSelection||(S.cap.studioSelection=new Set());
   S.cap.studioDelimiter=S.cap.studioDelimiter||localStorage.getItem("fizgig_caption_separator")||",";
@@ -12200,7 +12319,9 @@ function renderCaptionStudio(host,items,ext){
   };
   const suggestions=el("datalist",{id:"studioTagAutocomplete"});
   for(const [tag] of tagIndex.sorted.slice(0,500))suggestions.append(el("option",{value:tag}));
-  newTag.setAttribute("list","studioTagAutocomplete");
+  let autoPrefs={};
+  try{autoPrefs=JSON.parse(localStorage.getItem("fizgig.caption-workbench.settings.v1")||"{}")||{};}catch(_){}
+  if(autoPrefs.autocomplete!==false)newTag.setAttribute("list","studioTagAutocomplete");
   right.append(suggestions);
   newTag.addEventListener("keydown",e=>{
     if(e.key==="Enter"){e.preventDefault();newTag.parentElement?.querySelector("button")?.click();}
@@ -12614,10 +12735,7 @@ function renderCaptionStudio(host,items,ext){
   const duplicatePanel=captionDuplicatePanel(ext);
   const removedPanel=captionRemovedPanel(ext);
   const toolsRow=el("div",{class:"studio-main-actions"});
-  const settingsBtn=btn("Settings",()=>{
-    const drawer=document.querySelector("#tab-captions .caption-tools-drawer");
-    if(drawer){drawer.open=true;drawer.scrollIntoView({block:"start",behavior:"smooth"});}
-  });
+  const settingsBtn=btn("Settings",()=>captionWorkbenchSettingsOpen());
   const existingWildcard=exportWildcard;
   const dupBtn=btn("Find Duplicate Images",()=>{
     duplicatePanel.open=true;
@@ -12776,9 +12894,9 @@ function renderCaptionStudio(host,items,ext){
     }
     else if(key==="r"){
       handled();
-      const drawer=document.querySelector("#tab-captions .caption-tools-drawer");
-      if(drawer)drawer.open=true;
-      $("frFind")?.focus();$("frFind")?.scrollIntoView({block:"nearest"});
+      captionWorkbenchSettingsOpen(true);
+      $("frFind")?.focus({preventScroll:true});
+      $("frFind")?.scrollIntoView({block:"nearest"});
     }
     else if(key==="b"){handled();editMenu.open=true;editMenu.scrollIntoView({block:"nearest"});}
     else if(key==="d"){handled();void cleanTags("duplicate");}
