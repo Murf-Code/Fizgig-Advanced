@@ -11902,6 +11902,11 @@ function captionAiControlsRestore(){
     if(action){action.textContent="Caption All (AI)";action.title="Caption every image in the dataset";}
   }
   for(const panel of panels){
+    // Workbench-only adapters are removed when restoring the original
+    // Controls/Settings drawer. All original DOM controls keep their IDs and
+    // event handlers, so there is only one source of truth.
+    panel?.querySelector(".studio-ai-quick-settings")?.remove();
+    panel?.querySelector(".studio-ai-selected-count")?.remove();
     if(panel?.parentNode!==home)
       home.insertBefore(panel,anchor?.parentNode===home?anchor:null);
   }
@@ -11918,23 +11923,64 @@ function captionAiControlsMount(target){
   if(!model||!generation)return false;
   const anchor=home.querySelector("#capTranslate")?.closest(".section-card");
   S.cap.studioAiControlMount={home,panels,anchor};
+  // The model panel, generation buttons and progress bar are the original
+  // wired Fizgig controls. This compact adapter only reflects the existing
+  // capOverwrite checkbox and the captioner's output kind.
+  const overwrite=model.querySelector("#capOverwrite");
+  const writeMode=el("select",{class:"studio-ai-write-mode",
+    "aria-label":"How to write captions"});
+  writeMode.append(el("option",{value:"replace",text:"Replace existing"}),
+    el("option",{value:"missing",text:"Only missing"}));
+  writeMode.value=overwrite?.checked?"replace":"missing";
+  writeMode.addEventListener("change",()=>{
+    if(!overwrite)return;
+    overwrite.checked=writeMode.value==="replace";
+    overwrite.dispatchEvent(new Event("change",{bubbles:true}));
+  });
+  const destination=el("div",{class:"studio-ai-output-value",
+    title:"Output format comes from the selected model, not a separate conversion."});
+  const syncDestination=()=>{
+    destination.textContent=capTagger()||capDesc()?.kind==="tags"?"Tags":"Natural language";
+  };
+  syncDestination();
+  const quickSettings=el("div",{class:"studio-ai-quick-settings"},
+    el("label",{class:"studio-ai-field"},el("span",{text:"Write"}),writeMode),
+    el("div",{class:"studio-ai-field"},el("span",{text:"Put it in"}),destination));
+  const modelContent=model.querySelector(".card-content");
+  const hint=model.querySelector("#capModelHint");
+  const modelRow=model.querySelector("#capModel")?.closest(".field-row");
+  modelContent?.insertBefore(quickSettings,
+    hint?.nextSibling||modelRow?.nextSibling||modelContent.firstChild);
+  const header=el("header",{class:"studio-ai-card-header"},
+    el("h3",{text:"Auto caption"}),
+    el("p",{text:"Generate captions for selected images with Fizgig's local captioning models. Choose whether to replace existing captions or fill in missing ones."}));
   const group=el("div",{class:"studio-ai-model-panels"});
+  group.addEventListener("change",event=>{
+    if(event.target?.id==="capModel"||event.target?.id==="capTask")
+      syncDestination();
+  });
   for(const panel of panels){
     if(panel===model){
-      const title=panel.querySelector(".card-title");if(title)title.textContent="Model & instructions";
+      const title=panel.querySelector(".card-title");
+      if(title)title.textContent="Model & instructions";
     }
     if(panel===generation){
       const title=panel.querySelector(".card-title");
       if(title)title.textContent="Generate captions";
       const desc=panel.querySelector(".card-desc");
-      if(desc)desc.textContent="Captions the images selected in Tags or Waterfall. Ctrl+A selects all images. The Overwrite option above controls whether existing captions are replaced.";
+      if(desc)desc.textContent="Only the selected images will be captioned in the workbench.";
       const action=panel.querySelector("#capAll");
       if(action){action.textContent="Caption selected (AI)";
-        action.title="Caption only selected images. Ctrl+A selects the dataset.";}
+        action.title="Caption selected images. Ctrl+A selects the dataset.";}
+      const count=S.cap.studioSelection?.size||0;
+      const status=el("div",{class:"studio-ai-selected-count",role:"status",
+        text:count+" selected picture"+(count===1?"":"s")+" will run."});
+      const content=panel.querySelector(".card-content");
+      if(content)content.insertBefore(status,content.firstChild);
     }
     group.append(panel);
   }
-  target.append(group);
+  target.append(el("section",{class:"studio-ai-caption-card"},header,group));
   return true;
 }
 

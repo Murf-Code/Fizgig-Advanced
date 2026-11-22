@@ -5217,3 +5217,115 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
 .studio-tag-context-menu .studio-context-rule{
   height:1px;margin:6px 5px;background:var(--border);
 }
+
+/* TagBench-inspired compact Auto caption card. The actual model, task,
+   overwrite checkbox, generation and progress controls remain connected to
+   Fizgig; only their in-workbench presentation changes. */
+#tab-captions .studio-host .studio-ai-dock {
+  padding:10px 12px 12px;gap:0;
+}
+#tab-captions .studio-host .studio-ai-caption-card {
+  box-sizing:border-box;min-width:0;padding:16px 14px 14px;
+  border:1px solid var(--accent-border);border-radius:14px;
+  background:var(--bg-surface);
+}
+#tab-captions.caption-theme-glass .studio-host .studio-ai-caption-card{
+  border:1px solid transparent;
+  background:
+    linear-gradient(color-mix(in srgb,var(--bg-surface) 92%,var(--bg-inset)),
+      color-mix(in srgb,var(--bg-surface) 88%,var(--bg-inset))) padding-box,
+    linear-gradient(135deg,var(--accent-border),var(--data-teal)) border-box;
+}
+#tab-captions .studio-host .studio-ai-card-header{
+  display:flex;flex-direction:column;gap:5px;margin:0 0 13px;
+}
+#tab-captions .studio-host .studio-ai-card-header h3{
+  margin:0;font-size:18px;font-weight:750;letter-spacing:-.025em;
+  line-height:1.2;color:var(--text-primary);
+}
+#tab-captions .studio-host .studio-ai-card-header p{
+  margin:0;font-size:12px;line-height:1.5;color:var(--text-secondary);
+}
+#tab-captions .studio-host .studio-ai-caption-card .studio-ai-model-panels {
+  display:flex;flex-direction:column;gap:8px;min-width:0;
+}
+#tab-captions .studio-host .studio-ai-caption-card .studio-ai-model-panels>.section-card,
+#tab-captions.caption-theme-glass .studio-host .studio-ai-caption-card .studio-ai-model-panels>.section-card{
+  padding:0;margin:0;width:100%;box-sizing:border-box;
+  background:transparent;border:0;border-radius:0;
+  box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;
+}
+#tab-captions .studio-host .studio-ai-caption-card .studio-ai-model-panels .card-title,
+#tab-captions .studio-host .studio-ai-caption-card .studio-ai-model-panels .card-desc{
+  display:none;
+}
+#tab-captions .studio-host .studio-ai-caption-card .studio-ai-model-panels .card-content{
+  display:flex;flex-direction:column;gap:11px;padding:0;min-width:0;
+}
+#tab-captions .studio-host .studio-ai-caption-card .studio-ai-model-panels .field-row{
+  gap:5px;min-width:0;margin:0;
+}
+#tab-captions .studio-host .studio-ai-caption-card .studio-ai-model-panels .field-row:has(>.field-label){
+  display:flex;align-items:stretch;flex-direction:column;flex-wrap:nowrap;
+}
+#tab-captions .studio-host .studio-ai-caption-card .studio-ai-model-panels .field-row>.field-label{
+  display:block;color:var(--text-secondary);font-size:12px;
+}
+#tab-captions .studio-host .studio-ai-caption-card .studio-ai-model-panels
+  :is(input:not([type=checkbox]),select,textarea){
+  width:100%;min-width:0;max-width:100%;box-sizing:border-box;
+}
+#tab-captions .studio-host .studio-ai-caption-card .studio-ai-model-panels .field-hint{
+  font-size:11px;line-height:1.4;color:var(--text-secondary);
+}
+/* Place model and its description above the workbench-only Write/Output row,
+   while preserving the legacy drawer's original DOM ordering. */
+#tab-captions .studio-host .studio-ai-caption-card .studio-ai-model-panels
+  >.section-card:first-child>.card-content>.field-row:has(#capModel){order:-6}
+#tab-captions .studio-host .studio-ai-caption-card .studio-ai-model-panels
+  >.section-card:first-child>.card-content>#capModelHint{order:-5}
+#tab-captions .studio-host .studio-ai-caption-card .studio-ai-model-panels
+  >.section-card:first-child>.card-content>.studio-ai-quick-settings{order:-4}
+#tab-captions .studio-host .studio-ai-quick-settings{
+  display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+  align-items:start;gap:10px;min-width:0;
+}
+#tab-captions .studio-host .studio-ai-field{
+  display:flex;flex-direction:column;gap:5px;min-width:0;
+  font-size:12px;color:var(--text-secondary);
+}
+#tab-captions .studio-host .studio-ai-field :is(select,.studio-ai-output-value){
+  display:flex;align-items:center;width:100%;min-width:0;
+  min-height:35px;padding:6px 8px;box-sizing:border-box;
+  background:var(--bg-inset);border:1px solid var(--border);
+  color:var(--text-primary);border-radius:8px;font-size:12px;
+}
+#tab-captions .studio-host .studio-ai-field select{
+  appearance:auto;
+}
+#tab-captions .studio-host .studio-ai-output-value{
+  opacity:.85;overflow:hidden;text-overflow:ellipsis;
+}
+/* The checkbox is still the real saved setting; the visible Write dropdown
+   controls it without introducing a duplicate persisted value. */
+#tab-captions .studio-host .studio-ai-caption-card .checkbox-label:has(#capOverwrite){
+  display:none;
+}
+#tab-captions .studio-host .studio-ai-caption-card .studio-ai-model-panels>.accent-card{
+  padding-top:6px;border-top:1px solid var(--border);
+}
+#tab-captions .studio-host .studio-ai-selected-count{
+  font-size:11px;color:var(--text-secondary);margin:2px 0 0;
+}
+#tab-captions .studio-host .studio-ai-caption-card .accent-card .field-row{
+  display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:7px;
+}
+#tab-captions .studio-host .studio-ai-caption-card #capAll{
+  flex:1 0 100%;border-radius:999px;min-height:36px;
+}
+#tab-captions .studio-host .studio-ai-caption-card :is(#capStatic,#capStop,#capUnload){
+  flex:1 1 auto;font-size:11px;min-height:30px;padding:5px 7px;
+}
+@media(max-width:450px){
+  #tab-captions .studio-host .studio-ai-quick-settings{grid-template-columns:1fr}
+}

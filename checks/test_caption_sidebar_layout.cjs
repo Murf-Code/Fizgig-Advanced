@@ -237,3 +237,15 @@ assert.match(app,/if\(canceled\|\|!next\|\|next===tag\)\{restore\(\);return;\}/)
 assert.match(app,/if\(!ok\)restore\(\)/);
 assert.match(app,/row\.isConnected\)row\.replaceChildren\(\.\.\.originalChildren\)/);
 assert.match(app,/e\.key==="Escape"\)\{/);
+
+// Auto-Captioner uses one reference-inspired card, retaining the original
+// model, options, write/overwrite state and generation/progress controls.
+assert.match(app,/const quickSettings=el\("div",\{class:"studio-ai-quick-settings"/);
+assert.match(app,/overwrite\.checked=writeMode\.value==="replace"/);
+assert.match(app,/overwrite\.dispatchEvent\(new Event\("change",\{bubbles:true\}\)\)/);
+assert.match(app,/destination\.textContent=capTagger\(\)\|\|capDesc\(\)\?\.kind==="tags"\?"Tags":"Natural language"/);
+assert.match(app,/target\.append\(el\("section",\{class:"studio-ai-caption-card"\},header,group\)\)/);
+assert.match(app,/panel\?\.querySelector\("\.studio-ai-quick-settings"\)\?\.remove\(\)/);
+assert.match(app,/text:count\+" selected picture"/);
+assert.match(css,/#tab-captions \.studio-host \.studio-ai-caption-card\s*\{/);
+assert.match(css,/#tab-captions \.studio-host \.studio-ai-quick-settings\s*\{/);
