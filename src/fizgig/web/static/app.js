@@ -11005,6 +11005,15 @@ function studioTokens(s,mode="auto"){return CaptionStudioTags.tags(s,mode,S.cap.
 function studioCompose(original,tags,mode="auto"){return CaptionStudioTags.compose(original,tags,mode,S.cap.studioDelimiter||",");}
 function studioUnique(a){return CaptionStudioTags.unique(a);}
 function studioCaptionMode(it){return CaptionStudioTags.kind(it.caption,S.cap.studioModes?.get(it.path)||"auto",S.cap.studioDelimiter||",");}
+function studioCategories(){
+  const key="fizgig_caption_categories:"+String(S.imageFolder||"");
+  if(S.cap.studioCategories?.key===key)return S.cap.studioCategories;
+  let raw={};try{raw=JSON.parse(localStorage.getItem(key)||"{}");}catch(e){raw={};}
+  const state={key,colors:raw.colors&&typeof raw.colors==="object"?raw.colors:{},
+    tags:raw.tags&&typeof raw.tags==="object"?raw.tags:{}};
+  S.cap.studioCategories=state;return state;
+}
+function studioSaveCategories(state){localStorage.setItem(state.key,JSON.stringify({colors:state.colors,tags:state.tags}));}
 function renderCaptionStudio(host,items,ext){
   const selection=S.cap.studioSelection||(S.cap.studioSelection=new Set());
   S.cap.studioDelimiter=S.cap.studioDelimiter||localStorage.getItem("fizgig_caption_separator")||",";
@@ -11013,6 +11022,7 @@ function renderCaptionStudio(host,items,ext){
   if(!current){host.textContent="No matching images.";return;}
   S.cap.studioPath=current.path;
   const captionMode=studioCaptionMode(current);
+  const categoryState=studioCategories();
   const editorCompose=tags=>editorCompose(tags,captionMode);
   const left=el("aside",{class:"caption-studio-panel studio-browser"});
   const center=el("div",{class:"caption-studio-panel studio-editor"});
@@ -11073,6 +11083,12 @@ function renderCaptionStudio(host,items,ext){
       const chip=el("button",{class:"studio-chip",text:t+" ×",title:"Click to remove; drag to reorder",onclick:()=>{
         ta.value=editorCompose(studioTokens(ta.value,captionMode).filter(x=>x.toLowerCase()!==t.toLowerCase()));remember();redraw();
       }});
+      const category=categoryState.tags[t.toLowerCase()];
+      if(category&&categoryState.colors[category]){
+        chip.style.borderColor=categoryState.colors[category];
+        chip.style.boxShadow="inset 3px 0 0 "+categoryState.colors[category];
+        chip.title+=" · "+category;
+      }
       chip.draggable=true;
       chip.addEventListener("dragstart",e=>e.dataTransfer.setData("text/plain",t));
       chip.addEventListener("dragover",e=>e.preventDefault());
@@ -11158,6 +11174,25 @@ function renderCaptionStudio(host,items,ext){
     tagIndex={items:S.cap.items,rev,sorted:[...counts].sort((a,b)=>b[1]-a[1])};
     S.cap.studioTagCache=tagIndex;
   }
+  const catPanel=el("details",{class:"studio-category-manager"});
+  catPanel.append(el("summary",{text:"Tag categories & colors"}));
+  const catName=el("input",{type:"text",placeholder:"New category",class:"w-path"});
+  const catColor=el("input",{type:"color",value:"#7c66d8",title:"Category color"});
+  catPanel.append(el("div",{class:"field-row"},catName,catColor,btn("Add category",()=>{
+    const name=catName.value.trim().slice(0,40);
+    if(!name){say("Type a category name.");return;}
+    categoryState.colors[name]=catColor.value;studioSaveCategories(categoryState);renderCaptions();
+  })));
+  for(const [name,color] of Object.entries(categoryState.colors).sort((a,b)=>a[0].localeCompare(b[0]))){
+    const inp=el("input",{type:"color",value:/^#[0-9a-f]{6}$/i.test(color)?color:"#7c66d8",title:"Change "+name+" color"});
+    inp.addEventListener("change",()=>{categoryState.colors[name]=inp.value;studioSaveCategories(categoryState);renderCaptions();});
+    catPanel.append(el("div",{class:"field-row"},inp,el("span",{text:name}),btn("Delete",()=>{
+      if(!confirm("Delete category "+name+"? Existing tag assignments will be unassigned."))return;
+      delete categoryState.colors[name];for(const [tag,cat] of Object.entries(categoryState.tags))if(cat===name)delete categoryState.tags[tag];
+      studioSaveCategories(categoryState);renderCaptions();
+    })));
+  }
+  right.append(catPanel);
   const sortSelect=el("select",{class:"w-combo"});
   [["frequency","Frequency ↓"],["frequency-asc","Frequency ↑"],["alpha","Name A–Z"],["alpha-desc","Name Z–A"]].forEach(([value,label])=>sortSelect.append(el("option",{value,text:label})));
   sortSelect.value=S.cap.studioTagSort||"frequency";
@@ -11165,9 +11200,23 @@ function renderCaptionStudio(host,items,ext){
   const sorting=sortSelect.value;
   const sorted=[...tagIndex.sorted].sort((a,b)=>sorting==="alpha"?a[0].localeCompare(b[0]):sorting==="alpha-desc"?b[0].localeCompare(a[0]):sorting==="frequency-asc"?a[1]-b[1]||a[0].localeCompare(b[0]):b[1]-a[1]||a[0].localeCompare(b[0]));
   const index=el("div",{class:"studio-tag-index"});
-  for(const [tag,n] of sorted.slice(0,200))index.append(el("button",{class:"studio-index-tag",text:tag+" · "+n,onclick:()=>{
-    S.cap.studioQuery=JSON.stringify(tag);S.cap.page=0;renderCaptions();
-  }}));
+  for(const [tag,n] of sorted.slice(0,200)){
+    const selected=categoryState.tags[tag]||"";
+    const tagBtn=el("button",{class:"studio-index-tag",text:tag+" · "+n,onclick:()=>{
+      S.cap.studioQuery=JSON.stringify(tag);S.cap.page=0;renderCaptions();
+    }});
+    if(selected&&categoryState.colors[selected])tagBtn.style.borderLeft="4px solid "+categoryState.colors[selected];
+    const categorySelect=el("select",{class:"studio-category-select",title:"Category for "+tag});
+    categorySelect.append(el("option",{value:"",text:"Uncategorized"}));
+    for(const name of Object.keys(categoryState.colors).sort())categorySelect.append(el("option",{value:name,text:name}));
+    categorySelect.value=selected;
+    categorySelect.addEventListener("change",()=>{
+      if(categorySelect.value)categoryState.tags[tag]=categorySelect.value;
+      else delete categoryState.tags[tag];
+      studioSaveCategories(categoryState);renderCaptions();
+    });
+    index.append(el("div",{class:"studio-category-index-row"},tagBtn,categorySelect));
+  }
   right.append(el("div",{class:"field-row"},sortSelect,btn("Export wildcard",()=>{
     const txt=CaptionStudioTags.wildcards(sorted.map(x=>x[0]));
     const url=URL.createObjectURL(new Blob([txt],{type:"text/plain;charset=utf-8"}));
