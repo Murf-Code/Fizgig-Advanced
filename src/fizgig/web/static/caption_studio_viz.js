@@ -215,21 +215,29 @@ const CaptionStudioViz = (() => {
   const tbHue=id=>id<TB_HUES.length?TB_HUES[id]:
     "hsl("+Math.round(id*137.508%360)+" 72% 62%)";
   function tagbenchGraph(items) {
-    const counts=new Map(),pairs=new Map();
+    // First count tags, then collect co-occurrences only for the top 120
+    // that Constellation displays. The old one-pass implementation built
+    // pairwise combinations of *every* dataset tag before discarding most.
+    // This retains the exact same visible nodes and edge weights, but caps
+    // the pair map at 7,140 entries even on very large datasets.
+    const counts=new Map();
     for(const it of items){
-      const tags=[...new Set((it.tags||[]).map(lower).filter(Boolean))];
-      for(const tag of tags)counts.set(tag,(counts.get(tag)||0)+1);
+      const unique=new Set((it.tags||[]).map(lower).filter(Boolean));
+      for(const tag of unique)counts.set(tag,(counts.get(tag)||0)+1);
+    }
+    const all=[...counts].map(([tag,count])=>({tag,count}))
+      .sort((a,b)=>b.count-a.count||a.tag.localeCompare(b.tag));
+    const top=all.slice(0,120),keep=new Set(top.map(x=>x.tag)),pairs=new Map();
+    for(const it of items){
+      const tags=[...new Set((it.tags||[]).map(lower).filter(tag=>keep.has(tag)))];
       for(let i=0;i<tags.length;i++)for(let j=i+1;j<tags.length;j++){
         const a=tags[i],b=tags[j],key=a<b?a+"\0"+b:b+"\0"+a;
         pairs.set(key,(pairs.get(key)||0)+1);
       }
     }
-    const all=[...counts].map(([tag,count])=>({tag,count}))
-      .sort((a,b)=>b.count-a.count||a.tag.localeCompare(b.tag));
-    const top=all.slice(0,120),keep=new Set(top.map(x=>x.tag));
     const edges=[...pairs].map(([key,w])=>{
       const [a,b]=key.split("\0");return {a,b,w};
-    }).filter(e=>keep.has(e.a)&&keep.has(e.b)).sort((a,b)=>b.w-a.w);
+    }).sort((a,b)=>b.w-a.w);
     const linkCounts=new Map();
     for(const edge of edges){
       linkCounts.set(edge.a,(linkCounts.get(edge.a)||0)+1);
@@ -413,12 +421,19 @@ const CaptionStudioViz = (() => {
       const category=categories?.tags?.[n.tag],manual=category&&categories.colors?.[category];
       n.color=manual||tbHue(n.group);colors.set(n.tag,n.color);
     });
+    // Index node colors once; avoid O(all dataset tags × 120) scans.
+    const stemColors=new Map(),familyColors=new Map();
+    for(const n of nodes){
+      const stem=tbStem(n.tag),family=tbFamily(n.tag);
+      if(stem.length>=4&&!stemColors.has(stem))stemColors.set(stem,n.color);
+      if(family!==null&&!familyColors.has(family))familyColors.set(family,n.color);
+    }
     for(const tag of all)if(!colors.has(tag.tag)){
       const family=tbFamily(tag.tag),stem=tbStem(tag.tag);
-      const friend=nodes.find(n=>tbStem(n.tag)===stem&&stem.length>=4)
-        ||nodes.find(n=>family!==null&&tbFamily(n.tag)===family);
+      const friendColor=(stem.length>=4&&stemColors.get(stem))||
+        (family!==null&&familyColors.get(family));
       const category=categories?.tags?.[tag.tag],manual=category&&categories.colors?.[category];
-      if(manual||friend)colors.set(tag.tag,manual||friend.color);
+      if(manual||friendColor)colors.set(tag.tag,manual||friendColor);
     }
     return {...graph,nodes,chosen,alike,colors};
   }
