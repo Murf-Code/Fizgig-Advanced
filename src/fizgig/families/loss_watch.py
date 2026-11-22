@@ -830,6 +830,113 @@ class Watch:
         except Exception:
             logger.warning("[live-dataset] could not report outstanding source changes", exc_info=True)
 
+    def _refresh_h3_media(self, key, item, source, device):
+        """Rebuild MiniMax H3 clip/voice latents with the native video/audio cache codecs.
+
+        Must run between epochs with the train model parked. Never replace a cache
+        unless every participating source and output validation succeeds.
+        """
+        import copy
+        import numpy as np
+        from PIL import Image
+        from safetensors import safe_open
+        from fizgig.minimax import caching as h3_cache
+        from fizgig.dataset.image_dataset import AUDIO_SENTINEL_RESO, resize_image_to_bucket
+        from fizgig.families import clips as family_clips
+        from fizgig.minimax import clip as h3_clip
+        from fizgig.minimax.audio_vae import load_minimax_h3_audio_vae
+        from fizgig.minimax.vae import MiniMaxH3VideoVAEEncoder
+
+        if self.driver.description.key != "minimax":
+            raise ValueError("Only MiniMax H3 supports live clip/audio refresh")
+        ds = self._owner_dataset(key)
+        if ds is None:
+            raise ValueError("Media's dataset block was not found")
+        audio_only = os.path.splitext(source)[1].lower() in (".wav", ".mp3", ".flac", ".m4a")
+        clip = source.lower().endswith(".mp4")
+        if not (audio_only or clip):
+            raise ValueError("Unsupported media extension")
+        ref_sources = self._reference_paths(key, source) if clip else []
+        if clip and getattr(ds, "has_control", False) and len(ref_sources) != 1:
+            raise ValueError("H3 clip sliders need exactly one paired before-clip")
+        media_sources = [source] + ref_sources
+        def stamps():
+            return tuple((p, os.stat(p).st_size, os.stat(p).st_mtime_ns) for p in media_sources)
+        signature = stamps()
+        old_path = item.latent_cache_path
+        old_size = tuple(item.original_size)
+        audio_path = str(getattr(self.driver, "options", {}).get("audio_vae") or "")
+        with safe_open(old_path, framework="pt", device="cpu") as f:
+            old_keys = set(f.keys())
+        if (audio_only or "audio_latent" in old_keys) and not (
+                audio_path and os.path.isfile(audio_path)):
+            raise ValueError("Audio VAE missing; cannot safely preserve the clip/voice audio cache")
+        audio_vae = None
+        vae = None
+        scratch = copy.copy(item)
+        scratch.item_key = source  # H3's audio decoder reads this source path
+        if audio_only:
+            scratch.original_size = AUDIO_SENTINEL_RESO
+            scratch.bucket_size = AUDIO_SENTINEL_RESO
+            scratch.content = None
+            scratch.control_content = None
+        else:
+            frames = h3_clip.read_frames(source)
+            family_clips.validate(source, self.driver.description.clip_spec,
+                                  self.driver.description.display_name, frames=len(frames))
+            if not frames:
+                raise ValueError("Video clip contains no frames")
+            scratch.original_size = Image.fromarray(frames[0]).size
+            scratch.content = [resize_image_to_bucket(Image.fromarray(frame), tuple(item.bucket_size))
+                               for frame in frames]
+            if ref_sources:
+                before, _n = family_clips.hold_to_grid(
+                    h3_clip.read_frames(ref_sources[0]), self.driver.description.clip_spec)
+                scratch.control_content = [
+                    resize_image_to_bucket(Image.fromarray(frame), tuple(item.bucket_size))
+                    for frame in before]
+        cache_name = copy.copy(scratch)
+        new_cache = ds.get_latent_cache_path(cache_name)
+        scratch.latent_cache_path = new_cache + ".live-update"
+        try:
+            if audio_path and os.path.isfile(audio_path):
+                audio_vae = load_minimax_h3_audio_vae(audio_path, device=device, dtype=torch.float32)
+            if clip:
+                vae = MiniMaxH3VideoVAEEncoder()
+                with safe_open(self.vae_path, framework="pt", device="cpu") as f:
+                    vae.load_state_dict({k: f.get_tensor(k) for k in f.keys()}, strict=False)
+                vae = vae.to(device, torch.float32).eval()
+                h3_cache._encode_clip(vae, scratch, audio_vae, device, torch.float32,
+                                      clip_still=str(getattr(self.driver, "options", {})
+                                                     .get("clip_still_as_photo") or "") == "1")
+            else:
+                h3_cache._encode_audio_item(scratch, audio_vae)
+            if stamps() != signature:
+                raise ValueError("Clip/voice or control changed during encoding")
+            # Keep the runtime shape/bucket fixed, but update original dimensions
+            # for any training-time mask and crop transformations.
+            os.replace(scratch.latent_cache_path, new_cache)
+            for ds_item in _items(self.group).values():
+                if ds_item.latent_cache_path == old_path and (
+                    str(ds_item.item_key) == key or
+                    str(ds_item.item_key) == key.removesuffix("#still") + "#still"):
+                    ds_item.latent_cache_path = new_cache
+                    ds_item.original_size = scratch.original_size
+            if old_path != new_cache:
+                _remove(old_path)
+            self.removed_keys.discard(key)
+            self.unsupported_media_keys.discard(key)
+            # A clip's still item shares this cache and must be released too.
+            self.removed_keys.discard(key.removesuffix("#still") + "#still")
+            self.unsupported_media_keys.discard(key.removesuffix("#still") + "#still")
+            logger.info("[live-dataset] H3 %s re-encoded at next epoch (same active bucket %s)",
+                        key, item.bucket_size)
+        finally:
+            _remove(scratch.latent_cache_path)
+            del vae, audio_vae
+            gc.collect()
+            torch.cuda.empty_cache()
+
     def _images(self, epoch, dit, device, parkable, detected=None):
         """Rebuild only edited still-image latents at the boundary, retaining their training bucket."""
         path = os.path.join(self.output_dir, "loss_log", "image_updates.json")
@@ -878,9 +985,15 @@ class Watch:
                 # Never train on stale cache while the edited source is waiting to refresh.
                 self.removed_keys.add(str(k))
                 if os.path.splitext(source)[1].lower() not in _picture_exts():
-                    self.unsupported_media_keys.add(str(k))
-                    logger.error("[live-dataset] %s was edited: audio/video recaching during an active "
-                                 "run is not supported for this family; excluded until restart", k)
+                    if self.driver.description.key == "minimax":
+                        # Only the canonical clip entry encodes the shared media
+                        # cache; its derived #still batch item uses the same file.
+                        if not str(k).endswith("#still"):
+                            todo.append((str(k), items[k], source))
+                    else:
+                        self.unsupported_media_keys.add(str(k))
+                        logger.error("[live-dataset] %s was edited: the family cannot live-recache "
+                                     "audio/video, so its stale batch is excluded until restart", k)
                 else:
                     todo.append((str(k), items[k], source))
         if not todo:
@@ -903,6 +1016,9 @@ class Watch:
             try:
                 for k, item, source in todo:
                     try:
+                        if os.path.splitext(source)[1].lower() not in _picture_exts():
+                            self._refresh_h3_media(k, item, source, device)
+                            continue
                         # A paired edit must refresh target, every before-image latent and
                         # reference-aware text together. Never discard control latents.
                         from safetensors import safe_open
