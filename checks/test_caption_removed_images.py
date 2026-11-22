@@ -149,3 +149,19 @@ def test_failed_mask_move_rolls_back_image_and_caption(tmp_path, monkeypatch):
     assert (root / "photo.png").exists()
     assert (root / "photo.txt").read_text() == "caption"
     assert (root / "masks" / "photo-masklabel.png").exists()
+
+
+def test_corrupt_journal_prevents_new_removal_without_losing_files(tmp_path):
+    import pytest
+    from fizgig.web.server import remove_from_dataset
+    root = tmp_path / "dataset"
+    removed = root / "removed"
+    removed.mkdir(parents=True)
+    Image.new("RGB", (16, 16)).save(root / "lion.png")
+    (root / "lion.txt").write_text("first")
+    (removed / ".fizgig_caption_removals.json").write_text("{corrupt", encoding="utf-8")
+    with pytest.raises(ValueError, match="journal"):
+        remove_from_dataset(str(root), "lion.png", ".txt")
+    assert (root / "lion.png").exists()
+    assert (root / "lion.txt").read_text() == "first"
+    assert (removed / ".fizgig_caption_removals.json").read_text() == "{corrupt"
