@@ -6,10 +6,16 @@ const CaptionStudioViz = (() => {
   // Stable, theme-derived tag hues. Category assignments can override these.
   const tagPalette = ["--accent","--data-teal","--data-blue","--special",
     "--data-green","--data-orange","--accent-hover","--special-soft"];
+  let generatedTagColors=new Map();
+  const setTagbenchPalette=palette=>{
+    generatedTagColors=palette instanceof Map?palette:new Map();
+  };
   function colorForTag(tag, categories) {
     const key=lower(tag);
     const category=categories?.tags?.[key];
     if(category&&categories?.colors?.[category])return categories.colors[category];
+    if(categories?.generatedColors?.has(key))return categories.generatedColors.get(key);
+    if(generatedTagColors.has(key))return generatedTagColors.get(key);
     let hash=2166136261;
     for(const character of key)hash=Math.imul(hash^character.codePointAt(0),16777619)>>>0;
     return "var("+tagPalette[hash%tagPalette.length]+")";
@@ -428,6 +434,7 @@ const CaptionStudioViz = (() => {
       if(!it.size)return;
       const tile=document.createElement("button");
       tile.type="button";tile.className="studio-tb-flow-tile";
+      tile.dataset.path=it.path;
       tile.setAttribute("aria-label",it.name);
       if(it.path===activePath||selection?.has(it.path))tile.classList.add("is-picked");
       const img=document.createElement("img");
@@ -440,7 +447,27 @@ const CaptionStudioViz = (() => {
       cols[i%columns].append(tile);
     });
     if(!items.length){const hint=document.createElement("p");hint.textContent="No images match the current dataset filter.";hint.className="field-hint";flow.append(hint);}
-    stage.append(flow);return stage;
+    stage.append(flow);
+    let widthCount=columns;
+    const resize=()=>{
+      if(!stage.isConnected)return;
+      const wanted=Math.max(2,Math.floor(Math.max(400,stage.clientWidth)/228));
+      if(wanted===widthCount)return;
+      widthCount=wanted;
+      const tiles=[...flow.querySelectorAll(".studio-tb-flow-tile")];
+      flow.replaceChildren();
+      const fresh=Array.from({length:wanted},()=>{
+        const col=document.createElement("div");col.className="studio-tb-flow-column";
+        flow.append(col);return col;
+      });
+      tiles.forEach((tile,i)=>fresh[i%wanted].append(tile));
+    };
+    if(typeof ResizeObserver!=="undefined"){
+      const observer=new ResizeObserver(resize);
+      observer.observe(stage);
+      stage.dispose=()=>observer.disconnect();
+    }
+    return stage;
   }
   function tagbenchConstellation(model,onPick,pickedTag=null) {
     const stage=document.createElement("div");stage.className="studio-tb-constellation";
@@ -621,6 +648,6 @@ const CaptionStudioViz = (() => {
     return stage;
   }
 
-  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,tagbenchModel,tagbenchWaterfall,tagbenchConstellation});
+  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation});
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = CaptionStudioViz;
