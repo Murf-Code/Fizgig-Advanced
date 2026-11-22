@@ -7237,6 +7237,37 @@ function meRemoveLayer(){
   m.rmDirtyRect=null;
   return m.rmTint;
 }
+// Remove's red preview is composited on its own canvas layer. During a stroke
+// only its dirty rectangle changes: the photograph never needs to repaint.
+let meRemoveFrame=0;
+function meCanSeparateRemove(m){
+  return !!(m.rm&&m.rmDirty&&!m.showBefore&&m.tool!=="crop");
+}
+function meSyncRemoveOverlay(){
+  const m=meState(),cv=$("meCanvas"),stage=$("meStage");
+  if(!meCanSeparateRemove(m)||!cv||!stage||!m.mask||!cv.isConnected){
+    if(m.rmTint)m.rmTint.hidden=true;
+    return false;
+  }
+  const overlay=meRemoveLayer();
+  if(overlay.parentNode!==stage)stage.append(overlay);
+  overlay.classList.add("me-remove-overlay");
+  // The tinted mask uses image-space pixels; a CSS transform maps it to the
+  // current zoom/pan in the editor canvas without resampling the base image.
+  const sx=cv.clientWidth/cv.width,sy=cv.clientHeight/cv.height;
+  const transform="matrix("+(m.zoom*sx)+",0,0,"+(m.zoom*sy)+","+
+    (cv.offsetLeft+m.ox*sx)+","+(cv.offsetTop+m.oy*sy)+")";
+  if(overlay.style.transform!==transform)overlay.style.transform=transform;
+  overlay.hidden=false;
+  return true;
+}
+function meDrawRemove(){
+  if(meRemoveFrame)return;
+  meRemoveFrame=requestAnimationFrame(()=>{
+    meRemoveFrame=0;
+    if($("meCanvas")?.isConnected)meSyncRemoveOverlay();
+  });
+}
 // Batch pointer, zoom and animation invalidations to one canvas paint per frame.
 let mePaintFrame=0;
 function meDraw(){
@@ -7263,7 +7294,10 @@ function mePaint() {
       c.globalAlpha = 1;
     }
   }
-  if (m.rm && m.rmDirty && !m.showBefore) {           // Remove: what will be taken out, red over the picture
+  // Crop draws its handles above Remove in the base canvas; for other tools
+  // the red mask lives on an independent DOM canvas and does not repaint the
+  // entire photo when the pointer moves.
+  if (m.rm && m.rmDirty && !m.showBefore && !meCanSeparateRemove(m)) {
     c.globalAlpha = 0.6; c.drawImage(meRemoveLayer(), 0, 0); c.globalAlpha = 1;
   }
   if (m.tool === "crop" && m.crop) meDrawCrop(c, w, h);
@@ -7274,8 +7308,9 @@ function mePaint() {
     c.beginPath(); c.arc(m.samAt[0], m.samAt[1], 6 + ph * 22, 0, Math.PI * 2); c.stroke();
     c.fillStyle = themeColor("--pic-mask"); c.beginPath(); c.arc(m.samAt[0], m.samAt[1], 4, 0, Math.PI * 2); c.fill();
   }
-  // The brush ring is a GPU-composited overlay: no full-image canvas redraw
-  // is necessary while the pointer is only hovering over the preview.
+  meSyncRemoveOverlay();
+  // Small brush rings are native cursors; no rendering work is required
+  // when moving the pointer over an unchanged image.
 }
 function meAt(e) {
   const m = meState(), r = $("meCanvas").getBoundingClientRect();
@@ -7700,6 +7735,25 @@ function meWmAllClick() {
   meWmAllReset();
   meRemoveAllWm();
 }
+function meNativeBrushCursor(size){
+  // PhotoCraft's latency fix: let the operating system move modest brush
+  // outlines independently of frame painting, including on slow frames.
+  const diameter=Math.max(2,Math.round(size));
+  if(diameter>96)return null; // browser/OS cursor size limits vary
+  const m=meState(),cache=m.nativeBrushCursors||(m.nativeBrushCursors=new Map());
+  if(cache.has(diameter))return cache.get(diameter);
+  const edge=diameter+6,mid=edge/2;
+  const canvas=el("canvas",{width:edge,height:edge}),context=canvas.getContext("2d");
+  context.beginPath();context.arc(mid,mid,diameter/2,0,Math.PI*2);
+  context.lineWidth=3;context.strokeStyle="rgba(0,0,0,.94)";context.stroke();
+  context.beginPath();context.arc(mid,mid,diameter/2,0,Math.PI*2);
+  context.lineWidth=1.4;context.strokeStyle="#ffffff";context.stroke();
+  const style='url("'+canvas.toDataURL("image/png")+'") '+Math.floor(mid)+
+    " "+Math.floor(mid)+", crosshair";
+  if(cache.size>=24)cache.delete(cache.keys().next().value);
+  cache.set(diameter,style);
+  return style;
+}
 function meWire() {
   const m = meState(), cv = $("meCanvas");
   let last = null, pan = null, space = false;
@@ -7711,11 +7765,19 @@ function meWire() {
       cursor.hidden=true;return;
     }
     const size=Math.max(2,Number($("meSize").value)*p.cssScale);
+    const nativeCursor=meNativeBrushCursor(size);
+    if(nativeCursor){
+      if(cv.style.cursor!==nativeCursor)cv.style.cursor=nativeCursor;
+      cursor.hidden=true;
+      return;
+    }
+    if(cv.style.cursor!=="none")cv.style.cursor="none";
     if(cursorSize!==size){
       cursorSize=size;
       cursor.style.width=size+"px";cursor.style.height=size+"px";
     }
-    // Moving this CSS layer does not repaint the photo or its 4MP mask.
+    // Only large outlines use the compositor layer. The stage/canvas share
+    // the same coordinate origin in Tags and Image Prep.
     cursor.style.transform="translate3d("+(p.px+cv.offsetLeft)+"px,"+
       (p.py+cv.offsetTop)+"px,0) translate(-50%,-50%)";
     cursor.hidden=false;
@@ -7787,7 +7849,7 @@ function meWire() {
     }
     if (m.tool === "remove") {                         // paint what to take out; right-drag rubs it out
       if (e.button !== 0 && e.button !== 2) return;
-      m.flip = e.button === 2; meRmLine(p, p); last = p; m.rmHandEdited = true; meImgBar(); meDraw(); return;
+      m.flip = e.button === 2; meRmLine(p, p); last = p; m.rmHandEdited = true; meImgBar(); meDrawRemove(); return;
     }
     if (m.tool === "sam") {                            // a click adds; right-click or Alt+click takes away
       if (e.button === 0 || e.button === 2) meSamClick(p, e.button === 2 || e.altKey);
@@ -7804,8 +7866,9 @@ function meWire() {
     else if (m.cropDrag) { meCropMove(p); meImgBar(); }
     else if (last) { if (m.tool === "remove") meRmLine(last, p); else meStroke(last, p); last = p; }
     else if (m.tool === "crop" && m.crop && !m.stepBusy) cv.style.cursor = ME_CROP_CURSOR[meCropHit(p)];
-    // Hover should never redraw a multi-megapixel image.
-    if(pan||m.cropDrag||last)meDraw();
+    // Painting a Remove stroke updates only the red overlay, not the photo.
+    if(last&&m.tool==="remove")meDrawRemove();
+    else if(pan||m.cropDrag||last)meDraw();
   });
   const up = () => {
     if (last && m.tool === "remove") meRmSave(true);  // stroke end: kept at once
