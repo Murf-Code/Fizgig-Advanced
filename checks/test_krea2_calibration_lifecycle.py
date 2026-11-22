@@ -53,8 +53,8 @@ def test_missing_validation_holdout_is_logged(tmp_path, caplog):
 
 def test_calibration_exception_is_visible(tmp_path, monkeypatch, caplog):
     from fizgig.krea2 import direction_edit_v2
-    monkeypatch.setattr(direction_edit_v2, "captions_from_group", lambda _: {"x": "text"} * 1 if False else
-                        {str(i): "caption" for i in range(8)})
+    monkeypatch.setattr(direction_edit_v2, "captions_from_group",
+                        lambda _: {str(i): "caption" for i in range(8)})
     monkeypatch.setattr(direction_edit_v2, "captions_from_held", lambda _: {"h": "caption"})
     monkeypatch.setattr(direction_edit_v2, "make_config", lambda *a, **kw: {})
     def fail(*a, **kw):
