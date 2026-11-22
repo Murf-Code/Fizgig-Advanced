@@ -140,6 +140,15 @@ def _put(files):
             write_atomic(path, data)
 
 
+def step_targets(sid):
+    """Media paths restored by an undo/redo step, for review-lock preflight."""
+    with _lock:
+        change = _steps.get(int(sid))
+    if change is None:
+        raise ValueError("That image history step is no longer available.")
+    return list(change[0])
+
+
 def step(sid, direction):
     """Undo ("undo") or redo ("redo") the image step `sid`: its files go back to how they were before or after it."""
     with _lock:
