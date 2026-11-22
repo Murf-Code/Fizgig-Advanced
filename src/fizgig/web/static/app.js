@@ -12075,6 +12075,55 @@ function renderCaptionStudio(host,items,ext){
   indexSearch.value=S.cap.studioIndexSearch||"";
   const tagCount=el("div",{class:"studio-tag-count field-hint"});
   const selectionState=S.cap.studioPickedTags||(S.cap.studioPickedTags=new Set());
+  let pendingTagClick=null;
+  let tagEditing=null;
+  const beginTagRename=(row,tag)=>{
+    if(tagEditing)return;
+    const entry=el("input",{type:"text",class:"studio-inline-tag-edit",value:tag,
+      "aria-label":"Rename "+tag+" throughout the dataset"});
+    row.replaceChildren(entry);
+    tagEditing={old:tag,entry};
+    let canceled=false,finished=false;
+    const finish=async()=>{
+      if(finished)return;finished=true;tagEditing=null;
+      const next=entry.value.trim();
+      if(canceled||!next||next.toLowerCase()===tag.toLowerCase()){tagRows();return;}
+      const ok=await apply("rename",tag,"all",next);
+      if(ok){
+        const prev=categoryState.tags[tag.toLowerCase()];
+        if(prev&&!categoryState.tags[next.toLowerCase()]){
+          categoryState.tags[next.toLowerCase()]=prev;
+          delete categoryState.tags[tag.toLowerCase()];
+          studioSaveCategories(categoryState);
+        }
+      }
+      tagRows();
+    };
+    entry.addEventListener("keydown",e=>{
+      if(e.key==="Enter"){e.preventDefault();entry.blur();}
+      if(e.key==="Escape"){canceled=true;e.preventDefault();entry.blur();}
+    });
+    entry.addEventListener("blur",finish,{once:true});
+    entry.focus({preventScroll:true});entry.select();
+  };
+  const openTagActions=(e,tag,row)=>{
+    e.preventDefault();
+    document.querySelectorAll(".studio-tag-context-menu").forEach(n=>n.remove());
+    const menu=el("div",{class:"studio-image-context-menu studio-tag-context-menu",role:"menu"});
+    const addAction=(name,fn)=>menu.append(el("button",{type:"button",role:"menuitem",text:name,
+      onclick:()=>{menu.remove();fn();}}));
+    addAction("Rename tag (all images)",()=>beginTagRename(row,tag));
+    addAction("Remove tag from selected images",()=>void apply("remove",tag,"selection"));
+    addAction("Remove tag from all images",()=>void apply("remove",tag,"all"));
+    document.body.append(menu);
+    const rect=menu.getBoundingClientRect();
+    menu.style.left=Math.max(6,Math.min(e.clientX,window.innerWidth-rect.width-8))+"px";
+    menu.style.top=Math.max(6,Math.min(e.clientY,window.innerHeight-rect.height-8))+"px";
+    const dismiss=event=>{
+      if(!menu.contains(event.target)){menu.remove();document.removeEventListener("pointerdown",dismiss,true);}
+    };
+    document.addEventListener("pointerdown",dismiss,true);
+  };
   const tagRows=()=>{
     const search=indexSearch.value.trim().toLowerCase();
     S.cap.studioIndexSearch=indexSearch.value;
@@ -12093,24 +12142,25 @@ function renderCaptionStudio(host,items,ext){
         tagBtn.style.color=categoryState.colors[category];
       }
       tagBtn.addEventListener("click",e=>{
+        if(e.detail>1)return;
         if(e.ctrlKey||e.metaKey){
           selectionState.has(tag)?selectionState.delete(tag):selectionState.add(tag);
-          tagRows();return;
+          tagBtn.classList.toggle("is-picked",selectionState.has(tag));return;
         }
-        const exact=JSON.stringify(tag);
-        S.cap.studioQuery=S.cap.studioQuery===exact?"":exact;
-        S.cap.page=0;renderCaptions();
+        if(pendingTagClick)clearTimeout(pendingTagClick);
+        pendingTagClick=setTimeout(()=>{
+          pendingTagClick=null;
+          const exact=JSON.stringify(tag);
+          S.cap.studioQuery=S.cap.studioQuery===exact?"":exact;
+          S.cap.page=0;renderCaptions();
+        },260);
       });
-      tagBtn.addEventListener("contextmenu",e=>{
+      tagBtn.addEventListener("dblclick",e=>{
         e.preventDefault();
-        const choices=["Uncategorized",...Object.keys(categoryState.colors).sort()];
-        const choice=prompt("Category for "+tag+"\n"+choices.join(" | "),category||"Uncategorized");
-        if(choice===null)return;
-        if(choice==="Uncategorized"||choice===""){delete categoryState.tags[tag];}
-        else if(categoryState.colors[choice])categoryState.tags[tag]=choice;
-        else {alert("Choose an existing category in Tag categories & colors.");return;}
-        studioSaveCategories(categoryState);tagRows();
+        if(pendingTagClick){clearTimeout(pendingTagClick);pendingTagClick=null;}
+        beginTagRename(row,tag);
       });
+      tagBtn.addEventListener("contextmenu",e=>openTagActions(e,tag,row));
       row.append(tagBtn);index.append(row);
     }
     tagCount.textContent=matched.length+" / "+sorted.length+" Tags";
@@ -12150,11 +12200,15 @@ function renderCaptionStudio(host,items,ext){
     explore,tagCount);
   drawExplore();
   const bulk=el("div",{class:"studio-bulk"});
-  const apply=async(mode)=>{
-    const old=prompt("Tag to "+mode+":");if(!old||!old.trim())return;
-    const newTag=mode==="rename"?prompt("Replacement tag:"):"";
-    if(mode==="rename"&&!newTag)return;
-    const affected=selection.size?S.cap.items.filter(it=>selection.has(it.path)):S.cap.items;
+  // One backend mutation path for inline TagBench actions and legacy batch tools.
+  // Scope is explicit: 'all' renames across the dataset; 'selection' or 'image'
+  // affects only the chosen pictures. Never silently expand a selection.
+  const apply=async(mode,original=null,scope="selection",replacement=null)=>{
+    const old=original??prompt("Tag to "+mode+":");if(!old||!old.trim())return false;
+    const newTag=mode==="rename"?(replacement??prompt("Replacement tag:")):"";
+    if(mode==="rename"&&(!newTag||!newTag.trim()))return false;
+    const affected=scope==="all"?S.cap.items:scope==="image"?[current]:
+      selection.size?S.cap.items.filter(it=>selection.has(it.path)):[current];
     if(affected.some(it=>drafts.has(it.path)&&drafts.get(it.path)!==it.caption)){
       alert("Save your unsaved caption drafts before a bulk tag operation.");return;
     }
@@ -12169,7 +12223,8 @@ function renderCaptionStudio(host,items,ext){
       if(after!==it.caption)changes.push({folder:capItemFolder(it),name:it.name,path:it.path,
         before:it.caption,after});
     }
-    if(!changes.length){say("No editable captions match.");return;}
+    if(!changes.length){say("No editable captions match.");return false;}
+    if(changes.length>1000){say("Too many changes for one atomic batch. Limit the selection to 1000 images.");return false;}
     try{
       await api("/api/captions/batch_edit",{ext,edits:changes.map(c=>({
         folder:c.folder,name:c.name,expected:c.before,text:c.after
@@ -12180,7 +12235,8 @@ function renderCaptionStudio(host,items,ext){
       renderCaptions();
       const n=$("captionsGrid").querySelector(".studio-bulk-note");
       if(n)n.textContent=changes.length+" captions updated · one undo restores the group";
-    }catch(e){say(e.message);}
+      return true;
+    }catch(e){say(e.message);alert("Tag edit failed: "+e.message);return false;}
   };
   const historyUI=studioHistory();
   const undoGlobal=btn("↶ Undo dataset "+(historyUI.past.at(-1)?.label||"change"),async()=>{
@@ -12243,9 +12299,8 @@ function renderCaptionStudio(host,items,ext){
       else if(result?.error)say(result.error);
     }catch(e){say(e.message);}
   };
-  bulk.append(el("strong",{text:"Bulk tags · selected or whole dataset"}),undoGlobal,redoGlobal,
-    btn("Order tags across selection",applyOrdering),btn("Rename tag across selection",()=>apply("rename")),
-    btn("Remove tag across selection",()=>apply("remove")),btn("Add tag across selection",()=>apply("add")),
+  bulk.append(el("strong",{text:"History & advanced tag ordering"}),undoGlobal,redoGlobal,
+    btn("Order tags across selection",applyOrdering),
     el("div",{class:"field-row studio-selected-ai"},el("span",{class:"field-label",text:"AI caption selection:"}),
       aiChoice,btn("Run AI on selection",captionSelected)),
     el("span",{class:"field-hint studio-bulk-note"}));
