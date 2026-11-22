@@ -136,9 +136,10 @@ class Watch:
             logger.warning("[auto-recaption] needs the captioner (--captioner: the Krea 2 Qwen3-VL-4B text encoder "
                            "file) - off")
             auto_recaption = False
+        # Caption Studio can enqueue changes even with every loss-watch feature off.
+        # Keep the epoch-boundary worker alive so edits are never silently ignored.
         if not (log or per_image_lr or auto_recaption or warmup_look or env_on()):
-            self.auto_recaption = False
-            return
+            logger.info("[caption-fix] epoch-boundary caption synchronization enabled")
         self.image_dir = _find_key(user_config, "image_directory")
         self.caption_ext = _find_key(user_config, "caption_extension") or ".txt"
         if not (self.image_dir and os.path.isdir(self.image_dir)):
@@ -284,7 +285,7 @@ class Watch:
             try:
                 os.replace(path, processing)             # atomic claim: GUI edits made meanwhile land in a fresh file
                 with open(processing, encoding="utf-8") as f:
-                    updates = {str(k): str(v).strip() for k, v in json.load(f).items() if str(v).strip()}
+                    updates = {str(k): str(v) for k, v in json.load(f).items()}
             except Exception:
                 logger.warning("[caption-fix] could not read caption_updates.json - skipping", exc_info=True)
                 return

@@ -141,6 +141,9 @@ def read_caption(run, key, ext):
         return "", os.path.isdir(folder or "")
 
 
+_caption_queue_lock = __import__("threading").RLock()
+
+
 def save_caption(run, key, caption, ext):
     """An image's caption fixed from the per-image loss view (the desktop's Problem Images editor): the caption file
     rewritten, and - while the run is going or paused - the edit queued for the trainer, which re-encodes it at the
@@ -159,28 +162,52 @@ def save_caption(run, key, caption, ext):
         os.replace(tmp, p)
         wrote = True
     if run.get("result") in ("running", "paused") and run.get("output_dir"):
-        d = os.path.join(run["output_dir"], "loss_log")
-        os.makedirs(d, exist_ok=True)
-        q = os.path.join(d, "caption_updates.json")
-        updates = {}
-        if os.path.exists(q):
-            try:
-                with open(q, encoding="utf-8") as f:
-                    updates = json.load(f)
-            except (OSError, ValueError):
-                # other edits are waiting in a file we can't read: writing just this one would lose them
-                raise ValueError("The trainer's caption queue couldn't be read - not overwriting it. Try again in a "
-                                 "moment.")
-            if not isinstance(updates, dict):
-                updates = {}
-        updates[key] = caption
-        with open(q + ".tmp", "w", encoding="utf-8") as f:
-            json.dump(updates, f, indent=2)
-        os.replace(q + ".tmp", q)                    # atomic: the trainer never reads half a file
+        with _caption_queue_lock:
+            _enqueue_caption(run["output_dir"], key, caption)
         queued = True
     if not wrote and not queued:
         raise ValueError("The run's training folder isn't there any more - nothing saved.")
     return {"wrote": wrote, "queued": queued}
+
+
+def _enqueue_caption(output_dir, key, caption):
+    """Merge queued edits from concurrent Caption-tab and Problem Images saves."""
+    d = os.path.join(output_dir, "loss_log")
+    os.makedirs(d, exist_ok=True)
+    q = os.path.join(d, "caption_updates.json")
+    updates = {}
+    if os.path.exists(q):
+        try:
+            with open(q, encoding="utf-8") as f:
+                updates = json.load(f)
+        except (OSError, ValueError) as exc:
+            raise ValueError("Could not read pending caption changes; the queue was not overwritten.") from exc
+        if not isinstance(updates, dict):
+            raise ValueError("Invalid pending-caption queue; the queue was not overwritten.")
+    updates[str(key)] = str(caption)
+    with open(q + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(updates, f, indent=2)
+    os.replace(q + ".tmp", q)
+
+
+def queue_for_folder(folder, name, caption, ext, run):
+    """Queue a Caption Studio save for a picture belonging to this live run.
+
+    Return False rather than guessing a key for a different training folder.
+    """
+    if not run or run.get("result") not in ("running", "paused") or not run.get("output_dir"):
+        return False
+    root = os.path.realpath(str(run.get("image_folder") or ""))
+    folder = os.path.realpath(folder)
+    if not root or not os.path.isdir(root) or os.path.commonpath([root, folder]) != root:
+        return False
+    rel = os.path.relpath(folder, root)
+    key = os.path.splitext(os.path.basename(name))[0]
+    if rel != ".":
+        key = rel.replace(os.sep, "/") + "/" + key
+    with _caption_queue_lock:
+        _enqueue_caption(run["output_dir"], key, str(caption))
+    return True
 
 
 def image_paths(run, keys):

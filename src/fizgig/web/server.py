@@ -5632,9 +5632,16 @@ class Handler(BaseHTTPRequestHandler):
                 ext = captions.caption_ext(b.get("ext"))     # the Caption Extension, as every caption route reads it
                 if not stem or not os.path.isdir(folder):
                     return self.json({"error": "bad folder or file"}, 400)
-                with open(os.path.join(folder, stem + ext), "w", encoding="utf-8") as f:
-                    f.write(text)
-                return self.json({"ok": True})
+                from fizgig.web.image_loss import queue_for_folder
+                from fizgig.web.image_edit import write_atomic
+                filename = os.path.join(folder, stem + ext)
+                write_atomic(filename, str(text).encode("utf-8"))
+                with _lock:
+                    active = dict(_run)
+                    running = active.get("proc") is not None and active["proc"].poll() is None
+                run = history.get(active.get("history_id")) if running and active.get("history_id") else None
+                queued = queue_for_folder(folder, name, text, ext, run)
+                return self.json({"ok": True, "queued": queued})
         except ValueError as e:
             return self.json({"error": str(e)}, 400)
         return self.json({"error": "not found"}, 404)
