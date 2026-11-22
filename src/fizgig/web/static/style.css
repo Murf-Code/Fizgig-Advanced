@@ -4187,3 +4187,76 @@ body.caption-glass-ui .caption-settings-modal{background:linear-gradient(140deg,
 #tab-captions .studio-image-tag,#tab-captions .studio-tag-list-item .studio-index-tag,#tab-captions .studio-natural-caption{font-size:var(--caption-settings-font,13px)}
 #tab-captions .studio-thumb-rail .studio-file img,#tab-captions.caption-theme-glass .studio-thumb-rail .studio-file img{max-height:var(--caption-settings-preview-height,360px)}
 @media(max-width:600px){.caption-settings-backdrop{padding:10px}.caption-settings-modal{max-height:96vh;border-radius:13px}.caption-settings-heading{padding:14px 16px}.caption-settings-fields{grid-template-columns:1fr;gap:12px;padding:16px}.caption-settings-footer{padding:12px 16px}}
+
+
+/* Unified Auto-Captioner: the actual legacy controls live in the dock.
+   Reflow them as a compact editor, without duplicating IDs or handlers. */
+#tab-captions .studio-ai-dock{min-width:0;display:flex;flex-direction:column;gap:12px;
+  max-height:min(78vh,960px);overflow-y:auto;overflow-x:hidden;padding:14px}
+#tab-captions .studio-ai-dock[hidden]{display:none!important}
+#tab-captions .studio-ai-dock>strong{font-size:16px}
+#tab-captions .studio-ai-model-panels{display:flex;flex-direction:column;gap:12px;min-width:0}
+#tab-captions .studio-ai-model-panels>.section-card{display:block;min-width:0;
+  width:100%;margin:0;padding:0;box-sizing:border-box;
+  background:var(--bg-surface);border:1px solid var(--border);border-radius:10px}
+#tab-captions .studio-ai-model-panels .card-title{font-weight:700;font-size:13px;
+  padding:12px 12px 5px}
+#tab-captions .studio-ai-model-panels .card-content{display:flex;flex-direction:column;
+  gap:10px;padding:10px 12px 12px;min-width:0;box-sizing:border-box}
+#tab-captions .studio-ai-model-panels .field-row{display:flex;gap:6px 9px;
+  align-items:center;flex-wrap:wrap;min-width:0}
+#tab-captions .studio-ai-model-panels .field-row>.field-label{flex:none;
+  min-width:unset;width:auto;color:var(--text-secondary);font-size:12px}
+#tab-captions .studio-ai-model-panels .field-row :is(input,select,textarea){
+  box-sizing:border-box;min-width:0;max-width:100%;width:100%}
+#tab-captions .studio-ai-model-panels :is(#capEditInstr,#capInstrSave,#capInstrReset){
+  flex:none}
+#tab-captions .studio-ai-model-panels :is(#capTagMin,#capTagMax,#capTagChar,
+  #capTokens,#capThreshold){width:100%;max-width:170px}
+#tab-captions .studio-ai-model-panels .card-desc{padding:0 12px 8px;
+  font-size:11px;line-height:1.45;color:var(--text-secondary)}
+#tab-captions .studio-ai-model-panels .field-hint{font-size:11px;
+  line-height:1.45;overflow-wrap:anywhere}
+#tab-captions .studio-ai-model-panels .checkbox-label{display:flex;
+  flex-wrap:wrap;align-items:flex-start;gap:8px;font-size:12px}
+#tab-captions .studio-ai-model-panels .fetch-bar{width:100%}
+#tab-captions .studio-ai-model-panels .field-row .btn{min-width:0;
+  max-width:100%;white-space:normal;font-size:12px}
+#tab-captions .studio-ai-selection{padding:12px;border:1px solid var(--border);
+  border-radius:10px;min-width:0;background:var(--bg-surface);
+  display:flex;flex-direction:column;gap:10px}
+#tab-captions .studio-ai-selection>strong{font-size:13px}
+#tab-captions .studio-ai-selection .studio-ai-controls{display:flex;flex-direction:column;
+  align-items:stretch;gap:9px;min-width:0}
+#tab-captions .studio-ai-selection :is(select,button){min-width:0;max-width:100%;width:100%}
+#tab-captions.caption-theme-glass .studio-ai-model-panels>.section-card,
+#tab-captions.caption-theme-glass .studio-ai-selection{
+  background:rgba(20,22,40,.48);border-color:rgba(255,255,255,.18);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.09);
+  backdrop-filter:blur(10px)}
+/* Find & Replace reuses the same overlay class as Settings. */
+.caption-find-modal{width:min(100%,720px)}
+.caption-find-fields{display:flex;flex-direction:column;gap:14px;
+  padding:22px 24px;min-height:0;overflow-y:auto}
+.caption-find-field{display:flex;flex-direction:column;gap:7px;
+  min-width:0;color:#eeeef8;font-weight:600;font-size:13px}
+.caption-find-field>input{width:100%;box-sizing:border-box;
+  padding:10px 12px;min-height:41px;
+  border:1px solid rgba(255,255,255,.22);border-radius:9px;
+  background:rgba(12,12,23,.75);color:#fff;font:inherit}
+.caption-find-desc{color:#c4bed5;font-size:12px;line-height:1.5;margin:0}
+.caption-find-status{color:#e3def4;font-size:12px;margin:0;min-height:16px}
+.caption-find-preview{display:flex;flex-direction:column;gap:7px;min-width:0;
+  max-height:280px;overflow:auto}
+.caption-find-result{padding:9px 11px;border:1px solid rgba(255,255,255,.14);
+  border-radius:8px;background:rgba(5,7,15,.33);font-size:12px;
+  display:flex;flex-direction:column;gap:5px;overflow-wrap:anywhere}
+.caption-find-before{color:#e0a3b5;white-space:pre-wrap}
+.caption-find-after{color:#9ce5cf;white-space:pre-wrap}
+.caption-find-actions{justify-content:flex-end}
+.caption-find-modal .btn{cursor:pointer;padding:8px 13px;
+  color:#f5f4fc;border:1px solid rgba(255,255,255,.23);
+  border-radius:9px;background:rgba(255,255,255,.09)}
+.caption-find-modal .btn-primary{background:#6e51c8;border-color:rgba(167,158,255,.52)}
+.caption-find-modal .btn:disabled{opacity:.5;cursor:not-allowed}
+@media(max-width:600px){.caption-find-fields{padding:14px 16px}}
