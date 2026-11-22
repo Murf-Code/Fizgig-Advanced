@@ -45,3 +45,76 @@ has pre-existing syntax errors on `wip-test`. This file is left unchanged on the
 6. **Browser visual and accessibility testing is still needed.** JavaScript parsing and code review do not substitute for hands-on browser testing.
 
 Keep this on the test branch until those validations pass. Do not merge into `wip-test` or release it on the strength of static checks alone.
+
+
+---
+
+## P1/P2 continuation — 2026-11-22
+
+**Status: implementation pushed to `test/caption-workbench`, not production sign-off.** This section supersedes
+the older "features missing" statements above. The older paragraphs remain as a record of the initial audit.
+The base is `wip-test`; changes are isolated to the test branch. Do not merge until live GPU/UI verification.
+
+### P1 editing, review, and history
+
+- Shared session-level chronological undo/redo covers saved Studio captions, grouped Studio tag operations,
+  Studio picture crop/removal steps, moved/removed dataset images, and legacy Find/Replace, Add Text,
+  Static Caption, and Song Caption operations. The backend checks caption snapshots before reverting; grouped
+  edits validate every target and review lock before writing. Unsaved Studio drafts block an unsafe history step.
+- Tag ordering supports original order, reverse, A–Z, Z–A, dataset frequency and family tokenizer piece
+  counts, with configurable first/last pinned tags and first-line/prose preservation.
+- Multi-selection includes shift-ranges, ctrl/cmd-click, all matching files, selected-page toggles, and inversion.
+- Persistent review locks are enforced by direct save/removal, Studio batch writes, AI worker at write time,
+  legacy static/song/add/replace operations, translation at commit, image edit undo/redo,
+  duplicate merges, and detail-crop mirroring. A review ledger that cannot be read blocks writes.
+- Separate local image editor brush/mask history still handles **uncommitted canvas strokes**. Only committed
+  crop/remove image steps are integrated into the Studio-wide chronological history. External writers
+  and other non-Caption Studio interfaces do not automatically create Studio history entries.
+
+### P2 advanced TagBench experience
+
+- Three exploration modes: searchable tag index, frequency waterfall, interactive co-occurrence
+  constellation (pointer pan, scroll zoom, keyboard tag activation). Uses local data, no cloud analytics.
+- Actual per-model tokenizer piece count sorting where a local tokenizer is available; 500-tag request cap
+  avoids large downloads/requests. Tags autocomplete from the dataset index.
+- Draggable, keyboard-accessible panel separators persist proportions; responsive collapse for narrow screens.
+- Keyboard shortcuts include workspace undo/redo, select all, image navigation, and search focus,
+  while preserving existing Image Prep canvas shortcuts.
+- Drop or choose paired images/captions and ZIPs; reuse the existing resumable uploader. Imports target
+  a named Training Data folder; existing-file collisions require user confirmation.
+- Selected-image AI caption workflow supports missing-only, replace, or append text as an additional line;
+  uses Fizgig's existing local/installed captioners and respects review locks. AI work is asynchronous:
+  its completion is **not** yet an atomic grouped Studio history step.
+
+### Automated checks
+
+CI now compiles the modified Python service, dataset writer, training modules, AI worker, translation worker
+and tokenizer helper, parses all UI JavaScript, exercises pure tag-order/constellation code, the native LaMa
+wiring checks, review locks, duplicate management, atomic batch edit conflicts/rollback, and the original
+live-dataset synchronization tests. Check the *latest branch commit* in GitHub Actions; a passing previous
+commit does not establish the next commit's status.
+
+### Manual verification required before merge (not yet performed)
+
+1. **Live GPU training:** run at least two epochs on a disposable dataset, change a caption twice within one
+   epoch, crop and mask a picture, remove/restore it, verify next-epoch TE/VAE/mask refresh, actual output
+   captions/pixels and optimizer-step count. Repeat with a resumed LoRA.
+2. **Synchronization races:** edit two images in quick succession; lock a review during AI work; change
+   captions during translation; interrupt image re-encoding; simulate missing sidecars and stale metadata;
+   confirm no old cache is trained after a failed refresh. Test masked, paired, multiple-subfolder and
+   new-image admission scenarios.
+3. **Browser visual check:** light and dark themes at 1440px, 1024px, 768px, and 390px widths; resize
+   all panels; pan/zoom the constellation; operate the watermark/LaMa editor mounted in Studio; use keyboard
+   only; verify tab switching and caption draft retention.
+4. **Importer smoke test:** upload ZIP, paired caption and picture files, a folder containing nested paths,
+   mixed media, a duplicate filename and an interrupted 8-MB chunk; confirm source dataset safety.
+5. **History smoke test:** caption save, multi-selection bulk, picture crop/remove, dataset removal and
+   restored/redo state; modify the same caption outside Studio and confirm undo rejects the stale snapshot;
+   lock an image and confirm all relevant mutation routes refuse changes.
+6. **Regression sweep:** test caption file encodings, detail-crop mirroring, duplicate keeper merges,
+   resume-cache behavior and local LaMa inpainting (never replace with TagBench's CPU removal).
+
+**Hardware/UI limitation:** GitHub Actions' available checks are CPU-only. No real active CUDA/ROCm
+trainer or interactive desktop browser session was available through this integration, so visual review
+and live GPU validation are *not verified*. The repository-wide suite has an existing baseline
+collection problem in `src/fizgig/krea2/direction_edit_v2.py` and requires separate repair.
