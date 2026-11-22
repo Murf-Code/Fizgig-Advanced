@@ -5226,7 +5226,10 @@ class Handler(BaseHTTPRequestHandler):
                         result = image_edit.restore_original(folder, name)
                         result["queued"] = _notify_image_change(folder, name, "updated")
                         return self.json(result)
-                    return self.json(image_edit.step(b.get("step"), "redo" if b.get("redo") else "undo"))
+                    result = image_edit.step(b.get("step"), "redo" if b.get("redo") else "undo")
+                    for source in result.pop("changed_images", []):
+                        _notify_image_change(os.path.dirname(source), os.path.basename(source), "updated")
+                    return self.json(result)
                 except image_edit.LamaUnavailable as e:   # nothing was changed; the page shows it, the log keeps it
                     logger.error("Remove: %s", e)
                     return self.json({"error": str(e), "lama": True}, 400)
