@@ -946,7 +946,7 @@ class Watch:
             if old_path != new_cache:
                 _remove(old_path)
             self.removed_keys.discard(key)
-            self.stale_image_keys.discard(key)
+            getattr(self, "stale_image_keys", set()).discard(key)
             self.unsupported_media_keys.discard(key)
             # A clip's still item shares this cache and must be released too.
             self.removed_keys.discard(key.removesuffix("#still") + "#still")
@@ -961,6 +961,8 @@ class Watch:
 
     def _images(self, epoch, dit, device, parkable, detected=None):
         """Rebuild only edited still-image latents at the boundary, retaining their training bucket."""
+        if not hasattr(self, "stale_image_keys"):
+            self.stale_image_keys = set()
         path = os.path.join(self.output_dir, "loss_log", "image_updates.json")
         processing = path + ".processing"
         if not os.path.exists(path) and not detected:
