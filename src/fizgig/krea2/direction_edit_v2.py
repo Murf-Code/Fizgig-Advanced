@@ -537,6 +537,7 @@ def apply_captions(cfg):
                                   min_captions=cfg["control_min_captions"], exclude=used)
         round_picks.append(picks)
         used += [p["tag"] for p in picks]
+    if n_rounds > 1 and not any(round_picks[1:]):
     round_controls = [listed + [p["tag"] for p in picks] for picks in round_picks]
     controls_all = list(dict.fromkeys(c for cs in round_controls for c in cs))
     cfg["control_tags"] = controls_all
