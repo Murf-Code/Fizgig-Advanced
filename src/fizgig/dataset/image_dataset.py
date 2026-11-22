@@ -523,6 +523,8 @@ class BucketBatchManager:
         self.epoch = 0
 
         self.quota: Optional[dict] = None   # limit(): items a bucket gives each epoch (None = all of them)
+        self.live_pools = {}  # reso -> original and newly admitted entries
+        self.live_capacity = {}  # fixed original number of image slots
         self.reindex()
 
     def reindex(self):
@@ -562,9 +564,28 @@ class BucketBatchManager:
             logger.info(f"bucket: {reso}, count: {len(self.buckets[reso])}")
         logger.info(f"total batches: {len(self)}")
 
+    def add_live_item(self, bucket_reso, item, repeats=1):
+        """Add an encoded image to a fixed-size epoch sample pool.
+
+        Pool rotation starts at the next epoch; batch counts and optimizer schedule
+        do not change. A never-before-seen bucket resolution requires restart.
+        """
+        if bucket_reso not in self.buckets:
+            raise ValueError("A live image needs an existing bucket resolution")
+        if bucket_reso not in self.live_pools:
+            self.live_pools[bucket_reso] = list(self.buckets[bucket_reso])
+            self.live_capacity[bucket_reso] = len(self.buckets[bucket_reso])
+        if any(x.item_key == item.item_key for x in self.live_pools[bucket_reso]):
+            return False
+        self.live_pools[bucket_reso].extend([item] * max(1, int(repeats)))
+        return True
+
     def shuffle(self, rng=random):
         """The epoch's order: each bucket, the batches, the timestep pool - drawn from ``rng`` (the global random by
         default)."""
+        for reso, pool in self.live_pools.items():
+            rng.shuffle(pool)
+            self.buckets[reso][:] = pool[:self.live_capacity[reso]]
         for bucket in self.buckets.values():
             rng.shuffle(bucket)
         rng.shuffle(self.bucket_batch_indices)
