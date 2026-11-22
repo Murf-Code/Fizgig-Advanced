@@ -156,12 +156,14 @@ def save_caption(run, key, caption, ext):
     folder, name = _where(run, key)
     wrote, queued = False, False
     if os.path.isdir(folder):
+        from fizgig.web import caption_review
+        from fizgig.web.image_edit import write_atomic
         p = os.path.join(folder, name + ext)
-        tmp = p + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(caption)
-        os.replace(tmp, p)
-        wrote = True
+        with caption_review._lock:
+            if caption_review.is_caption_locked(p):
+                raise ValueError("This caption is reviewed and locked. Unlock it in Caption Studio first.")
+            write_atomic(p, caption.encode("utf-8"))
+            wrote = True
     if run.get("result") in ("running", "paused") and run.get("output_dir"):
         with _caption_queue_lock:
             _enqueue_caption(run["output_dir"], key, caption)
