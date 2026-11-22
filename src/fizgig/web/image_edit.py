@@ -147,8 +147,8 @@ def step(sid, direction):
     if s is None:
         raise ValueError("That change is too far back to undo (only the last 30 picture changes are kept).")
     _put(s[0] if direction == "undo" else s[1])
-    from fizgig.dataset.image_dataset import IMAGE_EXTENSIONS
-    image_exts = {e.lower() for e in IMAGE_EXTENSIONS}
+    # Avoid loading the training stack (torch/cv2) just to undo a picture edit.
+    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".avif", ".jxl"}
     changed = [p for p in s[0] if os.path.splitext(p)[1].lower() in image_exts]
     return {"ok": True, "changed_images": changed}
 

@@ -331,6 +331,8 @@ class Watch:
                 self.removed_keys.add(str(k))
                 logger.info("[image-fix] %s excluded from subsequent epochs", k)
             elif action == "updated":
+                # Never train on stale cached pixels if the VAE cannot refresh this item.
+                self.removed_keys.add(str(k))
                 todo.append((str(k), items[k], source))
         if not todo:
             _remove(processing)
