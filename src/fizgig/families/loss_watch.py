@@ -79,7 +79,7 @@ def _tag_settings(group):
     for ds in getattr(group, "datasets", None) or []:
         ts, bm = settings_of(ds), getattr(ds, "batch_manager", None)
         if ts is not None and bm is not None:
-            for bucket in bm.buckets.values():
+            for bucket in list(bm.buckets.values()) + list(getattr(bm, "live_pools", {}).values()):
                 for it in bucket:
                     out[str(it.item_key)] = ts
     return out
@@ -94,7 +94,7 @@ def _items(group):
             continue
         bm = getattr(ds, "batch_manager", None)
         if bm is not None:
-            for bucket in bm.buckets.values():
+            for bucket in list(bm.buckets.values()) + list(getattr(bm, "live_pools", {}).values()):
                 for it in bucket:
                     out[str(it.item_key)] = it
     return out
@@ -360,7 +360,7 @@ class Watch:
                 if getattr(ds, "is_reg", False):
                     continue
                 bm = getattr(ds, "batch_manager", None)
-                for bucket in (getattr(bm, "buckets", {}) or {}).values():
+                for bucket in list((getattr(bm, "buckets", {}) or {}).values()) + list(getattr(bm, "live_pools", {}).values()):
                     for it in bucket:
                         owners[str(it.item_key)] = ds
             self._owner_cache = owners
