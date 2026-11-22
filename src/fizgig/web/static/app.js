@@ -7593,6 +7593,7 @@ function meStateLine() {
   b.textContent = {unsaved: "● Unsaved changes", saved: "✓ Saved", none: "No mask yet", "": ""}[st];
   $("meSave").disabled = !m.dirty;
   $("meRevert").disabled = !m.dirty;
+  if(S.cap?.imageEditing?.inline)S.cap.studioStatusRefresh?.();
 }
 async function meSave() {
   const m = meState();
@@ -13704,7 +13705,14 @@ function renderCaptionStudio(host,items,ext){
     let state="saved",label="Saved";
     if(autoTask.lastError){state="attention";label="Save failed";}
     else if(status?.attention){state="attention";label="Needs attention";}
-    else if(autoTask.busy||autoTask.pending||localDraft||
+    else if(S.cap.imageEditing?.inline&&meState().stepBusy){
+      state="saving";label="Applying…";
+    }else if(S.cap.imageEditing?.inline&&meState().tool==="remove"&&meState().rmDirty){
+      state="editing";label="Apply removal";
+    }else if(S.cap.imageEditing?.inline&&meState().tool==="crop"&&
+      meState().crop&&!meCropWhole()){
+      state="editing";label="Apply crop";
+    }else if(autoTask.busy||autoTask.pending||localDraft||
       (S.cap.imageEditing?.inline&&meState().dirty)){
       state="saving";label="Saving…";
     }else if(pending){
