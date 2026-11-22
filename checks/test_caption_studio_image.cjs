@@ -23,7 +23,7 @@ assert.match(js,/m\.studioFolder=folder/);
 assert.match(js,/folder=m\.studioFolder \|\| S\.imageFolder/);
 assert.match(js,/folder=\$\{encodeURIComponent\(m\.folder \|\| S\.imageFolder\)\}/);
 assert.match(js,/captionImageChanged\(\);\s*return r;/);
-assert.match(js,/m\.dirty&&\!\(await meSave\(\)\)/);
+assert.match(js,/m\.dirty&&\(\!\(await meSave\(\)\)\|\|m\.dirty\)/);
 assert.match(js,/if\(!\(await meRmSave\(false\)\)\)return false;/);
 assert.match(js,/captionImageClose\(\)\.then\(ok=>\{if\(ok\)showTab\(name\);\}\)/);
 
