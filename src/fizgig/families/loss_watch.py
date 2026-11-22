@@ -351,14 +351,19 @@ class Watch:
 
 
     def _owner_dataset(self, key):
-        """Find the original dataset block rather than guessing from a key prefix."""
-        for ds in getattr(self.group, "datasets", ()) or ():
-            if getattr(ds, "is_reg", False):
-                continue
-            bm = getattr(ds, "batch_manager", None)
-            if bm and any(str(it.item_key) == str(key) for bucket in bm.buckets.values() for it in bucket):
-                return ds
-        return None
+        """Key -> dataset block map, built once so large source scans stay linear."""
+        owners = getattr(self, "_owner_cache", None)
+        if owners is None:
+            owners = {}
+            for ds in getattr(self.group, "datasets", ()) or ():
+                if getattr(ds, "is_reg", False):
+                    continue
+                bm = getattr(ds, "batch_manager", None)
+                for bucket in (getattr(bm, "buckets", {}) or {}).values():
+                    for it in bucket:
+                        owners[str(it.item_key)] = ds
+            self._owner_cache = owners
+        return owners.get(str(key))
 
     def _source_for_key(self, key, listings=None):
         """A training media path, with that dataset's permitted video/audio extensions."""
