@@ -11061,7 +11061,7 @@ function renderCaptionStudio(host,items,ext){
         const a=arr.findIndex(x=>x.toLowerCase()===from.toLowerCase());
         const b=arr.findIndex(x=>x.toLowerCase()===t.toLowerCase());
         if(a<0||b<0||a===b)return;
-        arr.splice(b,0,arr.splice(a,1)[0]);
+        const moved=arr.splice(a,1)[0];arr.splice(a<b?b-1:b,0,moved);
         ta.value=studioCompose(ta.value,arr);remember();redraw();
       });
       tags.append(chip);
