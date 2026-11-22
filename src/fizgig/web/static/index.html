@@ -655,13 +655,15 @@
         <section id="tab-captions" class="tab-panel">
           <div class="tab-banner">
             <h1>Captions</h1>
-            <p>Write a caption for every file in the training folder with an AI model, a trigger word or the words
-              every song shares; translate them, find and replace, and read or edit each one below.</p>
+            <p>Browse, edit and manage your dataset in Caption Studio. Caption generation, model settings, translation
+              and legacy batch tools remain available in the collapsible tools section.</p>
           </div>
+          <div class="field-hint" id="capFolder"></div>
+          <details class="caption-tools-drawer">
+            <summary>Caption generation, models and batch tools</summary>
           <div class="section-card">
             <div class="card-title">Settings</div>
             <div class="card-content">
-              <div class="field-hint" id="capFolder"></div>
               <div class="field-row"><span class="field-label">Trigger word:</span>
                 <input type="text" id="capTrigger" class="w-combo" placeholder="e.g. ohwx">
                 <span class="field-hint">Put at the start of every caption.</span></div>
@@ -796,8 +798,9 @@
               <div id="frChanges" class="checkpoint-list"></div>
             </div>
           </div>
-          <div class="section-card">
-            <div class="card-title"><span>The captions</span>
+          </details>
+          <div class="section-card caption-workspace-toolbar">
+            <div class="card-title"><span>Caption Studio · dataset workspace</span>
               <button class="btn btn-sm" id="captionsReload" title="Read the captions from the folder again (while captioning runs they also fill in by themselves)">↻ Refresh captions</button></div>
             <div class="card-content">
               <div class="field-row"><span class="field-label">Caption extension:</span>
@@ -2295,6 +2298,7 @@
   </div>
 
   <script src="/qrcode.js" onerror="fizgigRetry(this)"></script>
+  <script src="/caption_studio_tags.js" onerror="fizgigRetry(this)"></script>
   <script src="/app.js" onerror="fizgigRetry(this)"></script>
 </body>
 </html>
