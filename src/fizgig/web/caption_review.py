@@ -62,3 +62,16 @@ def mark(folder, name, value):
             if os.path.isfile(tmp):
                 os.remove(tmp)
     return sorted(values)
+
+
+def is_caption_locked(path):
+    """Protect a caption by the reviewed media file sharing its stem.
+
+    This also covers older Caption tab batch writers that only know the .txt path.
+    An unreadable review ledger fails closed instead of bypassing protection.
+    """
+    path = os.path.realpath(str(path))
+    folder = os.path.dirname(path)
+    stem = os.path.splitext(os.path.basename(path))[0].casefold()
+    with _lock:
+        return any(os.path.splitext(name)[0].casefold() == stem for name in _load(folder))
