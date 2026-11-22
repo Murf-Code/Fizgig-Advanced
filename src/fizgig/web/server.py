@@ -3458,7 +3458,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, page.encode("utf-8"), "text/html; charset=utf-8", extra=extra)
         if path == "/welcome.mp4":                  # the welcome popup's tour (it ships with Fizgig: no network)
             return self._stream(os.path.join(STATIC_DIR, "welcome_v8.mp4"), attachment=False)  # ranged: it seeks
-        if path in ("/app.js", "/style.css", "/qrcode.js"):
+        if path in ("/app.js", "/caption_studio_tags.js", "/style.css", "/qrcode.js"):
             return self._file(os.path.join(STATIC_DIR, path[1:]),
                               "application/javascript; charset=utf-8" if path.endswith(".js") else "text/css")
         if path == "/icon.png":
