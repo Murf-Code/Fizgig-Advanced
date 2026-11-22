@@ -11182,17 +11182,20 @@ function captionRemovedPanel(ext) {
 // the visible page. The Python service never auto-deletes; every action is reviewed.
 function captionDuplicatePanel(ext){
   const state=S.cap.studioDuplicates||(S.cap.studioDuplicates={
-    threshold:92,open:false,offset:0,choices:new Map()
+    strictness:4,copyTags:true,open:false,offset:0,choices:new Map()
   });
   const panel=el("details",{class:"studio-duplicate-browser"});
   panel.open=!!state.open;
   const heading=el("summary",{text:"Find near-duplicate images · compare and merge tags"});
   const guide=el("div",{class:"field-hint",text:
-    "Perceptual image similarity (CPU only). Adjust the threshold to find resized or slightly edited copies. "+
-    "Matches are suggestions, not proof: review pictures before merging or removing anything."});
-  const threshold=el("input",{type:"range",min:"75",max:"100",step:"1",class:"studio-duplicate-threshold"});
-  threshold.value=String(state.threshold);
-  const percentage=el("strong",{text:threshold.value+"%"});
+    "Original TagBench-style difference-hash and color matching (CPU). Strictness 0 = visually identical; "+
+    "higher values find more loosely similar images. Review every match. Fizgig keeps its local LaMa remover."});
+  const threshold=el("input",{type:"range",min:"0",max:"16",step:"1",class:"studio-duplicate-threshold"});
+  threshold.value=String(state.strictness);
+  const percentage=el("strong",{text:"Strictness "+threshold.value});
+  const copyBox=el("input",{type:"checkbox"});
+  copyBox.checked=state.copyTags!==false;
+  copyBox.addEventListener("change",()=>{state.copyTags=copyBox.checked;});
   const progress=el("div",{class:"field-hint",text:"Choose Scan dataset to compare its pictures."});
   const results=el("div",{class:"studio-duplicate-results"});
   const scanBtn=el("button",{class:"btn btn-primary btn-sm",text:"Scan dataset"});
@@ -11212,7 +11215,7 @@ function captionDuplicatePanel(ext){
     let data;
     try{
       data=await api("/api/captions/duplicates/status?folder="+encodeURIComponent(S.imageFolder)+
-        "&threshold="+encodeURIComponent(state.threshold)+"&offset="+state.offset);
+        "&strictness="+encodeURIComponent(state.strictness)+"&offset="+state.offset);
     }catch(e){progress.textContent=e.message;return;}
     if(!panel.isConnected||!panel.open)return;
     progress.textContent=data.stage==="idle"?"No scan yet. Scan the dataset to compare all its pictures.":
@@ -11220,7 +11223,7 @@ function captionDuplicatePanel(ext){
       data.stage==="matching"?"Matching perceptual signatures…":
       data.stage==="error"?"Scan failed: "+data.error:
       data.scanned+" images scanned · "+data.group_count+" potential duplicate group(s) · "+
-        data.pair_count+" similar pair(s) at "+data.threshold+"%"+
+        data.pair_count+" similar pair(s) at strictness "+data.strictness+
         (data.truncated?" · Large duplicate set truncated; review cautiously":"")+
         (data.failures?.length?" · "+data.failures.length+" image(s) couldn't be decoded":"");
     results.replaceChildren();
@@ -11237,7 +11240,7 @@ function captionDuplicatePanel(ext){
       " of "+data.group_count:"No groups";
     if(!(data.groups||[]).length){
       results.append(el("div",{class:"field-hint",text:
-        "No matching image groups at this threshold. Lower the percentage or scan again after adding pictures."}));
+        "No matching groups at this strictness. Increase the strictness number or scan again after adding images."}));
       return;
     }
     const items=dataByPath();
@@ -11253,7 +11256,7 @@ function captionDuplicatePanel(ext){
       if(!pictures.some(p=>p.path===choice.keeper))choice.keeper=pictures[0].path;
       const card=el("div",{class:"studio-duplicate-group"});
       const header=el("div",{class:"studio-duplicate-head"},
-        el("strong",{text:"Likely matches · "+group.similarity+"% minimum paired similarity"}),
+        el("strong",{text:"Likely matches · differing by up to "+group.distance+(group.identical?" · identical files":"")}),
         el("span",{class:"field-hint",text:group.count+" images · choose which to keep"}));
       const keeper=el("select",{class:"w-path",title:"Select the image whose caption will receive merged tags"});
       for(const pic of pictures)keeper.append(el("option",{value:pic.path,
@@ -11387,14 +11390,15 @@ function captionDuplicatePanel(ext){
     }catch(e){progress.textContent=e.message;scanBtn.disabled=false;}
   };
   scanBtn.addEventListener("click",scan);
-  const updateThreshold=debounce(()=>{state.threshold=Number(threshold.value);state.offset=0;read();},220);
+  const updateThreshold=debounce(()=>{state.strictness=Number(threshold.value);state.offset=0;read();},220);
   threshold.addEventListener("input",()=>{
-    percentage.textContent=threshold.value+"%";updateThreshold();
+    percentage.textContent="Strictness "+threshold.value;updateThreshold();
   });
   prevBtn.addEventListener("click",()=>{state.offset=Math.max(0,state.offset-32);read();});
   nextBtn.addEventListener("click",()=>{state.offset+=32;read();});
   panel.append(heading,guide,el("div",{class:"field-row studio-duplicate-controls"},
-    el("span",{class:"field-label",text:"Similarity threshold:"}),threshold,percentage,scanBtn),
+    el("span",{class:"field-label",text:"Match tolerance:"}),threshold,percentage,scanBtn),
+    el("label",{class:"field-row"},copyBox," Copy tags from images you drop onto every image you keep"),
     progress,page,results);
   panel.addEventListener("toggle",()=>{
     state.open=panel.open;
