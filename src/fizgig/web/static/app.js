@@ -12151,6 +12151,8 @@ function renderCaptionStudio(host,items,ext){
   const rightDock=el("div",{class:"studio-tag-dock"});
   const showTags=btn("All Tags",()=>{tagIndexPane.hidden=false;aiPane.hidden=true;rightDock.dataset.active="tags";});
   const showAI=btn("Auto-Captioner",()=>{tagIndexPane.hidden=true;aiPane.hidden=false;rightDock.dataset.active="ai";});
+  const redundantAiRow=bulk.querySelector(".studio-selected-ai");
+  if(redundantAiRow)redundantAiRow.remove();
   const aiPane=el("section",{class:"studio-ai-dock",hidden:true});
   const aiHint=el("div",{class:"field-hint",text:"AI runs on your selected images using Fizgig's caption model settings."});
   aiPane.append(aiHint,el("div",{class:"field-row"},aiChoice,btn("Run AI on selection",captionSelected)));
