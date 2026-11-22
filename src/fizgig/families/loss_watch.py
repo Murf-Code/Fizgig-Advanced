@@ -28,13 +28,15 @@ def _picture(folder, name, listings):
     it) and in every format training reads (.avif). listings: {folder: its file names}, filled on first use."""
     if folder not in listings:
         try:
-            listings[folder] = sorted(os.listdir(folder))
+            names = sorted(os.listdir(folder))
         except OSError:
-            listings[folder] = []
-    have = {}
-    for n in listings[folder]:
-        stem, ext = os.path.splitext(n)
-        have.setdefault((stem, ext.lower()), n)
+            names = []
+        have = {}
+        for n in names:
+            stem, ext = os.path.splitext(n)
+            have.setdefault((stem, ext.lower()), n)
+        listings[folder] = have
+    have = listings[folder]
     for ext in _picture_exts():
         if (name, ext) in have:
             return os.path.join(folder, have[(name, ext)])
