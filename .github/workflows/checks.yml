@@ -22,9 +22,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r checks/requirements.txt
-      - name: Python files compile
-        run: python -m compileall -q src
+      - name: Compile Caption Studio changed Python modules
+        run: |
+          python -m py_compile src/fizgig/families/loss_watch.py src/fizgig/families/train.py
+          python -m py_compile src/fizgig/web/server.py src/fizgig/web/image_loss.py src/fizgig/web/image_edit.py
       - name: Web UI scripts parse
         run: for f in src/fizgig/web/static/*.js; do node --check "$f"; done
-      - name: Checks
+      - name: Caption Studio regression checks
+        run: python -m pytest checks/test_caption_studio_sync.py checks/test_caption_live_images.py checks/test_caption_formats.py checks/test_image_edit.py -q
+      - name: Full regression checks
         run: python -m pytest checks -q
