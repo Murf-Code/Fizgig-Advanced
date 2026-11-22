@@ -82,11 +82,10 @@ def fingerprint(path):
     with Image.open(path) as src:
         src.seek(0)
         im = ImageOps.exif_transpose(src).convert("RGBA")
-        # Browser canvas draws RGBA pixels over an initially transparent black
-        # surface: preserve that visual result rather than inventing white.
-        rgb = Image.new("RGBA", im.size, (0, 0, 0, 0))
-        rgb.alpha_composite(im)
-        rgb = rgb.convert("RGB")
+        # The TagBench canvas starts transparent; getImageData exposes
+        # premultiplied RGB. Composite over black to match transparent pixels.
+        rgb = Image.new("RGB", im.size, (0, 0, 0))
+        rgb.paste(im, mask=im.getchannel("A"))
         width, height = rgb.size
         small = np.asarray(rgb.resize((9, 8), Image.Resampling.BILINEAR),
                            dtype=np.float64)
