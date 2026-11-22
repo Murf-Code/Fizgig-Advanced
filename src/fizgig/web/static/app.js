@@ -7371,7 +7371,7 @@ function mePush(tiled=false) {
   const entry=tiled?MaskEditorPerf.tiles(m.mask):meSnapshot();
   m.strokeHistory=tiled?entry:null;
   m.undo.push(entry);
-  if(m.undo.length>ME_UNDO)m.undo.shift();
+  MaskEditorPerf.trimHistory(m.undo,ME_UNDO);
   m.redo=[];
 }
 async function meRestore(from, to) {
@@ -7413,6 +7413,7 @@ async function meRestore(from, to) {
     return;
   }
   if(top.kind==="tiles"){
+    m.strokeHistory=null;
     const restored=MaskEditorPerf.restore(top,m.mask);
     from.pop();to.push(restored.inverse);
     if(restored.rect){
@@ -8016,6 +8017,7 @@ function meWire() {
     last = null; pan = null; pointerRect=null;
     m.panning = false; m.flip = false; m.cropDrag = null;
     m.strokeHistory=null;
+    MaskEditorPerf.trimHistory(m.undo,ME_UNDO);
     meImgBar(); meDraw(); };
   cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
   cv.addEventListener("pointerleave", () => { cursor.hidden=true; });
