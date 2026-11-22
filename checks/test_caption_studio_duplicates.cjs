@@ -13,7 +13,7 @@ assert.match(app,/state\.strictness/);
 assert.match(app,/choice\.kept\.add\(pic\.path\)/);
 assert.match(app,/function captionDuplicatePanel[\s\S]*"\/api\/captions\/duplicates\/merge_group"/);
 assert.match(app,/\/api\/captions\/remove/);
-assert.match(app,/Move checked duplicates to removed\//);
+assert.match(app,/Move unkept images to removed\//);
 assert.match(app,/Preview copied tags/);
 assert.match(app,/Apply copied tags to keepers/);
 assert.match(server,/path == "\/api\/captions\/duplicates\/scan"/);
