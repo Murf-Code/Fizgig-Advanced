@@ -105,3 +105,47 @@ def test_server_restore_refuses_collision_and_leaves_original_removed(tmp_path):
     with Image.open(root / "photo.png") as image:
         assert image.getpixel((0, 0)) == (0, 0, 255)
     assert removed_images.listing(root)[0]["moved"] == moved
+
+
+def test_masks_subfolder_removal_restore_is_lossless(tmp_path):
+    from fizgig.web.server import remove_from_dataset, restore_to_dataset
+    root = tmp_path / "dataset"
+    (root / "masks").mkdir(parents=True)
+    Image.new("RGB", (32, 32), "red").save(root / "photo.png")
+    (root / "photo.txt").write_text("caption", encoding="utf-8")
+    Image.new("L", (32, 32), 255).save(root / "masks" / "photo-masklabel.png")
+    before = {p.relative_to(root).as_posix(): p.read_bytes()
+              for p in root.rglob("*") if p.is_file()}
+    moved = remove_from_dataset(str(root), "photo.png", ".txt")
+    assert ["masks/photo-masklabel.png", "photo-masklabel.png"] in moved
+    assert not (root / "photo.png").exists()
+    assert not (root / "masks" / "photo-masklabel.png").exists()
+    assert set(restore_to_dataset(str(root), moved)) == {
+        "photo.png", "photo.txt", "masks/photo-masklabel.png"
+    }
+    after = {p.relative_to(root).as_posix(): p.read_bytes()
+             for p in root.rglob("*") if p.is_file() and "removed" not in p.parts}
+    assert after == before
+
+
+def test_failed_mask_move_rolls_back_image_and_caption(tmp_path, monkeypatch):
+    import pytest
+    from fizgig.web import server
+    root = tmp_path / "dataset"
+    (root / "masks").mkdir(parents=True)
+    Image.new("RGB", (32, 32)).save(root / "photo.png")
+    (root / "photo.txt").write_text("caption")
+    Image.new("L", (32, 32), 255).save(root / "masks" / "photo-masklabel.png")
+    replace = server.os.replace
+
+    def fail_mask(src, dst):
+        if str(src).endswith("masks/photo-masklabel.png"):
+            raise OSError("simulated mask move failure")
+        return replace(src, dst)
+
+    monkeypatch.setattr(server.os, "replace", fail_mask)
+    with pytest.raises(OSError, match="simulated mask move"):
+        server.remove_from_dataset(str(root), "photo.png", ".txt")
+    assert (root / "photo.png").exists()
+    assert (root / "photo.txt").read_text() == "caption"
+    assert (root / "masks" / "photo-masklabel.png").exists()
