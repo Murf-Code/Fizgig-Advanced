@@ -7125,6 +7125,7 @@ function meFresh() {
   const m = meState();
   meStopRemoveWorker();
   m.rm = null; m.rmBase = null; m.rmDirty = false; m.cropDrag = null; m.showBefore = false;
+  m.strokeHistory=null;
   // A new image must not briefly display the previous image's red marks
   // while its picture/watermark data is still loading.
   if(m.rmTint)m.rmTint.hidden=true;
@@ -7209,6 +7210,7 @@ function meDirtyRect(old,x,y,radius,w,h){
 }
 function meMarkMaskDirty(x,y,radius){
   const m=meState();
+  m.maskRevision=(m.maskRevision||0)+1;
   if(!Number.isFinite(x)||!Number.isFinite(y)||!Number.isFinite(radius)){
     m.maskDirtyFull=true;m.maskDirtyRect=null;return;
   }
@@ -7349,9 +7351,8 @@ function mePaint() {
   // Small brush rings are native cursors; no rendering work is required
   // when moving the pointer over an unchanged image.
 }
-function meAt(e) {
-  const m = meState(), r = arguments.length>1&&arguments[1]?
-    arguments[1]:$("meCanvas").getBoundingClientRect();
+function meAt(e,rect=null) {
+  const m=meState(),r=rect||$("meCanvas").getBoundingClientRect();
   const sx = (e.clientX - r.left) * ($("meCanvas").width / r.width), sy = (e.clientY - r.top) * ($("meCanvas").height / r.height);
   return {sx, sy, x: (sx - m.ox) / m.zoom, y: (sy - m.oy) / m.zoom,
     px:e.clientX-r.left,py:e.clientY-r.top,cssScale:r.width/$("meCanvas").width};
@@ -7418,6 +7419,7 @@ async function meRestore(from, to) {
         (p.l+p.r)/2,(p.t+p.b)/2,Math.max(p.r-p.l,p.b-p.t),
         m.mask.width,m.mask.height);
     }
+    m.maskRevision=(m.maskRevision||0)+1;
     m.dirty=true;meStateLine();meDraw();
     return;
   }
@@ -7638,7 +7640,8 @@ function meImgBar() {
   $("meCropSize").style.display = t === "crop" ? "" : "none";
   $("meApply").style.display = $("meCancel").style.display = (on || showRm) ? "" : "none";
   $("meApply").textContent = t === "crop" ? "Crop" : "Remove it";
-  $("meApply").disabled = m.stepBusy || (t === "crop" ? meCropWhole() : !m.rmDirty);
+  $("meApply").disabled = m.stepBusy || m.applyPreparing ||
+    (t === "crop" ? meCropWhole() : !m.rmDirty);
   $("meBefore").style.display = m.before ? "" : "none";
   $("meImgWhat").textContent = t === "crop" ? "Crop Image: drag the corners or edges, or drag inside to move the box." :
     showRm ? (m.rmFromWm && !m.rmHandEdited ?
@@ -7667,7 +7670,12 @@ async function mePicStep(path, body, what, busy) {
 }
 async function meApply() {
   const m = meState();
-  if (!m.pic || m.stepBusy) return;
+  if (!m.pic || m.stepBusy || m.applyPreparing) return;
+  // Keep the current image stable while asynchronous PNG encoding and its
+  // subsequent LaMa operation finish; do not permit image switching mid-save.
+  m.applyPreparing=true;
+  meImgBar();
+  try{
   if (m.tool === "crop") {
     if (meCropWhole()) { $("meState").textContent = "Drag the crop box's edges in first."; return; }
     const r = await mePicStep("/api/masks/edit/crop", meCropPx(), "crop", "Cropping…");
@@ -7700,9 +7708,11 @@ async function meApply() {
       "Removed. Hold \u201cHold for before\u201d to compare; Ctrl+Z undoes it.";
   }
   meDraw();
+  }finally{m.applyPreparing=false;meImgBar();}
 }
 function meCancel() {
   const m = meState();
+  if(m.applyPreparing)return;
   if (m.tool === "crop") meTool(m.prevTool || "brush");  // Esc leaves crop mode, the picture as it was
   else if (m.tool === "remove" || m.rmDirty) {
     meStopRemoveWorker();m.rm=null;m.rmDirty=false;m.rmFromWm=false;
@@ -7772,24 +7782,37 @@ function meStateLine() {
   if(S.cap?.imageEditing?.inline)S.cap.studioStatusRefresh?.();
 }
 async function meSave() {
-  const m = meState();
-  if (!m.mask || !m.name) return true;
-  // the mask on opaque black, so grey is grey however it was painted
-  const out = el("canvas", {width: m.mask.width, height: m.mask.height}), c = out.getContext("2d");
-  c.fillStyle = "#000"; c.fillRect(0, 0, out.width, out.height); c.drawImage(m.mask, 0, 0);
-  try {
-    const r = await api("/api/masks/edit/save", {folder: m.folder || S.imageFolder, name: m.name,
-      png: await MaskEditorPerf.pngDataURL(out)});
-    m.dirty = false;
-    const item = m.list.find((p) => p.name === m.name);
-    if (item) item.mask = !r.removed;
-    captionImageChanged();
-    meStateLine();
-    $("meState").textContent = r.removed ? "All black, so the mask was removed: this picture trains as normal." :
-      `Saved ${m.name.replace(/\.[^.]+$/, "")}-masklabel.png.`;
-    maskInfo();
-    return true;
-  } catch (e) { $("meState").textContent = e.message; return false; }
+  const m=meState();
+  if(!m.mask||!m.name)return true;
+  // Serialize saves. Later brush strokes must never be marked saved by an
+  // older, asynchronously encoded snapshot.
+  if(m.saveTask)return m.saveTask;
+  const task=(async()=>{
+    const name=m.name,folder=m.folder||S.imageFolder,revision=m.maskRevision||0;
+    const out=el("canvas",{width:m.mask.width,height:m.mask.height});
+    const c=out.getContext("2d");
+    c.fillStyle="#000";c.fillRect(0,0,out.width,out.height);c.drawImage(m.mask,0,0);
+    try{
+      const png=await MaskEditorPerf.pngDataURL(out);
+      const r=await api("/api/masks/edit/save",{folder,name,png});
+      if(m.name===name){
+        m.dirty=(m.maskRevision||0)!==revision;
+        const item=m.list.find(p=>p.name===name);
+        if(item)item.mask=!r.removed;
+        captionImageChanged();
+        meStateLine();
+        $("meState").textContent=m.dirty?
+          "Earlier mask saved; newer brush edits are still unsaved.":
+          (r.removed?"All black, so the mask was removed: this picture trains as normal.":
+            `Saved ${name.replace(/\.[^.]+$/,"")}-masklabel.png.`);
+        maskInfo();
+      }
+      return true;
+    }catch(error){$("meState").textContent=error.message;return false;}
+  })();
+  m.saveTask=task;
+  try{return await task;}
+  finally{if(m.saveTask===task)m.saveTask=null;}
 }
 async function meRemoveAllWm() {
   const m = meState();
@@ -11649,7 +11672,7 @@ async function captionImageOpen(it,tool="remove"){
 }
 async function captionImageFinishPending(){
   const m=meState();
-  if(m.stepBusy||m.samBusy||m.wmBusy){
+  if(m.stepBusy||m.samBusy||m.wmBusy||m.applyPreparing||m.saveTask){
     $("captionImageWorkspaceNote").textContent="Finish the current image operation first.";
     return false;
   }
