@@ -23,15 +23,19 @@ assert.match(js, /folder=\$\{encodeURIComponent\(m\.folder \|\| S\.imageFolder\)
              "meGo must not force the top-level folder");
 assert.match(js, /captionImageChanged\(\);\s*return r;/,
              "crop and remove must refresh Caption Studio metadata");
-assert.match(js, /function captionRemovedPanel\(ext\)/);
-assert.match(js, /\/api\/captions\/restore_saved/);
+// The separate "removed pictures" panel was intentionally retired; removal is
+// accessible from the image context menu and restored through shared history.
+assert.match(js, /const removeSelectedImages=async\(targetPath=null\)=>/);
+assert.match(js, /studioRecord\("Remove image"/);
+assert.match(js, /api\("\/api\/captions\/remove"/);
+assert.match(js, /api\("\/api\/captions\/restore"/);
 assert.match(js, /function captionImageFinishPending\(\)/);
 assert.match(js, /m\.dirty && !\(await meSave\(\)\)/);
 assert.match(js, /captionImageClose\(\)\.then\(ok=>\{if\(ok\)showTab\(name\);\}\)/,
              "tab navigation must wait for the editor to save before hiding it");
 assert.match(css, /#tab-captions \.caption-image-workspace/);
 const start = js.indexOf('btn("Edit image / crop"');
-const end = js.indexOf('btn("Remove from dataset"', start);
+const end = js.indexOf('const orderKey=', start);
 assert(start !== -1 && end > start);
 const handler = js.slice(start, end);
 assert.match(handler, /await captionImageOpen\(current\)/);
