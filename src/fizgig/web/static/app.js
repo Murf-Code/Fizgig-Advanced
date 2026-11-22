@@ -13060,6 +13060,9 @@ function renderCaptionStudio(host,items,ext){
           S.cap.studioTagbenchGraph={key:datasetKey,items:S.cap.items,revision,model};
         }
         CaptionStudioViz.setTagbenchPalette(model.colors);
+        // Returning to Tags must apply the constellation palette even if no
+        // node was clicked (the Image Tags list was built before this graph).
+        S.cap.studioExploreNeedRedraw=true;
         const network=CaptionStudioViz.tagbenchConstellation(model,tag=>{
           S.cap.studioExplorePickedTag=tag;
           const exact=tag?JSON.stringify(tag):"";
@@ -13180,7 +13183,7 @@ function renderCaptionStudio(host,items,ext){
     }
     if(e.altKey&&!cmd){
       const focus={f:tagQuery,a:newTag,s:indexSearch,i:tags};
-      if(key==="c"){handled();showAI.click();return;}
+      if(key==="c"){handled();showTabs("ai");return;}
       if(focus[key]){
         handled();
         if(key==="i")tags.querySelector("button")?.focus();
