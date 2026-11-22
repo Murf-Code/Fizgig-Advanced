@@ -3,7 +3,15 @@ orientation) that viewers apply; PIL reads the stored pixels as they are. OpenCV
 face finders see the picture upright: every PIL read of a training picture goes through here to match. The read
 also gives 16-bit greyscale as 8-bit (eight_bit) and a picture with a colour profile in sRGB (srgb)."""
 
+import struct
+
 ORIENTATION = 0x0112
+_PNG_SIG = b"\\x89PNG\\r\\n\\x1a\\n"
+# Orientation may appear in an eXIf chunk or in text metadata (XMP and
+# ImageMagick's 'Raw profile type exif'). Inspect the whole file, not only
+# pre-IDAT chunks. On uncertainty retain the existing Pillow path.
+_ORIENT_CHUNKS = (b"eXIf", b"tEXt", b"zTXt", b"iTXt")
+_MAX_CHUNKS = 100_000
 
 
 def orientation(im):
@@ -74,7 +82,40 @@ def eight_bit(im):
     return Image.fromarray((a.astype(np.float32) / 257.0 + 0.5).clip(0, 255).astype(np.uint8), "L")
 
 
-def upright_size(im):
-    """(width, height) as seen, from the header alone: flags 5-8 turn the picture a quarter."""
+def png_carries_orientation(path) -> bool:
+    """Return whether a PNG may contain EXIF orientation (or is uncertain).
+
+    PNG files without eXIf or text chunks can return their header dimensions
+    without causing Pillow's getexif() to decode the entire image. A suspect,
+    corrupt or unexpectedly structured file retains the original safe path.
+    Based on upstream Fizgig PR #399 by spaghettified26.
+    """
+    try:
+        with open(path, "rb") as stream:
+            if stream.read(8) != _PNG_SIG:
+                return True
+            for _ in range(_MAX_CHUNKS):
+                header = stream.read(8)
+                if len(header) < 8:
+                    return True
+                length, chunk = struct.unpack(">I4s", header)
+                if chunk in _ORIENT_CHUNKS:
+                    return True
+                if chunk == b"IEND":
+                    return False
+                stream.seek(length + 4, 1)  # Payload and CRC.
+            return True
+    except Exception:
+        return True
+
+
+def upright_size(im, path=None):
+    """Image dimensions after orientation, without inflating ordinary PNGs.
+
+    When a pathname is provided, a PNG with no possible EXIF skips
+    getexif(); all other cases preserve the previous Pillow behavior.
+    """
     w, h = im.size
+    if path is not None and im.format == "PNG" and "exif" not in im.info and not png_carries_orientation(path):
+        return (w, h)
     return (h, w) if orientation(im) in (5, 6, 7, 8) else (w, h)
