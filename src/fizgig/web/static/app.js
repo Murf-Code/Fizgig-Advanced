@@ -11671,6 +11671,13 @@ function renderCaptionStudio(host,items,ext){
     btn("Invert page",()=>{pageItems.forEach(i=>selection.has(i.path)?selection.delete(i.path):selection.add(i.path));renderCaptions();}),
     btn("Clear",()=>{selection.clear();renderCaptions();})),
     el("div",{class:"field-hint",text:selection.size+" selected · Shift-click selects ranges across pages"}));
+  const thumbs=el("div",{class:"studio-thumb-rail",role:"list", "aria-label":"Dataset thumbnails"});
+  const missingOnly=el("input",{type:"checkbox"});
+  missingOnly.checked=$("capFilter").value==="missing";
+  missingOnly.addEventListener("change",()=>{$("capFilter").value=missingOnly.checked?"missing":"all";S.cap.page=0;renderCaptions();});
+  const position=el("span",{class:"studio-position",text:String(Math.max(0,items.findIndex(i=>i.path===current.path)+1))+" / "+items.length});
+  const nav=el("div",{class:"studio-thumb-footer"},
+    el("label",{class:"studio-missing-toggle"},missingOnly,el("span",{text:"Missing Tags"})),position);
   for(const it of pageItems){
     const cb=el("input",{type:"checkbox"});cb.checked=selection.has(it.path);
     cb.setAttribute("aria-label","Select "+it.name);
@@ -11684,12 +11691,13 @@ function renderCaptionStudio(host,items,ext){
     };
     cb.addEventListener("click",e=>choose(cb.checked,e.shiftKey));
     const thumb=it.size?el("img",{src:"/api/thumb?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(TOKEN),loading:"lazy"}):el("span",{text:"♪"});
-    left.append(el("div",{class:"studio-browser-row"},cb,el("button",{class:"studio-file"+(it.path===current.path?" active":""),onclick:e=>{
+    thumbs.append(el("div",{class:"studio-browser-row",role:"listitem"},cb,el("button",{class:"studio-file"+(it.path===current.path?" active":""),onclick:e=>{
       if(e.shiftKey){choose(true,true);return;}
       if(e.ctrlKey||e.metaKey){choose(!selection.has(it.path),false);return;}
       S.cap.studioPath=it.path;S.cap.studioSelectionAnchor=it.path;renderCaptions();
     }},thumb,el("span",{text:mediaLabel(it)+(S.cap.studioReviewed?.has(it.path)?" · ✓ reviewed":it.caption===null?" · missing caption":"")}))));
   }
+  left.append(thumbs,nav);
   const drafts=S.cap.studioDrafts||(S.cap.studioDrafts=new Map());
   const histories=S.cap.studioHistories||(S.cap.studioHistories=new Map());
   const ta=el("textarea",{class:"studio-caption",rows:7});
@@ -12142,7 +12150,21 @@ function renderCaptionStudio(host,items,ext){
   const imageTitle=center.querySelector(".caption-card-title");
   if(preview)imageStage.append(preview);
   if(imageTitle)imageStage.append(imageTitle);
-  imageStage.append(pictureActions);
+  const stepImage=delta=>{
+    const idx=items.findIndex(i=>i.path===current.path);
+    if(idx<0||!items.length)return;
+    const next=items[Math.max(0,Math.min(items.length-1,idx+delta))];
+    if(!next||next.path===current.path)return;
+    S.cap.page=Math.floor(items.indexOf(next)/CAP_PAGE);
+    S.cap.studioPath=next.path;renderCaptions();
+  };
+  const stageNav=el("div",{class:"studio-stage-nav"},
+    btn("‹ Previous",()=>stepImage(-1)),
+    el("span",{class:"field-hint",text:current.name}),
+    btn("Next ›",()=>stepImage(1)));
+  stageNav.querySelector("button").disabled=items[0]?.path===current.path;
+  stageNav.querySelectorAll("button")[1].disabled=items.at(-1)?.path===current.path;
+  imageStage.append(stageNav,pictureActions);
   while(center.firstChild)editorPane.append(center.firstChild);
   while(right.firstChild)tagIndexPane.append(right.firstChild);
   const tagHeading=editorPane.querySelector("strong");
@@ -12165,7 +12187,22 @@ function renderCaptionStudio(host,items,ext){
   const duplicatePanel=captionDuplicatePanel(ext);
   const removedPanel=captionRemovedPanel(ext);
   const toolsRow=el("div",{class:"studio-main-actions"});
-  toolsRow.append(editMenu,importPanel,duplicatePanel,removedPanel);
+  const settingsBtn=btn("Settings",()=>{
+    const drawer=document.querySelector("#tab-captions .caption-tools-drawer");
+    if(drawer){drawer.open=true;drawer.scrollIntoView({block:"start",behavior:"smooth"});}
+  });
+  const wildcardBtn=right.querySelector("button");
+  const existingWildcard=[...tagIndexPane.querySelectorAll("button")].find(b=>b.textContent==="Export caption wildcard");
+  const downloadBtn=btn("Download dataset",()=>{$("dsZip")?.click();});
+  const dupBtn=btn("Find Duplicate Images",()=>{
+    duplicatePanel.open=true;
+    duplicatePanel.scrollIntoView({block:"start",behavior:"smooth"});
+  });
+  const actionBar=el("nav",{class:"studio-top-actions","aria-label":"Caption Workbench tools"},
+    settingsBtn,editMenu,dupBtn);
+  if(existingWildcard)actionBar.append(existingWildcard);
+  actionBar.append(importPanel,downloadBtn);
+  toolsRow.append(actionBar,duplicatePanel,removedPanel);
   layout.append(left,divider("left"),center,divider("right"),right);
   redraw();host.classList.add("studio-host");
   host.append(liveStatus,toolsRow,layout);
