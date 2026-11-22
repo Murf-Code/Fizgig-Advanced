@@ -11877,13 +11877,15 @@ function renderCaptionStudio(host,items,ext){
     if(locked){say("Unlock before adding tags.");return;}
     if(captionMode==="prose"){say("Choose Tag list mode to edit tags in this prose caption.");return;}
     if(newTag.value.trim()){ta.value=editorCompose(studioUnique([...studioTokens(ta.value,captionMode),newTag.value.trim()]));newTag.value="";remember();redraw();}
-  })),el("strong",{text:"Dataset tag index"}));
+  })));
   const rev=S.cap.studioRevision||0;
   const sepSelect=el("select",{class:"w-combo"});
   [[",","Commas"],[";","Semicolons"],["|","Pipes"]].forEach(([value,label])=>sepSelect.append(el("option",{value,text:label})));
   sepSelect.value=S.cap.studioDelimiter;
   sepSelect.addEventListener("change",()=>{S.cap.studioDelimiter=sepSelect.value;localStorage.setItem("fizgig_caption_separator",sepSelect.value);S.cap.studioRevision=(S.cap.studioRevision||0)+1;renderCaptions();});
-  right.append(el("div",{class:"field-row"},el("span",{class:"field-label",text:"Tag separator:"}),sepSelect));
+  const advancedTags=el("details",{class:"studio-tag-advanced"});
+  advancedTags.append(el("summary",{text:"Tag settings & categories"}),
+    el("div",{class:"field-row"},el("span",{class:"field-label",text:"Tag separator:"}),sepSelect));
   let tagIndex=S.cap.studioTagCache;
   if(!tagIndex||tagIndex.items!==S.cap.items||tagIndex.rev!==rev){
     const counts=new Map();
@@ -12021,13 +12023,16 @@ function renderCaptionStudio(host,items,ext){
     }else explore.append(index);
   };
   indexMode.addEventListener("change",drawExplore);
-  right.append(el("div",{class:"studio-tag-sort"},el("span",{class:"field-label",text:"Sort by"}),sortSelect),indexSearch,
-    el("div",{class:"field-row studio-view-selector"},indexMode,btn("Export caption wildcard",()=>{
+  const exportWildcard=btn("Export caption wildcard",()=>{
     const txt=CaptionStudioTags.captionWildcards(S.cap.items.map(it=>it.caption));
     if(!txt){say("No captions to export as a prompt wildcard.");return;}
     const url=URL.createObjectURL(new Blob([txt],{type:"text/plain;charset=utf-8"}));
     const a=document.createElement("a");a.href=url;a.download="fizgig_captions.txt";a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
-  })),explore,tagCount,catPanel);
+  });
+  advancedTags.append(catPanel);
+  right.append(el("div",{class:"studio-tag-search-wrap"},indexSearch),
+    el("div",{class:"studio-tag-sort"},el("span",{class:"field-label",text:"Sort by"}),sortSelect),
+    explore,tagCount);
   drawExplore();
   const bulk=el("div",{class:"studio-bulk"});
   const apply=async(mode)=>{
@@ -12201,6 +12206,9 @@ function renderCaptionStudio(host,items,ext){
   imageStage.append(stageNav,pictureActions);
   while(center.firstChild)editorPane.append(center.firstChild);
   while(right.firstChild)tagIndexPane.append(right.firstChild);
+  const listHeading=el("div",{class:"studio-pane-heading"},el("strong",{text:"All Tags"}));
+  tagIndexPane.prepend(listHeading);
+  editorPane.append(advancedTags);
   const tagHeading=editorPane.querySelector("strong");
   if(tagHeading)tagHeading.textContent="Image Tags · Caption Editor";
   center.append(imageStage);
@@ -12213,6 +12221,7 @@ function renderCaptionStudio(host,items,ext){
   const aiHint=el("div",{class:"field-hint",text:"AI runs on your selected images using Fizgig's caption model settings."});
   aiPane.append(aiHint,el("div",{class:"field-row"},aiChoice,btn("Run AI on selection",captionSelected)));
   rightDock.append(showTags,showAI);
+  rightDock.dataset.active="tags";
   right.append(editorPane,rightDock,tagIndexPane,aiPane);
   // A single expandable Edit Tags menu replaces the permanently repeated bulk toolbar.
   const editMenu=el("details",{class:"studio-edit-menu"});
@@ -12225,8 +12234,7 @@ function renderCaptionStudio(host,items,ext){
     const drawer=document.querySelector("#tab-captions .caption-tools-drawer");
     if(drawer){drawer.open=true;drawer.scrollIntoView({block:"start",behavior:"smooth"});}
   });
-  const wildcardBtn=right.querySelector("button");
-  const existingWildcard=[...tagIndexPane.querySelectorAll("button")].find(b=>b.textContent==="Export caption wildcard");
+  const existingWildcard=exportWildcard;
   const downloadBtn=btn("Download dataset",()=>{$("dsZip")?.click();});
   const dupBtn=btn("Find Duplicate Images",()=>{
     duplicatePanel.open=true;
@@ -12235,7 +12243,18 @@ function renderCaptionStudio(host,items,ext){
   const actionBar=el("nav",{class:"studio-top-actions","aria-label":"Caption Workbench tools"},
     settingsBtn,editMenu,dupBtn);
   if(existingWildcard)actionBar.append(existingWildcard);
-  actionBar.append(importPanel,downloadBtn);
+  const viewButtons=el("div",{class:"studio-view-rail",role:"group","aria-label":"Tag visualization"});
+  [["list","Tags"],["waterfall","Waterfall"],["constellation","Constellation"]].forEach(([mode,label])=>{
+    const button=btn(label,()=>{
+      indexMode.value=mode;
+      drawExplore();
+      for(const b of viewButtons.querySelectorAll("button"))b.classList.toggle("is-on",b.dataset.view===mode);
+    });
+    button.dataset.view=mode;
+    button.classList.toggle("is-on",indexMode.value===mode);
+    viewButtons.append(button);
+  });
+  actionBar.append(importPanel,downloadBtn,viewButtons);
   toolsRow.append(actionBar,duplicatePanel,removedPanel);
   layout.append(left,divider("left"),center,divider("right"),right);
   redraw();host.classList.add("studio-host");
