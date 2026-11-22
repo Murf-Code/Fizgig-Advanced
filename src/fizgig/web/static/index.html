@@ -663,6 +663,13 @@
                 <p>Edit images, tags and captions in one workspace</p>
               </div>
             </div>
+            <div class="caption-look-picker" role="group" aria-label="Caption Workbench appearance">
+              <span class="caption-look-picker-label">APPEARANCE</span>
+              <div class="caption-look-options">
+                <button type="button" class="caption-look-option" data-caption-theme="glass" aria-pressed="false" title="TagBench-inspired glass interface">✧ Glass</button>
+                <button type="button" class="caption-look-option" data-caption-theme="classic" aria-pressed="false" title="Restore the original Fizgig Caption Workbench look">Classic</button>
+              </div>
+            </div>
             <div class="caption-bench-dataset">
               <span class="caption-bench-dataset-label">ACTIVE DATASET</span>
               <div class="field-hint" id="capFolder"></div>
@@ -2321,6 +2328,7 @@
   <script src="/qrcode.js" onerror="fizgigRetry(this)"></script>
   <script src="/caption_studio_tags.js" onerror="fizgigRetry(this)"></script>
   <script src="/caption_studio_viz.js" onerror="fizgigRetry(this)"></script>
+  <script src="/caption_theme.js" onerror="fizgigRetry(this)"></script>
   <script src="/app.js" onerror="fizgigRetry(this)"></script>
 </body>
 </html>
