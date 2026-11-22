@@ -13058,6 +13058,11 @@ function renderCaptionStudio(host,items,ext){
       layout.hidden=false;
       fullStage.replaceChildren();
       applySizes();
+      // Match TagBench's active-image reveal when returning from Waterfall.
+      requestAnimationFrame(()=>{
+        if(host.isConnected&&S.cap.studioExploreMode==="list")
+          thumbs.querySelector(".studio-thumb.active")?.scrollIntoView({block:"nearest"});
+      });
     }else{
       for(const child of fullStage.children)child.dispose?.();
       layout.hidden=true;
