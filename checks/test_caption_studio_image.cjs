@@ -27,6 +27,8 @@ assert.match(js, /function captionRemovedPanel\(ext\)/);
 assert.match(js, /\/api\/captions\/restore_saved/);
 assert.match(js, /function captionImageFinishPending\(\)/);
 assert.match(js, /m\.dirty && !\(await meSave\(\)\)/);
+assert.match(js, /captionImageClose\(\)\.then\(ok=>\{if\(ok\)showTab\(name\);\}\)/,
+             "tab navigation must wait for the editor to save before hiding it");
 assert.match(css, /#tab-captions \.caption-image-workspace/);
 const start = js.indexOf('btn("Edit image / crop"');
 const end = js.indexOf('btn("Remove from dataset"', start);
