@@ -167,3 +167,72 @@ def test_merge_respects_custom_separator_and_missing_source_caption(tmp_path):
     assert result["added"] == ["sharp teeth"]
     assert (root / "a.caption").read_text(encoding="utf-8") == "cat; blue fur; sharp teeth"
     assert not (root / "c.caption").exists()
+
+
+def test_multi_keeper_tag_copy_matches_tagbench_and_never_removes_pictures(tmp_path):
+    root = tmp_path / "data"
+    a, b, c = (picture(root, n) for n in ("keep_a.png", "keep_b.png", "drop.png"))
+    (root / "keep_a.txt").write_text("lion, blue mane", encoding="utf-8")
+    (root / "keep_b.txt").write_text("lion, yellow fur", encoding="utf-8")
+    (root / "drop.txt").write_text("yellow fur, smiling, tail", encoding="utf-8")
+    original = {a: "lion, blue mane", b: "lion, yellow fur",
+                c: "yellow fur, smiling, tail"}
+    preview = caption_duplicates.merge_group(root, [a, b], [c], expected=original)
+    assert preview["updated_count"] == 0
+    assert [x["caption"] for x in preview["keepers"]] == [
+        "lion, blue mane, yellow fur, smiling, tail",
+        "lion, yellow fur, smiling, tail",
+    ]
+    assert (root / "keep_a.txt").read_text() == original[a]
+    applied = caption_duplicates.merge_group(root, [a, b], [c],
+                                              expected=original, apply=True)
+    assert applied["updated_count"] == 2
+    assert (root / "keep_a.txt").read_text() == preview["keepers"][0]["caption"]
+    assert (root / "keep_b.txt").read_text() == preview["keepers"][1]["caption"]
+    assert (root / "drop.txt").read_text() == original[c]
+    assert all(os.path.isfile(x) for x in (a, b, c))
+
+
+def test_multi_keeper_copy_off_is_preview_only_and_does_not_require_tags(tmp_path):
+    root = tmp_path / "data"
+    a, b = picture(root, "a.png"), picture(root, "b.png")
+    (root / "a.txt").write_text("A natural-language caption. Still protected.", encoding="utf-8")
+    (root / "b.txt").write_text("A second sentence.", encoding="utf-8")
+    old = {a: "A natural-language caption. Still protected.",
+           b: "A second sentence."}
+    result = caption_duplicates.merge_group(root, [a], [b], expected=old,
+                                             copy_tags=False, apply=True)
+    assert result["updated_count"] == 0
+    assert not result["applied"]
+    assert (root / "a.txt").read_text() == old[a]
+    assert (root / "b.txt").read_text() == old[b]
+
+
+def test_multi_keeper_preview_rolls_back_on_review_lock_or_stale_caption(tmp_path):
+    root = tmp_path / "data"
+    a, b, c = (picture(root, n) for n in ("a.png", "b.png", "c.png"))
+    for file, caption in ((a, "a"), (b, "b"), (c, "c")):
+        (root / (os.path.splitext(os.path.basename(file))[0] + ".txt")).write_text(caption)
+    expected = {a: "a", b: "b", c: "c"}
+    caption_review.mark(root, "b.png", True)
+    with pytest.raises(ValueError, match="reviewed"):
+        caption_duplicates.merge_group(root, [a, b], [c],
+                                       expected=expected, apply=True)
+    assert (root / "a.txt").read_text() == "a"
+    caption_review.mark(root, "b.png", False)
+    (root / "c.txt").write_text("newer tags")
+    with pytest.raises(ValueError, match="changed"):
+        caption_duplicates.merge_group(root, [a, b], [c],
+                                       expected=expected, apply=True)
+    assert (root / "a.txt").read_text() == "a"
+    assert (root / "b.txt").read_text() == "b"
+
+
+def test_local_lama_remains_the_only_object_inpainting_route():
+    """TagBench's CPU *matcher* is allowed; its remover must never replace LaMa."""
+    from fizgig.web import image_edit
+    from fizgig.dataset import lama
+    assert image_edit.lama_fill.__code__.co_names[-1] == "inpaint"
+    assert image_edit.lama_fill.__globals__["lama"] is lama
+    assert image_edit.inpaint_rgb.__defaults__[0] is None
+    assert "lama_fill" in image_edit.inpaint_rgb.__code__.co_names
