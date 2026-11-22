@@ -7152,12 +7152,16 @@ function meFromGray(canvas, img) {
 }
 function meFit() {
   const m = meState(), cv = $("meCanvas"), st = $("meStage");
-  cv.width = st.clientWidth || 800;
+  // Reassigning canvas dimensions clears and reallocates its backing store,
+  // even if the requested dimensions are unchanged. Only resize when needed.
+  const width=st.clientWidth||800;
   // Inline Tags uses the stage's actual dimensions, not Image Prep's
   // viewport-dependent cap. This avoids stretching a rasterized canvas.
-  cv.height = S.cap?.imageEditing?.inline ?
+  const height=S.cap?.imageEditing?.inline ?
     Math.max(1,st.clientHeight||300) :
-    Math.max(300, Math.min(window.innerHeight * 0.7, 900));
+    Math.max(300,Math.min(window.innerHeight*0.7,900));
+  if(cv.width!==width)cv.width=width;
+  if(cv.height!==height)cv.height=height;
   if (m.mask) {
     m.zoom = Math.min(cv.width / m.mask.width, cv.height / m.mask.height);
     m.ox = (cv.width - m.mask.width * m.zoom) / 2; m.oy = (cv.height - m.mask.height * m.zoom) / 2;
@@ -7567,24 +7571,51 @@ function meSizeKey(k) {
   s.value = Math.max(2, Math.min(400, Math.round(k === "[" ? v / 1.2 : v * 1.2 + 1))); meDraw();
   S.cap?.inlineRefreshControls?.();
 }
-function meDab(x, y) {
-  // one stamp of the brush on the mask: white with the strength's opacity, or that much taken away
-  const m = meState(), c = m.mask.getContext("2d");
-  const r = Number($("meSize").value) / 2 / m.zoom, soft = Number($("meSoft").value) / 100;
-  const a = Number($("meStrength").value) / 100;
-  const g = c.createRadialGradient(x, y, r * (1 - soft) * 0.999, x, y, r);
-  g.addColorStop(0, `rgba(255,255,255,${a})`); g.addColorStop(1, "rgba(255,255,255,0)");
-  // the Eraser takes away, the Brush adds; a right-click stroke does the other (#271)
-  c.globalCompositeOperation = (m.tool === "erase") !== !!m.flip ? "destination-out" : "source-over";
-  c.fillStyle = soft > 0 ? g : `rgba(255,255,255,${a})`;
-  c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
-  c.globalCompositeOperation = "source-over";
+// Soft masks previously built a radial gradient for every interpolated dab,
+// sometimes hundreds per pointer event. Cache one small alpha stamp per brush
+// setting; a large brush falls back to the original direct path to cap memory.
+function meBrushStamp(m,r,soft,a){
+  const half=Math.ceil(r)+2;
+  if(!Number.isFinite(half)||half*2>512)return null;
+  const key=r+"|"+soft+"|"+a;
+  if(m.brushStamp?.key===key)return m.brushStamp;
+  const canvas=el("canvas",{width:half*2,height:half*2});
+  const context=canvas.getContext("2d");
+  const gradient=context.createRadialGradient(half,half,r*(1-soft)*0.999,half,half,r);
+  gradient.addColorStop(0,`rgba(255,255,255,${a})`);
+  gradient.addColorStop(1,"rgba(255,255,255,0)");
+  context.fillStyle=gradient;
+  context.beginPath();context.arc(half,half,r,0,Math.PI*2);context.fill();
+  m.brushStamp={key,canvas,half};
+  return m.brushStamp;
+}
+function meDab(x,y,context){
+  // One mask stamp, preserving soft opacity and right-click erase behavior.
+  const m=meState(),c=context||m.mask.getContext("2d");
+  const r=Number($("meSize").value)/2/m.zoom;
+  const soft=Number($("meSoft").value)/100,a=Number($("meStrength").value)/100;
+  c.globalCompositeOperation=(m.tool==="erase")!==!!m.flip?"destination-out":"source-over";
+  const stamp=soft>0?meBrushStamp(m,r,soft,a):null;
+  if(stamp)c.drawImage(stamp.canvas,x-stamp.half,y-stamp.half);
+  else{
+    if(soft>0){
+      const gradient=c.createRadialGradient(x,y,r*(1-soft)*0.999,x,y,r);
+      gradient.addColorStop(0,`rgba(255,255,255,${a})`);
+      gradient.addColorStop(1,"rgba(255,255,255,0)");
+      c.fillStyle=gradient;
+    }else c.fillStyle=`rgba(255,255,255,${a})`;
+    c.beginPath();c.arc(x,y,r,0,Math.PI*2);c.fill();
+  }
+  c.globalCompositeOperation="source-over";
   meMarkMaskDirty(x,y,r);
 }
-function meStroke(from, to) {
-  const m = meState(), r = Math.max(0.5, Number($("meSize").value) / 2 / m.zoom);
-  const dx = to.x - from.x, dy = to.y - from.y, n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / (r * 0.3)));
-  for (let k = 1; k <= n; k++) meDab(from.x + dx * k / n, from.y + dy * k / n);
+function meStroke(from,to){
+  const m=meState(),r=Math.max(0.5,Number($("meSize").value)/2/m.zoom);
+  const dx=to.x-from.x,dy=to.y-from.y;
+  const n=Math.max(1,Math.ceil(Math.hypot(dx,dy)/(r*0.3)));
+  const context=m.mask.getContext("2d");
+  for(let k=1;k<=n;k++)
+    meDab(from.x+dx*k/n,from.y+dy*k/n,context);
 }
 function meStateLine() {
   // the save status beside Save now: unsaved changes, saved, or no mask on this picture yet
