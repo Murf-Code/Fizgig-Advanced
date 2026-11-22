@@ -70,13 +70,17 @@ assert.match(app,/\},\{passive:false\}\);/);
 assert.match(css,/#tab-captions \.studio-host \.studio-thumb-rail,[\s\S]*?scroll-behavior:auto;/);
 assert.doesNotMatch(css,/#tab-captions \.studio-host \.studio-thumb-rail,[\s\S]*?scroll-behavior:smooth;/);
 
-// The Tags rail is continuous and progressively mounted. Cards/Table alone
-// retain CAP_PAGE; arrow navigation and waterfall jumps reveal the active tile.
-assert.match(app,/const thumbBatch=64/);
-assert.match(app,/CaptionStudioSelection\.initialMountCount\(items\.length/);
-assert.match(app,/CaptionStudioSelection\.nextMountCount\(thumbRendered,items\.length,thumbBatch\)/);
-assert.match(app,/thumbs\.insertBefore\(fragment,moreThumbs\)/);
-assert.match(app,/new IntersectionObserver\(/);
+// Tags has a full-range virtualized scrollbar; only images in the visible
+// window are mounted. Cards/Table alone retain CAP_PAGE.
+assert.match(app,/function studioThumbGeometry\(items,railWidth,gap=14\)/);
+assert.match(app,/function studioThumbIndex\(offsets,position\)/);
+assert.match(app,/const paintWindow=\(\)=>/);
+assert.match(app,/windowRows\.replaceChildren\(fragment\)/);
+assert.match(app,/thumbs\.revealPath=path=>revealIndex\(/);
+assert.match(app,/new ResizeObserver\(/);
+assert.match(app,/thumbs\.addEventListener\("scroll",queueWindow,\{passive:true\}\)/);
+assert.match(css,/#tab-captions \.studio-host \.studio-thumb-rail\.is-windowed/);
+assert.doesNotMatch(app,/const moreThumbs=el\(/);
 assert.doesNotMatch(app,/const pageItems=items\.slice\(S\.cap\.page\*CAP_PAGE/);
 assert.match(app,/S\.cap\.studioThumbRevealPath=next\.path/);
 
