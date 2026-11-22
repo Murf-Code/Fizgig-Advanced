@@ -345,8 +345,9 @@ def merge_tags(folder, keeper, donors, *, ext=".txt", delimiter=",",
         raise ValueError("The keeper and source images must be different.")
     if not isinstance(expected, dict):
         raise ValueError("The current caption snapshots are required.")
-    with _WRITE_LOCK:
-        if caption_review.is_locked(os.path.dirname(keeper), os.path.basename(keeper)):
+    with _WRITE_LOCK, caption_review._lock:
+        if (caption_review.is_locked(os.path.dirname(keeper), os.path.basename(keeper)) or
+                caption_review.is_caption_locked(os.path.splitext(keeper)[0] + ext)):
             raise ValueError("This keeper is reviewed and locked. Unlock it first.")
         paths = [keeper] + others
         captions = []
@@ -392,6 +393,7 @@ def merge_group(folder, keepers, donors, *, ext=".txt", delimiter=",",
     action with its own explicit confirmation and review-lock checks.
     """
     from fizgig.web.image_edit import write_atomic
+    from fizgig.web import caption_review
 
     root = _root(folder)
     if not isinstance(keepers, list) or not 1 <= len(keepers) <= 100:
@@ -406,7 +408,7 @@ def merge_group(folder, keepers, donors, *, ext=".txt", delimiter=",",
         raise ValueError("All current caption snapshots are required.")
     if not isinstance(copy_tags, bool):
         raise ValueError("copy_tags must be true or false.")
-    with _WRITE_LOCK:
+    with _WRITE_LOCK, caption_review._lock:
         output = []
         if copy_tags and dpaths:
             for k in kpaths:
@@ -425,8 +427,13 @@ def merge_group(folder, keepers, donors, *, ext=".txt", delimiter=",",
                                "applied": False})
         applied = []
         if apply and copy_tags and dpaths:
-            # Atomic PER FILE; best-effort rollback for an unexpected mid-commit
-            # write failure. Source captions still remain untouched.
+            # Refuse a newly reviewed keeper and any stale donor/keeper snapshot
+            # before modifying the first caption, then roll back on disk errors.
+            if any(caption_review.is_caption_locked(os.path.splitext(p)[0] + ext)
+                   for p in kpaths):
+                raise ValueError("A keeper was reviewed and locked before the merge.")
+            if any(_caption_text(p, ext) != expected[p] for p in kpaths + dpaths):
+                raise ValueError("A caption changed before the merge; refresh the preview.")
             try:
                 for result in output:
                     if result["changed"]:
