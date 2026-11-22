@@ -440,13 +440,17 @@ const CaptionStudioViz = (() => {
   function tagbenchWaterfall(items,onSelect,onContextMenu,activePath,selection,token) {
     const stage=document.createElement("div");stage.className="studio-tb-waterfall";
     const flow=document.createElement("div");flow.className="studio-tb-flow";
-    const viewportWidth=Math.max(300,window.innerWidth-60);
-    const columns=Math.max(2,Math.floor(viewportWidth/228));
-    const cols=Array.from({length:columns},()=>{
-      const col=document.createElement("div");col.className="studio-tb-flow-column";flow.append(col);return col;
-    });
     const pictures=items.filter(it=>it.size);
-    pictures.forEach((it,i)=>{
+    const initialColumns=Math.max(2,Math.floor(Math.max(300,window.innerWidth-60)/228));
+    let columns=Array.from({length:initialColumns},()=>{
+      const col=document.createElement("div");col.className="studio-tb-flow-column";
+      flow.append(col);return col;
+    });
+    // Decode only the first page of thumbnails. The dataset may have tens of
+    // thousands of images; creating every DOM node and image at once is costly.
+    const batchSize=120;
+    let count=0,disposed=false,resizeObserver=null,loadObserver=null;
+    const createTile=it=>{
       const tile=document.createElement("button");
       tile.type="button";tile.className="studio-tb-flow-tile";
       tile.dataset.path=it.path;
@@ -460,29 +464,56 @@ const CaptionStudioViz = (() => {
       tile.append(img);
       tile.addEventListener("click",event=>onSelect(it,event));
       tile.addEventListener("contextmenu",event=>onContextMenu(event,it));
-      cols[i%columns].append(tile);
-    });
-    if(!pictures.length){const hint=document.createElement("p");hint.textContent="No pictures match the current dataset filter.";hint.className="field-hint";flow.append(hint);}
+      return tile;
+    };
+    const sentinel=document.createElement("button");
+    sentinel.type="button";sentinel.className="studio-tb-load-more btn btn-sm";
+    sentinel.textContent="Load more images";sentinel.setAttribute("aria-label","Load more waterfall images");
+    const loadMore=()=>{
+      if(disposed||count>=pictures.length)return;
+      const end=Math.min(pictures.length,count+batchSize);
+      for(;count<end;count++)columns[count%columns.length].append(createTile(pictures[count]));
+      if(count>=pictures.length){
+        sentinel.remove();
+        loadObserver?.disconnect();
+      }else sentinel.textContent="Load more images ("+count+" / "+pictures.length+")";
+    };
+    sentinel.addEventListener("click",loadMore);
     stage.append(flow);
-    let widthCount=columns;
+    if(!pictures.length){
+      const hint=document.createElement("p");hint.textContent="No pictures match the current dataset filter.";
+      hint.className="field-hint";flow.append(hint);
+    }else{
+      stage.append(sentinel);
+      loadMore();
+      if(typeof IntersectionObserver!=="undefined"&&sentinel.isConnected){
+        loadObserver=new IntersectionObserver(entries=>{
+          if(entries.some(entry=>entry.isIntersecting))loadMore();
+        },{root:stage,rootMargin:"450px 0px"});
+        loadObserver.observe(sentinel);
+      }
+    }
     const resize=()=>{
-      if(!stage.isConnected)return;
+      if(disposed||!stage.isConnected)return;
       const wanted=Math.max(2,Math.floor(Math.max(400,stage.clientWidth)/228));
-      if(wanted===widthCount)return;
-      widthCount=wanted;
+      if(wanted===columns.length)return;
       const tiles=[...flow.querySelectorAll(".studio-tb-flow-tile")];
       flow.replaceChildren();
-      const fresh=Array.from({length:wanted},()=>{
+      columns=Array.from({length:wanted},()=>{
         const col=document.createElement("div");col.className="studio-tb-flow-column";
         flow.append(col);return col;
       });
-      tiles.forEach((tile,i)=>fresh[i%wanted].append(tile));
+      tiles.forEach((tile,i)=>columns[i%wanted].append(tile));
     };
     if(typeof ResizeObserver!=="undefined"){
-      const observer=new ResizeObserver(resize);
-      observer.observe(stage);
-      stage.dispose=()=>observer.disconnect();
+      resizeObserver=new ResizeObserver(resize);
+      resizeObserver.observe(stage);
     }
+    stage.dispose=()=>{
+      disposed=true;
+      resizeObserver?.disconnect();
+      loadObserver?.disconnect();
+    };
     return stage;
   }
   function tagbenchConstellation(model,onPick,pickedTag=null) {
