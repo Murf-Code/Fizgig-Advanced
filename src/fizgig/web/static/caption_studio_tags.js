@@ -91,9 +91,38 @@ const CaptionStudioTags = (() => {
     return result;
   }
 
+  // Deterministic tag ordering. Front/back pins preserve user-supplied priority,
+  // while the rest can use frequency or the model tokenizer's real token counts.
+  function order(values, options = {}) {
+    const rule = options.rule || "original";
+    const key = x => String(x).trim().toLocaleLowerCase();
+    const items = unique(values.map(x => String(x).trim()).filter(Boolean));
+    const byKey = new Map(items.map(x => [key(x), x]));
+    const front = unique(options.front || []).map(key);
+    const back = unique(options.back || []).map(key).filter(x => !front.includes(x));
+    const pinned = new Set([...front, ...back]);
+    const lookup = (source, tag) => source instanceof Map ? source.get(key(tag)) :
+      source?.[key(tag)];
+    const remaining = items.filter(x => !pinned.has(key(x)));
+    const alpha = (a, b) => a.localeCompare(b, undefined, {sensitivity:"base"});
+    const count = (source, tag) => Number(lookup(source, tag) ?? 0);
+    if(rule==="reverse")remaining.reverse();
+    else if(rule==="alpha")remaining.sort(alpha);
+    else if(rule==="alpha-desc")remaining.sort((a,b)=>alpha(b,a));
+    else if(rule==="frequency"||rule==="frequency-asc")
+      remaining.sort((a,b)=>(rule==="frequency" ? count(options.counts,b)-count(options.counts,a) :
+        count(options.counts,a)-count(options.counts,b)) || alpha(a,b));
+    else if(rule==="token-asc"||rule==="token-desc")
+      remaining.sort((a,b)=>(rule==="token-asc" ? count(options.tokens,a)-count(options.tokens,b) :
+        count(options.tokens,b)-count(options.tokens,a)) || alpha(a,b));
+    return [...front,...back].filter(x=>byKey.has(x)).length===0 ? remaining :
+      [...front.filter(x=>byKey.has(x)).map(x=>byKey.get(x)),...remaining,
+        ...back.filter(x=>byKey.has(x)).map(x=>byKey.get(x))];
+  }
+
   const wildcards = (values, delimiter = ",") => unique(values).sort((a, b) => a.localeCompare(b))
     .join("\n") + (values.length ? "\n" : "");
 
-  return Object.freeze({kind, tags, compose, unique, search, wildcards});
+  return Object.freeze({kind, tags, compose, unique, search, order, wildcards});
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = CaptionStudioTags;
