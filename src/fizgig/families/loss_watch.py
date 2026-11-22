@@ -387,6 +387,8 @@ class Watch:
                 try:
                     cache.save_cond(self.driver.description, text_tmp, condition,
                                     refs=refs_text, encoder=cache.encoder_stamp(self.te_path))
+                    if _refs and (not all(os.path.isfile(p) for p in self._reference_paths(key, source))):
+                        raise ValueError("Reference removed during new-image encoding")
                     os.replace(item.latent_cache_path + ".live-update", item.latent_cache_path)
                     os.replace(text_tmp.text_encoder_output_cache_path, item.text_encoder_output_cache_path)
                     if ds.batch_manager.add_live_item(tuple(item.bucket_size), item, ds.num_repeats):
@@ -896,6 +898,10 @@ class Watch:
                         paired = bool(getattr(ds, "has_control", False) or had_controls)
                         if paired and not getattr(self.driver, "supports_references", False):
                             raise ValueError("The driver cannot live-refresh paired references")
+                        def signature(paths):
+                            return tuple((p, os.stat(p).st_size, os.stat(p).st_mtime_ns) for p in paths)
+                        inputs = [source] + (self._reference_paths(k, source) if paired else [])
+                        fingerprint = signature(inputs)
                         with torch.no_grad():
                             upright = open_upright(source)
                             new_source_size = upright.size
@@ -922,6 +928,8 @@ class Watch:
                             try:
                                 cache.save_latents(self.driver.description, scratch, encoded,
                                                    encoded_controls)
+                                if signature(inputs) != fingerprint:
+                                    raise ValueError("Source or reference changed during live VAE encoding")
                                 os.replace(scratch.latent_cache_path, new_cache)
                                 item.latent_cache_path = new_cache
                                 item.original_size = new_source_size
@@ -1046,6 +1054,9 @@ class Watch:
                                item.text_encoder_output_cache_path)
                 finally:
                     _remove(scratch.text_encoder_output_cache_path)
+                # Do not commit old text if a user saved another caption while
+                # this encoder was running; the next boundary will use the new file.
+                # For auto-recaption the on-disk file was already updated above.
                 item.caption = cap
                 self.stale_caption_keys.discard(k)
                 self.removed_keys.discard(k)
