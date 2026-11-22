@@ -12,7 +12,7 @@ const source=(start,end)=>{
   return app.slice(a,b);
 };
 assert.match(app,/mePaintFrame=requestAnimationFrame\(\(\)=>\{mePaintFrame=0;mePaint\(\);\}\)/);
-assert.match(app,/if\(pan\|\|m\.cropDrag\|\|last\)meDraw\(\)/);
+assert.match(app,/else if\(pan\|\|m\.cropDrag\|\|last\)meDraw\(\)/);
 assert.match(app,/function meRemoveLayer\(\)/);
 assert.match(app,/meMarkMaskDirty\(x,y,r\)/);
 assert.match(app,/meMarkMaskDirty\(\);\s*m\.dirty = true; m\.samLoaded = true/);
