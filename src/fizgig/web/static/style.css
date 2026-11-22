@@ -5438,3 +5438,31 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
     grid-template-columns:minmax(96px,12%) 8px minmax(290px,1fr) 8px minmax(195px,36%);
   }
 }
+
+/* Mask editor performance: the brush ring is a tiny composited surface rather
+   than being painted into the whole image canvas on every mouse move. */
+.me-stage .me-brush-cursor{
+  position:absolute;
+  left:0;top:0;
+  z-index:2;
+  pointer-events:none;
+  border:1.5px solid #fff;
+  border-radius:50%;
+  background:transparent;
+  box-sizing:border-box;
+  mix-blend-mode:difference;
+  will-change:transform;
+}
+.me-stage .me-brush-cursor[hidden]{display:none!important}
+
+/* Blurring the entire embedded Image Editor makes every stroke expensive:
+   each canvas update previously invalidated a very large backdrop surface.
+   Keep the dark-glass palette, but use an opaque-enough static surface. */
+#tab-captions.caption-theme-glass .caption-image-workspace{
+  background:linear-gradient(150deg,rgba(29,27,46,.98),rgba(13,13,25,.99));
+  backdrop-filter:none;
+  -webkit-backdrop-filter:none;
+}
+#tab-captions #captionImageEditorSlot .me-stage{
+  isolation:isolate;
+}
