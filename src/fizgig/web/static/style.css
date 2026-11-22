@@ -3304,3 +3304,23 @@ label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; 
 
 #tab-captions .studio-live-status{border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;overflow-wrap:anywhere}
 #tab-captions .studio-live-status.needs-attention{border-style:dashed;border-color:var(--accent-border);font-weight:600}
+
+
+/* Caption Studio: the one shared Image Prep editor, mounted without leaving Captions. */
+#tab-captions .caption-image-workspace[hidden]{display:none!important}
+#tab-captions .caption-image-workspace{margin:12px 0 18px;border:1px solid var(--accent-border);
+  border-radius:12px;background:var(--bg-surface);padding:12px;min-width:0}
+#tab-captions .caption-image-workspace-heading{display:flex;justify-content:space-between;align-items:center;
+  flex-wrap:wrap;gap:10px;margin-bottom:8px;padding:2px 2px 12px;border-bottom:1px solid var(--border)}
+#tab-captions .caption-image-workspace-heading strong{font-size:14px;color:var(--text-primary)}
+#tab-captions .caption-image-workspace-heading .field-hint{margin-top:5px}
+#tab-captions #captionImageEditorSlot .mask-edit{margin:0;border:0;padding:0}
+#tab-captions #captionImageEditorSlot .mask-edit>summary{display:none}
+#tab-captions #captionImageEditorSlot .me-stage{min-height:320px;max-height:min(76vh,820px);
+  overflow:hidden;background:var(--bg-deep)}
+#tab-captions #captionImageEditorSlot .me-stage canvas{max-height:min(76vh,820px)}
+#tab-captions #captionImageEditorSlot .me-bar{gap:8px 10px}
+@media(max-width:650px){
+  #tab-captions .caption-image-workspace{padding:8px}
+  #tab-captions #captionImageEditorSlot .me-stage{min-height:240px}
+}
