@@ -22,7 +22,7 @@ const CaptionStudioViz = (() => {
     const frequencies=new Map(top.map(([tag,count])=>[lower(tag),count]));
     const total=Math.max(1,captions.length);
     const edges = [...links].map(([pair,count]) => {
-      const [a,b] = pair.split("\\u0000");
+      const [a,b] = pair.split("\u0000");
       const expected=(frequencies.get(a)||0)*(frequencies.get(b)||0)/total;
       return {a,b,count,strength:count/Math.max(1,expected)};
     }).filter(x=>x.count>=2&&x.strength>1.05)
