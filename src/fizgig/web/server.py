@@ -4049,6 +4049,12 @@ class Handler(BaseHTTPRequestHandler):
             if not p.lower().endswith(".safetensors") or not os.path.isfile(p):
                 return self.json({"error": "not a checkpoint"}, 404)
             return self._stream(p)
+        if path == "/api/captions/reviews":
+            from fizgig.web import caption_review
+            try:
+                return self.json({"reviewed": caption_review.reviewed((qs.get("folder") or [""])[0])})
+            except ValueError as e:
+                return self.json({"error": str(e)}, 400)
         if path == "/api/captions":
             return self._captions((qs.get("folder") or [""])[0], (qs.get("ext") or [".txt"])[0],
                                   (qs.get("family") or [""])[0], subs=(qs.get("subs") or [""])[0] == "1",
@@ -5637,8 +5643,15 @@ class Handler(BaseHTTPRequestHandler):
                 if not uri:
                     raise ValueError("Could not read that picture.")
                 return self.json({"uri": uri})
+            if path == "/api/captions/review":
+                from fizgig.web import caption_review
+                return self.json({"reviewed": caption_review.mark(b.get("folder"), b.get("name"),
+                                                                  b.get("reviewed") is True)})
             if path == "/api/captions/remove":       # out of the training set, into removed/ (never deleted)
+                from fizgig.web import caption_review
                 folder, name = str(b.get("folder") or ""), str(b.get("name") or "")
+                if caption_review.is_locked(folder, name):
+                    raise ValueError("This picture is reviewed and locked. Unlock it in Caption Studio first.")
                 moved = remove_from_dataset(folder, name, captions.caption_ext(b.get("ext")))
                 _notify_image_change(folder, name, "removed")
                 return self.json({"moved": moved})
@@ -5655,6 +5668,9 @@ class Handler(BaseHTTPRequestHandler):
                 ext = captions.caption_ext(b.get("ext"))     # the Caption Extension, as every caption route reads it
                 if not stem or not os.path.isdir(folder):
                     return self.json({"error": "bad folder or file"}, 400)
+                from fizgig.web import caption_review
+                if caption_review.is_locked(folder, name):
+                    raise ValueError("This caption is reviewed and locked. Unlock it in Caption Studio first.")
                 from fizgig.web.image_loss import queue_for_folder
                 from fizgig.web.image_edit import write_atomic
                 filename = os.path.join(folder, stem + ext)
