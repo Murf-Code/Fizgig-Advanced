@@ -230,6 +230,200 @@ class Watch:
 
 
 
+    def _new_image_sources(self):
+        """New eligible stills in existing dataset blocks (holdouts never join training)."""
+        known = set(_items(self.group))
+        results = []
+        allowed = set(_picture_exts())
+        for ds in getattr(self.group, "datasets", ()) or ():
+            if getattr(ds, "is_reg", False) or getattr(ds, "holdout_only", False):
+                continue
+            folder = getattr(ds, "image_directory", None)
+            bm = getattr(ds, "batch_manager", None)
+            if not folder or not bm or not os.path.isdir(folder):
+                continue
+            prefix = str(getattr(ds, "item_prefix", "") or "")
+            held = set(getattr(ds, "holdout_stems", ()) or ())
+            seen = set()
+            for filename in sorted(os.listdir(folder)):
+                stem, ext = os.path.splitext(filename)
+                if ext.lower() not in allowed or stem in held or stem in seen:
+                    continue
+                seen.add(stem)
+                key = prefix + stem
+                if key in known:
+                    continue
+                source = os.path.join(folder, filename)
+                if not os.path.isfile(source):
+                    continue
+                cext = getattr(ds, "caption_extension", None)
+                caption_path = os.path.join(folder, stem + cext) if cext else ""
+                if cext and not os.path.isfile(caption_path) and not getattr(ds.datasource, "captions_optional", False):
+                    logger.warning("[live-dataset] %s not yet eligible: missing caption %s", key, caption_path)
+                    continue
+                results.append((ds, key, source, caption_path))
+        return results
+
+    def _admit_new_images(self, epoch, dit, device, parkable):
+        """Encode and admit stills into existing buckets without changing training step counts.
+
+        A new shape with no existing bucket, unsupported source type or failed encoding
+        stays out of the run and is reported by the status endpoint. No partial cache
+        can enter the sampler.
+        """
+        candidates = self._new_image_sources()
+        if not candidates:
+            return
+        if not self.vae_path or not self.te_path:
+            logger.warning("[live-dataset] %s new images await VAE/text encoder paths", len(candidates))
+            return
+        from fizgig.dataset.image_dataset import ItemInfo, BucketSelector, resize_image_to_bucket
+        from fizgig.dataset.masks import mask_for_stem, mask_problem
+        from fizgig.dataset.caption_file import read_caption
+        from fizgig.utils.upright import open_upright
+        from fizgig.families import cache, quant
+        import copy
+        prepared = []
+        for ds, key, source, cap_path in candidates[:64]:
+            try:
+                im = open_upright(source)
+                if im.mode not in ("RGB", "RGBA"):
+                    im = im.convert("RGB")
+                selector = BucketSelector(ds.resolution, ds.enable_bucket, ds.bucket_no_upscale, ds.reso_steps)
+                bucket = tuple(selector.get_bucket_resolution(im.size))
+                if bucket not in ds.batch_manager.buckets:
+                    logger.warning("[live-dataset] %s needs a new bucket %s; restart to include this aspect ratio",
+                                   key, bucket)
+                    continue
+                if getattr(ds, "has_control", False) and not getattr(self.driver, "supports_references", False):
+                    logger.warning("[live-dataset] %s uses a reference format this driver cannot live-encode", key)
+                    continue
+                item = ItemInfo(key, read_caption(cap_path) if cap_path else "", im.size, bucket)
+                item.latent_cache_path = ds.get_latent_cache_path(item)
+                item.text_encoder_output_cache_path = ds.get_text_encoder_output_cache_path(item)
+                mask_root = ds.mask_directory or ds.image_directory
+                if getattr(ds, "loss_masks", False):
+                    mask = mask_for_stem(mask_root, os.path.splitext(os.path.basename(source))[0])
+                    if mask:
+                        why = mask_problem(mask, im.size)
+                        if why:
+                            logger.warning("[live-dataset] %s has invalid mask (%s); not admitted", key, why)
+                            continue
+                        item.mask_path = mask
+                self._owner_dataset(key)  # initialize the owner map before adding this entry
+                self._owner_cache[key] = ds
+                references = (self._reference_images(key, source, bucket)
+                              if getattr(ds, "has_control", False) else [])
+                item.control_content = references or None
+                source_stat = (os.stat(source).st_size, os.stat(source).st_mtime_ns)
+                cap_stat = (os.stat(cap_path).st_size, os.stat(cap_path).st_mtime_ns) if cap_path else None
+                prepared.append((ds, key, source, cap_path, item, im, references, source_stat, cap_stat))
+            except Exception:
+                logger.warning("[live-dataset] cannot prepare new image %s", key, exc_info=True)
+        if not prepared:
+            return
+        if parkable:
+            quant.move(dit, "cpu")
+            gc.collect()
+            torch.cuda.empty_cache()
+        latent_prepared = []
+        try:
+            vae = self.driver.load_vae(self.vae_path, device)
+            try:
+                with torch.no_grad():
+                    for row in prepared:
+                        ds, key, source, cap_path, item, image, refs, source_stat, cap_stat = row
+                        scratch = copy.copy(item)
+                        scratch.latent_cache_path += ".live-update"
+                        try:
+                            pixels = resize_image_to_bucket(image, tuple(item.bucket_size))
+                            target = self.driver.encode_images(vae, [pixels])[0]
+                            controls = [self.driver.encode_images(vae, [ref])[0] for ref in refs]
+                            cache.save_latents(self.driver.description, scratch, target, controls)
+                            latent_prepared.append(row)
+                        except Exception:
+                            _remove(scratch.latent_cache_path)
+                            logger.warning("[live-dataset] failed encoding latent of %s", key, exc_info=True)
+            finally:
+                del vae
+                gc.collect()
+                torch.cuda.empty_cache()
+
+            plain, reference = [], []
+            from safetensors import safe_open
+            for row in latent_prepared:
+                ds, key, *_ = row
+                if not getattr(ds, "has_control", False):
+                    plain.append(row)
+                    continue
+                # Edit-pair text has a vision reference; a slider's paired text
+                # does not. Read this format from an existing cache in the block.
+                ref_text = False
+                for bucket in ds.batch_manager.buckets.values():
+                    if bucket:
+                        with safe_open(bucket[0].text_encoder_output_cache_path,
+                                       framework="pt", device="cpu") as f:
+                            ref_text = bool((f.metadata() or {}).get("reference_sizes"))
+                        break
+                (reference if ref_text else plain).append(row)
+
+            def activate(row, condition, refs_text=""):
+                ds, key, source, cap_path, item, _image, _refs, source_stat, cap_stat = row
+                original = os.stat(source)
+                now = (original.st_size, original.st_mtime_ns)
+                caption_now = (os.stat(cap_path).st_size, os.stat(cap_path).st_mtime_ns) if cap_path else None
+                if now != source_stat or caption_now != cap_stat:
+                    raise ValueError("Source or caption changed while encoding; will retry next boundary")
+                text_tmp = copy.copy(item)
+                text_tmp.text_encoder_output_cache_path += ".live-update"
+                try:
+                    cache.save_cond(self.driver.description, text_tmp, condition,
+                                    refs=refs_text, encoder=cache.encoder_stamp(self.te_path))
+                    os.replace(item.latent_cache_path + ".live-update", item.latent_cache_path)
+                    os.replace(text_tmp.text_encoder_output_cache_path, item.text_encoder_output_cache_path)
+                    if ds.batch_manager.add_live_item(tuple(item.bucket_size), item, ds.num_repeats):
+                        logger.info("[live-dataset] epoch %s: admitted new image %s (fixed steps/epoch)", epoch, key)
+                finally:
+                    _remove(text_tmp.text_encoder_output_cache_path)
+                    _remove(item.latent_cache_path + ".live-update")
+
+            if plain:
+                te = self.driver.load_text_encoder(self.te_path, device)
+                try:
+                    for row in plain:
+                        try:
+                            activate(row, self.driver.encode_text(te, [row[4].caption])[0])
+                        except Exception:
+                            logger.warning("[live-dataset] deferred new image %s", row[1], exc_info=True)
+                finally:
+                    self.driver.unload_text_encoder(te)
+                    del te
+                    gc.collect()
+                    torch.cuda.empty_cache()
+            if reference:
+                rte = self.driver.load_reference_text_encoder(self.te_path, device)
+                try:
+                    for row in reference:
+                        try:
+                            refs = row[6]
+                            cond = self.driver.encode_text_with_references(rte, [row[4].caption], [refs])[0]
+                            refs_text = ",".join(f"{r.shape[1]}x{r.shape[0]}" for r in refs)
+                            activate(row, cond, refs_text)
+                        except Exception:
+                            logger.warning("[live-dataset] deferred new paired image %s", row[1], exc_info=True)
+                finally:
+                    self.driver.unload_text_encoder(rte)
+                    del rte
+                    gc.collect()
+                    torch.cuda.empty_cache()
+            # Refresh the baselines now that new keys belong to the live pool.
+            self._source_snapshot = self._source_state()
+        finally:
+            for row in latent_prepared:
+                _remove(row[4].latent_cache_path + ".live-update")
+            if parkable:
+                quant.move(dit, device)
+
     def _unscheduled_inputs(self):
         """Keys of newly present source media outside the fixed active batch schedule.
 
@@ -563,14 +757,19 @@ class Watch:
             logger.warning("[live-dataset] source scan failed; queued UI edits still apply", exc_info=True)
             changed_images, changed_text = {}, {}
         try:
-            self._report_unscheduled_inputs()
-        except Exception:
-            logger.warning("[live-dataset] could not report new source media", exc_info=True)
-        try:
             self._images(epoch, dit, device, parkable, changed_images)
         except Exception:
             _recover_processing(os.path.join(self.output_dir, "loss_log", "image_updates.json"), changed_images)
             logger.warning("[image-fix] image refresh failed this boundary - training continues", exc_info=True)
+        try:
+            self._admit_new_images(epoch, dit, device, parkable)
+        except Exception:
+            logger.warning("[live-dataset] new-image admission failed; no unencoded images were scheduled",
+                           exc_info=True)
+        try:
+            self._report_unscheduled_inputs()
+        except Exception:
+            logger.warning("[live-dataset] could not report unscheduled sources", exc_info=True)
         try:
             self._refresh_masks(changed_images)
         except Exception:
