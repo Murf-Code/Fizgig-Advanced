@@ -4158,12 +4158,40 @@ body.caption-settings-open{overflow:hidden}
 .caption-settings-field{display:flex;flex-direction:column;align-items:stretch;gap:8px;min-width:0;font-size:13px;font-weight:550;color:#e7e5f2}
 .caption-settings-field>input:not([type=checkbox]),.caption-settings-field>select{display:block;box-sizing:border-box;width:100%;min-height:40px;padding:9px 12px;border-radius:10px;color:#f1effa;border:1px solid rgba(255,255,255,.22);background:rgba(9,9,17,.5);font:inherit;color-scheme:dark}
 .caption-settings-field>small{font-size:11px;line-height:1.4;font-weight:400;color:#b8b5cb}
-.caption-settings-field input[type=checkbox]{width:18px;height:18px;accent-color:#9274f1;cursor:pointer}
+.caption-settings-field input[type=checkbox]{
+  /* Global switches use flex-basis:32px. Inside the Settings column that
+     becomes HEIGHT instead of width, turning the pill sideways. */
+  flex:0 0 auto;
+  align-self:flex-start;
+  box-sizing:border-box;
+  width:34px;height:20px;
+  margin:2px 0;
+  accent-color:#9274f1;cursor:pointer;
+}
 .caption-settings-modal :is(input,select,button,summary):focus-visible{outline:2px solid #aaa1ff;outline-offset:2px}
 .caption-settings-advanced{margin:0 24px 4px;min-height:0;overflow:auto;border:1px solid var(--settings-line);border-radius:11px;background:rgba(9,9,18,.23)}
 .caption-settings-advanced>summary{cursor:pointer;list-style:none;padding:13px 15px;font-size:13px;font-weight:650;display:flex;align-items:center;justify-content:space-between}
-.caption-settings-advanced>summary::after{content:"⌄";font-size:20px;line-height:10px;color:#c8bcff}
-.caption-settings-advanced[open]>summary::after{transform:rotate(180deg)}
+.caption-settings-advanced>summary::after{
+  content:"";display:block;flex:none;
+  width:8px;height:8px;
+  border-right:2px solid #c8bcff;border-bottom:2px solid #c8bcff;
+  transform:rotate(45deg);
+  margin:0 5px 5px 12px;
+  transition:transform .16s ease;
+}
+.caption-settings-advanced[open]>summary::after{
+  transform:rotate(225deg);
+  margin-top:5px;margin-bottom:0;
+}
+.caption-settings-advanced .caption-settings-advanced-label{
+  display:flex;flex-direction:column;gap:4px;min-width:0;
+}
+.caption-settings-advanced .caption-settings-advanced-label strong{
+  color:#f1eefb;font-size:13px;font-weight:680;
+}
+.caption-settings-advanced .caption-settings-advanced-label small{
+  color:#b5b1cf;font-size:11px;font-weight:400;line-height:1.4;
+}
 .caption-settings-advanced>summary::-webkit-details-marker{display:none}
 .caption-settings-advanced>.caption-tools-drawer{display:block;margin:0;border:0;border-top:1px solid var(--settings-line);border-radius:0;padding:0;background:transparent}
 .caption-settings-advanced>.caption-tools-drawer>summary{display:none}
@@ -5946,4 +5974,14 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
 }
 @media(prefers-reduced-motion:reduce){
   #tab-prep .me-dialog-window{transition:none;animation:none}
+}
+
+/* Inline explanation replaces an unrelated-looking dropdown at the top of
+   the floating Image Prep editor; keep help readable without hiding controls. */
+#tab-prep .me-dialog-quick-note{
+  flex:none;padding:7px 12px;
+  color:#b9c6dc;font-size:11px;line-height:1.45;
+  background:rgba(132,142,210,.08);
+  border:1px solid rgba(177,192,232,.13);
+  border-radius:10px;
 }
