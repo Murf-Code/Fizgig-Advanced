@@ -11170,6 +11170,9 @@ function renderCaptions() {
     S.cap.studioThumbScrollTop=priorRail.scrollTop;
     S.cap.studioThumbViewKey=priorRail.dataset.viewKey||"";
   }
+  // Detached editors must survive a Tags rebuild (selection, autosave,
+  // image replacement, search). Reattach the same canvas in the next stage.
+  if(S.cap.imageEditing?.inline)captionInlineStageDetach();
   // Preserve the one real set of bound AI model/task controls across renders.
   // The workbench re-creates this host frequently (selection, filters, saves).
   captionAiControlsRestore();
@@ -11314,65 +11317,120 @@ function studioLiveSummary(status){
 }
 // Caption Studio mounts the ONE existing Image Prep editor in its own workspace.
 // Moving the live DOM keeps canvas events, undo/redo and mask state intact.
-async function captionImageOpen(it) {
-  if (!it?.size || !/\.(png|jpe?g|webp|bmp|avif|jxl)$/i.test(it.name)) {
-    throw new Error("Image editing is available for still pictures; video and audio aren't supported.");
-  }
-  const mount=$("captionImageWorkspace"), slot=$("captionImageEditorSlot"), editor=$("maskEdit");
-  if (!mount||!slot||!editor) throw new Error("The picture editor isn't available in this layout.");
-  if (!S.cap.imageEditorHome) S.cap.imageEditorHome={parent:editor.parentNode,next:editor.nextSibling};
-  const current=S.cap.imageEditing;
-  if (current && (current.folder!==capItemFolder(it)||current.name!==it.name)) {
-    if (!(await captionImageFinishPending())) return;
-  }
-  S.cap.imageEditing={folder:capItemFolder(it),name:it.name,path:it.path};
-  meState().studioFolder=capItemFolder(it);
-  $("meFilter").value="all";
-  slot.append(editor);
-  mount.hidden=false;
-  editor.open=true;
-  $("captionImageWorkspaceTitle").textContent="Editing "+it.name;
-  $("captionImageWorkspaceNote").textContent="Changes to this image or its mask are queued for the next training epoch.";
-  await meOpen();
-  const idx=meShown().findIndex(p=>p.name===it.name);
-  if(idx<0) {
-    $("captionImageWorkspaceNote").textContent="This image isn't available in the editor's current list.";
-    return;
-  }
-  if(meState().name!==it.name) await meGo(idx,true);
-  meFit();
-  mount.scrollIntoView({behavior:"smooth",block:"nearest"});
+// Keep the one Image Prep canvas, with its existing Remove/Crop/pointer
+// handlers, but mount ONLY the stage inside Tags. The heavy editor form and
+// its advanced mask controls stay in Image Prep.
+function captionInlineStageDetach(){
+  const stage=$("meStage"),home=S.cap?.inlineStageHome;
+  if(!stage||!home?.parent||stage.parentNode===home.parent)return;
+  home.parent.insertBefore(stage,home.next?.parentNode===home.parent?home.next:null);
 }
-async function captionImageFinishPending() {
-  const m=meState();
-  if(m.stepBusy||m.samBusy||m.wmBusy) {
-    $("captionImageWorkspaceNote").textContent="Finish the current image operation before closing.";
-    return false;
-  }
-  if(m.dirty && !(await meSave())) return false;
-  if(!(await meRmSave(false))) return false;
+function captionInlineStageMount(preview){
+  const stage=$("meStage");
+  if(!stage||!preview)return false;
+  if(!S.cap.inlineStageHome)
+    S.cap.inlineStageHome={parent:stage.parentNode,next:stage.nextSibling};
+  preview.replaceChildren(stage);
+  preview.classList.add("studio-preview-editing");
   return true;
 }
-async function captionImageClose() {
-  if(!S.cap?.imageEditing) return true;
+function captionInlineSyncStage(preview){
+  if(!S.cap?.imageEditing?.inline||!preview)return false;
+  if(!captionInlineStageMount(preview))return false;
+  requestAnimationFrame(()=>{
+    if(preview.isConnected&&preview.contains($("meStage"))){
+      const cv=$("meCanvas"),st=$("meStage");
+      if(Math.abs(cv.width-st.clientWidth)>2||Math.abs(cv.height-st.clientHeight)>2)
+        meFit();
+      else meDraw();
+    }
+  });
+  return true;
+}
+async function captionImageOpen(it,tool="remove"){
+  if(!it?.size||!/\.(png|jpe?g|webp|bmp|avif|jxl)$/i.test(it.name))
+    throw new Error("Remove and Crop support still pictures, not videos or audio.");
+  const sequence=(S.cap.inlineOpenSequence||0)+1;
+  S.cap.inlineOpenSequence=sequence;
+  // Serialized opens avoid racing saves while the user clicks thumbnails fast.
+  const previous=S.cap.inlineOpenTask||Promise.resolve();
+  const job=previous.catch(()=>{}).then(async()=>{
+    if(sequence!==S.cap.inlineOpenSequence)return;
+    const editor=$("maskEdit");
+    if(!editor||!$("meStage"))throw new Error("Image tools aren't available.");
+    const current=S.cap.imageEditing;
+    const folder=capItemFolder(it);
+    if(current&&(current.path!==it.path||current.folder!==folder)){
+      if(!(await captionImageFinishPending()))throw new Error("Finish the current image edit first.");
+    }
+    if(sequence!==S.cap.inlineOpenSequence)return;
+    const preview=document.querySelector("#captionsGrid .studio-image-stage .studio-preview");
+    if(!preview||S.cap.studioPath!==it.path)return;
+    S.cap.imageEditing={folder,name:it.name,path:it.path,inline:true};
+    const m=meState();
+    m.studioFolder=folder;
+    $("meFilter").value="all";
+    captionInlineStageMount(preview);
+    editor.open=true;
+    const cached=m.folder===folder&&m.list.some(p=>p.name===it.name);
+    if(!cached){
+      await meOpen();
+    }else if(m.name!==it.name||!m.pic){
+      const index=meShown().findIndex(p=>p.name===it.name);
+      if(index>=0)await meGo(index,true);
+      else await meOpen();
+    }
+    if(sequence!==S.cap.inlineOpenSequence)return;
+    if(m.name!==it.name){
+      const index=meShown().findIndex(p=>p.name===it.name);
+      if(index<0)throw new Error("The selected picture isn't in the image editor.");
+      await meGo(index,true);
+    }
+    if(sequence!==S.cap.inlineOpenSequence)return;
+    meTool(tool);
+    meFit();
+    S.cap.inlineRefreshControls?.();
+  });
+  S.cap.inlineOpenTask=job;
+  try{await job;}
+  finally{if(S.cap.inlineOpenTask===job)S.cap.inlineOpenTask=null;}
+}
+async function captionImageFinishPending(){
+  const m=meState();
+  if(m.stepBusy||m.samBusy||m.wmBusy){
+    $("captionImageWorkspaceNote").textContent="Finish the current image operation first.";
+    return false;
+  }
+  if(m.dirty&&!(await meSave()))return false;
+  if(!(await meRmSave(false)))return false;
+  return true;
+}
+async function captionImageClose(){
+  if(!S.cap?.imageEditing)return true;
   if(S.cap.imageClosing)return false;
   S.cap.imageClosing=true;
+  S.cap.inlineOpenSequence=(S.cap.inlineOpenSequence||0)+1;
   try{
-    if(!(await captionImageFinishPending())) return false;
-    const home=S.cap.imageEditorHome,editor=$("maskEdit");
-    meState().studioFolder=null;
+    if(S.cap.inlineOpenTask)await S.cap.inlineOpenTask.catch(()=>{});
+    if(!(await captionImageFinishPending()))return false;
+    captionInlineStageDetach();
+    const editor=$("maskEdit");
+    const home=S.cap.imageEditorHome;
+    if(home?.parent&&editor&&editor.parentNode!==home.parent)
+      home.parent.insertBefore(editor,home.next?.parentNode===home.parent?home.next:null);
+    const m=meState();
+    m.studioFolder=null;
     S.cap.imageEditing=null;
-    if(home?.parent && editor) home.parent.insertBefore(editor,
-      home.next?.parentNode===home.parent?home.next:null);
-    if(editor) editor.open=false;
+    S.cap.inlineRefreshControls=null;
+    if(editor)editor.open=false;
     $("captionImageWorkspace").hidden=true;
     await loadCaptions().catch(e=>console.warn("Caption Studio image refresh:",e));
     return true;
   }finally{S.cap.imageClosing=false;}
 }
-function captionImageChanged() {
-  if(!S.cap?.imageEditing) return;
-  // Re-read sizes, masks and thumbnail mtime without disturbing unsaved captions.
+function captionImageChanged(){
+  if(!S.cap?.imageEditing)return;
+  // Existing live dataset re-encoding and image/caption synchronization apply.
   loadCaptions().catch(e=>console.warn("Caption Studio image refresh:",e));
 }
 
