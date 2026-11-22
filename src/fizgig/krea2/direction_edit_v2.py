@@ -20,7 +20,6 @@ most).
 5. Verify: score again with the edit, and with a random direction rescaled to the same size per Linear as a
    control, on captions held out of the fit.
 6. Export: dW is linear in s and of rank <= k x rounds, so a kohya LoRA (alpha = rank) reproduces it exactly: LoRA
-   strength m is edit strength s * m, and strength 0 is off. Plus a JSON report and a scores CSV.
 
 What v2 changes against v1 (direction_edit.py, left as it is so the two can be compared):
   * The sign. Strength > 0 now AMPLIFIES the target-vs-control direction on the chosen columns; v1's +1 removed
@@ -28,9 +27,6 @@ What v2 changes against v1 (direction_edit.py, left as it is so the two can be c
   * "Improves" is signed. The edit has to LOWER the targets' suppression, and by more than the random control
     does; v1 compared absolute changes, so an edit that made things worse could pass.
   * Held-out verification: verify_count extra captions never used for fitting score the edit (before, after,
-    random); the report says whether the check was held out or in-sample.
-  * Columns are chosen by weight x activation (column_select "activation"), not weights alone, and the report gives
-    the fraction of each Linear's output energy along the direction that the chosen columns carry.
   * Blocks are measured and edited in pipeline order, each on the path as already edited (v1 measured every block
     on the unedited model).
   * The random control is rescaled to the real edit's norm per Linear; control_drift reports how far the controls
@@ -49,25 +45,18 @@ No backward pass and no image transformer: Qwen3-VL is loaded once for the promp
 (the four text-fusion blocks + txtmlp) is read from the DiT file. Only the optional renders load the whole model.
 """
 import copy
-import csv
 import functools
 import hashlib
 import json
-import logging
 import math
 import os
 import random
 import re
 import shutil
 import tempfile
-import time
 
 import torch
 import torch.nn as nn
-
-logger = logging.getLogger(__name__)
-if not logger.handlers and not logging.getLogger().handlers:
-    logging.basicConfig(level=logging.INFO)
 
 STAGES = ("taps", "lw_0", "lw_1", "rf_0", "rf_1", "txtmlp")
 BLOCK_IDS = ("txt_lw_0", "txt_lw_1", "txt_rf_0", "txt_rf_1")
@@ -100,7 +89,6 @@ DEFAULTS = {
     "rank": 4,
     "compute_dtype": "fp32",
     "save_dtype": "fp32",
-    "hash_checkpoint": True,
     "random_seed": 0,
     "render": False,
     "render_prompts": [],
@@ -280,8 +268,6 @@ def _normalise(cfg):
             raise ValueError(f"{k} must be fp32 or bf16.")
     if cfg["auto_control_tags"] is not None and not isinstance(cfg["auto_control_tags"], bool):
         cfg["auto_control_tags"] = _truthy(cfg["auto_control_tags"])
-    cfg["hash_checkpoint"] = bool(cfg["hash_checkpoint"]) if isinstance(cfg["hash_checkpoint"], bool) \
-        else _truthy(cfg["hash_checkpoint"])
     cfg["render"] = bool(cfg["render"]) if isinstance(cfg["render"], bool) else _truthy(cfg["render"])
     cfg["scan"] = bool(cfg["scan"]) if isinstance(cfg["scan"], bool) else _truthy(cfg["scan"])
     cfg["column_select"] = str(cfg["column_select"]).strip().lower()
@@ -551,8 +537,6 @@ def apply_captions(cfg):
         round_picks.append(picks)
         used += [p["tag"] for p in picks]
     if n_rounds > 1 and not any(round_picks[1:]):
-        logger.warning("[direction-edit v2] rounds > 1 but the controls can't rotate (they are all listed and "
-                       "auto_control_tags is not true): only the captions change between rounds.")
     round_controls = [listed + [p["tag"] for p in picks] for picks in round_picks]
     controls_all = list(dict.fromkeys(c for cs in round_controls for c in cs))
     cfg["control_tags"] = controls_all
@@ -574,9 +558,6 @@ def apply_captions(cfg):
         remaining = [i for i in remaining if i not in taken]
     v_want = int(cfg.get("verify_count", 0))
     v_n = min(v_want, len(remaining))
-    if v_n < v_want:
-        logger.warning(f"[direction-edit v2] only {v_n} of the {v_want} held-out verification captions could be set "
-                       "aside (too few eligible captions).")
     held = sorted(random.Random(cfg["caption_seed"] + 104729).sample(remaining, v_n)) if v_n else []
     plan = [{"base_prompts": [", ".join(eligible[i][1]) for i in fits[r]], "control_tags": round_controls[r],
              "sampled_files": [eligible[i][0] for i in fits[r]]} for r in range(n_rounds)]
@@ -597,12 +578,6 @@ def apply_captions(cfg):
     if n_rounds > 1:
         cfg["caption_source"]["rounds"] = [{"sampled_files": plan[r]["sampled_files"], "controls": round_controls[r],
                                             "auto_controls": round_picks[r]} for r in range(n_rounds)]
-    logger.info(f"[direction-edit v2] caption mode: {len(files)} captions in {folder}, {len(eligible)} eligible, "
-                f"{n} sampled per round x {n_rounds} round(s) (seed {cfg['caption_seed']}), "
-                f"{len(held)} held out for verification")
-    if round_picks[0]:
-        logger.info("[direction-edit v2] auto controls: " + ", ".join(f"{p['tag']} ({p['captions']})"
-                                                                    for p in round_picks[0]))
     return cfg
 
 
@@ -907,7 +882,6 @@ def run_on_path(path, encoded, cfg):
     missing = [p for p in prompts if p not in encoded]
     if missing:
         raise ValueError(f"{len(missing)} prompts were not encoded (e.g. {missing[0]!r}).")
-    t0 = time.time()
     plan = _plan(cfg)
     rounds = len(plan)
     per_round = float(cfg["strength"]) / rounds
@@ -924,16 +898,8 @@ def run_on_path(path, encoded, cfg):
             c, rel = contributions(measure(work, encoded, rprompts), rc)
             if before_fit is None:
                 before_fit = score(rel, rc)
-                for t in cfg["target_tags"]:
-                    logger.info(f"[direction-edit v2] {t}: suppression "
-                                f"{before_fit[t]['suppression']:+.3f}, collapses at "
-                                f"{before_fit[t]['collapse_stage']} ({before_fit[t]['collapse_drop']:+.3f})")
             key = block if rounds == 1 else f"{block}@r{r + 1}"
             U_all[key], reliability[key] = directions(c, rc, block)
-            ri = reliability[key]
-            logger.info(f"[direction-edit v2] {key}: split-half cosine "
-                        f"{ri['split_half_cosine'] if ri['split_half_cosine'] is None else round(ri['split_half_cosine'], 3)}"
-                        f", per-prompt cosine {ri['per_prompt_cosine_mean']:.3f}")
             scales = input_scales(work, encoded, _activation_prompts(rc, cfg), names_of[block]) if use_act else None
             st = {}
             part = build_edit(work, {block: U_all[key]}, rc, strength=per_round, scales=scales, blocks=[block],
@@ -993,9 +959,6 @@ def run_on_path(path, encoded, cfg):
               "control_drift": drift(after), "random_control_drift": drift(random_ctl)}
     # an edit helps when it LOWERS the targets' suppression and by more than a random one of the same size does
     verify["beats_random"] = bool(verify["improvement"] > 0 and verify["improvement"] > verify["random_improvement"])
-    logger.info(f"[direction-edit v2] target suppression {sb:+.3f} -> {sa:+.3f} with the edit, {sr:+.3f} with a random "
-                f"direction ({'held-out' if held else 'in-sample'} captions, {time.time() - t0:.1f} s); "
-                f"beats random: {verify['beats_random']}")
     return {"scores": {"before": before, "after": after, "random": random_ctl}, "scores_fit_before": before_fit,
             "reliability": reliability, "directions": {k: U_all[k].tolist() for k in U_all}, "edit": edit,
             "edit_stats": stats, "random_delta_norm": rand_norm, "verify": verify, "prompts_encoded": len(prompts),
@@ -1019,85 +982,21 @@ def lora_state_dict(edit, rank, dtype=torch.float32):
 
 
 def export(result, cfg, output_dir, output_name, *, checkpoint=None, extra=None):
-    """Writes <name>.safetensors (the LoRA), <name>_direction_edit.json (the report) and
-    <name>_direction_edit_scores.csv. Returns their paths."""
+    """Write only the calibration LoRA. Verification details remain in memory for the training decision."""
     from safetensors.torch import save_file
     os.makedirs(output_dir, exist_ok=True)
     lora_path = os.path.join(output_dir, f"{output_name}.safetensors")
-    json_path = os.path.join(output_dir, f"{output_name}_direction_edit.json")
-    csv_path = os.path.join(output_dir, f"{output_name}_direction_edit_scores.csv")
-    rank = int(cfg["rank"])
-    need = int(cfg["num_directions"]) * int(result.get("rounds", 1))
-    if rank < need:
-        logger.info(f"[direction-edit v2] rank raised from {rank} to {need} (num_directions x rounds) so the LoRA "
-                    "reproduces the summed edit exactly.")
-        rank = need
-    sd, err = lora_state_dict(result["edit"], rank, DTYPES[cfg["save_dtype"]])
-    summary = {"targets": cfg["target_tags"], "controls": cfg["control_tags"], "strength": cfg["strength"],
-               "edit_blocks": cfg["edit_blocks"], "edit_linears": cfg["edit_linears"], "columns": cfg["columns"],
-               "num_directions": cfg["num_directions"], "rounds": result.get("rounds", 1),
-               "column_select": cfg.get("column_select"), "version": 2,
-               "checkpoint_sha256": (checkpoint or {}).get("sha256")}
-    meta = {"ss_network_module": "networks.lora", "ss_network_dim": str(rank), "ss_network_alpha": str(rank),
-            "ss_base_model_version": "krea2", "modelspec.architecture": "Krea-2/lora",
-            "ss_training_method": "text_fusion_direction_edit_v2", "fizgig_direction_edit": json.dumps(summary)}
-    save_file(sd, lora_path, metadata=meta)
-    edits = {name: {"columns_edited": int(idx.numel()), "delta_norm": float(delta.norm()),
-                    "lora_relative_error": err[name], "column_indices": idx.tolist(),
-                    "random_delta_norm": result.get("random_delta_norm", {}).get(name),
-                    "selection": result.get("edit_stats", {}).get(name, [])}
-             for name, (delta, idx) in result["edit"].items()}
-    report = {
-        "method": "text_fusion_direction_edit_v2",
-        "created": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "note": ("v2: strength > 0 amplifies the direction. "
-                 "The score is a text-side proxy (how much each tag moves the text path's conditioning), not proof "
-                 "the picture changed: confirm on images with a tagger. Compare the edit with the random-direction "
-                 "control and check the split-half cosine before trusting a direction."),
-        # Captions are private data: keep aggregate counts and scores, never raw caption bodies or temporary paths.
-        "config": {k: v for k, v in cfg.items() if k not in
-                   ("base_prompts", "caption_records", "verification_records", "verify_prompts",
-                    "round_plan", "caption_folder", "verify_caption_folder")},
-        "checkpoint": checkpoint or {},
-        "prompts_encoded": result["prompts_encoded"],
-        "scores": result["scores"],
-        "reliability": result["reliability"],
-        "verify": result["verify"],
-        "scores_in_sample_before": result.get("scores_fit_before"),
-        "scan": cfg.get("scan_report"),
-        "edits": edits,
-        "lora": {"file": os.path.basename(lora_path), "rank": rank, "alpha": rank, "dtype": cfg["save_dtype"],
-                 "strength_note": "LoRA strength m applies edit strength s x m; 0 = off, exactly."},
-        "directions": result["directions"],
+    rank = max(int(cfg["rank"]), int(cfg["num_directions"]) * int(result.get("rounds", 1)))
+    sd, _err = lora_state_dict(result["edit"], rank, DTYPES[cfg["save_dtype"]])
+    meta = {
+        "ss_network_module": "networks.lora",
+        "ss_network_dim": str(rank),
+        "ss_network_alpha": str(rank),
+        "ss_base_model_version": "krea2",
+        "modelspec.architecture": "Krea-2/lora",
     }
-    if extra:
-        report.update(extra)
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2)
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        wr = csv.writer(f)
-        wr.writerow(["tag", "role"] + [f"z_{s}" for s in STAGES] +
-                    ["suppression_before", "suppression_after", "suppression_random", "collapse_stage",
-                     "collapse_drop"])
-        sc = result["scores"]
-        for t, row in sc["before"].items():
-            wr.writerow([t, row["role"]] + [f"{row['z'][s]:.4f}" for s in STAGES] +
-                        [f"{row['suppression']:.4f}", f"{sc['after'][t]['suppression']:.4f}",
-                         f"{sc['random'][t]['suppression']:.4f}", row["collapse_stage"],
-                         f"{row['collapse_drop']:.4f}"])
-    logger.info(f"[direction-edit v2] saved {lora_path} (+ {os.path.basename(json_path)}, {os.path.basename(csv_path)})")
-    return {"lora": lora_path, "report": json_path, "scores": csv_path}
-
-
-def hash_file(path, chunk=16 << 20):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        while True:
-            b = f.read(chunk)
-            if not b:
-                break
-            h.update(b)
-    return h.hexdigest()
+    save_file(sd, lora_path, metadata=meta)
+    return {"lora": lora_path}
 
 
 # ---- whole-dataset scan: find the tags the text path barely hears, no hand-picked targets or controls ----------
@@ -1267,26 +1166,13 @@ def scan_select(cfg, pairs, rows, meta, requested_targets=None):
             "fit": {"coefficients": [float(b) for b in beta[:, 0]], "residual_sd": sd}}
 
 
-def write_scan_csv(selection, path):
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        wr = csv.writer(f)
-        cols = ["tag", "count", "samples", "chars", "mean_log_rel", "z", "z_half_a", "z_half_b", "confirmed_weak",
-                "role"]
-        wr.writerow(cols)
-        for r in selection["rows"]:
-            wr.writerow([f"{r[c]:.4f}" if isinstance(r[c], float) else r[c] for c in cols])
-
-
 def _run_scan(cfg, store, *, dit_path, te_path, device, encoder, path_config, output_dir, output_name):
-    """Encode the ablation prompts, measure them on the text path, set cfg's targets and controls from the result and
-    write <name>_direction_edit_scan.csv. The scan's encodings are dropped from `store` afterwards."""
+    """Measure tags found in training captions and select suppressed targets and suitable controls."""
     if not dit_path or not os.path.isfile(dit_path):
         raise ValueError(f"the Krea 2 DiT {dit_path!r} doesn't exist.")
     prompts, pairs, meta = plan_scan(cfg)
     if not pairs:
         raise ValueError("the scan found no tag in enough captions: lower scan_min_count.")
-    logger.info(f"[direction-edit v2] scan: {len({p['tag'] for p in pairs})} tags, {len(pairs)} caption/tag pairs, "
-                f"{len(prompts)} prompts to encode")
     encode_prompts(prompts, te_path, device, encoder=encoder, store=store)
     path = load_fusion_path(dit_path, path_config, device=device, dtype=DTYPES[cfg["compute_dtype"]])
     try:
@@ -1295,23 +1181,12 @@ def _run_scan(cfg, store, *, dit_path, te_path, device, encoder, path_config, ou
         del path
         if device.type == "cuda":
             torch.cuda.empty_cache()
-    sel = scan_select(cfg, pairs, rows, meta, requested_targets=cfg.get("target_tags") or [])
-    os.makedirs(output_dir, exist_ok=True)
-    scan_csv = os.path.join(output_dir, f"{output_name}_direction_edit_scan.csv")
-    write_scan_csv(sel, scan_csv)
+    selection = scan_select(cfg, pairs, rows, meta, requested_targets=cfg.get("target_tags") or [])
     store.clear()
-    dataset_controls = sel["controls"]
-    general_controls = builtin_controls(sel["targets"], seed=cfg["caption_seed"])
+    dataset_controls = selection["controls"]
+    general_controls = builtin_controls(selection["targets"], seed=cfg["caption_seed"])
     all_controls = list(dict.fromkeys(dataset_controls + general_controls))
-    cfg["target_tags"], cfg["control_tags"], cfg["auto_control_tags"] = sel["targets"], all_controls, False
-    cfg["scan_report"] = {"tags_total": len(meta["counts"]), "tags_scored": len(sel["rows"]),
-                          "rare_or_unscanned_tags": sum(1 for n in meta["counts"].values() if n < cfg["scan_min_count"]),
-                          "pairs": len(pairs), "targets": sel["targets"], "skipped_targets": sel["skipped_targets"],
-                          "dataset_controls": dataset_controls, "builtin_sfw_controls": general_controls,
-                          "controls": all_controls, "fit": sel["fit"], "csv": os.path.basename(scan_csv),
-                          "scan_z": cfg["scan_z"], "scan_stage": cfg["scan_stage"]}
-    logger.info(f"[direction-edit v2] scanned {len(sel['rows'])}/{len(meta['counts'])} distinct tags in the full "
-                f"training set; targets: {', '.join(sel['targets']) or '(none)'}")
+    cfg["target_tags"], cfg["control_tags"], cfg["auto_control_tags"] = selection["targets"], all_controls, False
 
 
 # ---- the whole run --------------------------------------------------------------------------------------------
@@ -1409,21 +1284,12 @@ def encode_prompts(prompts, te_path, device, driver=None, encoder=None, te=None,
 
         def encode(part):
             return driver.encode_text(te, part)
-    t0 = time.time()
-    try:
-        for i in range(0, len(todo), chunk):
             part = todo[i:i + chunk]
             for p, e in zip(part, encode(part)):
                 h, m = e["hidden_states"], e.get("attention_mask")
                 if m is not None:
                     h = h[m.bool()]
                 store[p] = {"hidden_states": h, "attention_mask": None}     # valid tokens only
-            done = min(i + chunk, len(todo))
-            if done == len(todo) or (i // chunk) % 10 == 9:
-                rate = done / max(time.time() - t0, 1e-6)
-                logger.info(f"[direction-edit v2] encoded {done}/{len(todo)} prompts ({rate:.1f}/s, "
-                            f"~{(len(todo) - done) / max(rate, 1e-6):.0f} s left"
-                            + (f", {store.spilled} spilled to disk" if store.spilled else "") + ")")
     finally:
         if own_te:
             driver.unload_text_encoder(te)
@@ -1475,11 +1341,7 @@ def render(dit_path, vae_path, conds, neg_cond, edit, output_dir, output_name, *
 def run_direction_edit(cfg, *, dit_path, te_path, vae_path=None, output_dir, output_name, render_seed=42,
                        render_width=None, render_height=None, speed_lora=None, speed_lora_strength=None,
                        device=None, encoder=None, path_config=None):
-    """The whole edit: an optional whole-dataset scan (scan), captions applied (caption mode), the config checked,
-    every prompt encoded with Qwen3-VL (streamed into an EncodedStore that spills to disk past ram_budget_gb) and
-    the encoder freed, only the text path loaded, steps 1-5 (run_on_path), the LoRA + report written, and the
-    optional before / after renders. Returns the written paths and the verify summary."""
-    t0 = time.time()
+    """Run calibration and return its temporary LoRA plus the in-memory verification result."""
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     store = EncodedStore(int(float(cfg.get("ram_budget_gb", 6.0)) * (1 << 30)))
     try:
@@ -1487,15 +1349,8 @@ def run_direction_edit(cfg, *, dit_path, te_path, vae_path=None, output_dir, out
             _run_scan(cfg, store, dit_path=dit_path, te_path=te_path, device=device, encoder=encoder,
                       path_config=path_config, output_dir=output_dir, output_name=output_name)
             if not cfg.get("target_tags"):
-                os.makedirs(output_dir, exist_ok=True)
-                report_path = os.path.join(output_dir, f"{output_name}_direction_edit.json")
-                with open(report_path, "w", encoding="utf-8") as f:
-                    json.dump({"method": "text_fusion_direction_edit_v2", "status": "skipped",
-                               "reason": "No candidate target showed consistent measured suppression.",
-                               "scan": cfg.get("scan_report")}, f, indent=2)
-                return {"status": "skipped", "report": report_path, "verify": None}
+                return {"status": "skipped", "verify": None}
         apply_captions(cfg)
-        # Actual hold-out captions verify only; never used for candidate discovery or fitting.
         held = cfg.get("verification_records") or {}
         if held:
             cfg["verify_prompts"] = list(dict.fromkeys(", ".join(split_tags(v))
@@ -1508,14 +1363,10 @@ def run_direction_edit(cfg, *, dit_path, te_path, vae_path=None, output_dir, out
         if not dit_path or not os.path.isfile(dit_path):
             raise ValueError(f"the Krea 2 DiT {dit_path!r} doesn't exist.")
         prompts = prompt_list(cfg)
-        extra_prompts = []
+        render_conds = None
         if cfg["render"]:
             from fizgig.families.description import GENERAL_NEGATIVE
             extra_prompts = render_prompts(cfg) + [GENERAL_NEGATIVE]
-        logger.info(f"[direction-edit v2] {len(_plan(cfg))} round(s) x {len(cfg['base_prompts'])} base prompts x (1 + "
-                    f"{len(cfg['target_tags'])} targets + controls) + {len(cfg.get('verify_prompts') or [])} held-out "
-                    f"= {len(prompts)} prompts to encode")
-        render_conds = None
         if cfg["render"] and encoder is None:
             from fizgig.krea2.driver import Krea2Driver
             drv = Krea2Driver()
@@ -1527,15 +1378,10 @@ def run_direction_edit(cfg, *, dit_path, te_path, vae_path=None, output_dir, out
                 drv.unload_text_encoder(te)
         else:
             encode_prompts(prompts, te_path, device, encoder=encoder, store=store)
-        checkpoint = {"file": os.path.basename(dit_path), "size": os.path.getsize(dit_path)}
-        if cfg["hash_checkpoint"]:
-            logger.info("[direction-edit v2] hashing the checkpoint (hash_checkpoint)")
-            checkpoint["sha256"] = hash_file(dit_path)
         path = load_fusion_path(dit_path, path_config, device=device, dtype=DTYPES[cfg["compute_dtype"]])
         result = run_on_path(path, store, cfg)
         del path
-        files = export(result, cfg, output_dir, output_name, checkpoint=checkpoint,
-                       extra={"elapsed_seconds": round(time.time() - t0, 1)})
+        files = export(result, cfg, output_dir, output_name)
         if cfg["render"]:
             try:
                 if not vae_path:
@@ -1543,20 +1389,16 @@ def run_direction_edit(cfg, *, dit_path, te_path, vae_path=None, output_dir, out
                 files["renders"] = render(dit_path, vae_path, render_conds[:-1], render_conds[-1], result["edit"],
                                           output_dir, output_name, seed=int(render_seed), width=render_width,
                                           height=render_height, device=device)
-            except Exception as e:              # the edit is saved: a render that fails is reported, not fatal
-                logger.warning(f"[direction-edit v2] before / after renders failed: {e}")
-                files["render_error"] = str(e)
-        logger.info(f"[direction-edit v2] done in {time.time() - t0:.0f} s")
-        return {**files, "verify": result["verify"], "targets": list(cfg["target_tags"]),
-                "controls": list(cfg["control_tags"]), "scan": cfg.get("scan_report")}
+            except Exception:
+                pass
+        return {**files, "verify": result["verify"]}
     finally:
         store.close()
 
 
 def main(argv=None):
     import argparse
-    p = argparse.ArgumentParser(description="Krea 2 Text fusion direction edit v2 (no training: a closed-form, "
-                                            "reversible edit saved as a LoRA + JSON + CSV).")
+    p = argparse.ArgumentParser(description="Krea 2 text-fusion calibration (closed-form LoRA edit).")
     p.add_argument("--dit", required=True)
     p.add_argument("--text_encoder", required=True)
     p.add_argument("--vae", default=None, help="needed only with --render")
@@ -1595,7 +1437,6 @@ def main(argv=None):
     cfg = _normalise(cfg)
     out = run_direction_edit(cfg, dit_path=a.dit, te_path=a.text_encoder, vae_path=a.vae, output_dir=a.output_dir,
                              output_name=a.output_name, render_seed=a.seed, device=a.device)
-    print(json.dumps({k: v for k, v in out.items()}, indent=2))
 
 
 if __name__ == "__main__":
