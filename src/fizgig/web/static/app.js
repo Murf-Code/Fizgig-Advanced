@@ -7230,6 +7230,22 @@ async function meRestore(from, to) {
   if (from === m.undo && meDropPending()) return;     // Ctrl+Z with a stroke not applied yet clears the stroke first
   if (!from.length) return;
   const top = from[from.length - 1];
+  if (top.step && S.cap?.imageEditing) {
+    // A committed crop/remove participates in the same chronological Studio
+    // stack even when Undo is clicked inside Image Prep's embedded controls.
+    const h=studioHistory(),goingBack=from===m.undo;
+    const stack=goingBack?h.past:h.future, latest=stack.at(-1)?.entry;
+    const tracked=[...h.past,...h.future].some(x=>x.entry.kind==="image"&&x.entry.step===top.step);
+    if(tracked){
+      if(latest?.kind!=="image"||latest.step!==top.step){
+        $("meState").textContent="Undo the newer Caption Studio actions first to preserve history order.";
+        return;
+      }
+      try{await studioTravel(goingBack?"undo":"redo");}
+      catch(e){$("meState").textContent=e.message;}
+      return;
+    }
+  }
   if (top.step) {                                     // a Crop or Remove: the server puts the files back
     const undo = from === m.undo;
     m.stepBusy = true; meBusy(undo ? "Undoing…" : "Redoing…");
