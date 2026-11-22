@@ -10909,6 +10909,15 @@ function captionModelsChanged() {
 }
 
 async function loadCaptions() {
+  // A dataset switch must not leave Image Prep mounted on the former folder.
+  if(S.cap?.imageEditing&&!S.cap.imageClosing){
+    const normalized=p=>String(p||"").replace(/\\/g,"/").replace(/\/+$/,"").toLowerCase();
+    const old=normalized(S.cap.imageEditing.folder),current=normalized(S.imageFolder);
+    if(!current||(old!==current&&!old.startsWith(current+"/"))){
+      if(!(await captionImageClose()))
+        throw new Error("Finish and close the previous dataset's picture editor first.");
+    }
+  }
   if (!S.cap.opts || S.cap.optsFamily !== S.family) {        // a model change can bring the song card
     await loadCaptionOptions().catch((e) => {        // said, and asked again next time the tab opens
       S.cap.opts = null; $("capModelHint").textContent = `Couldn't get the caption models: ${e.message}`; });
