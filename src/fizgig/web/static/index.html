@@ -829,6 +829,16 @@
                 <button class="btn btn-sm" id="capGo">Go</button></div>
             </div>
           </div>
+          <!-- The same Image Prep editor is moved here while Caption Studio edits a picture. -->
+          <section id="captionImageWorkspace" class="caption-image-workspace" hidden aria-label="Caption Studio image editor">
+            <div class="caption-image-workspace-heading">
+              <div><strong id="captionImageWorkspaceTitle">Image editor</strong>
+                <div class="field-hint" id="captionImageWorkspaceNote">Changes to this image are picked up at the next training epoch.</div>
+              </div>
+              <button class="btn btn-sm" id="captionImageClose" type="button">Close image editor</button>
+            </div>
+            <div id="captionImageEditorSlot"></div>
+          </section>
           <div class="captions-grid" id="captionsGrid"></div>
           <div class="section-card">
             <div class="card-title">Log</div>
