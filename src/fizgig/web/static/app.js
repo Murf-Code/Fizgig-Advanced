@@ -10923,8 +10923,8 @@ async function loadCaptions() {
   // A dataset switch must not leave Image Prep mounted on the former folder.
   if(S.cap?.imageEditing&&!S.cap.imageClosing){
     const normalized=p=>String(p||"").replace(/\\/g,"/").replace(/\/+$/,"").toLowerCase();
-    const old=normalized(S.cap.imageEditing.folder),current=normalized(S.imageFolder);
-    if(!current||(old!==current&&!old.startsWith(current+"/"))){
+    const old=normalized(S.cap.imageEditing.folder),currentFolder=normalized(S.imageFolder);
+    if(!currentFolder||(old!==currentFolder&&!old.startsWith(currentFolder+"/"))){
       if(!(await captionImageClose()))
         throw new Error("Finish and close the previous dataset's picture editor first.");
       if(!current())return;
@@ -10980,6 +10980,15 @@ async function loadCaptions() {
   try{liveStatus=await api("/api/captions/live_status?folder="+encodeURIComponent(folderAtRequest));}
   catch(e){liveStatus=null;}
   if(!current()||String(S.imageFolder)!==folderAtRequest||capExt()!==ext)return;
+  // Refresh must not keep removed paths in a bulk selection or as the active image.
+  const kept=CaptionStudioSelection.prune(items,S.cap.studioSelection||[],
+    S.cap.studioPath,S.cap.studioSelectionAnchor);
+  if(S.cap.studioSelection){
+    S.cap.studioSelection.clear();
+    kept.selected.forEach(path=>S.cap.studioSelection.add(path));
+  }
+  S.cap.studioPath=kept.active;
+  S.cap.studioSelectionAnchor=kept.anchor;
   S.cap.items=items;
   S.cap.studioReviewed=reviewed;
   S.cap.liveStatus=liveStatus;
@@ -11798,7 +11807,26 @@ function renderCaptionStudio(host,items,ext){
     return bar;
   };
   const selection=S.cap.studioSelection||(S.cap.studioSelection=new Set());
+  // Tags and Waterfall use one selection state, one range anchor and one active path.
+  const pickImage=(it,event,order=items)=>{
+    const next=CaptionStudioSelection.pick(order,selection,S.cap.studioPath,
+      S.cap.studioSelectionAnchor,it.path,event,CAP_PAGE);
+    if(next.page===null)return false;
+    selection.clear();
+    next.selected.forEach(path=>selection.add(path));
+    S.cap.studioPath=next.active;
+    S.cap.studioSelectionAnchor=next.anchor;
+    S.cap.page=next.page;
+    return true;
+  };
   S.cap.studioDelimiter=S.cap.studioDelimiter||localStorage.getItem("fizgig_caption_separator")||",";
+  // A Constellation tag filter changes the visible ordering. Resolve its target
+  // *after* that new filter is applied, not against an older page number.
+  if(S.cap.studioJumpToPath){
+    const index=items.findIndex(it=>it.path===S.cap.studioJumpToPath);
+    if(index>=0)S.cap.page=Math.floor(index/CAP_PAGE);
+    S.cap.studioJumpToPath=null;
+  }
   const pageItems=items.slice(S.cap.page*CAP_PAGE,(S.cap.page+1)*CAP_PAGE);
   const current=pageItems.find(i=>i.path===S.cap.studioPath)||pageItems[0]||items[0];
   if(!current){
@@ -11891,7 +11919,7 @@ function renderCaptionStudio(host,items,ext){
   };
   const imageTargets=path=>{
     const paths=path?(selection.has(path)&&selection.size>0?[...selection]:[path]):
-      (selection.size?[...selection]:[current.path]);
+      (selection.size?[...selection]:[S.cap.studioPath||current.path]);
     const wanted=new Set(paths);
     return S.cap.items.filter(it=>wanted.has(it.path));
   };
@@ -12054,19 +12082,7 @@ function renderCaptionStudio(host,items,ext){
       "aria-pressed":isPicked?"true":"false",
       oncontextmenu:e=>openImageMenu(e,it),
       onclick:e=>{
-        const anchor=items.findIndex(x=>x.path===(S.cap.studioSelectionAnchor||S.cap.studioPath));
-        const target=items.findIndex(x=>x.path===it.path);
-        if(e.shiftKey&&anchor>=0&&target>=0){
-          selection.clear();
-          items.slice(Math.min(anchor,target),Math.max(anchor,target)+1).forEach(x=>selection.add(x.path));
-        }else if(e.ctrlKey||e.metaKey){
-          selection.has(it.path)?selection.delete(it.path):selection.add(it.path);
-          S.cap.studioSelectionAnchor=it.path;
-        }else{
-          selection.clear();selection.add(it.path);
-          S.cap.studioSelectionAnchor=it.path;
-        }
-        S.cap.studioPath=it.path;
+        pickImage(it,e);
         renderCaptions();
       }},thumb);
     thumbs.append(el("div",{class:"studio-browser-row",role:"listitem"},tile));
@@ -12732,7 +12748,8 @@ function renderCaptionStudio(host,items,ext){
   if(preview)imageStage.append(preview);
   if(imageTitle)imageStage.append(imageTitle);
   const stepImage=delta=>{
-    const idx=items.findIndex(i=>i.path===current.path);
+    // Waterfall clicks update the live path without remounting the stage.
+    const idx=items.findIndex(i=>i.path===(S.cap.studioPath||current.path));
     if(idx<0||!items.length)return;
     const next=items[Math.max(0,Math.min(items.length-1,idx+delta))];
     if(!next||next.path===current.path)return;
@@ -13030,15 +13047,13 @@ function renderCaptionStudio(host,items,ext){
       fullStage.replaceChildren();
       if(view==="waterfall"){
         const chooseImage=(it,event)=>{
-          const picked=S.cap.studioSelection||(S.cap.studioSelection=new Set());
-          if(event.ctrlKey||event.metaKey){
-            picked.has(it.path)?picked.delete(it.path):picked.add(it.path);
-          }else{picked.clear();picked.add(it.path);}
-          S.cap.studioPath=it.path;
+          if(!pickImage(it,event))return;
           S.cap.studioExploreNeedRedraw=true;
           for(const tile of fullStage.querySelectorAll(".studio-tb-flow-tile")){
             const image=tile.dataset.path;
-            tile.classList.toggle("is-picked",picked.has(image)||image===it.path);
+            tile.classList.toggle("is-picked",
+              selection.has(image)||image===S.cap.studioPath);
+            tile.setAttribute("aria-pressed",String(selection.has(image)));
           }
         };
         const flow=CaptionStudioViz.tagbenchWaterfall(items,chooseImage,openImageMenu,
@@ -13068,9 +13083,20 @@ function renderCaptionStudio(host,items,ext){
           S.cap.page=0;
           S.cap.studioExploreNeedRedraw=true;
           if(tag){
-            const first=S.cap.items.find(it=>studioTokens(it.caption,studioCaptionMode(it))
-              .some(value=>value.toLocaleLowerCase()===tag));
-            if(first)S.cap.studioPath=first.path;
+            const matches=it=>studioTokens(it.caption,studioCaptionMode(it))
+              .some(value=>value.toLocaleLowerCase()===tag.toLocaleLowerCase());
+            const first=items.find(matches)||S.cap.items.find(matches);
+            if(first){
+              // If a prior name/missing-only filter hides the matching image,
+              // show the chosen tag rather than silently landing elsewhere.
+              const visible=items.some(it=>it.path===first.path);
+              if(!visible){
+                $("capSearch").value="";
+                $("capFilter").value="all";
+              }
+              pickImage(first,null,visible?items:S.cap.items);
+              S.cap.studioJumpToPath=first.path;
+            }
           }
         },S.cap.studioExplorePickedTag||null);
         fullStage.append(network);
