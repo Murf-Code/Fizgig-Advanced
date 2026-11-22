@@ -344,6 +344,25 @@ def test_run_direction_edit_end_to_end_with_scan_rounds_and_spill():
 
 
 
+
+def test_manual_target_is_skipped_when_not_suppressed():
+    d = make_folder(n=180)
+    cfg = de.make_config({"direction_edit_caption_folder": d, "direction_edit_scan": "1",
+                          "direction_edit_target_tags": "tag00"})
+    cfg.update(scan_min_count=8, scan_per_tag=6, scan_max_tags=500, scan_z=0.8)
+    cfg = de._normalise(cfg)
+    prompts, pairs, meta = de.plan_scan(cfg)
+    store = de.encode_prompts(prompts, None, "cpu", encoder=fake_encoder(weak={"tgt a"}))
+    rows = de.scan_measure(tiny_path(), store, pairs)
+    rejected = de.scan_select(cfg, pairs, rows, meta, requested_targets=["tag00"])
+    assert rejected["targets"] == []
+    assert rejected["skipped_targets"] and rejected["skipped_targets"][0]["tag"] == "tag00"
+
+    accepted = de.scan_select(cfg, pairs, rows, meta, requested_targets=["tgt a"])
+    assert accepted["targets"] == ["tgt a"]
+    store.close()
+
+
 def test_scan_counts_tags_beyond_context_cap():
     d = tempfile.mkdtemp(prefix="de_v2_tail_tags_")
     common = [f"common{i:02d}" for i in range(45)]
