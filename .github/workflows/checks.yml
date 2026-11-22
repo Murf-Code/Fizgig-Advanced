@@ -28,6 +28,8 @@ jobs:
           python -m py_compile src/fizgig/web/server.py src/fizgig/web/image_loss.py src/fizgig/web/image_edit.py
       - name: Web UI scripts parse
         run: for f in src/fizgig/web/static/*.js; do node --check "$f"; done
+      - name: Caption Studio tag-query unit checks
+        run: node checks/test_caption_studio_tags.cjs
       - name: Caption Studio regression checks
         run: python -m pytest checks/test_caption_studio_sync.py checks/test_caption_live_images.py checks/test_caption_live_masks.py checks/test_caption_formats.py checks/test_image_edit.py -q
       # The upstream full suite is blocked by pre-existing syntax errors in
