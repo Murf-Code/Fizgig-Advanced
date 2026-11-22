@@ -5695,6 +5695,25 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/captions/duplicates/scan":
                 from fizgig.web import caption_duplicates
                 return self.json(caption_duplicates.start(b.get("folder"), b.get("paths")))
+            if path == "/api/captions/duplicates/merge_group":
+                from fizgig.web import caption_duplicates
+                from fizgig.web.image_loss import queue_for_folder
+                ext = captions.caption_ext(b.get("ext"))
+                result = caption_duplicates.merge_group(
+                    b.get("folder"), b.get("keepers"), b.get("donors"),
+                    ext=ext, delimiter=b.get("delimiter", ","),
+                    expected=b.get("expected"), copy_tags=b.get("copy_tags") is True,
+                    apply=b.get("apply") is True)
+                if result["applied"]:
+                    with _lock:
+                        active = dict(_run)
+                        running = active.get("proc") is not None and active["proc"].poll() is None
+                    run = history.get(active.get("history_id")) if running and active.get("history_id") else None
+                    result["queued"] = sum(bool(queue_for_folder(os.path.dirname(p),
+                        os.path.basename(p), next(x["caption"] for x in result["keepers"]
+                                                  if x["keeper"] == p), ext, run))
+                        for p in result["applied"])
+                return self.json(result)
             if path == "/api/captions/duplicates/merge":
                 from fizgig.web import caption_duplicates
                 from fizgig.web.image_loss import queue_for_folder
