@@ -11397,8 +11397,13 @@ async function captionImageOpen(it,tool="remove"){
     if(!preview||S.cap.studioPath!==it.path)return;
     S.cap.imageEditing={folder,name:it.name,path:it.path,inline:true};
     const m=meState();
-    if(!current?.inline)S.cap.inlinePreviousView=m.view;
-    m.view="pic"; // Crop and Remove should not inherit a dim training-mask view.
+    if(!current?.inline){
+      S.cap.inlinePreviousView=m.view;
+      S.cap.inlinePreviousRatio=m.ratio;
+    }
+    m.view="pic"; // No mask-darkened preview in Tags.
+    m.ratio="free"; // The compact crop UI has no hidden aspect-ratio constraint.
+    $("meRatio").value="free";
     m.studioFolder=folder;
     $("meFilter").value="all";
     captionInlineStageMount(preview);
@@ -11454,7 +11459,12 @@ async function captionImageClose(){
     const m=meState();
     m.studioFolder=null;
     if(S.cap.inlinePreviousView)m.view=S.cap.inlinePreviousView;
+    if(S.cap.inlinePreviousRatio){
+      m.ratio=S.cap.inlinePreviousRatio;
+      $("meRatio").value=m.ratio;
+    }
     S.cap.inlinePreviousView=null;
+    S.cap.inlinePreviousRatio=null;
     S.cap.imageEditing=null;
     S.cap.inlineRefreshControls=null;
     if(editor)editor.open=false;
