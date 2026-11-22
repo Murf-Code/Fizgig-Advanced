@@ -11890,9 +11890,39 @@ function renderCaptionStudio(host,items,ext){
       renderCaptions();
     }catch(e){say("Batch ordering: "+e.message);}
   };
+  const aiChoice=el("select",{class:"w-combo",title:"Selected-image AI caption workflow"});
+  [["missing","Only images missing captions"],["replace","Replace selected captions"],
+    ["append","Append generated caption as a new line"]]
+    .forEach(([value,label])=>aiChoice.append(el("option",{value,text:label})));
+  aiChoice.value=S.cap.studioAiMode||"missing";
+  aiChoice.addEventListener("change",()=>S.cap.studioAiMode=aiChoice.value);
+  const captionSelected=async()=>{
+    const chosen=(selection.size?S.cap.items.filter(it=>selection.has(it.path)):[current])
+      .filter(it=>it.size && !S.cap.studioReviewed?.has(it.path) &&
+        /\.(png|jpe?g|webp|bmp|avif|jxl|mp4)$/i.test(it.name));
+    if(!chosen.length)return say("Select editable images. Reviewed images are protected.");
+    if(chosen.some(it=>drafts.has(it.path)&&drafts.get(it.path)!==it.caption))
+      return say("Save unsaved caption drafts before starting batch AI.");
+    const targets=aiChoice.value==="missing"?chosen.filter(it=>it.caption===null):chosen;
+    if(!targets.length)return say("All selected images already have captions.");
+    if(!confirm("AI caption "+targets.length+" images using the selected model and task? "+
+      (aiChoice.value==="replace"?"Existing captions will be replaced.":
+        aiChoice.value==="append"?"New captions will append as extra lines.":"Existing captions will be kept.")))return;
+    say("AI captioning "+targets.length+" selected images…");
+    try{
+      const result=await capRun("/api/captions/ai",capJobBody({
+        only:targets.map(it=>it.path),overwrite:aiChoice.value==="replace",
+        append:aiChoice.value==="append"
+      }));
+      if(result?.files)say("AI queued "+result.files+" selected images · progress appears in Captions tools.");
+      else if(result?.error)say(result.error);
+    }catch(e){say(e.message);}
+  };
   bulk.append(el("strong",{text:"Bulk tags · selected or whole dataset"}),undoGlobal,redoGlobal,
     btn("Order selected tags",applyOrdering),btn("Rename tag",()=>apply("rename")),
     btn("Remove tag",()=>apply("remove")),btn("Add tag",()=>apply("add")),
+    el("div",{class:"field-row studio-selected-ai"},el("span",{class:"field-label",text:"AI caption selection:"}),
+      aiChoice,btn("Run on selected images",captionSelected)),
     el("span",{class:"field-hint studio-bulk-note"}));
   const liveStatus=el("div",{class:"studio-live-status field-hint",id:"studioLiveStatus",
     text:studioLiveSummary(S.cap.liveStatus)});
