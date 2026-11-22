@@ -11019,8 +11019,9 @@ function renderCaptions() {
     items = [...items].sort((a, b) => ((v(a) > v(b)) - (v(a) < v(b))) * ts.dir || a.name.localeCompare(b.name));
   }
   if ($("capView").value === "studio" && S.cap.studioQuery) {
+    const match=CaptionStudioTags.compileSearch(S.cap.studioQuery);
     items = items.filter(it => studioCaptionMode(it) === "tags" &&
-      CaptionStudioTags.search(studioTokens(it.caption, "tags"), S.cap.studioQuery));
+      match(studioTokens(it.caption, "tags")));
   }
   const pages = Math.max(1, Math.ceil(items.length / CAP_PAGE));
   S.cap.page = Math.min(S.cap.page, pages - 1);
