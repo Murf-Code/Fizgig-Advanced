@@ -11089,16 +11089,20 @@ async function captionImageFinishPending() {
 }
 async function captionImageClose() {
   if(!S.cap?.imageEditing) return true;
-  if(!(await captionImageFinishPending())) return false;
-  const home=S.cap.imageEditorHome,editor=$("maskEdit");
-  meState().studioFolder=null;
-  S.cap.imageEditing=null;
-  if(home?.parent && editor) home.parent.insertBefore(editor,
-    home.next?.parentNode===home.parent?home.next:null);
-  if(editor) editor.open=false;
-  $("captionImageWorkspace").hidden=true;
-  await loadCaptions().catch(e=>console.warn("Caption Studio image refresh:",e));
-  return true;
+  if(S.cap.imageClosing)return false;
+  S.cap.imageClosing=true;
+  try{
+    if(!(await captionImageFinishPending())) return false;
+    const home=S.cap.imageEditorHome,editor=$("maskEdit");
+    meState().studioFolder=null;
+    S.cap.imageEditing=null;
+    if(home?.parent && editor) home.parent.insertBefore(editor,
+      home.next?.parentNode===home.parent?home.next:null);
+    if(editor) editor.open=false;
+    $("captionImageWorkspace").hidden=true;
+    await loadCaptions().catch(e=>console.warn("Caption Studio image refresh:",e));
+    return true;
+  }finally{S.cap.imageClosing=false;}
 }
 function captionImageChanged() {
   if(!S.cap?.imageEditing) return;
@@ -11585,8 +11589,10 @@ function wireCaptions() {
   $("captionImageClose").addEventListener("click",()=>captionImageClose().catch(e=>{
     $("captionImageWorkspaceNote").textContent=e.message;
   }));
-  $("capView").addEventListener("change", () => {
-    if($("capView").value!=="studio" && S.cap.imageEditing) captionImageClose();
+  $("capView").addEventListener("change", async () => {
+    if($("capView").value!=="studio" && S.cap.imageEditing) {
+      if(!(await captionImageClose())){$("capView").value="studio";return;}
+    }
     S.cap.page = 0; renderCaptions();
   });
   $("frApply").addEventListener("click", held($("frApply"), () => findReplace(true)));
@@ -13000,7 +13006,14 @@ function tabRunScroll(name) {
   return !!spot;
 }
 function showTab(name) {
-  if (name !== "captions" && S.cap?.imageEditing) captionImageClose();
+  if (name !== "captions" && S.cap?.imageEditing) {
+    // Don't hide the canvas while a save or GPU image operation is unfinished.
+    if(S.cap.imageClosing)return;
+    captionImageClose().then(ok=>{if(ok)showTab(name);}).catch(e=>{
+      $("captionImageWorkspaceNote").textContent=e.message;
+    });
+    return;
+  }
   if (name !== "prep" && S.me && S.me.dirty) meSave();      // leaving Image Prep saves the mask being edited
   if (name !== activeTab()) ctxOnTab();                     // the job on show finished: the view moves on now
   // each tab keeps its own scroll place: back on Training, the loss chart is where you left it (the tabs share one
