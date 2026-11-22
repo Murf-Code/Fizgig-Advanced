@@ -11195,7 +11195,10 @@ function captionDuplicatePanel(ext){
   const percentage=el("strong",{text:"Strictness "+threshold.value});
   const copyBox=el("input",{type:"checkbox"});
   copyBox.checked=state.copyTags!==false;
-  copyBox.addEventListener("change",()=>{state.copyTags=copyBox.checked;});
+  copyBox.addEventListener("change",()=>{
+    state.copyTags=copyBox.checked;
+    results.querySelectorAll(".studio-duplicate-merge-preview").forEach(node=>node.replaceChildren());
+  });
   const progress=el("div",{class:"field-hint",text:"Choose Scan dataset to compare its pictures."});
   const results=el("div",{class:"studio-duplicate-results"});
   const scanBtn=el("button",{class:"btn btn-primary btn-sm",text:"Scan dataset"});
@@ -11338,6 +11341,8 @@ function captionDuplicatePanel(ext){
             onclick:async()=>{
               confirmBtn.disabled=true;
               try{
+                if(copyBox.checked!==payload.copy_tags)
+                  throw new Error("Copy-tags setting changed. Preview the merge again.");
                 const done=await api("/api/captions/duplicates/merge_group",{...payload,apply:true});
                 detail.textContent="Updated "+done.updated_count+" keeper caption(s). "+
                   "Images were not deleted. You may separately move the dropped images to removed/.";
@@ -11409,7 +11414,7 @@ function captionDuplicatePanel(ext){
     state.open=panel.open;
     if(panel.open)read();
   });
-  if(panel.open)read();
+  if(panel.open)queueMicrotask(()=>{if(panel.isConnected)read();});
   return panel;
 }
 function renderCaptionStudio(host,items,ext){
