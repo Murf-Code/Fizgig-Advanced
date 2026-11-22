@@ -11776,7 +11776,7 @@ function renderCaptionStudio(host,items,ext){
     catch(e){say(e.message);}
   };
   const pictureActions=el("div",{class:"field-row"},
-    btn("Re-caption",async()=>{
+    btn("Re-caption image",async()=>{
       if(locked){say("Unlock the reviewed picture before re-captioning.");return;}
       if(!current.size){say("Select an image to use AI captioning.");return;}
       say("Re-captioning…");
@@ -11849,7 +11849,7 @@ function renderCaptionStudio(host,items,ext){
       el("span",{class:"field-label",text:"Caption format:"}),modeSelect),el("div",{class:"studio-preview"},mediaFor(current,true)),
     el("div",{class:"caption-card-title",text:mediaLabel(current)}),ta,word,
     el("div",{class:"field-row"},el("button",{class:"btn btn-primary",text:"Save caption",onclick:save}),
-      btn("Undo",()=>historyStep("undo")),btn("Redo",()=>historyStep("redo")),
+      btn("Undo draft",()=>historyStep("undo")),btn("Redo draft",()=>historyStep("redo")),
       btn("Deduplicate",()=>{if(locked)return say("Unlock before editing.");ta.value=editorCompose(studioUnique(studioTokens(ta.value,captionMode)));remember();redraw();}),
       btn("Apply tag order",async()=>{
         if(locked)return say("Unlock before editing.");
@@ -12021,10 +12021,10 @@ function renderCaptionStudio(host,items,ext){
     }catch(e){say(e.message);}
   };
   const historyUI=studioHistory();
-  const undoGlobal=btn("↶ Undo "+(historyUI.past.at(-1)?.label||"change"),async()=>{
+  const undoGlobal=btn("↶ Undo dataset "+(historyUI.past.at(-1)?.label||"change"),async()=>{
     try{await studioTravel("undo");}catch(e){alert("Undo stopped: "+e.message);}
   });
-  const redoGlobal=btn("↷ Redo "+(historyUI.future.at(-1)?.label||"change"),async()=>{
+  const redoGlobal=btn("↷ Redo dataset "+(historyUI.future.at(-1)?.label||"change"),async()=>{
     try{await studioTravel("redo");}catch(e){alert("Redo stopped: "+e.message);}
   });
   undoGlobal.disabled=!historyUI.past.length||historyUI.busy;
@@ -12082,10 +12082,10 @@ function renderCaptionStudio(host,items,ext){
     }catch(e){say(e.message);}
   };
   bulk.append(el("strong",{text:"Bulk tags · selected or whole dataset"}),undoGlobal,redoGlobal,
-    btn("Order selected tags",applyOrdering),btn("Rename tag",()=>apply("rename")),
-    btn("Remove tag",()=>apply("remove")),btn("Add tag",()=>apply("add")),
+    btn("Order tags across selection",applyOrdering),btn("Rename tag across selection",()=>apply("rename")),
+    btn("Remove tag across selection",()=>apply("remove")),btn("Add tag across selection",()=>apply("add")),
     el("div",{class:"field-row studio-selected-ai"},el("span",{class:"field-label",text:"AI caption selection:"}),
-      aiChoice,btn("Run on selected images",captionSelected)),
+      aiChoice,btn("Run AI on selection",captionSelected)),
     el("span",{class:"field-hint studio-bulk-note"}));
   const liveStatus=el("div",{class:"studio-live-status field-hint",id:"studioLiveStatus",
     text:studioLiveSummary(S.cap.liveStatus)});
@@ -12095,11 +12095,11 @@ function renderCaptionStudio(host,items,ext){
   if(!sizes){
     try{sizes=JSON.parse(localStorage.getItem("fizgig_caption_panel_sizes")||"null");}catch(e){}
     if(!sizes||!Number.isFinite(sizes.left)||!Number.isFinite(sizes.right))
-      sizes={left:23,right:25};
+      sizes={left:19,right:36};
     S.cap.studioPanelSizes=sizes;
   }
   const applySizes=()=>{
-    const leftWidth=Math.max(17,Math.min(35,sizes.left)),rightWidth=Math.max(17,Math.min(35,sizes.right));
+    const leftWidth=Math.max(15,Math.min(30,sizes.left)),rightWidth=Math.max(28,Math.min(48,sizes.right));
     layout.style.gridTemplateColumns=window.matchMedia("(max-width:1100px)").matches?"":
       "minmax(195px,"+leftWidth+"%) 8px minmax(290px,1fr) 8px minmax(195px,"+rightWidth+"%)";
   };
@@ -12109,9 +12109,9 @@ function renderCaptionStudio(host,items,ext){
       "aria-label":"Resize "+side+" Caption Studio panel"});
     let drag=null;
     const change=percentage=>{
-      const next=Math.max(17,Math.min(35,percentage));
+      const next=side==="left"?Math.max(15,Math.min(30,percentage)):Math.max(28,Math.min(48,percentage));
       const opposite=side==="left"?"right":"left";
-      sizes[side]=Math.min(next,68-sizes[opposite]);
+      sizes[side]=Math.min(next,75-sizes[opposite]);
       applySizes();
     };
     grip.addEventListener("pointerdown",e=>{
@@ -12133,9 +12133,40 @@ function renderCaptionStudio(host,items,ext){
     });
     return grip;
   };
+  // TagBench layout: left thumbnails, middle image stage, right stacked tag editor/index.
+  // Move existing live nodes rather than cloning controls or recreating event handlers.
+  const editorPane=el("section",{class:"studio-tag-editor-pane"});
+  const tagIndexPane=el("section",{class:"studio-tag-index-pane"});
+  const imageStage=el("section",{class:"studio-image-stage"});
+  const preview=center.querySelector(".studio-preview");
+  const imageTitle=center.querySelector(".caption-card-title");
+  if(preview)imageStage.append(preview);
+  if(imageTitle)imageStage.append(imageTitle);
+  imageStage.append(pictureActions);
+  while(center.firstChild)editorPane.append(center.firstChild);
+  while(right.firstChild)tagIndexPane.append(right.firstChild);
+  const tagHeading=editorPane.querySelector("strong");
+  if(tagHeading)tagHeading.textContent="Image Tags · Caption Editor";
+  center.append(imageStage);
+  const rightDock=el("div",{class:"studio-tag-dock"});
+  const showTags=btn("All Tags",()=>{tagIndexPane.hidden=false;aiPane.hidden=true;rightDock.dataset.active="tags";});
+  const showAI=btn("Auto-Captioner",()=>{tagIndexPane.hidden=true;aiPane.hidden=false;rightDock.dataset.active="ai";});
+  const aiPane=el("section",{class:"studio-ai-dock",hidden:true});
+  const aiHint=el("div",{class:"field-hint",text:"AI runs on your selected images using Fizgig's caption model settings."});
+  aiPane.append(aiHint,el("div",{class:"field-row"},aiChoice,btn("Run AI on selection",captionSelected)));
+  rightDock.append(showTags,showAI);
+  right.append(editorPane,rightDock,tagIndexPane,aiPane);
+  // A single expandable Edit Tags menu replaces the permanently repeated bulk toolbar.
+  const editMenu=el("details",{class:"studio-edit-menu"});
+  editMenu.append(el("summary",{text:"Edit Tags · batch operations"}),bulk);
+  const importPanel=captionStudioImportPanel();
+  const duplicatePanel=captionDuplicatePanel(ext);
+  const removedPanel=captionRemovedPanel(ext);
+  const toolsRow=el("div",{class:"studio-main-actions"});
+  toolsRow.append(editMenu,importPanel,duplicatePanel,removedPanel);
   layout.append(left,divider("left"),center,divider("right"),right);
   redraw();host.classList.add("studio-host");
-  host.append(liveStatus,bulk,captionStudioImportPanel(),captionDuplicatePanel(ext),captionRemovedPanel(ext),layout);
+  host.append(liveStatus,toolsRow,layout);
   applySizes();
 }
 
