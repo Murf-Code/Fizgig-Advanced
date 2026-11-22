@@ -428,6 +428,42 @@ class SingleStreamDiT(nn.Module):
             self.offloader.set_forward_only(False)
             self.prepare_block_swap_before_forward()
 
+    def fuse_text_context(
+        self,
+        context: Tensor,
+        txtmask: Tensor,
+        *,
+        text_boost: float = 0.0,
+        text_scale: float = 1.0,
+    ) -> Tensor:
+        """Fuse Krea 2's twelve text-encoder taps, optionally using the bounded Text Enhancer.
+
+        The two fusion passes share the exact same attention parameters. This matters because the enhancer
+        is a residual between those passes, not a separate prompt weighting operation.
+        """
+        from fizgig.krea2.text_boost import clamped_strength, clamped_text_scale, enhance
+
+        txt_attn_params_nomask = AttentionParams.create_attention_params_from_mask(
+            self.attn_mode, self.split_attn, 0, None)
+        txt_attn_params = AttentionParams.create_attention_params_from_mask(
+            self.attn_mode, self.split_attn, 0, txtmask)
+
+        strength = clamped_strength(text_boost)
+        if strength > 0.0:
+            context = enhance(
+                lambda value: self.txtfusion(value, txt_attn_params_nomask, txt_attn_params),
+                context,
+                strength,
+            )
+        else:
+            context = self.txtfusion(context, txt_attn_params_nomask, txt_attn_params)
+
+        context = self.txtmlp(context)
+        scale = clamped_text_scale(text_scale)
+        if scale != 1.0:
+            context = context * scale
+        return context
+
     def forward(
         self,
         img: Tensor,
@@ -435,6 +471,9 @@ class SingleStreamDiT(nn.Module):
         t: Tensor,
         pos: Tensor,
         mask: Tensor | None = None,
+        *,
+        text_boost: float = 0.0,
+        text_scale: float = 1.0,
     ) -> Tensor:
         img = self.first(img)
         t = self.tmlp(temb(t, self.config.tdim, device=img.device, dtype=img.dtype))
@@ -445,20 +484,9 @@ class SingleStreamDiT(nn.Module):
         imglen = img.shape[1]
         txtmask = mask[:, imglen:]  # (B, txt_len) bool
 
-        # Text fusion is a self-attention over text tokens only (img_len=0), in two stages that
-        # attend along DIFFERENT axes. The per-layer blocks flatten to (b*seq, layers, dim) and
-        # attend across the encoder's layer stack for each token — the text length is their BATCH,
-        # not their sequence — which is why a key-padding mask does not apply to them and they get
-        # `nomask`. The refiner attends the text sequence itself and does mask padding.
-        #
-        # Do NOT assume text padding is therefore inert here: padding the text up to a multiple
-        # (to cut the distinct-shape count) measurably changed the output for short captions,
-        # ~2% relative, while the equivalent padding of the COMBINED sequence is bit-exact. That
-        # is unexplained and the change was reverted — see docs/PERF_ROADMAP.md.
-        txt_attn_params_nomask = AttentionParams.create_attention_params_from_mask(self.attn_mode, self.split_attn, 0, None)
-        txt_attn_params = AttentionParams.create_attention_params_from_mask(self.attn_mode, self.split_attn, 0, txtmask)
-        context = self.txtfusion(context, txt_attn_params_nomask, txt_attn_params)
-        context = self.txtmlp(context)
+        # The shared helper keeps the plain path and both enhancer fusion passes on identical masks
+        # and AttentionParams. With text_boost=0 and text_scale=1 it is the original single pass.
+        context = self.fuse_text_context(context, txtmask, text_boost=text_boost, text_scale=text_scale)
 
         combined = torch.cat((img, context), dim=1)  # image first, then text
 
