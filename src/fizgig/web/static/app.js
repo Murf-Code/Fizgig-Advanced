@@ -12788,9 +12788,13 @@ function renderCaptionStudio(host,items,ext){
   if(!sizes){
     try{sizes=JSON.parse(localStorage.getItem("fizgig_caption_panel_sizes")||"null");}catch(e){}
     if(!sizes||!Number.isFinite(sizes.left)||!Number.isFinite(sizes.right))
-      // Start at the left splitter's existing minimum. A manually dragged
-      // width in localStorage always takes precedence over this default.
       sizes={left:15,right:36};
+    else if(sizes.left===19&&sizes.right===36){
+      // The previous unchanged defaults were 19/36. Migrate that pair to
+      // the new leftmost default; keep actual customized widths untouched.
+      sizes={...sizes,left:15};
+      localStorage.setItem("fizgig_caption_panel_sizes",JSON.stringify(sizes));
+    }
     S.cap.studioPanelSizes=sizes;
   }
   const applySizes=()=>{
