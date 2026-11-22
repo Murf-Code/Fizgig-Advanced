@@ -12578,9 +12578,20 @@ function renderCaptionStudio(host,items,ext){
   const tags=el("ul",{class:"studio-image-tag-list",role:"list",
     "aria-label":"Image Tags; click to select, double-click to rename, Delete to remove"});
   const imageTagPicked=S.cap.studioImageTagPicked||(S.cap.studioImageTagPicked=new Set());
+  const imageTagButtons=new Map();
+  const syncImageTagSelection=before=>{
+    for(const key of new Set([...before,...imageTagPicked])){
+      if(before.has(key)===imageTagPicked.has(key))continue;
+      const button=imageTagButtons.get(key);
+      if(!button)continue;
+      const selected=imageTagPicked.has(key);
+      button.classList.toggle("is-picked",selected);
+      button.setAttribute("aria-pressed",String(selected));
+    }
+  };
   const captionText=el("textarea",{class:"studio-natural-caption",rows:12,
     "aria-label":"Natural language caption",
-    placeholder:"Write a natural-language caption for this image…"});
+    placeholder:"Freeform caption. Saved under the tags, after the first line break."});
   captionText.readOnly=locked;
   const existingText=()=>{
     const raw=ta.value||"";
@@ -12619,7 +12630,9 @@ function renderCaptionStudio(host,items,ext){
   const imageTagMenu=(event,tag)=>{
     event.preventDefault();
     if(!locked&&captionMode!=="prose"){
-      imageTagPicked.add(tag.toLowerCase());redraw();
+      const before=new Set(imageTagPicked);
+      imageTagPicked.add(tag.toLowerCase());
+      syncImageTagSelection(before);
     }
     document.querySelectorAll(".studio-tag-context-menu").forEach(n=>n.remove());
     const menu=el("div",{class:"studio-image-context-menu studio-tag-context-menu",role:"menu"});
@@ -12651,6 +12664,7 @@ function renderCaptionStudio(host,items,ext){
   const redraw=()=>{
     word.textContent=String(ta.value.trim()?ta.value.trim().split(/\s+/).length:0)+" words · "+String(studioTokens(ta.value,captionMode).length)+" tags"+(captionMode==="prose"?" · prose protected from tag actions":"");
     tags.replaceChildren();
+    imageTagButtons.clear();
     const parts=captionMode==="prose"?[]:studioTokens(ta.value,"tags");
     const distinct=studioUnique(parts);
     for(const t of distinct){
@@ -12661,8 +12675,10 @@ function renderCaptionStudio(host,items,ext){
         text:t,"aria-pressed":String(picked),
         title:"Click to select · Ctrl-click for multiple · Shift-click for range · double-click to rename"});
       button.style.setProperty("--studio-tag-color",CaptionStudioViz.colorForTag(t,categoryState));
+      imageTagButtons.set(t.toLowerCase(),button);
       button.addEventListener("click",e=>{
         const key=t.toLowerCase();
+        const before=new Set(imageTagPicked);
         if(e.shiftKey&&S.cap.studioImageTagAnchor){
           const all=distinct.map(x=>x.toLowerCase()),start=all.indexOf(S.cap.studioImageTagAnchor),end=all.indexOf(key);
           if(start>=0&&end>=0){
@@ -12673,10 +12689,7 @@ function renderCaptionStudio(host,items,ext){
           imageTagPicked.has(key)?imageTagPicked.delete(key):imageTagPicked.add(key);
         }else{imageTagPicked.clear();imageTagPicked.add(key);}
         S.cap.studioImageTagAnchor=key;
-        for(const el of tags.querySelectorAll("button")){
-          const on=imageTagPicked.has(el.textContent.toLowerCase());
-          el.classList.toggle("is-picked",on);el.setAttribute("aria-pressed",String(on));
-        }
+        syncImageTagSelection(before);
       });
       button.addEventListener("dblclick",()=>{
         if(locked)return;
@@ -12762,7 +12775,11 @@ function renderCaptionStudio(host,items,ext){
   const newTag=el("input",{placeholder:"Add tag · Enter to save",type:"text",
     class:"w-path",autocomplete:"off","aria-label":"Add image tag"});
   newTag.disabled=captionMode==="prose"||locked;
-  const naturalEditor=el("section",{class:"studio-natural-pane"},captionText);
+  // TagBench 1.2: freeform description follows tags on the first line.
+  // Retain Fizgig's existing autosave while making this behavior explicit.
+  const captionHelp=el("p",{class:"studio-natural-help",
+    text:"Freeform caption. Saved under the tags, after the first line break."});
+  const naturalEditor=el("section",{class:"studio-natural-pane"},captionText,captionHelp);
   naturalEditor.hidden=!naturalMode;
   const addTag=value=>{
     if(locked||captionMode==="prose")return;
@@ -12945,7 +12962,7 @@ function renderCaptionStudio(host,items,ext){
   // Keep All Tags fully browsable without mounting thousands of rows on each
   // image selection. Only rows near the scroll position cost DOM memory.
   let matchedTagRows=[],renderedTagRows=0;
-  const tagBatchSize=120;
+  const tagBatchSize=80;
   const appendTagRows=()=>{
     if(renderedTagRows>=matchedTagRows.length)return;
     const fragment=document.createDocumentFragment();
@@ -12994,10 +13011,10 @@ function renderCaptionStudio(host,items,ext){
     tagCount.textContent=matchedTagRows.length+" / "+sorted.length+" Tags";
   };
   index.addEventListener("scroll",()=>{
-    if(index.scrollTop+index.clientHeight>=index.scrollHeight-300)
+    if(index.scrollTop+index.clientHeight>=index.scrollHeight-520)
       appendTagRows();
   },{passive:true});
-  indexSearch.addEventListener("input",()=>{tagRows();drawExplore();});
+  indexSearch.addEventListener("input",tagRows);
   tagRows();
   const indexMode=el("select",{class:"w-combo",title:"Explore tag frequencies and co-occurrences"});
   [["list","Tag list"],["waterfall","Frequency waterfall"],["constellation","Tag constellation"]]
@@ -13012,10 +13029,8 @@ function renderCaptionStudio(host,items,ext){
   // Tag list remains the list; full-screen visualizations have their own
   // workspace stage rather than replacing the All Tags panel with mini charts.
   const drawExplore=()=>{
-    explore.replaceChildren(index);
-    const query=indexSearch.value.trim().toLocaleLowerCase();
-    tagCount.textContent=sorted.filter(([tag])=>tag.toLocaleLowerCase().includes(query)).length+
-      " / "+sorted.length+" Tags";
+    if(index.parentElement!==explore)explore.replaceChildren(index);
+    tagCount.textContent=matchedTagRows.length+" / "+sorted.length+" Tags";
   };
   indexMode.addEventListener("change",drawExplore);
   const exportWildcard=btn("Export caption wildcard",()=>{
@@ -13220,12 +13235,7 @@ function renderCaptionStudio(host,items,ext){
   if(naturalMode){
     // Reuse the one autosaved caption textarea and fill the space formerly
     // occupied by the All Tags list and its search/sort controls.
-    tagIndexPane.replaceChildren(
-      el("div",{class:"studio-pane-heading"},el("strong",{text:"Caption"})),
-      naturalEditor);
-  }else{
-    tagIndexPane.prepend(el("div",{class:"studio-pane-heading"},
-      el("strong",{text:"All Tags"})));
+    tagIndexPane.replaceChildren(naturalEditor);
   }
   center.append(imageStage);
   // Lower selector changes only the second section. Image Tags stays at the
@@ -13234,11 +13244,14 @@ function renderCaptionStudio(host,items,ext){
     "aria-label":"All Tags or Auto-Captioner"});
   const aiPane=el("section",{class:"studio-ai-dock",hidden:true});
   const activeDock=S.cap.studioDock==="ai"?"ai":"all";
+  const headerTitle=el("strong",{text:"All Tags"});
   const showTabs=mode=>{
     S.cap.studioDock=mode==="ai"?"ai":"all";
     tagIndexPane.hidden=S.cap.studioDock!=="all";
     aiPane.hidden=S.cap.studioDock!=="ai";
     rightDock.dataset.active=naturalMode&&S.cap.studioDock==="all"?"caption":S.cap.studioDock;
+    headerTitle.textContent=S.cap.studioDock==="ai"?"Auto-Captioner":
+      naturalMode?"Caption":"All Tags";
     showAll.setAttribute("aria-selected",String(!naturalMode&&S.cap.studioDock==="all"));
     showAi.setAttribute("aria-selected",String(S.cap.studioDock==="ai"));
   };
@@ -13252,10 +13265,10 @@ function renderCaptionStudio(host,items,ext){
   });
   showAll.setAttribute("role","tab");
   showAi.setAttribute("role","tab");
-  aiPane.append(el("strong",{text:"Auto-Captioner"}));
   captionAiControlsMount(aiPane);
   rightDock.append(showAll,showAi);
-  right.append(editorPane,rightDock,tagIndexPane,aiPane);
+  const tagHeader=el("div",{class:"studio-tag-header"},headerTitle,rightDock);
+  right.append(editorPane,tagHeader,tagIndexPane,aiPane);
   showTabs(activeDock);
   // A single expandable Edit Tags menu replaces the permanently repeated bulk toolbar.
   // TagBench Find & Replace: literal, case-sensitive text replacement in the

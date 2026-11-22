@@ -4967,7 +4967,7 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
 #tab-captions.caption-theme-glass .studio-host .studio-tag-list-item .studio-index-tag::before{
   content:"";position:absolute;left:5px;top:50%;width:4px;height:.9em;
   transform:translateY(-50%);border-radius:999px;background:currentColor;
-  box-shadow:0 0 7px currentColor;
+  box-shadow:none;
 }
 #tab-captions.caption-theme-glass .studio-host .studio-image-tag:hover,
 #tab-captions.caption-theme-glass .studio-host .studio-tag-list-item .studio-index-tag:hover{
@@ -4976,7 +4976,7 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
 #tab-captions.caption-theme-glass .studio-host .studio-image-tag.is-picked,
 #tab-captions.caption-theme-glass .studio-host .studio-tag-list-item .studio-index-tag.is-picked{
   background:rgba(255,255,255,.14);
-  box-shadow:inset 0 0 0 1px currentColor,0 0 10px rgba(255,255,255,.15);
+  box-shadow:inset 0 0 0 1px currentColor;
 }
 #tab-captions .studio-thumb-load-more{
   display:block;width:85%;align-self:center;margin:6px auto 14px;
@@ -5063,4 +5063,33 @@ body.caption-glass-ui .studio-image-context-menu .studio-tag-color-swatch{
 }
 .studio-image-context-menu .studio-tag-color-custom .studio-tag-color-auto{
   margin-left:auto;padding:5px 7px;font-size:11px;
+}
+
+/* Caption Workbench: heading and tab actions share one compact row. */
+#tab-captions .studio-host .studio-tag-header {
+  order:1;flex:none;min-width:0;display:flex;align-items:center;
+  gap:8px;padding:7px 12px;border-top:1px solid var(--border);
+  border-bottom:1px solid var(--border);
+}
+#tab-captions .studio-host .studio-tag-header>strong {
+  flex:0 0 auto;font-size:15px;font-weight:700;letter-spacing:-.015em;
+}
+#tab-captions .studio-host .studio-tag-header .studio-tag-dock {
+  order:0;margin-left:auto;min-width:0;flex:0 1 auto;
+  padding:0;border:0;background:transparent;gap:5px;
+}
+#tab-captions .studio-host .studio-tag-header .studio-tag-dock .btn {
+  flex:0 1 auto;padding:5px 9px;white-space:nowrap;font-size:11px;
+}
+#tab-captions .studio-host .studio-natural-help {
+  margin:0;color:var(--text-muted);font-size:11px;line-height:1.45;
+}
+#tab-captions .studio-host .studio-image-tag-list,
+#tab-captions .studio-host .studio-tag-index-pane .studio-tag-list{
+  scroll-behavior:auto;overscroll-behavior-y:contain;
+}
+/* Avoid recompositing a large backdrop blur for every tag hover. */
+#tab-captions.caption-theme-glass .studio-host .studio-index {
+  background:rgba(29,29,42,.88);
+  backdrop-filter:none;-webkit-backdrop-filter:none;
 }

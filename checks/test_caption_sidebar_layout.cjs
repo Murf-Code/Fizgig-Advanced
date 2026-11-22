@@ -13,7 +13,7 @@ assert.match(app,/right\.querySelector\("\.studio-image-tags-heading"\)/);
 assert.match(app,/right\.querySelector\("\.studio-add-tag"\),tags,word/);
 assert.match(app,/while\(right\.firstChild\)tagIndexPane\.append\(right\.firstChild\)/);
 assert.match(app,/rightDock\.append\(showAll,showAi\)/);
-assert.match(app,/right\.append\(editorPane,rightDock,tagIndexPane,aiPane\)/);
+assert.match(app,/right\.append\(editorPane,tagHeader,tagIndexPane,aiPane\)/);
 assert.match(app,/const showAll=btn\("All Tags",\(\)=>\{/);
 assert.match(app,/const showAi=btn\("Auto-Captioner",\(\)=>\{/);
 assert.doesNotMatch(app,/editorPane\.hidden\s*=/);
@@ -122,3 +122,15 @@ assert.match(css,/#tab-captions \.studio-host \.studio-tag-index-pane>\.studio-n
 assert.match(css,/#tab-captions\.caption-theme-glass \.studio-host \.studio-natural-toggle:has\(input:checked\)/);
 
 console.log("TagBench stacked sidebar and unchanged Tags/Waterfall/Constellation selector checks passed");
+
+// Fast tag selection, single-pass filtering, aligned caption header, TagBench help.
+assert.match(app,/const imageTagButtons=new Map\(\)/);
+assert.match(app,/const syncImageTagSelection=before=>/);
+assert.doesNotMatch(app,/for\(const el of tags\.querySelectorAll\("button"\)\)/);
+assert.match(app,/const tagBatchSize=80/);
+assert.match(app,/indexSearch\.addEventListener\("input",tagRows\)/);
+assert.match(app,/if\(index\.parentElement!==explore\)explore\.replaceChildren\(index\)/);
+assert.match(app,/const tagHeader=el\("div",\{class:"studio-tag-header"\},headerTitle,rightDock\)/);
+assert.match(app,/Freeform caption\. Saved under the tags, after the first line break\./);
+assert.match(app,/const captionHelp=el\("p",\{class:"studio-natural-help"/);
+assert.match(css,/#tab-captions \.studio-host \.studio-tag-header\{/);
