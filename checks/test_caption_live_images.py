@@ -65,3 +65,41 @@ def test_failed_image_refresh_is_queued_and_not_trained(tmp_path, monkeypatch):
     watch._images(1, None, None, False)
     assert watch.excluded({"item_keys": ["photo"]})
     assert json.loads(q.read_text(encoding="utf-8")) == {"photo": "updated"}
+
+
+def test_source_scan_detects_caption_and_image_edits(tmp_path, monkeypatch):
+    root = tmp_path / "dataset"
+    root.mkdir()
+    picture = root / "photo.png"
+    picture.write_bytes(b"old-pixels")
+    caption = root / "photo.txt"
+    caption.write_text("original", encoding="utf-8")
+    monkeypatch.setattr(loss_watch, "_items", lambda group: {"photo": SimpleNamespace()})
+    watch = loss_watch.Watch.__new__(loss_watch.Watch)
+    watch.group = object()
+    watch.image_dir = str(root)
+    watch.caption_ext = ".txt"
+    watch.folders = {"": str(root)}
+    watch._source_snapshot = watch._source_state()
+    assert watch._scan_sources() == ({}, {})
+    caption.write_text("changed", encoding="utf-8")
+    picture.write_bytes(b"new-pixels-and-contents")
+    img, txt = watch._scan_sources()
+    assert img == {"photo": "updated"}
+    assert txt == {"photo": "changed"}
+    picture.unlink()
+    img, txt = watch._scan_sources()
+    assert img == {"photo": "removed"}
+    assert txt == {}
+
+
+def test_claimed_queue_is_recovered_without_overwriting_newer_updates(tmp_path):
+    q = tmp_path / "caption_updates.json"
+    processing = tmp_path / "caption_updates.json.processing"
+    processing.write_text('{"a": "older", "b": "recovered"}', encoding="utf-8")
+    q.write_text('{"a": "newer"}', encoding="utf-8")
+    loss_watch._recover_processing(str(q), {"c": "detected"})
+    assert json.loads(q.read_text(encoding="utf-8")) == {
+        "a": "newer", "b": "recovered", "c": "detected"
+    }
+    assert not processing.exists()
