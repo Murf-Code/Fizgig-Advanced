@@ -10892,6 +10892,15 @@ async function loadCaptions() {
   const r = await api(`/api/captions?folder=${encodeURIComponent(capFolder())}` +
     `&ext=${encodeURIComponent(ext)}&family=${encodeURIComponent(S.family || "")}`);
   S.cap.items = r.items;                      // the pictures, then the largest detail crops (it.crop: their folder)
+  const folders=[...new Set(S.cap.items.map(capItemFolder))];
+  const reviewLookup=new Map();
+  await Promise.all(folders.map(async folder=>{
+    try{
+      const data=await api("/api/captions/reviews?folder="+encodeURIComponent(folder));
+      reviewLookup.set(folder,new Set(data.reviewed||[]));
+    }catch(e){reviewLookup.set(folder,new Set());console.warn("Caption review status:",e.message);}
+  }));
+  S.cap.studioReviewed=new Set(S.cap.items.filter(it=>reviewLookup.get(capItemFolder(it))?.has(it.name)).map(it=>it.path));
   renderCaptions();
 }
 
@@ -11022,6 +11031,7 @@ function renderCaptionStudio(host,items,ext){
   if(!current){host.textContent="No matching images.";return;}
   S.cap.studioPath=current.path;
   const captionMode=studioCaptionMode(current);
+  const locked=!!S.cap.studioReviewed?.has(current.path);
   const categoryState=studioCategories();
   const editorCompose=tags=>editorCompose(tags,captionMode);
   const left=el("aside",{class:"caption-studio-panel studio-browser"});
@@ -11030,7 +11040,7 @@ function renderCaptionStudio(host,items,ext){
   const note=el("div",{class:"field-hint"});
   const say=s=>{note.textContent=s;};
   const btn=(s,fn)=>el("button",{class:"btn btn-sm",text:s,onclick:fn});
-  left.append(el("strong",{text:"Dataset browser"}),el("div",{class:"field-hint",text:String(items.length)+" matches"}));
+  left.append(el("strong",{text:"Dataset browser"}),el("div",{class:"field-hint",text:String(items.length)+" matches · "+String(S.cap.studioReviewed?.size||0)+" reviewed"}));
   const tagQuery=el("input",{type:"text",class:"w-path",placeholder:'Exact tags: "red hair" AND NOT blurry'});
   tagQuery.value=S.cap.studioQuery||"";
   const applyTagQuery=()=>{try{CaptionStudioTags.search([],tagQuery.value);S.cap.studioQuery=tagQuery.value.trim();S.cap.page=0;renderCaptions();}catch(e){say("Invalid tag query: "+e.message);}};
@@ -11043,7 +11053,7 @@ function renderCaptionStudio(host,items,ext){
     cb.setAttribute("aria-label","Select "+it.name);
     cb.onchange=()=>{if(cb.checked)selection.add(it.path);else selection.delete(it.path);};
     const thumb=it.size?el("img",{src:"/api/thumb?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(TOKEN),loading:"lazy"}):el("span",{text:"♪"});
-    left.append(el("div",{class:"studio-browser-row"},cb,el("button",{class:"studio-file"+(it.path===current.path?" active":""),onclick:()=>{S.cap.studioPath=it.path;renderCaptions();}},thumb,el("span",{text:mediaLabel(it)+(it.caption===null?" · missing caption":"")}))));
+    left.append(el("div",{class:"studio-browser-row"},cb,el("button",{class:"studio-file"+(it.path===current.path?" active":""),onclick:()=>{S.cap.studioPath=it.path;renderCaptions();}},thumb,el("span",{text:mediaLabel(it)+(S.cap.studioReviewed?.has(it.path)?" · ✓ reviewed":it.caption===null?" · missing caption":"")}))));
   }
   const drafts=S.cap.studioDrafts||(S.cap.studioDrafts=new Map());
   const histories=S.cap.studioHistories||(S.cap.studioHistories=new Map());
@@ -11056,6 +11066,8 @@ function renderCaptionStudio(host,items,ext){
     S.cap.studioRevision=(S.cap.studioRevision||0)+1;renderCaptions();
   });
   ta.value=drafts.has(current.path)?drafts.get(current.path):(current.caption||"");
+  ta.readOnly=locked;
+  modeSelect.disabled=locked;
   current._ta=ta;
   const hist=histories.get(current.path)||{past:[],future:[],value:ta.value};
   histories.set(current.path,hist);
@@ -11068,6 +11080,7 @@ function renderCaptionStudio(host,items,ext){
     drafts.set(current.path,ta.value);
   };
   const historyStep=direction=>{
+    if(locked){say("Unlock this reviewed caption before editing.");return;}
     const from=direction==="undo"?hist.past:hist.future;
     const to=direction==="undo"?hist.future:hist.past;
     if(!from.length)return;
@@ -11089,7 +11102,8 @@ function renderCaptionStudio(host,items,ext){
         chip.style.boxShadow="inset 3px 0 0 "+categoryState.colors[category];
         chip.title+=" · "+category;
       }
-      chip.draggable=true;
+      chip.disabled=locked;
+      chip.draggable=!locked;
       chip.addEventListener("dragstart",e=>e.dataTransfer.setData("text/plain",t));
       chip.addEventListener("dragover",e=>e.preventDefault());
       chip.addEventListener("drop",e=>{
@@ -11106,6 +11120,7 @@ function renderCaptionStudio(host,items,ext){
   };
   ta.addEventListener("input",()=>{remember();redraw();});
   const save=async()=>{
+    if(locked){say("Unlock this reviewed caption before saving.");return;}
     try{const x=await api("/api/captions/save",{folder:capItemFolder(current),name:current.name,text:ta.value,ext});
       current.caption=ta.value;drafts.delete(current.path);
       S.cap.studioRevision=(S.cap.studioRevision||0)+1;
@@ -11114,12 +11129,14 @@ function renderCaptionStudio(host,items,ext){
   };
   const pictureActions=el("div",{class:"field-row"},
     btn("Re-caption",async()=>{
+      if(locked){say("Unlock the reviewed picture before re-captioning.");return;}
       if(!current.size){say("Select an image to use AI captioning.");return;}
       say("Re-captioning…");
       try{await capRun("/api/captions/ai",capJobBody({only:[current.path],overwrite:true}));}
       catch(e){say(e.message);}
     }),
     btn("Edit image / crop",()=>{
+      if(locked){say("Unlock the reviewed picture before editing its image.");return;}
       if(!current.size){say("Image tools work on pictures.");return;}
       if(capItemFolder(current)!==S.imageFolder){
         say("This image is in a subfolder. Open Image Prep to select that dataset.");return;
@@ -11135,6 +11152,7 @@ function renderCaptionStudio(host,items,ext){
       },0);
     }),
     btn("Remove from dataset",async()=>{
+      if(locked){say("Unlock this reviewed picture before removing it.");return;}
       if(current.crop){say("Remove detail crops from Image Prep.");return;}
       if(!confirm("Move "+current.name+" and its caption into removed/? You can undo this removal."))return;
       try{
@@ -11146,18 +11164,30 @@ function renderCaptionStudio(host,items,ext){
       }catch(e){say(e.message);}
     })
   );
-  center.append(el("strong",{text:"Caption editor"}),el("div",{class:"field-row"},
+  const reviewBtn=btn(locked?"✓ Reviewed · unlock":"Mark reviewed ✓",async()=>{
+    if(!locked&&drafts.has(current.path)&&drafts.get(current.path)!==current.caption){
+      say("Save your caption draft before marking it reviewed.");return;
+    }
+    try{
+      await api("/api/captions/review",{folder:capItemFolder(current),name:current.name,reviewed:!locked});
+      const reviewed=S.cap.studioReviewed||(S.cap.studioReviewed=new Set());
+      if(locked)reviewed.delete(current.path);else reviewed.add(current.path);
+      renderCaptions();
+    }catch(e){say(e.message);}
+  });
+  center.append(el("div",{class:"field-row"},el("strong",{text:"Caption editor"}),reviewBtn),el("div",{class:"field-row"},
       el("span",{class:"field-label",text:"Caption format:"}),modeSelect),el("div",{class:"studio-preview"},mediaFor(current,true)),
     el("div",{class:"caption-card-title",text:mediaLabel(current)}),ta,word,
     el("div",{class:"field-row"},el("button",{class:"btn btn-primary",text:"Save caption",onclick:save}),
       btn("Undo",()=>historyStep("undo")),btn("Redo",()=>historyStep("redo")),
-      btn("Deduplicate",()=>{ta.value=editorCompose(studioUnique(studioTokens(ta.value,captionMode)));remember();redraw();}),
-      btn("Sort tags",()=>{ta.value=editorCompose(studioUnique(studioTokens(ta.value,captionMode)).sort((a,b)=>a.localeCompare(b)));remember();redraw();}),
-      btn("Strip artist tags",()=>{ta.value=editorCompose(studioTokens(ta.value,captionMode).filter(t=>!/^(@|artist\s*:)/i.test(t)));remember();redraw();})),
+      btn("Deduplicate",()=>{if(locked)return say("Unlock before editing.");ta.value=editorCompose(studioUnique(studioTokens(ta.value,captionMode)));remember();redraw();}),
+      btn("Sort tags",()=>{if(locked)return say("Unlock before editing.");ta.value=editorCompose(studioUnique(studioTokens(ta.value,captionMode)).sort((a,b)=>a.localeCompare(b)));remember();redraw();}),
+      btn("Strip artist tags",()=>{if(locked)return say("Unlock before editing.");ta.value=editorCompose(studioTokens(ta.value,captionMode).filter(t=>!/^(@|artist\s*:)/i.test(t)));remember();redraw();})),
     pictureActions,note);
   const newTag=el("input",{placeholder:"Add tag",type:"text",class:"w-path"});
-  newTag.disabled=captionMode==="prose";
+  newTag.disabled=captionMode==="prose"||locked;
   right.append(el("strong",{text:"Image tags"}),tags,el("div",{class:"field-row"},newTag,btn("Add",()=>{
+    if(locked){say("Unlock before adding tags.");return;}
     if(captionMode==="prose"){say("Choose Tag list mode to edit tags in this prose caption.");return;}
     if(newTag.value.trim()){ta.value=editorCompose(studioUnique([...studioTokens(ta.value,captionMode),newTag.value.trim()]));newTag.value="";remember();redraw();}
   })),el("strong",{text:"Dataset tag index"}));
@@ -11234,7 +11264,7 @@ function renderCaptionStudio(host,items,ext){
     if(!confirm("Apply to "+affected.length+" captions?"))return;
     let done=0,fail=0;
     for(const it of affected){
-      if(studioCaptionMode(it)==="prose")continue; // never rewrite a prose sentence as a tag list
+      if(S.cap.studioReviewed?.has(it.path)||studioCaptionMode(it)==="prose")continue; // never rewrite locked or prose captions
       const source=studioTokens(it.caption,"tags");
       const target=mode==="remove"?source.filter(t=>t.toLowerCase()!==old.trim().toLowerCase()):
         mode==="rename"?source.map(t=>t.toLowerCase()===old.trim().toLowerCase()?newTag.trim():t):[...source,old.trim()];
