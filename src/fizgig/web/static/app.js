@@ -7119,6 +7119,9 @@ function meFresh() {
   // a new or changed picture: no Remove stroke waiting, the crop box back round the whole picture
   const m = meState();
   m.rm = null; m.rmBase = null; m.rmDirty = false; m.cropDrag = null; m.showBefore = false;
+  // A new image must not briefly display the previous image's red marks
+  // while its picture/watermark data is still loading.
+  if(m.rmTint)m.rmTint.hidden=true;
   m.crop = m.tool === "crop" && m.mask ? {l: 0, t: 0, r: m.mask.width, b: m.mask.height} : null;
   if (m.crop) meCropFit();
   meImgBar();
@@ -7258,7 +7261,7 @@ function meSyncRemoveOverlay(){
   const transform="matrix("+(m.zoom*sx)+",0,0,"+(m.zoom*sy)+","+
     (cv.offsetLeft+m.ox*sx)+","+(cv.offsetTop+m.oy*sy)+")";
   if(overlay.style.transform!==transform)overlay.style.transform=transform;
-  overlay.hidden=false;
+  if(overlay.hidden)overlay.hidden=false;
   return true;
 }
 function meDrawRemove(){
@@ -7771,7 +7774,7 @@ function meWire() {
     const nativeCursor=meNativeBrushCursor(size);
     if(nativeCursor){
       if(cv.style.cursor!==nativeCursor)cv.style.cursor=nativeCursor;
-      cursor.hidden=true;
+      if(!cursor.hidden)cursor.hidden=true;
       return;
     }
     if(cv.style.cursor!=="none")cv.style.cursor="none";
@@ -7783,7 +7786,7 @@ function meWire() {
     // the same coordinate origin in Tags and Image Prep.
     cursor.style.transform="translate3d("+(p.px+cv.offsetLeft)+"px,"+
       (p.py+cv.offsetTop)+"px,0) translate(-50%,-50%)";
-    cursor.hidden=false;
+    if(cursor.hidden)cursor.hidden=false;
   };
   $("maskEdit").addEventListener("toggle", () => {
     if ($("maskEdit").open && !meState().studioFolder) meOpen();
