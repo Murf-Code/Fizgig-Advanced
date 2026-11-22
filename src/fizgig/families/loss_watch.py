@@ -301,8 +301,13 @@ class Watch:
                     logger.warning("[live-dataset] %s uses a reference format this driver cannot live-encode", key)
                     continue
                 item = ItemInfo(key, read_caption(cap_path) if cap_path else "", im.size, bucket)
-                item.latent_cache_path = ds.get_latent_cache_path(item)
-                item.text_encoder_output_cache_path = ds.get_text_encoder_output_cache_path(item)
+                # Dataset cache filenames are based on source file basename, not
+                # subject prefixes such as "s2:" (invalid in Windows filenames).
+                import copy
+                cache_item = copy.copy(item)
+                cache_item.item_key = source
+                item.latent_cache_path = ds.get_latent_cache_path(cache_item)
+                item.text_encoder_output_cache_path = ds.get_text_encoder_output_cache_path(cache_item)
                 mask_root = ds.mask_directory or ds.image_directory
                 if getattr(ds, "loss_masks", False):
                     mask = mask_for_stem(mask_root, os.path.splitext(os.path.basename(source))[0])
@@ -900,8 +905,12 @@ class Watch:
                             scratch.original_size = new_source_size
                             scratch.control_content = references if paired else None
                             owner = self._owner_dataset(k)
-                            new_cache = (owner.get_latent_cache_path(scratch) if owner is not None
-                                         else item.latent_cache_path)
+                            if owner is not None:
+                                cache_name = copy.copy(scratch)
+                                cache_name.item_key = source
+                                new_cache = owner.get_latent_cache_path(cache_name)
+                            else:
+                                new_cache = item.latent_cache_path
                             scratch.latent_cache_path = new_cache + ".live-update"
                             old_cache = item.latent_cache_path
                             try:
