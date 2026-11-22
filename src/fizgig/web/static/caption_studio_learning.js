@@ -35,6 +35,10 @@ const CaptionStudioLearning = (() => {
       return a.name.localeCompare(b.name);
     });
   }
-  return Object.freeze({pathKey,index,forPath,decorate,sort,tones});
+  // Explicit opt-out of the current run wins; a different tracked run may
+  // auto-enable colors again. A completed run is never an auto trigger.
+  const shouldAutoEnable = (data, optedOutRun) =>
+    !!(data?.auto_enable && data.run?.id && data.run.id!==optedOutRun);
+  return Object.freeze({pathKey,index,forPath,decorate,sort,tones,shouldAutoEnable});
 })();
 if(typeof module!=="undefined"&&module.exports)module.exports=CaptionStudioLearning;

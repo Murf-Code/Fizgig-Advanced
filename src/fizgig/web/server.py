@@ -4102,11 +4102,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json({"error": "not a checkpoint"}, 404)
             return self._stream(p)
         if path == "/api/captions/learning_status":
-            # Lightweight verdict snapshot for the optional image outlines.
-            # No per-epoch chart series or model work is sent to the browser.
+            # A live process, not an old run's saved log, decides whether to
+            # turn on learning colors automatically in the Caption Workbench.
             from fizgig.web import caption_learning
+            with _lock:
+                proc = _run.get("proc")
+                active_id = (_run.get("history_id") if proc is not None
+                             and proc.poll() is None else None)
             return self.json(caption_learning.snapshot(
-                (qs.get("folder") or [""])[0], history.runs()[:200], get_family))
+                (qs.get("folder") or [""])[0], history.runs()[:200],
+                get_family, active_run_id=active_id))
         if path == "/api/captions/live_status":
             folder = os.path.realpath((qs.get("folder") or [""])[0] or "")
             with _lock:

@@ -10909,8 +10909,10 @@ async function pollCaptions() {
       if(box){box.textContent=studioLiveSummary(status);box.classList.toggle("needs-attention",!!status.attention);}
     }).catch(()=>{});
   }
+  // Probe even when the colors are off, so a newly started watched run can
+  // enable them without asking the user to visit the Training tab first.
   if(S.imageFolder&&$("capView")?.value==="studio"&&
-      document.querySelector("#tab-captions.active")&&captionLearningWanted())
+      document.querySelector("#tab-captions.active"))
     captionLearningRefresh();
   if (busy || document.querySelector("#tab-captions.active")) S.cap.timer = setTimeout(pollCaptions, busy ? 1500 : 5000);
 }
@@ -11010,6 +11012,8 @@ function captionLearningEnsureFolder() {
   if(S.cap.learningFolder!==folder) {
     S.cap.learningFolder=folder;
     S.cap.learningMap=new Map();
+    S.cap.learningRun=null;
+    S.cap.learningAutoActive=false;
     S.cap.learningAt=0;
   }
 }
@@ -11034,7 +11038,7 @@ function captionLearningWanted() {
 }
 function captionLearningRefresh() {
   captionLearningEnsureFolder();
-  if(!S.imageFolder||!captionLearningWanted()||S.cap.learningRequest||
+  if(!S.imageFolder||S.cap.learningRequest||
       (S.cap.learningAt&&Date.now()-S.cap.learningAt<CAP_LEARNING_REFRESH_MS))return;
   const folder=String(S.imageFolder);
   S.cap.learningAt=Date.now();
@@ -11043,6 +11047,14 @@ function captionLearningRefresh() {
       if(String(S.imageFolder||"")!==folder)return; // stale dataset switch
       S.cap.learningMap=CaptionStudioLearning.index(data.images);
       S.cap.learningRun=data.run||null;
+      S.cap.learningAutoActive=!!data.auto_enable;
+      if(CaptionStudioLearning.shouldAutoEnable(data,S.cap.learningManualOffRun)) {
+        // Auto-enable only for the dataset's currently running, watched run.
+        // A manual opt-out stays respected for that run, including on reload.
+        S.cap.studioLearningColors=true;
+        const check=document.querySelector("#captionsGrid .studio-learning-toggle input");
+        if(check)check.checked=true;
+      }
       const sort=$("capSort")?.value;
       const resort=sort==="loss-high"||sort==="loss-low";
       // Don't replace a live caption editor while the user is typing.
@@ -11059,6 +11071,10 @@ function renderCaptions() {
     try { S.cap.studioLearningColors=localStorage.getItem("fizgig.caption.learning_colors")==="1"; }
     catch(e) { S.cap.studioLearningColors=false; }
   }
+  if(typeof S.cap.learningManualOffRun!=="string") {
+    try { S.cap.learningManualOffRun=localStorage.getItem("fizgig.caption.learning_manual_off_run")||""; }
+    catch(e) { S.cap.learningManualOffRun=""; }
+  }
   captionLearningEnsureFolder();
   const host = $("captionsGrid");
   // Preserve the one real set of bound AI model/task controls across renders.
@@ -11073,7 +11089,7 @@ function renderCaptions() {
   if (filter === "missing") items = items.filter(i => i.caption === null);
   else if (filter === "captioned") items = items.filter(i => i.caption !== null);
   const sort = $("capSort").value, px = (i) => (i.size ? i.size[0] * i.size[1] : null);
-  if(captionLearningWanted()&&$("capView").value==="studio")captionLearningRefresh();
+  if($("capView").value==="studio")captionLearningRefresh();
   if(sort==="loss-high"||sort==="loss-low")
     items=CaptionStudioLearning.sort(items,S.cap.learningMap,sort);
   else if (sort !== "name") {                       // by pixel count; songs (no size) go last either way
@@ -13220,8 +13236,22 @@ function renderCaptionStudio(host,items,ext){
             tile.setAttribute("aria-pressed",String(selection.has(image)));
           }
         };
+        const openTagsImage=(it,event)=>{
+          event?.preventDefault();
+          // A double click chooses this exact picture, regardless of prior
+          // Ctrl/Shift selection, then opens the usual Tags editor on its page.
+          if(!pickImage(it,null))return;
+          S.cap.studioExploreNeedRedraw=true;
+          openView("list");
+          requestAnimationFrame(()=>{
+            // Keep the target visible in the left thumbnail rail as well as
+            // displaying it in the Tags editor's center preview.
+            document.querySelector("#captionsGrid .studio-thumb-rail .studio-file.active")
+              ?.scrollIntoView({block:"nearest"});
+          });
+        };
         const flow=CaptionStudioViz.tagbenchWaterfall(items,chooseImage,openImageMenu,
-          S.cap.studioPath,S.cap.studioSelection,TOKEN,captionLearningDecorate);
+          S.cap.studioPath,S.cap.studioSelection,TOKEN,captionLearningDecorate,openTagsImage);
         fullStage.append(flow);
       }else{
         const revision=S.cap.studioRevision||0;
@@ -13283,8 +13313,15 @@ function renderCaptionStudio(host,items,ext){
   learningCheck.checked=!!S.cap.studioLearningColors;
   learningCheck.addEventListener("change",()=>{
     S.cap.studioLearningColors=learningCheck.checked;
-    try{localStorage.setItem("fizgig.caption.learning_colors",learningCheck.checked?"1":"0");}
-    catch(e){/* the toggle still works in private mode */}
+    if(S.cap.learningAutoActive&&S.cap.learningRun?.id){
+      // Manual off wins until a different watched run starts.
+      S.cap.learningManualOffRun=learningCheck.checked?"":S.cap.learningRun.id;
+    }
+    try{
+      localStorage.setItem("fizgig.caption.learning_colors",learningCheck.checked?"1":"0");
+      localStorage.setItem("fizgig.caption.learning_manual_off_run",
+        S.cap.learningManualOffRun||"");
+    }catch(e){/* the toggle still works in private mode */}
     captionLearningUpdateMounted();
     if(learningCheck.checked)captionLearningRefresh();
   });

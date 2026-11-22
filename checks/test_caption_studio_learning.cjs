@@ -26,4 +26,12 @@ L.decorate(tile,{verdict:"stuck",recent:.7},true);
 assert.equal(tile.dataset.learningStatus,"stuck");
 L.decorate(tile,{verdict:"stuck",recent:.7},false);
 assert.equal(tile.dataset.learningStatus,undefined); // verified below through attribute API in browser
+// Only a live, tracked run enables learning colors automatically.
+// A manual opt-out for that exact run must be honored across refreshes.
+const live={auto_enable:true,run:{id:"current"}};
+assert.equal(L.shouldAutoEnable(live,""),true);
+assert.equal(L.shouldAutoEnable(live,"current"),false);
+assert.equal(L.shouldAutoEnable({auto_enable:false,run:{id:"old"}},""),false);
+assert.equal(L.shouldAutoEnable({auto_enable:true,run:{id:"new"}},"current"),true);
+assert.equal(L.shouldAutoEnable({auto_enable:true,run:null},""),false);
 console.log("caption learning helpers OK");

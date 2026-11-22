@@ -8,8 +8,19 @@ import os
 from fizgig.web import image_loss
 
 
-def snapshot(folder, runs, family_of):
-    empty = {"run": None, "images": []}
+TRACKING_KEYS = ("KREA2_LOSS_WATCH", "KREA2_PER_IMAGE_LR",
+                 "KREA2_WARMUP_LOOK", "KREA2_AUTO_RECAPTION")
+ENABLED_VALUES = (True, "true", "True", "1", 1)
+
+
+def tracking_enabled(run):
+    """The same four controls used by the Training tab's Per-image loss button."""
+    values = run.get("values") or {}
+    return any(values.get(key) in ENABLED_VALUES for key in TRACKING_KEYS)
+
+
+def snapshot(folder, runs, family_of, active_run_id=None):
+    empty = {"run": None, "images": [], "auto_enable": False}
     if not folder or not os.path.isdir(folder):
         return empty
     root = os.path.normcase(os.path.realpath(folder))
@@ -18,13 +29,21 @@ def snapshot(folder, runs, family_of):
         other = str(run.get("image_folder") or "")
         if not other or os.path.normcase(os.path.realpath(other)) != root:
             continue
-        if not owners.get(run.get("id")):
-            continue  # never attach an older run to a newer run's overwritten log
         family = family_of(run.get("family") or "")
         if not getattr(family, "loss_watch", False):
             continue
-        data = image_loss.residuals(run.get("output_dir"))
+        active = (active_run_id is not None and run.get("id") == active_run_id
+                  and run.get("result") == "running" and tracking_enabled(run))
+        # A current watched run should enable its colors even before it writes
+        # the first per-image loss record. Never borrow a previous run's log.
+        owned = bool(owners.get(run.get("id")))
+        if not owned and not active:
+            continue
+        data = image_loss.residuals(run.get("output_dir")) if owned else None
         if not data:
+            if active:
+                return {"run": {"id": run.get("id"), "name": run.get("lora"),
+                                "epoch": None}, "images": [], "auto_enable": True}
             continue
         paths = image_loss.image_paths(run, [im["key"] for im in data["images"]])
         images = []
@@ -42,5 +61,5 @@ def snapshot(folder, runs, family_of):
             })
         return {"run": {"id": run.get("id"), "name": run.get("lora"),
                         "epoch": (data.get("report") or {}).get("epoch")},
-                "images": images}
+                "images": images, "auto_enable": active}
     return empty

@@ -37,4 +37,37 @@ assert.equal(sparseModel.top.length,120);
 assert.ok(sparseModel.edges.every(e=>known.has(e.a)&&known.has(e.b)));
 assert.ok(sparseModel.edges.length<=7140);
 
-console.log("Caption Studio visualization co-occurrence checks passed");
+// Waterfall tiles preserve ordinary single-click selection. Double-click is
+// a distinct action that opens the exact tile in the Tags editor.
+const savedDoc=global.document, savedWin=global.window;
+try {
+  const fakeElement=()=>{
+    const children=[],handlers={};
+    return {children,handlers,dataset:{},classList:{add(){}},
+      style:{},isConnected:false,
+      append(...elements){children.push(...elements);},
+      setAttribute(){},addEventListener(name,fn){handlers[name]=fn;},
+      remove(){},replaceChildren(...elements){children.splice(0,children.length,...elements);}
+    };
+  };
+  global.document={createElement:()=>fakeElement()};
+  global.window={innerWidth:850};
+  const picked=[],opened=[];
+  const it={path:"/dataset/portrait.webp",name:"portrait.webp",size:[512,768]};
+  const stage=Viz.tagbenchWaterfall([it],item=>picked.push(item.path),
+    ()=>{},null,new Set(),"",null,item=>opened.push(item.path));
+  const tile=stage.children[0].children[0].children[0];
+  assert.ok(tile.handlers.click);
+  assert.ok(tile.handlers.dblclick);
+  tile.handlers.click({detail:1});
+  assert.deepEqual(picked,[it.path]);
+  assert.deepEqual(opened,[]);
+  let prevented=false;
+  tile.handlers.dblclick({preventDefault(){prevented=true;}});
+  assert.equal(prevented,true);
+  assert.deepEqual(opened,[it.path]);
+} finally {
+  global.document=savedDoc;
+  global.window=savedWin;
+}
+console.log("Caption Studio visualization co-occurrence and double-click checks passed");
