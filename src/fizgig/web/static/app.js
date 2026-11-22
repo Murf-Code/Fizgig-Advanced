@@ -11029,7 +11029,11 @@ function studioLiveSummary(status){
   if(status.unscheduled_count)parts.push(status.unscheduled_count+" new file(s) not yet admitted");
   if(status.unsupported_media_count)parts.push(status.unsupported_media_count+" changed video/audio source(s) excluded until restart");
   if(status.invalid_mask_count)parts.push(status.invalid_mask_count+" invalid mask(s) blocking training");
-  const samples=[...(status.unscheduled_examples||[]),...(status.unsupported_media_examples||[])].slice(0,8);
+  if(status.pending_image_count)parts.push(status.pending_image_count+" image re-encode(s) pending");
+  if(status.pending_caption_count)parts.push(status.pending_caption_count+" caption re-encode(s) pending");
+  if(status.blocked_count)parts.push(status.blocked_count+" active item(s) excluded pending refresh");
+  const samples=[...(status.unscheduled_examples||[]),...(status.unsupported_media_examples||[]),
+    ...(status.blocked_examples||[])].slice(0,8);
   return "Live dataset attention: "+parts.join(" · ")+". "+(status.reason||"")+
     (samples.length?" Examples: "+samples.join(", "):"");
 }
