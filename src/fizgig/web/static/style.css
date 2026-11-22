@@ -4475,30 +4475,204 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   .caption-duplicates-modal .studio-duplicate-results{grid-template-columns:1fr}
 }
 
-/* Caption tag tabs: show only one list at a time, with Image Tags first. */
-#tab-captions .studio-tag-dock {
-  order:0;
-  position:relative;
-  flex:none;
+/* TagBench's right column is stacked, not a single visible list. Keep Image
+   Tags at the top, All Tags (or Auto-Captioner) below, each scrolling inside
+   its own list. The global Tags/Waterfall/Constellation view stays unchanged. */
+#tab-captions .studio-host .studio-index {
+  display:flex;
+  flex-direction:column;
+  height:min(82dvh,950px);
+  min-height:520px;
+  overflow:hidden;
 }
-#tab-captions .studio-tag-editor-pane[hidden],
+#tab-captions .studio-host .studio-tag-editor-pane {
+  order:0;
+  display:flex;
+  flex-direction:column;
+  flex:1 1 49%;
+  min-height:0;
+  overflow:hidden;
+  padding:12px 12px 8px;
+  gap:7px;
+  border-bottom:0;
+}
+#tab-captions .studio-host .studio-tag-index-pane {
+  order:2;
+  flex:1 1 51%;
+  min-height:0;
+  overflow:hidden;
+  padding:11px 12px 12px;
+  gap:7px;
+}
+#tab-captions .studio-host .studio-ai-dock {
+  order:2;
+  flex:1 1 51%;
+  min-height:0;
+  overflow-y:auto;
+  padding:11px 12px 12px;
+}
+#tab-captions .studio-host .studio-image-tag-list {
+  flex:1 1 auto;
+  height:auto;
+  min-height:75px;
+  max-height:none;
+  padding:4px;
+  gap:0;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+}
+#tab-captions .studio-host .studio-image-tag {
+  padding:5px 8px;
+  border-radius:3px;
+  font-size:var(--caption-settings-font,13px);
+  line-height:1.4;
+}
+#tab-captions .studio-host .studio-image-tags-heading {
+  flex:none;
+  flex-wrap:nowrap;
+  gap:8px;
+  min-height:29px;
+}
+#tab-captions .studio-image-tags-heading>strong {
+  font-size:15px;
+  font-weight:700;
+  letter-spacing:-.015em;
+}
+#tab-captions .studio-host .studio-add-tag {
+  flex:none;
+  gap:5px;
+  margin:0;
+}
+#tab-captions .studio-host .studio-add-tag input {
+  min-width:0;
+  width:100%;
+  flex:1;
+  font-size:12px;
+}
+#tab-captions .studio-host .studio-add-tag .btn {
+  flex:none;
+  padding:5px 9px;
+}
+#tab-captions .studio-host .studio-tag-dock {
+  order:1;
+  flex:none;
+  display:flex;
+  gap:4px;
+  padding:7px 12px;
+  border-top:1px solid var(--border);
+  border-bottom:1px solid var(--border);
+  background:transparent;
+}
+#tab-captions .studio-host .studio-tag-dock .btn {
+  flex:1 1 50%;
+  padding:6px 10px;
+  border-radius:999px;
+  font-size:12px;
+  line-height:1.3;
+}
 #tab-captions .studio-tag-index-pane[hidden],
 #tab-captions .studio-ai-dock[hidden] {
   display:none!important;
 }
-#tab-captions .studio-tag-dock[data-active="image"] .btn:first-child,
-#tab-captions .studio-tag-dock[data-active="all"] .btn:last-child {
+#tab-captions .studio-tag-dock[data-active="all"] .btn:first-child,
+#tab-captions .studio-tag-dock[data-active="ai"] .btn:last-child {
   background:var(--accent-subtle);
   border-color:var(--accent-border);
   color:var(--text-primary);
 }
-#tab-captions.caption-theme-glass .studio-tag-dock[data-active="image"] .btn:first-child,
-#tab-captions.caption-theme-glass .studio-tag-dock[data-active="all"] .btn:last-child {
+#tab-captions.caption-theme-glass .studio-tag-dock[data-active="all"] .btn:first-child,
+#tab-captions.caption-theme-glass .studio-tag-dock[data-active="ai"] .btn:last-child {
   background:color-mix(in srgb,var(--accent) 34%,transparent);
   border-color:var(--accent-border);
   color:var(--text-primary);
   box-shadow:inset 0 1px 0 color-mix(in srgb,var(--text-primary) 14%,transparent),
     0 0 14px color-mix(in srgb,var(--accent) 16%,transparent);
+}
+#tab-captions .studio-host .studio-tag-index-pane .studio-explore {
+  flex:1 1 auto;
+  min-height:0;
+}
+#tab-captions .studio-host .studio-tag-index-pane .studio-explore>.studio-tag-list {
+  flex:1 1 auto;
+  min-height:0;
+  height:100%;
+  overscroll-behavior:contain;
+}
+#tab-captions .studio-host .studio-tag-index-pane .studio-pane-heading {
+  flex:none;
+  margin-bottom:1px;
+}
+#tab-captions .studio-host .studio-tag-sort {
+  flex:none;
+  display:flex;
+  align-items:center;
+  gap:6px;
+  flex-wrap:nowrap;
+}
+#tab-captions .studio-host .studio-tag-sort .field-label {
+  flex:none;
+  font-size:11px;
+  white-space:nowrap;
+}
+#tab-captions .studio-host .studio-tag-sort select {
+  flex:1 1 auto;
+  min-width:0;
+  max-width:none;
+  padding:6px 7px;
+  font-size:12px;
+}
+#tab-captions .studio-host .studio-tag-sort .studio-tag-direction {
+  flex:0 0 74px;
+  width:74px;
+  min-width:0;
+}
+#tab-captions .studio-host .studio-tag-count {
+  flex:none;
+  font-size:11px;
+  text-align:left;
+}
+#tab-captions .studio-host .studio-tag-editor-pane>.studio-tag-advanced {
+  margin-top:0;
+}
+#tab-captions .studio-host .studio-natural-toggle {
+  position:relative;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  padding:6px 9px;
+  border:1px solid var(--border-strong);
+  background:var(--bg-surface);
+  color:var(--text-primary);
+  border-radius:8px;
+  font-size:12px;
+  font-weight:500;
+  line-height:1.2;
+}
+#tab-captions .studio-host .studio-natural-toggle input[type="checkbox"] {
+  position:absolute;
+  width:1px;
+  height:1px;
+  opacity:0;
+}
+#tab-captions .studio-host .studio-natural-toggle:has(input:checked) {
+  background:var(--accent-subtle);
+  border-color:var(--accent-border);
+}
+#tab-captions .studio-host .studio-natural-toggle:focus-within {
+  outline:2px solid var(--accent);
+  outline-offset:2px;
+}
+@media(max-width:1100px) {
+  #tab-captions .studio-host .studio-index {
+    height:min(76dvh,800px);
+    min-height:480px;
+  }
+}
+@media(max-width:650px) {
+  #tab-captions .studio-host .studio-index {
+    height:680px;
+    max-height:none;
+  }
 }
 
 /* Full-workspace TagBench 1.2 Explore views: normal caption editing is a
