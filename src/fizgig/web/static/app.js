@@ -2350,11 +2350,18 @@ async function pollRun() {
   // Pause, pressed again while the pause waits for the epoch's end: Save & stop - a restore point after the current
   // step, then the run stops (a fine-tune stops at whole rotations only: it just waits)
   const pausing = !!(r.running && r.pause);
+  const savedPause = r.state === "paused" && !r.running && !!r.resume;
   const ftNow = r.values && r.values.FAMILY_KIND && /fine-tune/i.test(String(r.values.FAMILY_KIND));
   const pb = $("btnPause");
-  pb.textContent = !pausing ? "Pause" : r.save_stop ? "Saving…" : ftNow ? "Pausing…" : "Save & stop";
-  pb.disabled = !r.running || (pausing && (!!r.save_stop || !!ftNow));
-  pb.title = !pausing ? "Stop cleanly at the end of this epoch, with a saved state that Resume carries on from"
+  // Only show Saved after the trainer has exited and the backend has
+  // confirmed a resumable restore point. Never infer success from save_stop
+  // alone: that flag also remains true while the checkpoint is being written.
+  pb.textContent = savedPause ? "Saved" :
+    !pausing ? "Pause" : r.save_stop ? "Saving…" : ftNow ? "Pausing…" : "Save & stop";
+  pb.disabled = savedPause || !r.running || (pausing && (!!r.save_stop || !!ftNow));
+  pb.classList.toggle("is-saved", savedPause);
+  pb.title = savedPause ? "Restore point saved. Use Continue to resume training." :
+    !pausing ? "Stop cleanly at the end of this epoch, with a saved state that Resume carries on from"
     : "Don't wait for the epoch's end: save a restore point after the current step, then stop. Resume carries on " +
       "from it, mid-epoch";
   if (pausing && r.save_stop) $("runStatus").textContent = "Saving restore point, then stopping…";
