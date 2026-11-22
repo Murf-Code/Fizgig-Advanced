@@ -12591,7 +12591,26 @@ function renderCaptionStudio(host,items,ext){
   right.append(editorPane,rightDock,tagIndexPane,aiPane);
   // A single expandable Edit Tags menu replaces the permanently repeated bulk toolbar.
   const editMenu=el("details",{class:"studio-edit-menu"});
-  editMenu.append(el("summary",{text:"Edit Tags · batch operations"}),bulk);
+  editMenu.append(el("summary",{text:"Edit Tags",title:"Dataset undo, redo and tag ordering"}),bulk);
+  // The dropdown floats above the workbench instead of expanding the toolbar.
+  // Register a single dismiss listener, replacing the previous render's handler.
+  if(S.cap.studioEditMenuDismiss){
+    document.removeEventListener("pointerdown",S.cap.studioEditMenuDismiss);
+    document.removeEventListener("keydown",S.cap.studioEditMenuDismiss);
+  }
+  S.cap.studioEditMenuDismiss=event=>{
+    if(!editMenu.open)return;
+    if(event.type==="pointerdown"&&!editMenu.contains(event.target)){
+      editMenu.open=false;
+    }else if(event.type==="keydown"&&event.key==="Escape"){
+      editMenu.open=false;
+      editMenu.querySelector("summary")?.focus({preventScroll:true});
+      event.preventDefault();
+    }
+  };
+  document.addEventListener("pointerdown",S.cap.studioEditMenuDismiss);
+  document.addEventListener("keydown",S.cap.studioEditMenuDismiss);
+  editMenu.querySelector("summary").setAttribute("aria-label","Edit Tags options");
   const duplicatePanel=captionDuplicatePanel(ext);
   const removedPanel=captionRemovedPanel(ext);
   const toolsRow=el("div",{class:"studio-main-actions"});
