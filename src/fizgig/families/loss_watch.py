@@ -120,10 +120,12 @@ class Watch:
     def __init__(self, output_dir, group, user_config, driver, *, log=False, per_image_lr=False, auto_recaption=False,
                  warmup_look=False, resume=False, start_epoch=0, te_path=None, trigger_word=None,
                  trigger_position="start", recaption_triggers=None, recaption_instruction=None, recaption_instruction_detailed=None,
-                 captioner_path=None, recaption_task=None, recaption_task_detailed=None, recaption_with=None, vae_path=None):
+                 captioner_path=None, recaption_task=None, recaption_task_detailed=None, recaption_with=None, vae_path=None,
+                 folder_weights=None):
         from fizgig.training.loss_logger import PerImageLossWatch, is_enabled as env_on
         self.output_dir, self.group, self.driver, self.te_path = output_dir, group, driver, te_path
         self.vae_path = vae_path
+        self.folder_weights = folder_weights
         self.removed_keys = set()
         self.invalid_mask_keys = set()  # mask errors are distinct from deleted/stale image latents
         self.trigger_word, self.trigger_position = trigger_word, trigger_position
@@ -384,6 +386,8 @@ class Watch:
                     os.replace(text_tmp.text_encoder_output_cache_path, item.text_encoder_output_cache_path)
                     if ds.batch_manager.add_live_item(tuple(item.bucket_size), item, ds.num_repeats):
                         admitted.append(key)
+                        if self.folder_weights is not None and float(getattr(ds, "loss_weight", 1.0)) != 1.0:
+                            self.folder_weights[key] = float(ds.loss_weight)
                         logger.info("[live-dataset] epoch %s: admitted new image %s (fixed steps/epoch)", epoch, key)
                 finally:
                     _remove(text_tmp.text_encoder_output_cache_path)
