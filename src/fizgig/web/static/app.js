@@ -12425,7 +12425,6 @@ function renderCaptionStudio(host,items,ext){
     el("div",{class:"field-row studio-caption-head"},
       el("strong",{text:"Caption"})),
     el("div",{class:"studio-preview"},mediaFor(current,true)),
-    el("div",{class:"caption-card-title",text:mediaLabel(current)}),
     ta,word,
     pictureActions,note);
   const newTag=el("input",{placeholder:"Add tag",type:"text",class:"w-path"});
@@ -12818,28 +12817,24 @@ function renderCaptionStudio(host,items,ext){
   const tagIndexPane=el("section",{class:"studio-tag-index-pane"});
   const imageStage=el("section",{class:"studio-image-stage"});
   const preview=center.querySelector(".studio-preview");
-  const imageTitle=center.querySelector(".caption-card-title");
   if(preview)imageStage.append(preview);
-  if(imageTitle)imageStage.append(imageTitle);
   const stepImage=delta=>{
     // Waterfall clicks update the live path without remounting the stage.
-    const idx=items.findIndex(i=>i.path===(S.cap.studioPath||current.path));
+    const activePath=S.cap.studioPath||current.path;
+    const idx=items.findIndex(i=>i.path===activePath);
     if(idx<0||!items.length)return;
-    const next=items[Math.max(0,Math.min(items.length-1,idx+delta))];
-    if(!next||next.path===current.path)return;
-    S.cap.page=Math.floor(items.indexOf(next)/CAP_PAGE);
+    const target=Math.max(0,Math.min(items.length-1,idx+delta));
+    if(target===idx)return;
+    const next=items[target];
+    S.cap.page=Math.floor(target/CAP_PAGE);
     S.cap.studioPath=next.path;
     selection.clear();selection.add(next.path);
     S.cap.studioSelectionAnchor=next.path;
     renderCaptions();
   };
-  const stageNav=el("div",{class:"studio-stage-nav"},
-    btn("‹ Previous",()=>stepImage(-1)),
-    el("span",{class:"field-hint",text:current.name}),
-    btn("Next ›",()=>stepImage(1)));
-  stageNav.querySelector("button").disabled=items[0]?.path===current.path;
-  stageNav.querySelectorAll("button")[1].disabled=items.at(-1)?.path===current.path;
-  imageStage.append(stageNav,pictureActions);
+  // Navigation uses arrow keys or the thumbnail rail. Keep only image actions
+  // below the preview, without duplicating the image's filename.
+  imageStage.append(pictureActions);
   while(center.firstChild)editorPane.append(center.firstChild);
   while(right.firstChild)tagIndexPane.append(right.firstChild);
   const listHeading=el("div",{class:"studio-pane-heading"},el("strong",{text:"All Tags"}));
