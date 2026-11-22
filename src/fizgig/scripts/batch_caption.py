@@ -97,7 +97,8 @@ def _write_caption(path: str, caption: str, ext: str = ".txt", append=False) -> 
     from fizgig.web.image_edit import write_atomic
     target = os.path.splitext(path)[0] + (ext or ".txt")
     with caption_review._lock:
-        if caption_review.is_locked(os.path.dirname(path), os.path.basename(path)):
+        if caption_review.is_locked(os.path.dirname(path), os.path.basename(path)) or \
+                caption_review.is_caption_locked(target):
             raise ValueError("Caption review lock: unlock the picture before AI captioning.")
         if append and os.path.isfile(target):
             from fizgig.dataset.caption_file import read_caption
