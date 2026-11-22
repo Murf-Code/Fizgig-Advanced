@@ -118,9 +118,11 @@ class Watch:
     def __init__(self, output_dir, group, user_config, driver, *, log=False, per_image_lr=False, auto_recaption=False,
                  warmup_look=False, resume=False, start_epoch=0, te_path=None, trigger_word=None,
                  trigger_position="start", recaption_triggers=None, recaption_instruction=None, recaption_instruction_detailed=None,
-                 captioner_path=None, recaption_task=None, recaption_task_detailed=None, recaption_with=None):
+                 captioner_path=None, recaption_task=None, recaption_task_detailed=None, recaption_with=None, vae_path=None):
         from fizgig.training.loss_logger import PerImageLossWatch, is_enabled as env_on
         self.output_dir, self.group, self.driver, self.te_path = output_dir, group, driver, te_path
+        self.vae_path = vae_path
+        self.removed_keys = set()
         self.trigger_word, self.trigger_position = trigger_word, trigger_position
         self.triggers = dict(recaption_triggers or {})     # another folder's own trigger word, by key prefix
         self.instr, self.instr_detailed = recaption_instruction, recaption_instruction_detailed
@@ -217,6 +219,10 @@ class Watch:
     def excluded(self, batch):
         """The step is skipped: its picture is excluded (a batch's: every one of them)."""
         keys = batch.get("item_keys")
+        if isinstance(keys, (list, tuple)) and keys and all(str(k) in self.removed_keys for k in keys):
+            return True
+        if not isinstance(keys, (list, tuple)) and str(keys) in self.removed_keys:
+            return True
         if self.watch is None or self._reg_only(keys):
             return False
         if isinstance(keys, (list, tuple)) and len(keys) > 1:
@@ -225,6 +231,10 @@ class Watch:
 
     def multiplier(self, batch):
         keys = batch.get("item_keys")
+        if (isinstance(keys, (list, tuple)) and len(keys) == 1 and str(keys[0]) in self.removed_keys):
+            return 0.0
+        if not isinstance(keys, (list, tuple)) and str(keys) in self.removed_keys:
+            return 0.0
         return self.watch.multiplier(keys) if self.watch is not None and not self._reg_only(keys) else 1.0
 
     def observe(self, epoch, step, batch, t, loss):
@@ -247,7 +257,7 @@ class Watch:
         if per is None or len(keys) < 2 or int(per.shape[0]) != len(keys):
             return None
         raw = info.get("per_raw") or [float(x) for x in per.detach().float().cpu()]
-        out = [self.watch is not None and k not in self.reg and self.watch.is_excluded([k]) for k in keys]
+        out = [k in self.removed_keys or (self.watch is not None and k not in self.reg and self.watch.is_excluded([k])) for k in keys]
         kept = [i for i, o in enumerate(out) if not o]
         mult = [0.0 if out[i] else float(reg_mult) if reg_keys and k in reg_keys else
                 (self.watch.multiplier([k]) if self.watch is not None else 1.0) for i, k in enumerate(keys)]
@@ -273,9 +283,99 @@ class Watch:
         if self.watch is not None:
             self.watch.epoch_boundary(epoch)
         try:
+            self._images(epoch, dit, device, parkable)
+        except Exception:
+            logger.warning("[image-fix] image refresh failed this boundary - training continues", exc_info=True)
+        try:
             self._captions(epoch, dit, device, parkable)
         except Exception:
             logger.warning("[caption-fix] caption repair failed this boundary - training continues", exc_info=True)
+
+    def _images(self, epoch, dit, device, parkable):
+        """Rebuild only edited still-image latents at the boundary, retaining their training bucket."""
+        path = os.path.join(self.output_dir, "loss_log", "image_updates.json")
+        processing = path + ".processing"
+        if not os.path.exists(path):
+            return
+        os.replace(path, processing)
+        try:
+            with open(processing, encoding="utf-8") as f:
+                updates = json.load(f)
+            if not isinstance(updates, dict):
+                raise ValueError("Image queue must be a mapping")
+        except Exception:
+            logger.warning("[image-fix] could not read queued images; queue preserved", exc_info=True)
+            return
+        if not updates:
+            _remove(processing)
+            return
+        items = _items(self.group)
+        listings = {}
+        todo = []
+        for k, action in updates.items():
+            if k not in items:
+                logger.warning("[image-fix] %s not in current training schedule; added images require a new run", k)
+                continue
+            # Select the dataset folder from the item's key prefix, not a filename guessed from the UI.
+            folder = ""
+            stem = str(k).rsplit("/", 1)[-1]
+            for prefix, d in self.folders.items():
+                if str(k).startswith(prefix) and len(prefix) >= len(folder):
+                    folder = d
+            if not folder:
+                folder = self.image_dir or ""
+            source = _picture(folder, stem, listings)
+            if action == "removed" or not source:
+                self.removed_keys.add(str(k))
+                logger.info("[image-fix] %s excluded from subsequent epochs", k)
+            elif action == "updated":
+                todo.append((str(k), items[k], source))
+        if not todo:
+            _remove(processing)
+            return
+        if not self.vae_path:
+            logger.warning("[image-fix] no VAE available; retaining pending images")
+            _requeue(path, processing, {k: "updated" for k, _, _ in todo})
+            return
+        from fizgig.families import cache, quant
+        from fizgig.dataset.image_dataset import resize_image_to_bucket
+        from fizgig.utils.upright import open_upright
+        pending = {}
+        if parkable:
+            quant.move(dit, "cpu")
+            gc.collect()
+            torch.cuda.empty_cache()
+        try:
+            vae = self.driver.load_vae(self.vae_path, device)
+            try:
+                for k, item, source in todo:
+                    try:
+                        if getattr(item, "control_content", None):
+                            raise ValueError("paired image edits need a new cache run")
+                        # The old bucket is fixed for the active run, even if an edit changes aspect.
+                        with torch.no_grad():
+                            image = resize_image_to_bucket(open_upright(source), tuple(item.bucket_size))
+                            encoded = self.driver.encode_images(vae, [image])[0]
+                            cache.save_latents(self.driver.description, item, encoded)
+                        self.removed_keys.discard(k)
+                        logger.info("[image-fix] epoch %s: %s latent re-encoded at %s", epoch, k, item.bucket_size)
+                    except Exception:
+                        pending[k] = "updated"
+                        logger.warning("[image-fix] could not refresh %s; retaining pending update", k, exc_info=True)
+            finally:
+                del vae
+                gc.collect()
+                torch.cuda.empty_cache()
+        except Exception:
+            pending.update({k: "updated" for k, _, _ in todo})
+            logger.warning("[image-fix] VAE load/encode failed; retry at next boundary", exc_info=True)
+        finally:
+            if parkable:
+                quant.move(dit, device)
+        if pending:
+            _requeue(path, processing, pending)
+        else:
+            _remove(processing)
 
     def _captions(self, epoch, dit, device, parkable):
         path = os.path.join(self.output_dir, "loss_log", "caption_updates.json")
@@ -462,7 +562,8 @@ def _cleanup(output_dir):
     """Fresh run: clear the previous run's Problem Images artifacts; rotate (not delete) the research JSONL."""
     ll = os.path.join(output_dir, "loss_log")
     for f in ("problem_images.json", "problem_images.json.tmp", "caption_updates_applied.json",
-              "caption_updates_applied.json.tmp", "caption_updates.json", "caption_updates.json.processing"):
+              "caption_updates_applied.json.tmp", "caption_updates.json", "caption_updates.json.processing",
+               "image_updates.json", "image_updates.json.processing"):
         _remove(os.path.join(ll, f))
     jl = os.path.join(ll, "per_image_loss.jsonl")
     if os.path.exists(jl):

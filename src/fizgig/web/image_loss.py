@@ -210,6 +210,43 @@ def queue_for_folder(folder, name, caption, ext, run):
     return True
 
 
+_image_queue_lock = __import__("threading").RLock()
+
+
+def queue_image_for_folder(folder, name, action, run):
+    """Register an image mutation for the next epoch, never for an unrelated dataset."""
+    if not run or run.get("result") not in ("running", "paused") or not run.get("output_dir"):
+        return False
+    root = os.path.realpath(str(run.get("image_folder") or ""))
+    folder = os.path.realpath(folder)
+    if not root or not os.path.isdir(root) or os.path.commonpath([root, folder]) != root:
+        return False
+    rel = os.path.relpath(folder, root)
+    key = os.path.splitext(os.path.basename(name))[0]
+    if rel != ".":
+        key = rel.replace(os.sep, "/") + "/" + key
+    if action not in ("updated", "removed"):
+        raise ValueError("Unknown image update")
+    out = os.path.join(run["output_dir"], "loss_log")
+    with _image_queue_lock:
+        os.makedirs(out, exist_ok=True)
+        q = os.path.join(out, "image_updates.json")
+        values = {}
+        if os.path.isfile(q):
+            try:
+                with open(q, encoding="utf-8") as f:
+                    values = json.load(f)
+                if not isinstance(values, dict):
+                    raise ValueError("Invalid image update queue")
+            except (OSError, ValueError) as exc:
+                raise ValueError("Unable to read pending image changes; queue preserved.") from exc
+        values[key] = action
+        with open(q + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(values, f, indent=2)
+        os.replace(q + ".tmp", q)
+    return True
+
+
 def image_paths(run, keys):
     """{key: picture path} - a key is its folder's prefix + the picture's name without its extension."""
     out, by = {}, {}

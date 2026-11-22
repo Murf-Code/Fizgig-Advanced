@@ -727,6 +727,18 @@ def _studio_samples(desc):
             "look": look, "render": "samples" if render == "samples" else "checkpoint"}
 
 
+def _notify_image_change(folder, name, action):
+    """Send edited or removed picture to the active trainer's epoch queue."""
+    from fizgig.web.image_loss import queue_image_for_folder
+    with _lock:
+        live = _run.get("proc") is not None and _run["proc"].poll() is None
+        rid = _run.get("history_id")
+    if not live or not rid:
+        return False
+    rec = history.get(rid)
+    return queue_image_for_folder(folder, name, action, rec)
+
+
 def _gpu_training():
     """A training run is using the GPU: Repair Studio waits for it."""
     with _lock:
@@ -5197,22 +5209,23 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": "Choose the training folder on the Start tab first."}, 400)
                 try:
                     if path == "/api/masks/edit/crop":
-                        if _gpu_training():       # the run has this picture's size and mask cached: crop after it
-                            return self.json({"error": "A run is training: crop when it finishes. Remove and the "
-                                                       "mask tools work now."}, 400)
-                        return self.json(image_edit.crop(folder, name, [b.get(k) for k in ("left", "top", "right", "bottom")]))
+                        result = image_edit.crop(folder, name, [b.get(k) for k in ("left", "top", "right", "bottom")])
+                        result["queued"] = _notify_image_change(folder, name, "updated")
+                        return self.json(result)
                     if path == "/api/masks/edit/remove":
                         # LaMa stays on the CPU while a run holds the GPU
-                        return self.json(image_edit.remove(folder, name, str(b.get("png") or ""),
-                                                           backup=bool(b.get("backup")), gpu=not _gpu_training()))
+                        result = image_edit.remove(folder, name, str(b.get("png") or ""),
+                                                   backup=bool(b.get("backup")), gpu=not _gpu_training())
+                        result["queued"] = _notify_image_change(folder, name, "updated")
+                        return self.json(result)
                     if path == "/api/masks/edit/remove_watermark":
-                        if _gpu_training():
-                            return self.json({"error": "A run is training: remove watermarks when it finishes."}, 400)
-                        return self.json(image_edit.remove_watermark(folder, name, b.get("pad")))
+                        result = image_edit.remove_watermark(folder, name, b.get("pad"))
+                        result["queued"] = _notify_image_change(folder, name, "updated")
+                        return self.json(result)
                     if path == "/api/masks/edit/restore_original":
-                        if _gpu_training():
-                            return self.json({"error": "A run is training: restore when it finishes."}, 400)
-                        return self.json(image_edit.restore_original(folder, name))
+                        result = image_edit.restore_original(folder, name)
+                        result["queued"] = _notify_image_change(folder, name, "updated")
+                        return self.json(result)
                     return self.json(image_edit.step(b.get("step"), "redo" if b.get("redo") else "undo"))
                 except image_edit.LamaUnavailable as e:   # nothing was changed; the page shows it, the log keeps it
                     logger.error("Remove: %s", e)
@@ -5622,10 +5635,17 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Could not read that picture.")
                 return self.json({"uri": uri})
             if path == "/api/captions/remove":       # out of the training set, into removed/ (never deleted)
-                return self.json({"moved": remove_from_dataset(str(b.get("folder") or ""), str(b.get("name") or ""),
-                                                               captions.caption_ext(b.get("ext")))})
+                folder, name = str(b.get("folder") or ""), str(b.get("name") or "")
+                moved = remove_from_dataset(folder, name, captions.caption_ext(b.get("ext")))
+                _notify_image_change(folder, name, "removed")
+                return self.json({"moved": moved})
             if path == "/api/captions/restore":
-                return self.json({"restored": restore_to_dataset(str(b.get("folder") or ""), b.get("moved") or [])})
+                folder = str(b.get("folder") or "")
+                restored = restore_to_dataset(folder, b.get("moved") or [])
+                for name in restored:
+                    if os.path.splitext(name)[1].lower() in _IMAGES:
+                        _notify_image_change(folder, name, "updated")
+                return self.json({"restored": restored})
             if path == "/api/captions/save":
                 folder, name, text = b.get("folder", ""), b.get("name", ""), b.get("text", "")
                 stem = os.path.splitext(os.path.basename(name))[0]

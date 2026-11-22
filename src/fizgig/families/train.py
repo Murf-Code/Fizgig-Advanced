@@ -2592,7 +2592,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     from fizgig.families.loss_watch import Watch
     watch = Watch(output_dir, group, user_config, driver, log=log_per_image_loss, per_image_lr=per_image_lr,
                   auto_recaption=auto_recaption, warmup_look=warmup_look_outliers,
-                  resume=bool(resume_state_dir), start_epoch=start_epoch, te_path=te_path,
+                  resume=bool(resume_state_dir), start_epoch=start_epoch, te_path=te_path, vae_path=vae_path,
                   trigger_word=trigger_word, trigger_position=trigger_position,
                   recaption_triggers=json.loads(recaption_triggers) if recaption_triggers else None,
                   recaption_instruction=recaption_instruction,
