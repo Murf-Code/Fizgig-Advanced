@@ -237,8 +237,12 @@ def share_captions(folder, ext=".txt"):
                         continue
             except OSError:
                 pass
-            with open(dst, "wb") as f:
-                f.write(text)
+            from fizgig.web import caption_review
+            from fizgig.web.image_edit import write_atomic
+            with caption_review._lock:
+                if caption_review.is_caption_locked(dst):
+                    continue
+                write_atomic(dst, text)
             n += 1
     return n
 
@@ -263,6 +267,9 @@ def copy_captions(folder, mp=None, log=print, ext=".txt", captions=None):
     for d in dirs:
         man = _load(os.path.join(d, MANIFEST))
         for c in uncaptioned(d, ext):
+            from fizgig.web import caption_review
+            if caption_review.is_caption_locked(os.path.splitext(c)[0] + ext):
+                continue
             stem = os.path.splitext(os.path.basename(c))[0]
             src = (man.get(stem) or {}).get("source") or ""
             pic = os.path.join(picture_dir(folder, src), src) if src else ""
