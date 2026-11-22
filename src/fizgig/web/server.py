@@ -2615,57 +2615,87 @@ REMOVED_DIR = "removed"           # the desktop's Remove folder
 
 
 def remove_from_dataset(folder, name, ext):
-    """Take a file out of the training set without deleting it: it, its caption (and a song's waveform picture) move
-    into <folder>/removed/. Returns the names moved, for Undo."""
+    """Move a picture, captions and masks out of the dataset as one recoverable action.
+
+    A mask can be beside the picture or in masks/. Record its original relative
+    path and roll back earlier moves if any later move or journal write fails.
+    """
+    from fizgig.web import removed_images
+
     folder = os.path.abspath(folder)
-    src = os.path.join(folder, os.path.basename(name))
-    if not os.path.isfile(src) or os.path.dirname(src) != folder:
+    if not isinstance(name, str) or os.path.basename(name) != name or name in ("", ".", ".."):
+        raise ValueError("Choose a file in the training folder.")
+    src = os.path.join(folder, name)
+    if not os.path.isfile(src):
         raise ValueError("That file isn't in the training folder.")
-    stem, fext = os.path.splitext(os.path.basename(name))
-    names = [os.path.basename(name)]
+    stem, fext = os.path.splitext(name)
+    sources = [(name, src)]
     for cext in {ext or ".txt", ".txt"}:
-        if os.path.isfile(os.path.join(folder, stem + cext)):
-            names.append(stem + cext)
+        path = os.path.join(folder, stem + cext)
+        if os.path.isfile(path):
+            sources.append((os.path.basename(path), path))
     if fext.lower() in _AUDIO:
-        names += [f for f in os.listdir(folder) if os.path.splitext(f)[0] == stem and os.path.splitext(f)[1].lower() in _IMAGES]
-    mask = mask_for_stem(folder, stem)                # masked training: a picture's mask goes with it
-    if mask:
-        names.append(os.path.basename(mask))
+        sources += [(n, os.path.join(folder, n)) for n in os.listdir(folder)
+                    if os.path.splitext(n)[0] == stem and
+                    os.path.splitext(n)[1].lower() in _IMAGES and
+                    os.path.isfile(os.path.join(folder, n))]
+    mask = mask_for_stem(folder, stem)
+    if mask and os.path.isfile(mask):
+        relative = os.path.relpath(mask, folder).replace(os.sep, "/")
+        if not (os.path.basename(mask) == relative or relative == "masks/" + os.path.basename(mask)):
+            raise ValueError("Mask is outside the dataset's picture or masks folder.")
+        sources.append((relative, mask))
     dest = os.path.join(folder, REMOVED_DIR)
     os.makedirs(dest, exist_ok=True)
-    moved = []
-    for n in names:
-        target, k = os.path.join(dest, n), 2
-        while os.path.exists(target):                # never overwrite an earlier removal
-            s, e = os.path.splitext(n)
-            target, k = os.path.join(dest, f"{s} ({k}){e}"), k + 1
-        os.replace(os.path.join(folder, n), target)
-        moved.append([n, os.path.basename(target)])
+    moved, completed = [], []
     try:
-        from fizgig.web import removed_images
-        removed_images.record(folder, moved)
+        for original, source in sources:
+            filename = os.path.basename(source)
+            target, k = os.path.join(dest, filename), 2
+            while os.path.exists(target):
+                base, suffix = os.path.splitext(filename)
+                target, k = os.path.join(dest, f"{base} ({k}){suffix}"), k + 1
+            os.replace(source, target)
+            moved.append([original, os.path.basename(target)])
+            completed.append((source, target))
+        if not removed_images.record(folder, moved):
+            raise OSError("Could not save the dataset removal journal.")
     except Exception:
-        logger.exception("Could not save removal journal; images are still in removed/")
+        failures = []
+        for source, target in reversed(completed):
+            try:
+                if os.path.exists(target):
+                    os.replace(target, source)
+            except OSError as exc:
+                failures.append(f"{os.path.basename(source)}: {exc}")
+        if failures:
+            raise RuntimeError("Dataset removal failed and rollback is incomplete: " +
+                               "; ".join(failures))
+        raise
     return moved
 
 
 def restore_to_dataset(folder, moved):
-    """Undo a removal: [[original name, name in removed]] back where they were (never over a file there)."""
+    """Undo a journaled removal without overwriting anything in the live dataset."""
+    from fizgig.web import removed_images
+
     folder = os.path.abspath(folder)
+    pairs = removed_images._clean_pairs(moved)
+    if not isinstance(moved, list) or len(pairs) != len(moved):
+        raise ValueError("Invalid dataset restoration names.")
     back = []
-    for orig, there in moved or ():
-        src = os.path.join(folder, REMOVED_DIR, os.path.basename(there))
-        dst = os.path.join(folder, os.path.basename(orig))
+    for original, stored in pairs:
+        src = os.path.join(folder, REMOVED_DIR, stored)
+        dst = os.path.join(folder, *original.split("/"))
         if os.path.isfile(src) and not os.path.exists(dst):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
             os.replace(src, dst)
-            back.append(orig)
+            back.append(original)
     try:
-        from fizgig.web import removed_images
-        removed_images.reconcile(folder, moved, back)
+        removed_images.reconcile(folder, pairs, back)
     except Exception:
         logger.exception("Could not update removal journal")
     return back
-
 
 _thumbs: dict = {}            # (path, mtime) -> a small JPEG; the oldest go past 600
 
