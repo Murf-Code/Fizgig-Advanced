@@ -12350,7 +12350,10 @@ function captionWorkbenchSettingsOpen(advanced=false,initializeOnly=false){
     });
     row("Show tag autocomplete suggestions",autocomplete,"Uses known tags in the active dataset");
     const advancedPanel=el("details",{class:"caption-settings-advanced"});
-    const advancedSummary=el("summary",{text:"Advanced Fizgig tools"});
+    const advancedSummary=el("summary",{},
+      el("span",{class:"caption-settings-advanced-label"},
+        el("strong",{text:"Caption generation & batch tools"}),
+        el("small",{text:"AI captioning models, trigger words, and batch caption actions"})));
     original.open=false;
     advancedPanel.append(advancedSummary,original);
     const actions=el("footer",{class:"caption-settings-footer"},
