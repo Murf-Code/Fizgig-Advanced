@@ -11897,8 +11897,53 @@ function renderCaptionStudio(host,items,ext){
   const liveStatus=el("div",{class:"studio-live-status field-hint",id:"studioLiveStatus",
     text:studioLiveSummary(S.cap.liveStatus)});
   liveStatus.classList.toggle("needs-attention",!!S.cap.liveStatus?.attention);
-  redraw();host.classList.add("studio-host");host.append(liveStatus,bulk,captionDuplicatePanel(ext),captionRemovedPanel(ext),
-    el("div",{class:"studio-layout"},left,center,right));
+  const layout=el("div",{class:"studio-layout studio-resizable"});
+  let sizes=S.cap.studioPanelSizes;
+  if(!sizes){
+    try{sizes=JSON.parse(localStorage.getItem("fizgig_caption_panel_sizes")||"null");}catch(e){}
+    if(!sizes||!Number.isFinite(sizes.left)||!Number.isFinite(sizes.right))
+      sizes={left:23,right:25};
+    S.cap.studioPanelSizes=sizes;
+  }
+  const applySizes=()=>{
+    const leftWidth=Math.max(17,Math.min(35,sizes.left)),rightWidth=Math.max(17,Math.min(35,sizes.right));
+    layout.style.gridTemplateColumns=window.matchMedia("(max-width:1100px)").matches?"":
+      "minmax(195px,"+leftWidth+"%) 8px minmax(290px,1fr) 8px minmax(195px,"+rightWidth+"%)";
+  };
+  const divider=side=>{
+    const grip=el("div",{class:"studio-splitter",role:"separator",tabindex:"0",
+      title:"Drag or use arrow keys to resize "+side+" panel",
+      "aria-label":"Resize "+side+" Caption Studio panel"});
+    let drag=null;
+    const change=percentage=>{
+      const next=Math.max(17,Math.min(35,percentage));
+      const opposite=side==="left"?"right":"left";
+      sizes[side]=Math.min(next,68-sizes[opposite]);
+      applySizes();
+    };
+    grip.addEventListener("pointerdown",e=>{
+      drag={id:e.pointerId,box:layout.getBoundingClientRect()};
+      grip.setPointerCapture(e.pointerId);e.preventDefault();
+    });
+    grip.addEventListener("pointermove",e=>{
+      if(!drag||e.pointerId!==drag.id)return;
+      const px=side==="left"?e.clientX-drag.box.left:drag.box.right-e.clientX;
+      change(px*100/drag.box.width);
+    });
+    const done=()=>{drag=null;localStorage.setItem("fizgig_caption_panel_sizes",JSON.stringify(sizes));};
+    grip.addEventListener("pointerup",done);
+    grip.addEventListener("pointercancel",done);
+    grip.addEventListener("keydown",e=>{
+      if(!["ArrowLeft","ArrowRight"].includes(e.key))return;
+      e.preventDefault();change(sizes[side]+(side==="left"?(e.key==="ArrowRight"?1:-1):
+        (e.key==="ArrowLeft"?1:-1)));done();
+    });
+    return grip;
+  };
+  layout.append(left,divider("left"),center,divider("right"),right);
+  redraw();host.classList.add("studio-host");
+  host.append(liveStatus,bulk,captionDuplicatePanel(ext),captionRemovedPanel(ext),layout);
+  applySizes();
 }
 
 // the table view: one row a file, sorted by a click on a column's head (again: the other way)
@@ -12065,6 +12110,37 @@ function wireCaptions() {
     if (!Number.isFinite(n)) return;
     S.cap.page = Math.max(0, n - 1); $("capGoto").value = ""; renderCaptions(); window.scrollTo(0, 0);
   };
+  // Workspace shortcuts never override editing text or Image Prep's own canvas shortcuts.
+  document.addEventListener("keydown",e=>{
+    if(!$("tab-captions").classList.contains("active")||$("capView").value!=="studio"||
+        S.cap.imageEditing||e.altKey)return;
+    if(e.target.closest("input,textarea,select,[contenteditable=true]"))return;
+    const mod=e.ctrlKey||e.metaKey,key=e.key.toLowerCase();
+    if(mod&&key==="z"){
+      e.preventDefault();studioTravel(e.shiftKey?"redo":"undo").catch(err=>alert(err.message));return;
+    }
+    if(mod&&key==="y"){
+      e.preventDefault();studioTravel("redo").catch(err=>alert(err.message));return;
+    }
+    if(mod&&key==="a"){
+      e.preventDefault();
+      S.cap.studioSelection ||= new Set();
+      S.cap.items.forEach(it=>S.cap.studioSelection.add(it.path));
+      renderCaptions();return;
+    }
+    if(mod||e.shiftKey)return;
+    if(key==="/"){e.preventDefault();$("capSearch").focus();return;}
+    if(key==="arrowright"||key==="arrowleft"){
+      const idx=S.cap.items.findIndex(it=>it.path===S.cap.studioPath);
+      if(idx<0)return;
+      const next=S.cap.items[Math.max(0,Math.min(S.cap.items.length-1,
+        idx+(key==="arrowright"?1:-1)))];
+      if(!next)return;
+      e.preventDefault();S.cap.studioPath=next.path;
+      S.cap.page=Math.floor(S.cap.items.indexOf(next)/CAP_PAGE);
+      renderCaptions();
+    }
+  });
   $("capGo").addEventListener("click", goto);
   $("capGoto").addEventListener("keydown", (e) => { if (e.key === "Enter") goto(); });
 }
