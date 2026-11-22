@@ -80,3 +80,23 @@ def test_ai_append_still_respects_review_locks(tmp_path):
     with pytest.raises(ValueError, match="review lock"):
         _write_caption(str(image), "third", append=True)
     assert "third" not in (folder / "lion.txt").read_text()
+
+
+def test_reviewed_detail_crop_is_not_overwritten_by_caption_mirror(tmp_path):
+    from fizgig.dataset import detail_crops
+
+    for label in ("0.25mp", "0.5mp"):
+        d = tmp_path / detail_crops.DIR / label
+        d.mkdir(parents=True)
+        (d / "lion.png").write_bytes(b"picture")
+        (d / "cat.png").write_bytes(b"picture")
+    small = tmp_path / detail_crops.DIR / "0.25mp"
+    large = tmp_path / detail_crops.DIR / "0.5mp"
+    (small / "lion.txt").write_text("reviewed text", encoding="utf-8")
+    (large / "lion.txt").write_text("new shared text", encoding="utf-8")
+    (small / "cat.txt").write_text("older", encoding="utf-8")
+    (large / "cat.txt").write_text("updated", encoding="utf-8")
+    caption_review.mark(small, "lion.png", True)
+    assert detail_crops.share_captions(str(tmp_path)) == 1
+    assert (small / "lion.txt").read_text() == "reviewed text"
+    assert (small / "cat.txt").read_text() == "updated"
