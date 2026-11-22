@@ -133,4 +133,4 @@ assert.match(app,/if\(index\.parentElement!==explore\)explore\.replaceChildren\(
 assert.match(app,/const tagHeader=el\("div",\{class:"studio-tag-header"\},headerTitle,rightDock\)/);
 assert.match(app,/Freeform caption\. Saved under the tags, after the first line break\./);
 assert.match(app,/const captionHelp=el\("p",\{class:"studio-natural-help"/);
-assert.match(css,/#tab-captions \.studio-host \.studio-tag-header\{/);
+assert.match(css,/#tab-captions \.studio-host \.studio-tag-header\s*\{/);
