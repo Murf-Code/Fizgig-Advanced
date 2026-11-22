@@ -7153,7 +7153,11 @@ function meFromGray(canvas, img) {
 function meFit() {
   const m = meState(), cv = $("meCanvas"), st = $("meStage");
   cv.width = st.clientWidth || 800;
-  cv.height = Math.max(300, Math.min(window.innerHeight * 0.7, 900));
+  // Inline Tags uses the stage's actual dimensions, not Image Prep's
+  // viewport-dependent cap. This avoids stretching a rasterized canvas.
+  cv.height = S.cap?.imageEditing?.inline ?
+    Math.max(1,st.clientHeight||300) :
+    Math.max(300, Math.min(window.innerHeight * 0.7, 900));
   if (m.mask) {
     m.zoom = Math.min(cv.width / m.mask.width, cv.height / m.mask.height);
     m.ox = (cv.width - m.mask.width * m.zoom) / 2; m.oy = (cv.height - m.mask.height * m.zoom) / 2;
@@ -7796,11 +7800,26 @@ function meWire() {
     if (k === " ") { space = true; e.preventDefault(); }
     else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === "z") { e.preventDefault(); meRestore(m.undo, m.redo); }
     else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === "y") { e.preventDefault(); meRestore(m.redo, m.undo); }
-    else if (k === "ArrowLeft") { e.preventDefault(); meGo(m.at - 1); }
-    else if (k === "ArrowRight") { e.preventDefault(); meGo(m.at + 1); }
+    else if (k === "ArrowLeft") { e.preventDefault();
+      if(S.cap?.imageEditing?.inline)S.cap.studioStepImage?.(-1);
+      else meGo(m.at - 1);
+    }
+    else if (k === "ArrowRight") { e.preventDefault();
+      if(S.cap?.imageEditing?.inline)S.cap.studioStepImage?.(1);
+      else meGo(m.at + 1);
+    }
     else if (k === "[" || k === "]") meSizeKey(k);
-    else if (k === "Enter" && (m.tool === "crop" || m.tool === "remove" || m.rmDirty)) { e.preventDefault(); meApply(); }
-    else if (k === "Escape" && (m.tool === "crop" || m.tool === "remove" || m.rmDirty)) { e.preventDefault(); meCancel(); }
+    else if (k === "Enter" && (m.tool === "crop" || m.tool === "remove" || m.rmDirty)) {
+      e.preventDefault();
+      if(S.cap?.imageEditing?.inline){
+        document.querySelector("#captionsGrid .studio-image-apply")?.click();
+      }else meApply();
+    }
+    else if (k === "Escape" && (m.tool === "crop" || m.tool === "remove" || m.rmDirty)) {
+      e.preventDefault();
+      meCancel();
+      if(S.cap?.imageEditing?.inline)void captionImageClose();
+    }
     else if (e.ctrlKey || e.metaKey || e.altKey) return;
     else if (k === "c" || k === "C") meTool("crop");
     else if (k === "j" || k === "J") meTool("remove");
@@ -7864,6 +7883,7 @@ function meTool(t) {
   for (const id of ["meTool", "mePicTool"])
     $(id).querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.tool === t));
   meImgBar(); meDraw();
+  if(S.cap?.imageEditing?.inline)S.cap.inlineRefreshControls?.();
 }
 
 // Crop to's choices: the faces, then Other…. The YOLO face model's other classes (Fdetailer's penis, paw pads, ...)
@@ -13654,6 +13674,7 @@ function renderCaptionStudio(host,items,ext){
     S.cap.studioThumbRevealPath=next.path;
     renderCaptions();
   };
+  S.cap.studioStepImage=stepImage;
   // Navigation uses arrow keys or the thumbnail rail. Keep only image actions
   // below the preview, without duplicating the image's filename.
   imageStage.append(pictureActions);
