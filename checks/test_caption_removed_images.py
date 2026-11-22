@@ -20,9 +20,11 @@ def test_removal_journal_survives_reload_and_reconciles(tmp_path):
     assert items[0]["id"] == ident
     assert items[0]["moved"] == move
     assert removed_images.lookup(folder, ident)["name"] == "example.png"
+    (removed / "example.png").unlink()  # the real restore moved the file away
     removed_images.reconcile(folder, move, ["example.png"])
     pending = removed_images.lookup(folder, ident)
     assert pending["moved"] == [["example.txt", "example.txt"]]
+    (removed / "example.txt").unlink()
     removed_images.reconcile(folder, move, ["example.txt"])
     assert removed_images.listing(folder) == []
 
