@@ -98,12 +98,19 @@ def main():
                 failed += 1
                 _say(f"FAIL: {name} (empty translation, kept as it was)")
                 continue
-            if caption_review.is_caption_locked(fp):
-                skipped += 1
-                _say(f"SKIP: {name} (reviewed while translating)")
-                continue
-            with open(fp, "w", encoding="utf-8") as f:
-                f.write(f"{trigger}, {rest} - {chinese}" if trigger else f"{original} - {chinese}")
+            from fizgig.web.image_edit import write_atomic
+            with caption_review._lock:
+                if caption_review.is_caption_locked(fp):
+                    skipped += 1
+                    _say(f"SKIP: {name} (reviewed while translating)")
+                    continue
+                # The text may have changed during the model's slow inference.
+                if read_caption(fp).strip() != original:
+                    skipped += 1
+                    _say(f"SKIP: {name} (caption edited while translating)")
+                    continue
+                result = f"{trigger}, {rest} - {chinese}" if trigger else f"{original} - {chinese}"
+                write_atomic(fp, result.encode("utf-8"))
             done += 1
             _say(f"OK: {name}")
         except Exception as e:
