@@ -1018,7 +1018,9 @@ class Watch:
         if not todo:
             _remove(processing)
             return
-        if not self.vae_path:
+        media_todo = [row for row in todo if os.path.splitext(row[2])[1].lower() not in _picture_exts()]
+        still_todo = [row for row in todo if row not in media_todo]
+        if not self.vae_path and (still_todo or any(x[2].lower().endswith(".mp4") for x in media_todo)):
             logger.warning("[image-fix] no VAE available; retaining pending images")
             _requeue(path, processing, {k: "updated" for k, _, _ in todo})
             return
@@ -1031,13 +1033,19 @@ class Watch:
             gc.collect()
             torch.cuda.empty_cache()
         try:
-            vae = self.driver.load_vae(self.vae_path, device)
+            # H3 media needs the native encoder, NOT the preview video decoder
+            # returned by driver.load_vae (which would double-load many GB).
+            for k, item, source in media_todo:
+                try:
+                    self._refresh_h3_media(k, item, source, device)
+                except Exception:
+                    pending[k] = "updated"
+                    logger.warning("[live-dataset] H3 media refresh failed for %s; retry next epoch",
+                                   k, exc_info=True)
+            vae = self.driver.load_vae(self.vae_path, device) if still_todo else None
             try:
-                for k, item, source in todo:
+                for k, item, source in still_todo:
                     try:
-                        if os.path.splitext(source)[1].lower() not in _picture_exts():
-                            self._refresh_h3_media(k, item, source, device)
-                            continue
                         # A paired edit must refresh target, every before-image latent and
                         # reference-aware text together. Never discard control latents.
                         from safetensors import safe_open
@@ -1112,7 +1120,7 @@ class Watch:
                 gc.collect()
                 torch.cuda.empty_cache()
         except Exception:
-            pending.update({k: "updated" for k, _, _ in todo})
+            pending.update({k: "updated" for k, _, _ in still_todo})
             logger.warning("[image-fix] VAE load/encode failed; retry at next boundary", exc_info=True)
         finally:
             if parkable:
