@@ -466,23 +466,37 @@ class Watch:
 
     def _report_unscheduled_inputs(self):
         pending = self._unscheduled_inputs()
-        if pending == getattr(self, "_unscheduled_last", None):
+        unsupported = sorted(getattr(self, "unsupported_media_keys", set()))
+        invalid = sorted(getattr(self, "invalid_mask_keys", set()))
+        signature = (tuple(pending), tuple(unsupported), tuple(invalid))
+        if signature == getattr(self, "_unscheduled_last", None):
             return
         if pending:
-            logger.warning("[live-dataset] %s input(s) exist outside this run's cached batch schedule "
-                           "(examples: %s). They require a new cache/optimizer schedule and are NOT "
-                           "being trained. Restart the run to include them.",
+            logger.warning("[live-dataset] %s file(s) not admitted to the active batch schedule "
+                           "(examples: %s). Missing captions, cache errors or unseen bucket "
+                           "shapes may require correction or a restart.",
                            len(pending), ", ".join(pending[:12]))
         status_path = os.path.join(self.output_dir, "loss_log", "live_dataset_status.json")
         os.makedirs(os.path.dirname(status_path), exist_ok=True)
-        payload = {"requires_restart": bool(pending), "unscheduled_count": len(pending),
-                   "unscheduled_examples": pending[:40],
-                   "reason": ("New or uncached media cannot be added safely to the active fixed training "
-                              "schedule. Restart training after preparing the cache." if pending else "")}
+        payload = {
+            "requires_restart": bool(unsupported),
+            "attention": bool(pending or unsupported or invalid),
+            "unscheduled_count": len(pending),
+            "unscheduled_examples": pending[:40],
+            "unsupported_media_count": len(unsupported),
+            "unsupported_media_examples": unsupported[:30],
+            "invalid_mask_count": len(invalid),
+            "invalid_mask_examples": invalid[:30],
+            "reason": ("Edited video/audio sources cannot yet be live-re-encoded; their "
+                       "old cached batches have been excluded until restart." if unsupported else
+                       "Some new files have not been admitted yet. Check captions, matching "
+                       "bucket shapes and the training log." if pending else
+                       "Fix the invalid masks to let those images train." if invalid else ""),
+        }
         with open(status_path + ".tmp", "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
         os.replace(status_path + ".tmp", status_path)
-        self._unscheduled_last = pending
+        self._unscheduled_last = signature
 
     def _mask_state(self):
         """{item key: (path, size, mtime)} for masks of active still-image datasets.
@@ -776,10 +790,6 @@ class Watch:
             logger.warning("[live-dataset] new-image admission failed; no unencoded images were scheduled",
                            exc_info=True)
         try:
-            self._report_unscheduled_inputs()
-        except Exception:
-            logger.warning("[live-dataset] could not report unscheduled sources", exc_info=True)
-        try:
             self._refresh_masks(changed_images)
         except Exception:
             logger.warning("[live-mask] mask refresh failed; old mask state retained", exc_info=True)
@@ -788,6 +798,10 @@ class Watch:
         except Exception:
             _recover_processing(os.path.join(self.output_dir, "loss_log", "caption_updates.json"), changed_text)
             logger.warning("[caption-fix] caption repair failed this boundary - training continues", exc_info=True)
+        try:
+            self._report_unscheduled_inputs()
+        except Exception:
+            logger.warning("[live-dataset] could not report outstanding source changes", exc_info=True)
 
     def _images(self, epoch, dit, device, parkable, detected=None):
         """Rebuild only edited still-image latents at the boundary, retaining their training bucket."""
