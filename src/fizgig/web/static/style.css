@@ -3281,3 +3281,15 @@ label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; 
 #captionsGrid .studio-file:focus-visible,#captionsGrid .studio-chip:focus-visible,#captionsGrid .studio-index-tag:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 #captionsGrid .studio-index-tag:hover{background:var(--bg-hover)}
 #captionsGrid .studio-browser .field-hint{color:var(--text-secondary)}
+
+/* Caption Studio-first layout: the original model and batch controls remain available. */
+#tab-captions .caption-tools-drawer{margin:12px 0 20px;border:1px solid var(--border);border-radius:10px;background:var(--bg-surface);padding:10px 14px}
+#tab-captions .caption-tools-drawer>summary{cursor:pointer;font-weight:650;padding:8px 2px;color:var(--text-primary)}
+#tab-captions .caption-tools-drawer[open]>summary{margin-bottom:12px}
+#tab-captions .caption-tools-drawer>.section-card{margin-top:12px}
+#tab-captions .caption-workspace-toolbar{border-color:var(--accent-border)}
+#tab-captions .studio-index .field-row{flex-wrap:wrap}
+#tab-captions .studio-index .field-row>select{max-width:200px}
+#tab-captions .studio-browser input.w-path{min-width:100px;max-width:100%}
+#tab-captions .caption-studio-panel .field-row{flex-wrap:wrap}
+@media(min-width:1300px){#tab-captions .studio-layout{grid-template-columns:minmax(210px,1fr) minmax(400px,2.35fr) minmax(230px,1fr)}}
