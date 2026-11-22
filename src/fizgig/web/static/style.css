@@ -5553,3 +5553,121 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
   #tab-captions .studio-image-toolbar{gap:5px;padding:5px}
   #tab-captions .studio-image-toolbar .btn{padding:7px 9px}
 }
+
+/* Focus-first Tags workspace: the image owns the center column, editing
+   controls are subordinate, and the save state lives in the top tool row. */
+#tab-captions .studio-top-actions{
+  min-height:44px;
+  gap:7px;
+}
+#tab-captions .studio-main-actions{margin-bottom:6px}
+#tab-captions .studio-host .studio-editor{
+  padding:8px;
+}
+#tab-captions .studio-host .studio-image-stage{
+  gap:7px;
+}
+#tab-captions .studio-host .studio-image-stage .studio-preview{
+  border-radius:12px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.045);
+}
+#tab-captions .studio-image-toolbar{
+  width:max-content;
+  max-width:100%;
+  margin-inline:auto;
+  border-radius:9px;
+  padding:4px 6px;
+}
+#tab-captions .studio-image-toolbar .btn{
+  min-height:31px;
+  padding:5px 10px;
+}
+#tab-captions .studio-image-toolbar .btn:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:2px;
+}
+#tab-captions .studio-workspace-status{
+  position:relative;
+  margin:0 0 0 auto;
+  padding:0;
+  border:1px solid var(--border);
+  background:var(--bg-surface);
+  border-radius:9px;
+  flex:0 0 auto;
+  min-width:0;
+  z-index:5;
+}
+#tab-captions .studio-workspace-status summary{
+  list-style:none;
+  display:flex;
+  align-items:center;
+  gap:7px;
+  padding:8px 10px;
+  min-height:31px;
+  box-sizing:border-box;
+  cursor:pointer;
+  white-space:nowrap;
+  color:var(--text-secondary);
+  font-size:11.5px;
+  font-weight:600;
+}
+#tab-captions .studio-workspace-status summary::-webkit-details-marker{display:none}
+#tab-captions .studio-workspace-status summary::after{
+  content:"⌄";
+  font-size:12px;
+  opacity:.6;
+}
+#tab-captions .studio-workspace-status summary:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:2px;
+}
+#tab-captions .studio-workspace-status .studio-status-dot{
+  display:inline-block;
+  flex:none;
+  width:7px;
+  height:7px;
+  border-radius:50%;
+  background:var(--success);
+}
+#tab-captions .studio-workspace-status[data-state="saving"] .studio-status-dot{
+  background:var(--data-blue);
+}
+#tab-captions .studio-workspace-status[data-state="pending"] .studio-status-dot{
+  background:var(--warning);
+}
+#tab-captions .studio-workspace-status[data-state="attention"] .studio-status-dot{
+  background:var(--danger);
+}
+#tab-captions .studio-workspace-status[data-state="attention"]{
+  border-color:var(--danger);
+}
+#tab-captions .studio-workspace-status[open] .studio-status-detail{
+  position:absolute;
+  right:0;
+  top:calc(100% + 7px);
+  z-index:10;
+  width:min(350px,80vw);
+  max-height:190px;
+  overflow:auto;
+  padding:12px;
+  border:1px solid var(--border);
+  border-radius:10px;
+  background:var(--bg-surface);
+  color:var(--text-secondary);
+  box-shadow:0 12px 28px rgba(0,0,0,.28);
+  font-size:12px;
+  line-height:1.5;
+  overflow-wrap:anywhere;
+}
+#tab-captions .studio-workspace-status:not([open]) .studio-status-detail{
+  display:none;
+}
+#tab-captions .studio-image-stage .studio-preview:focus-within{
+  border-color:var(--accent-border);
+}
+@media(max-width:760px){
+  #tab-captions .studio-workspace-status{margin-left:0}
+  #tab-captions .studio-workspace-status[open] .studio-status-detail{
+    left:0;right:auto;
+  }
+}
