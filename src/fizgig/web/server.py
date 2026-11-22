@@ -5274,6 +5274,10 @@ class Handler(BaseHTTPRequestHandler):
                         result = image_edit.restore_original(folder, name)
                         result["queued"] = _notify_image_change(folder, name, "updated")
                         return self.json(result)
+                    for source in image_edit.step_targets(b.get("step")):
+                        if os.path.splitext(source)[1].lower() in _IMAGES and caption_review.is_locked(
+                                os.path.dirname(source), os.path.basename(source)):
+                            raise ValueError("Reviewed picture is locked. Unlock it before image undo/redo.")
                     result = image_edit.step(b.get("step"), "redo" if b.get("redo") else "undo")
                     for source in result.pop("changed_images", []):
                         _notify_image_change(os.path.dirname(source), os.path.basename(source), "updated")
@@ -5765,6 +5769,18 @@ class Handler(BaseHTTPRequestHandler):
                     if os.path.splitext(name)[1].lower() in _IMAGES:
                         _notify_image_change(folder, name, "updated")
                 return self.json({"restored": restored})
+            if path == "/api/captions/batch_edit":
+                from fizgig.web import caption_batch_edit
+                from fizgig.web.image_loss import queue_for_folder
+                ext = captions.caption_ext(b.get("ext"))
+                changed = caption_batch_edit.apply(b.get("edits"), ext)
+                with _lock:
+                    active = dict(_run)
+                    running = active.get("proc") is not None and active["proc"].poll() is None
+                run = history.get(active.get("history_id")) if running and active.get("history_id") else None
+                queued = sum(bool(queue_for_folder(row["folder"], row["name"],
+                    row["after"] or "", ext, run)) for row in changed)
+                return self.json({"changed": len(changed), "queued": queued})
             if path == "/api/captions/save":
                 folder, name, text = b.get("folder", ""), b.get("name", ""), b.get("text", "")
                 stem = os.path.splitext(os.path.basename(name))[0]
