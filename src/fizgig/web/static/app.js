@@ -11648,6 +11648,12 @@ function renderCaptionStudio(host,items,ext){
     return;
   }
   S.cap.studioPath=current.path;
+  // TagBench: the active image is selected by default; dataset switches reset
+  // the previous dataset's bulk selection, but clearing a selection stays clear.
+  if(S.cap.studioSelectionFolder!==String(S.imageFolder||"")){
+    selection.clear();selection.add(current.path);
+    S.cap.studioSelectionFolder=String(S.imageFolder||"");
+  }
   let captionMode=studioCaptionMode(current);
   const locked=!!S.cap.studioReviewed?.has(current.path);
   const categoryState=studioCategories();
@@ -11658,46 +11664,74 @@ function renderCaptionStudio(host,items,ext){
   const note=el("div",{class:"field-hint"});
   const say=s=>{note.textContent=s;};
   const btn=(s,fn)=>el("button",{class:"btn btn-sm",text:s,onclick:fn});
-  left.append(el("strong",{text:"Dataset browser"}),el("div",{class:"field-hint",text:String(items.length)+" matches · "+String(S.cap.studioReviewed?.size||0)+" reviewed"}));
+  left.append(el("div",{class:"studio-browser-heading"},
+    el("strong",{text:"Images"}),
+    el("span",{class:"field-hint",text:String(items.length)})));
   const tagQuery=el("input",{type:"text",class:"w-path",placeholder:'Exact tags: "red hair" AND NOT blurry'});
   tagQuery.value=S.cap.studioQuery||"";
   const applyTagQuery=()=>{try{CaptionStudioTags.search([],tagQuery.value);S.cap.studioQuery=tagQuery.value.trim();S.cap.page=0;renderCaptions();}catch(e){say("Invalid tag query: "+e.message);}};
   tagQuery.addEventListener("keydown",e=>{if(e.key==="Enter")applyTagQuery();});
-  left.append(el("div",{class:"field-hint",text:"Boolean tag filter · AND / OR / NOT, parentheses, quoted tags"}),
-    el("div",{class:"field-row"},tagQuery,btn("Apply",applyTagQuery),btn("Clear",()=>{S.cap.studioQuery="";renderCaptions();})));
-  left.append(el("div",{class:"field-row"},
-    btn("Select page",()=>{pageItems.forEach(i=>selection.add(i.path));renderCaptions();}),
-    btn("Select all matches",()=>{items.forEach(i=>selection.add(i.path));renderCaptions();}),
-    btn("Invert page",()=>{pageItems.forEach(i=>selection.has(i.path)?selection.delete(i.path):selection.add(i.path));renderCaptions();}),
-    btn("Clear",()=>{selection.clear();renderCaptions();})),
-    el("div",{class:"field-hint",text:selection.size+" selected · Shift-click selects ranges across pages"}));
-  const thumbs=el("div",{class:"studio-thumb-rail",role:"list", "aria-label":"Dataset thumbnails"});
-  const missingOnly=el("input",{type:"checkbox"});
-  missingOnly.checked=$("capFilter").value==="missing";
-  missingOnly.addEventListener("change",()=>{$("capFilter").value=missingOnly.checked?"missing":"all";S.cap.page=0;renderCaptions();});
+  tagQuery.placeholder='Filter images by tags';
+  tagQuery.title="Enter a tag query. Supports AND, OR, NOT and quoted tags.";
+  tagQuery.setAttribute("aria-label","Filter images by tags");
+  const clearFilter=btn("×",()=>{S.cap.studioQuery="";renderCaptions();});
+  clearFilter.title="Clear image tag filter";
+  const filterBar=el("div",{class:"studio-filter-bar"},tagQuery,btn("Search",applyTagQuery),clearFilter);
+  const selectionMenu=el("details",{class:"studio-selection-menu"});
+  selectionMenu.append(el("summary",{text:"Selection options",title:"Select, invert or clear images"}),
+    el("div",{class:"studio-selection-actions"},
+      btn("Select all matches",()=>{items.forEach(i=>selection.add(i.path));renderCaptions();}),
+      btn("Select page",()=>{pageItems.forEach(i=>selection.add(i.path));renderCaptions();}),
+      btn("Invert page",()=>{pageItems.forEach(i=>selection.has(i.path)?selection.delete(i.path):selection.add(i.path));renderCaptions();}),
+      btn("Clear selection",()=>{selection.clear();renderCaptions();})));
+  left.append(filterBar);
+  const thumbs=el("div",{class:"studio-thumb-rail",role:"list","aria-label":"Dataset thumbnails",tabindex:"0"});
+  const missingBtn=btn($("capFilter").value==="missing"?"Missing Tags ✓":"Missing Tags",()=>{
+    $("capFilter").value=$("capFilter").value==="missing"?"all":"missing";
+    S.cap.page=0;renderCaptions();
+  });
+  missingBtn.classList.add("studio-missing-filter");
+  missingBtn.classList.toggle("is-on",$("capFilter").value==="missing");
+  missingBtn.title="Show only images without a caption";
   const position=el("span",{class:"studio-position",text:String(Math.max(0,items.findIndex(i=>i.path===current.path)+1))+" / "+items.length});
+  const selectionCount=el("span",{class:"studio-selection-count",text:selection.size+" selected"});
   const nav=el("div",{class:"studio-thumb-footer"},
-    el("label",{class:"studio-missing-toggle"},missingOnly,el("span",{text:"Missing Tags"})),position);
+    missingBtn,position,selectionCount);
+  thumbs.addEventListener("keydown",e=>{
+    if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="a"){
+      e.preventDefault();items.forEach(it=>selection.add(it.path));renderCaptions();
+    }
+  });
   for(const it of pageItems){
-    const cb=el("input",{type:"checkbox"});cb.checked=selection.has(it.path);
-    cb.setAttribute("aria-label","Select "+it.name);
-    const choose=(checked,range)=>{
-      const anchor=items.findIndex(x=>x.path===S.cap.studioSelectionAnchor);
-      const target=items.findIndex(x=>x.path===it.path);
-      const chosen=range&&anchor>=0?items.slice(Math.min(anchor,target),Math.max(anchor,target)+1):[it];
-      chosen.forEach(x=>checked?selection.add(x.path):selection.delete(x.path));
-      S.cap.studioSelectionAnchor=it.path;
-      renderCaptions();
-    };
-    cb.addEventListener("click",e=>choose(cb.checked,e.shiftKey));
-    const thumb=it.size?el("img",{src:"/api/thumb?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(TOKEN),loading:"lazy"}):el("span",{text:"♪"});
-    thumbs.append(el("div",{class:"studio-browser-row",role:"listitem"},cb,el("button",{class:"studio-file"+(it.path===current.path?" active":""),onclick:e=>{
-      if(e.shiftKey){choose(true,true);return;}
-      if(e.ctrlKey||e.metaKey){choose(!selection.has(it.path),false);return;}
-      S.cap.studioPath=it.path;S.cap.studioSelectionAnchor=it.path;renderCaptions();
-    }},thumb,el("span",{text:mediaLabel(it)+(S.cap.studioReviewed?.has(it.path)?" · ✓ reviewed":it.caption===null?" · missing caption":"")}))));
+    const isActive=it.path===current.path;
+    const isPicked=selection.has(it.path);
+    const thumb=it.size?el("img",{src:"/api/thumb?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(TOKEN),
+      loading:"lazy",alt:"",decoding:"async"}):el("span",{class:"studio-thumb-placeholder",text:"♪"});
+    const tile=el("button",{type:"button",
+      class:"studio-file studio-thumb"+(isActive?" active":"")+(isPicked?" is-picked":"")+
+        (S.cap.studioReviewed?.has(it.path)?" is-reviewed":""),
+      title:it.name,
+      "aria-label":it.name+(it.caption===null?", missing caption":"")+(isPicked?", selected":""),
+      "aria-pressed":isPicked?"true":"false",
+      onclick:e=>{
+        const anchor=items.findIndex(x=>x.path===(S.cap.studioSelectionAnchor||S.cap.studioPath));
+        const target=items.findIndex(x=>x.path===it.path);
+        if(e.shiftKey&&anchor>=0&&target>=0){
+          selection.clear();
+          items.slice(Math.min(anchor,target),Math.max(anchor,target)+1).forEach(x=>selection.add(x.path));
+        }else if(e.ctrlKey||e.metaKey){
+          selection.has(it.path)?selection.delete(it.path):selection.add(it.path);
+          S.cap.studioSelectionAnchor=it.path;
+        }else{
+          selection.clear();selection.add(it.path);
+          S.cap.studioSelectionAnchor=it.path;
+        }
+        S.cap.studioPath=it.path;
+        renderCaptions();
+      }},thumb);
+    thumbs.append(el("div",{class:"studio-browser-row",role:"listitem"},tile));
   }
-  left.append(thumbs,nav);
+  left.append(thumbs,nav,selectionMenu);
   const drafts=S.cap.studioDrafts||(S.cap.studioDrafts=new Map());
   const histories=S.cap.studioHistories||(S.cap.studioHistories=new Map());
   const ta=el("textarea",{class:"studio-caption",rows:7});
@@ -12195,7 +12229,10 @@ function renderCaptionStudio(host,items,ext){
     const next=items[Math.max(0,Math.min(items.length-1,idx+delta))];
     if(!next||next.path===current.path)return;
     S.cap.page=Math.floor(items.indexOf(next)/CAP_PAGE);
-    S.cap.studioPath=next.path;renderCaptions();
+    S.cap.studioPath=next.path;
+    selection.clear();selection.add(next.path);
+    S.cap.studioSelectionAnchor=next.path;
+    renderCaptions();
   };
   const stageNav=el("div",{class:"studio-stage-nav"},
     btn("‹ Previous",()=>stepImage(-1)),
