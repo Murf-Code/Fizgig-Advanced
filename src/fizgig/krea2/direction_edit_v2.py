@@ -27,9 +27,10 @@ What v2 changes against v1 (direction_edit.py, left as it is so the two can be c
   * "Improves" is signed. The edit has to LOWER the targets' suppression, and by more than the random control
     does; v1 compared absolute changes, so an edit that made things worse could pass.
   * Held-out verification: verify_count extra captions never used for fitting score the edit (before, after,
+    random) on captions held out of the fit.
   * Blocks are measured and edited in pipeline order, each on the path as already edited (v1 measured every block
     on the unedited model).
-  * The random control is rescaled to the real edit's norm per Linear; control_drift reports how far the controls
+  * The random control is rescaled to the real edit's norm per Linear; control_drift measures how far the controls
     themselves moved.
   * rounds > 1: each round draws new captions and (auto) controls, re-measures on the edited path and adds a
     share (strength / rounds) of a fresh edit; the LoRA rank rises to num_directions x rounds so the sum is exact.
