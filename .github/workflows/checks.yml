@@ -38,6 +38,8 @@ jobs:
         run: node checks/test_caption_studio_selection.cjs
       - name: Caption sidebar TagBench layout keeps Explorer modes
         run: node checks/test_caption_sidebar_layout.cjs
+      - name: Caption thumbnail rail retained DOM and native scroll
+        run: node checks/test_caption_thumb_rail.cjs
       - name: Caption Studio validation/sample context menu checks
         run: node checks/test_caption_studio_training_picks.cjs
       - name: Caption Studio shared image editor wiring checks
