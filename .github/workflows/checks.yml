@@ -46,6 +46,10 @@ jobs:
         run: node checks/test_mask_editor_performance.cjs
       - name: Remove brush cursor and composited preview regressions
         run: node checks/test_remove_preview_latency.cjs
+      - name: Tiled history, bounded previews and asynchronous encoding
+        run: node checks/test_caption_image_perf.cjs
+      - name: Background Remove worker bridge and patch safety
+        run: node checks/test_remove_worker_bridge.cjs
       - name: TagBench duplicate finder preserves native LaMa removal wiring
         run: node checks/test_caption_studio_duplicates.cjs
       - name: Caption Studio regression checks
