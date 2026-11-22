@@ -2,6 +2,8 @@
 
 Fizgig Advanced is Fizgig with extra features. It's kept up to date with upstream [shootthesound/Fizgig](https://github.com/shootthesound/Fizgig), so you get everything in Fizgig plus the extras below. This version matches **Fizgig v9.5.0**, plus Fizgig Advanced's extras.
 
+**Caption Workbench UI inspiration:** Thanks to **TagGUI** for inspiring the image-browsing, tag-management and visual-exploration interface. Fizgig Advanced adapts these ideas to its own training and caption systems. This acknowledgment is for design inspiration and does not imply affiliation or endorsement.
+
 **How it differs from upstream**
 - **More optimizers:** Prodigy, Muon, Automagic V4 and PoLoRA. Adaptive LR steps aside for optimizers that set their own rate.
 - **Training tools:** fixed Image Validation loss, loss graph trend views, early stopping, Adaptive LR that can follow validation loss, Save & stop on a second Pause, two-click Stop, faster Blocks Swap for Krea 2 and MOSS-Image LoRAs, Timestep focus presets, tag shuffle.
