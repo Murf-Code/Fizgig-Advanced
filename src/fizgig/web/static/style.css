@@ -3443,7 +3443,7 @@ label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; 
 /* TagBench-aligned workspace: thumbnail rail | image canvas | stacked editing dock. */
 #tab-captions .studio-host .studio-layout{align-items:stretch;min-height:650px;gap:0}
 #tab-captions .studio-host .studio-browser{max-height:min(82vh,950px);border-radius:10px 0 0 10px;overflow:auto}
-#tab-captions .studio-host .studio-editor{padding:10px;min-height:520px;border-radius:0;justify-content:stretch;overflow:hidden}
+#tab-captions .studio-host .studio-editor{padding:10px;min-height:520px;height:min(82dvh,950px);box-sizing:border-box;border-radius:0;justify-content:stretch;overflow:hidden}
 #tab-captions .studio-host .studio-index{padding:0;border-radius:0 10px 10px 0;max-height:min(82vh,950px);overflow:hidden;display:flex;flex-direction:column}
 #tab-captions .studio-image-stage{display:flex;flex-direction:column;gap:12px;min-height:0;height:100%;flex:1 1 auto}
 #tab-captions .studio-image-stage .studio-preview{flex:1 1 0;max-height:none;min-height:0;height:100%;width:100%;background:var(--bg-inset)}
