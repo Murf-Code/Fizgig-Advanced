@@ -6,7 +6,7 @@ also gives 16-bit greyscale as 8-bit (eight_bit) and a picture with a colour pro
 import struct
 
 ORIENTATION = 0x0112
-_PNG_SIG = b"\\x89PNG\\r\\n\\x1a\\n"
+_PNG_SIG = b"\x89PNG\r\n\x1a\n"
 # Orientation may appear in an eXIf chunk or in text metadata (XMP and
 # ImageMagick's 'Raw profile type exif'). Inspect the whole file, not only
 # pre-IDAT chunks. On uncertainty retain the existing Pillow path.
