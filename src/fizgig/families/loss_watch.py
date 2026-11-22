@@ -253,6 +253,8 @@ class Watch:
 
     def _new_image_sources(self):
         """New eligible stills in existing dataset blocks (holdouts never join training)."""
+        from fizgig.dataset.masks import is_mask_file
+        from fizgig.dataset.image_dataset import superseded_stems
         known = set(_items(self.group))
         results = []
         allowed = set(_picture_exts())
@@ -265,10 +267,12 @@ class Watch:
                 continue
             prefix = str(getattr(ds, "item_prefix", "") or "")
             held = set(getattr(ds, "holdout_stems", ()) or ())
+            superseded = superseded_stems(folder)
             seen = set()
             for filename in sorted(os.listdir(folder)):
                 stem, ext = os.path.splitext(filename)
-                if ext.lower() not in allowed or stem in held or stem in seen:
+                if (ext.lower() not in allowed or is_mask_file(filename) or
+                        stem in held or stem in superseded or stem in seen):
                     continue
                 seen.add(stem)
                 key = prefix + stem
