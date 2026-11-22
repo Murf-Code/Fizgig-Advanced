@@ -7189,7 +7189,7 @@ function meFit() {
   const width=st.clientWidth||800;
   // Inline Tags uses the stage's actual dimensions, not Image Prep's
   // viewport-dependent cap. This avoids stretching a rasterized canvas.
-  const height=S.cap?.imageEditing?.inline ?
+  const height=(S.cap?.imageEditing?.inline||meDialogVisible()) ?
     Math.max(1,st.clientHeight||300) :
     Math.max(300,Math.min(window.innerHeight*0.7,900));
   if(cv.width!==width)cv.width=width;
@@ -7889,6 +7889,66 @@ function meNativeBrushCursor(size){
   cache.set(diameter,style);
   return style;
 }
+// The Image Prep mask editor is one shared editor. In Image Prep it opens as
+// a glass modal; in Captions the existing live stage is moved into Tags. A
+// details element remains only as a keyboard-accessible launch surface.
+let meDialogPreviousFocus=null,meDialogDismissing=false;
+function meDialogVisible(){
+  return !!($("maskEdit")?.open&&$("tab-prep")?.classList.contains("active")&&
+    !meState().studioFolder);
+}
+async function meDialogShow(){
+  if(S.cap?.imageEditing?.inline||!$("tab-prep").classList.contains("active"))return;
+  const editor=$("maskEdit"),m=meState();
+  meDialogPreviousFocus=document.activeElement;
+  editor.open=true;
+  document.body.classList.add("me-dialog-open");
+  try{
+    if(!m.pic||!m.mask||m.folder!==(m.studioFolder||S.imageFolder)||m.wantList){
+      m.wantList=false;
+      await meOpen();
+    }
+    requestAnimationFrame(()=>{
+      if(!meDialogVisible())return;
+      meFit();
+      if(m.tool==="remove")mePrepareRemoveWorker();
+      $("meDialogClose").focus({preventScroll:true});
+    });
+  }catch(error){
+    $("meState").textContent="Could not open editor: "+error.message;
+  }
+}
+async function meDialogDismiss(){
+  if(!meDialogVisible())return true;
+  if(meDialogDismissing)return false;
+  const m=meState();
+  if(m.stepBusy||m.samBusy||m.wmBusy||m.applyPreparing){
+    $("meState").textContent="Finish the current image operation before closing.";
+    return false;
+  }
+  meDialogDismissing=true;
+  const close=$("meDialogClose");
+  close.disabled=true;
+  try{
+    if(m.saveTask&&(!(await m.saveTask)||m.dirty))return false;
+    if(m.dirty&&(!(await meSave())||m.dirty))return false;
+    if(!(await meRmSave(false)))return false;
+    await meDrainRemoveWorker();
+    meStopRemoveWorker(); // the editor may be reopened without losing edits
+    $("maskEdit").open=false;
+    document.body.classList.remove("me-dialog-open");
+    if(meDialogPreviousFocus?.isConnected){
+      meDialogPreviousFocus.focus({preventScroll:true});
+    }else $("maskEdit").querySelector(":scope > summary")?.focus({preventScroll:true});
+    meDialogPreviousFocus=null;
+    return true;
+  }catch(error){
+    $("meState").textContent="Editor could not close: "+error.message;
+    return false;
+  }finally{
+    close.disabled=false;meDialogDismissing=false;
+  }
+}
 function meWire() {
   const m = meState(), cv = $("meCanvas");
   let last = null, pan = null, space = false, pointerRect = null;
@@ -7919,10 +7979,40 @@ function meWire() {
       (p.py+cv.offsetTop)+"px,0) translate(-50%,-50%)";
     if(cursor.hidden)cursor.hidden=false;
   };
-  $("maskEdit").addEventListener("toggle", () => {
-    if ($("maskEdit").open && !meState().studioFolder) meOpen();
-    else if (!$("maskEdit").open && meState().dirty) meSave();      // closing it saves
+  // Clicking the old disclosure row now launches the full-screen glass
+  // workspace instead of expanding the editor into the Masks card.
+  const launcher=$("maskEdit").querySelector(":scope > summary");
+  launcher.addEventListener("click",event=>{
+    event.preventDefault();
+    if(meDialogVisible())void meDialogDismiss();
+    else void meDialogShow();
   });
+  $("meDialogClose").addEventListener("click",()=>void meDialogDismiss());
+  $("meDialogBackdrop").addEventListener("pointerdown",event=>{
+    if(event.target===event.currentTarget)void meDialogDismiss();
+  });
+  document.addEventListener("keydown",event=>{
+    if(!meDialogVisible())return;
+    if(event.key==="Escape"){
+      // First Escape cancels an active Remove/Crop action; a second one
+      // closes the window. The existing editor handler owns that first key.
+      if(m.tool==="crop"||m.tool==="remove"||m.rmDirty)return;
+      event.preventDefault();event.stopImmediatePropagation();
+      void meDialogDismiss();
+    }else if(event.key==="Tab"){
+      // Keep keyboard focus inside the floating editor.
+      const nodes=[...$("meDialogWindow").querySelectorAll(
+        'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex="0"]')]
+        .filter(node=>node.getClientRects().length&&!node.closest("[hidden]"));
+      if(!nodes.length)return;
+      const first=nodes[0],last=nodes[nodes.length-1];
+      if(event.shiftKey&&document.activeElement===first){
+        event.preventDefault();last.focus({preventScroll:true});
+      }else if(!event.shiftKey&&document.activeElement===last){
+        event.preventDefault();first.focus({preventScroll:true});
+      }
+    }
+  },true);
   window.addEventListener("beforeunload", (e) => {   // closing the window with edits not saved: ask first
     if (S.me && S.me.dirty) { e.preventDefault(); e.returnValue = ""; }
   });
@@ -16333,6 +16423,11 @@ function tabRunScroll(name) {
   return !!spot;
 }
 function showTab(name) {
+  if(name!=="prep"&&meDialogVisible()){
+    if(meDialogDismissing)return;
+    void meDialogDismiss().then(ok=>{if(ok)showTab(name);});
+    return;
+  }
   if (name !== "captions" && S.cap?.imageEditing) {
     // Don't hide the canvas while a save or GPU image operation is unfinished.
     if(S.cap.imageClosing)return;
