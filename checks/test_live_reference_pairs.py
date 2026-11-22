@@ -33,7 +33,7 @@ class PairDriver:
         assert captions == ["updated caption"]
         assert len(references[0]) == 1
         self.refs_seen += 1
-        return [{"cond__test": torch.ones(1, 8) * 9}]
+        return [{"test": torch.ones(1, 8) * 9}]
 
     def unload_text_encoder(self, te):
         pass
@@ -54,7 +54,7 @@ def paired_case(tmp_path):
     save_file({"latent_4x4": torch.zeros(4, 4, 4),
                "latent_control_0_4x4": torch.zeros(4, 4, 4)}, item.latent_cache_path)
     cache.save_cond(PairDriver.description, item,
-                    {"cond__test": torch.zeros(1, 8)}, refs="32x32")
+                    {"test": torch.zeros(1, 8)}, refs="32x32")
     bm = SimpleNamespace(buckets={(32, 32): [item]})
     ds = SimpleNamespace(item_prefix="s2:", image_directory=str(root),
         control_directory=str(before), extra_reference_directory=None,
