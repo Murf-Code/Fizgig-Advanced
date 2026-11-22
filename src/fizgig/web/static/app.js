@@ -12664,25 +12664,29 @@ function renderCaptionStudio(host,items,ext){
   const bottomSpace=el("div",{class:"studio-thumb-spacer","aria-hidden":"true"});
   thumbs.append(topSpace,windowRows,bottomSpace);
   let geometry=null,paintStart=-1,paintEnd=-1,railWidth=0,queued=false;
+  let pendingResizePosition=null;
   const rebuildGeometry=()=>{
     const width=thumbs.clientWidth||S.cap.studioThumbWidth||180;
     if(geometry&&Math.abs(width-railWidth)<1)return;
     // Resizing the split rail changes row heights. Anchor to the image at
     // the top of the viewport rather than jumping to a different index.
-    const old=geometry,scroll=thumbs.scrollTop;
+    const old=geometry,scroll=pendingResizePosition??thumbs.scrollTop;
     const anchor=old?studioThumbIndex(old.offsets,scroll):0;
     const fraction=old?Math.max(0,Math.min(1,
       (scroll-old.offsets[anchor])/Math.max(1,old.heights[anchor]))):0;
     railWidth=width;S.cap.studioThumbWidth=width;
     geometry=studioThumbGeometry(items,width);
-    if(old)thumbs.scrollTop=geometry.offsets[anchor]+fraction*geometry.heights[anchor];
+    // Apply the new scroll position after updating spacer heights; assigning
+    // it against the old scroll range would clamp near the dataset's end.
+    if(old)pendingResizePosition=geometry.offsets[anchor]+fraction*geometry.heights[anchor];
     paintStart=paintEnd=-1;
   };
   const paintWindow=()=>{
     if(!thumbs.isConnected)return;
     rebuildGeometry();
     const {offsets,heights,total,gap}=geometry;
-    const top=thumbs.scrollTop,bottom=top+Math.max(100,thumbs.clientHeight);
+    const top=pendingResizePosition??thumbs.scrollTop;
+    const bottom=top+Math.max(100,thumbs.clientHeight);
     const start=Math.max(0,studioThumbIndex(offsets,top)-7);
     const end=Math.min(items.length,studioThumbIndex(offsets,bottom)+10);
     if(start===paintStart&&end===paintEnd)return;
@@ -12692,6 +12696,10 @@ function renderCaptionStudio(host,items,ext){
     topSpace.style.height=offsets[start]+"px";
     bottomSpace.style.height=Math.max(0,total-offsets[end]+(end<items.length?gap:0))+"px";
     windowRows.replaceChildren(fragment);
+    if(pendingResizePosition!==null){
+      thumbs.scrollTop=pendingResizePosition;
+      pendingResizePosition=null;
+    }
     thumbs.dataset.rendered=String(end-start);
   };
   const queueWindow=()=>{
