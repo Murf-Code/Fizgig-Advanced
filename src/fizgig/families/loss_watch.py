@@ -1044,6 +1044,23 @@ class Watch:
 
             def write(row, cond, refs=""):
                 k, item, cap, _attempt = row
+                # Validate against the actual dataset file immediately before
+                # committing; a newer edit while the TE was busy wins.
+                source = self._source_for_key(k)
+                ds = self._owner_dataset(k)
+                prefix = str(getattr(ds, "item_prefix", "") or "")
+                stem = str(k)[len(prefix):].rsplit("/", 1)[-1].removesuffix("#still")
+                folder = (getattr(ds, "image_directory", None) if ds else None) or (
+                    os.path.dirname(source) if source else self.image_dir or "")
+                cext = (getattr(ds, "caption_extension", None) if ds else None) or self.caption_ext
+                cap_file = os.path.splitext(source)[0] + cext if source else os.path.join(folder, stem + cext)
+                from fizgig.dataset.caption_file import read_caption
+                try:
+                    latest = read_caption(cap_file)
+                except OSError:
+                    latest = ""
+                if latest.strip() != str(cap).strip():
+                    raise ValueError(f"Caption of {k} changed while being encoded; will retry with the new text")
                 scratch = copy.copy(item)
                 scratch.caption = cap
                 scratch.text_encoder_output_cache_path = item.text_encoder_output_cache_path + ".live-update"
@@ -1054,9 +1071,6 @@ class Watch:
                                item.text_encoder_output_cache_path)
                 finally:
                     _remove(scratch.text_encoder_output_cache_path)
-                # Do not commit old text if a user saved another caption while
-                # this encoder was running; the next boundary will use the new file.
-                # For auto-recaption the on-disk file was already updated above.
                 item.caption = cap
                 self.stale_caption_keys.discard(k)
                 self.removed_keys.discard(k)
