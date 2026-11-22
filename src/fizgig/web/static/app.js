@@ -10934,6 +10934,7 @@ function renderCaptions() {
     (q ? ` · ${items.length} match` : "") + (pages > 1 ? ` · page ${S.cap.page + 1} of ${pages}` : "");
   $("capPrev").disabled = S.cap.page === 0; $("capNext").disabled = S.cap.page >= pages - 1;
   host.classList.toggle("captions-as-table", $("capView").value === "table");
+  host.classList.toggle("studio-host", $("capView").value === "studio");
   if ($("capView").value === "studio") { renderCaptionStudio(host, items, ext); return; }
   if ($("capView").value === "table") {
     host.append(captionsTable(items.slice(S.cap.page * CAP_PAGE, (S.cap.page + 1) * CAP_PAGE), ext));
