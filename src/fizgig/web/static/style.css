@@ -5455,6 +5455,22 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
 }
 .me-stage .me-brush-cursor[hidden]{display:none!important}
 
+/* Remove marks stay on this transparent composited layer. Editing it updates
+   only touched pixels instead of redrawing a full photo per pointer event. */
+.me-stage canvas.me-remove-overlay{
+  position:absolute;
+  left:0;top:0;
+  display:block;
+  width:auto;height:auto;
+  max-width:none;
+  transform-origin:0 0;
+  pointer-events:none;
+  opacity:.6;
+  z-index:1;
+  will-change:transform;
+}
+.me-stage canvas.me-remove-overlay[hidden]{display:none!important}
+
 /* Blurring the entire embedded Image Editor makes every stroke expensive:
    each canvas update previously invalidated a very large backdrop surface.
    Keep the dark-glass palette, but use an opaque-enough static surface. */
