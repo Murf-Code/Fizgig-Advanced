@@ -774,7 +774,7 @@ class Watch:
         # Never train a removed image, including a mixed batch whose family lacks
         # per-item losses. Skipping the whole batch is safer than training stale pixels.
         keys_to_check = keys if isinstance(keys, (list, tuple)) else [keys]
-        if any(str(k) in self.removed_keys or str(k) in getattr(self, "invalid_mask_keys", ())
+        if any(str(k) in getattr(self, "removed_keys", ()) or str(k) in getattr(self, "invalid_mask_keys", ())
                or str(k) in getattr(self, "unsupported_media_keys", ())
                or str(k) in getattr(self, "stale_caption_keys", ()) for k in keys_to_check):
             return True
@@ -786,7 +786,7 @@ class Watch:
 
     def multiplier(self, batch):
         keys = batch.get("item_keys")
-        blocked = self.removed_keys | getattr(self, "invalid_mask_keys", set()) | getattr(self, "unsupported_media_keys", set()) | getattr(self, "stale_caption_keys", set())
+        blocked = getattr(self, "removed_keys", set()) | getattr(self, "invalid_mask_keys", set()) | getattr(self, "unsupported_media_keys", set()) | getattr(self, "stale_caption_keys", set())
         if (isinstance(keys, (list, tuple)) and len(keys) == 1 and str(keys[0]) in blocked):
             return 0.0
         if not isinstance(keys, (list, tuple)) and str(keys) in blocked:
@@ -813,7 +813,7 @@ class Watch:
         if per is None or len(keys) < 2 or int(per.shape[0]) != len(keys):
             return None
         raw = info.get("per_raw") or [float(x) for x in per.detach().float().cpu()]
-        blocked = self.removed_keys | getattr(self, "invalid_mask_keys", set()) | getattr(self, "unsupported_media_keys", set()) | getattr(self, "stale_caption_keys", set())
+        blocked = getattr(self, "removed_keys", set()) | getattr(self, "invalid_mask_keys", set()) | getattr(self, "unsupported_media_keys", set()) | getattr(self, "stale_caption_keys", set())
         out = [k in blocked or (self.watch is not None and k not in self.reg and self.watch.is_excluded([k])) for k in keys]
         kept = [i for i, o in enumerate(out) if not o]
         mult = [0.0 if out[i] else float(reg_mult) if reg_keys and k in reg_keys else
