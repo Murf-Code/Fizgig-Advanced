@@ -10831,6 +10831,7 @@ async function captionsLive() {
       $("lightboxCapNote").textContent = "Re-captioned";
     }
     it.caption = n.caption;
+    S.cap.studioRevision=(S.cap.studioRevision||0)+1;
     if (ta) { ta.value = n.caption ?? ""; fitText(ta); }
     if (big.value === (n.caption ?? "")) fitText(big);
   }
@@ -11002,7 +11003,7 @@ function studioUnique(a){const seen=new Set();return a.filter(x=>{const k=x.toLo
 function renderCaptionStudio(host,items,ext){
   const selection=S.cap.studioSelection||(S.cap.studioSelection=new Set());
   const pageItems=items.slice(S.cap.page*CAP_PAGE,(S.cap.page+1)*CAP_PAGE);
-  const current=items.find(i=>i.path===S.cap.studioPath)||pageItems[0]||items[0];
+  const current=pageItems.find(i=>i.path===S.cap.studioPath)||pageItems[0]||items[0];
   if(!current){host.textContent="No matching images.";return;}
   S.cap.studioPath=current.path;
   const left=el("aside",{class:"caption-studio-panel studio-browser"});
@@ -11015,6 +11016,7 @@ function renderCaptionStudio(host,items,ext){
   left.append(btn("Select page",()=>{pageItems.forEach(i=>selection.add(i.path));renderCaptions();}),btn("Clear selection",()=>{selection.clear();renderCaptions();}));
   for(const it of pageItems){
     const cb=el("input",{type:"checkbox"});cb.checked=selection.has(it.path);
+    cb.setAttribute("aria-label","Select "+it.name);
     cb.onchange=()=>{if(cb.checked)selection.add(it.path);else selection.delete(it.path);};
     const thumb=it.size?el("img",{src:"/api/thumb?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(TOKEN),loading:"lazy"}):el("span",{text:"♪"});
     left.append(el("div",{class:"studio-browser-row"},cb,el("button",{class:"studio-file"+(it.path===current.path?" active":""),onclick:()=>{S.cap.studioPath=it.path;renderCaptions();}},thumb,el("span",{text:mediaLabel(it)+(it.caption===null?" · missing caption":"")}))));
@@ -11054,6 +11056,7 @@ function renderCaptionStudio(host,items,ext){
   const save=async()=>{
     try{const x=await api("/api/captions/save",{folder:capItemFolder(current),name:current.name,text:ta.value,ext});
       current.caption=ta.value;drafts.delete(current.path);
+      S.cap.studioRevision=(S.cap.studioRevision||0)+1;
       say(x.queued?"Saved; queued for next epoch":"Saved");}
     catch(e){say(e.message);}
   };
@@ -11103,10 +11106,16 @@ function renderCaptionStudio(host,items,ext){
   right.append(el("strong",{text:"Image tags"}),tags,el("div",{class:"field-row"},newTag,btn("Add",()=>{
     if(newTag.value.trim()){ta.value=studioCompose(ta.value,studioUnique([...studioTokens(ta.value),newTag.value.trim()]));newTag.value="";remember();redraw();}
   })),el("strong",{text:"Dataset tag index"}));
-  const counts=new Map();
-  for(const it of S.cap.items)for(const t of new Set(studioTokens(it.caption).map(t=>t.toLowerCase())))counts.set(t,(counts.get(t)||0)+1);
+  const rev=S.cap.studioRevision||0;
+  let tagIndex=S.cap.studioTagCache;
+  if(!tagIndex||tagIndex.items!==S.cap.items||tagIndex.rev!==rev){
+    const counts=new Map();
+    for(const it of S.cap.items)for(const t of new Set(studioTokens(it.caption).map(t=>t.toLowerCase())))counts.set(t,(counts.get(t)||0)+1);
+    tagIndex={items:S.cap.items,rev,sorted:[...counts].sort((a,b)=>b[1]-a[1])};
+    S.cap.studioTagCache=tagIndex;
+  }
   const index=el("div",{class:"studio-tag-index"});
-  for(const [tag,n] of [...counts].sort((a,b)=>b[1]-a[1]).slice(0,120))index.append(el("button",{class:"studio-index-tag",text:tag+" · "+n,onclick:()=>{
+  for(const [tag,n] of tagIndex.sorted.slice(0,120))index.append(el("button",{class:"studio-index-tag",text:tag+" · "+n,onclick:()=>{
     $("capSearch").value=tag;S.cap.page=0;renderCaptions();
   }}));
   right.append(index);
@@ -11131,6 +11140,7 @@ function renderCaptionStudio(host,items,ext){
       try{await api("/api/captions/save",{folder:capItemFolder(it),name:it.name,text:after,ext});it.caption=after;done++;}
       catch(e){fail++;}
     }
+    S.cap.studioRevision=(S.cap.studioRevision||0)+1;
     renderCaptions();
     const n=$("captionsGrid").querySelector(".studio-bulk-note");if(n)n.textContent=done+" updated"+(fail?" · "+fail+" failed":"");
   };
