@@ -2598,7 +2598,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                   recaption_instruction=recaption_instruction,
                   recaption_instruction_detailed=recaption_instruction_detailed, captioner_path=captioner,
                   recaption_with=json.loads(recaption_with) if recaption_with else None,
-                  recaption_task=recaption_task, recaption_task_detailed=recaption_task_detailed)
+                  recaption_task=recaption_task, recaption_task_detailed=recaption_task_detailed,
+                  folder_weights=folder_weights)
     # Gradient accumulation (Krea 2's rule): N micro-batches average into one update - each loss is divided by N, the
     # optimizer steps every N and at every epoch end (a partial group is flushed), so updates per epoch are
     # ceil(steps / N) and the schedule runs in those updates. Sliders already backpropagate two poles per step: 1.
