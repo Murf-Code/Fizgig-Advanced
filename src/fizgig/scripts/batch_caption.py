@@ -92,12 +92,21 @@ def _load_image_list(list_file: str) -> list[str]:
     return out
 
 
-def _write_caption(path: str, caption: str, ext: str = ".txt") -> None:
+def _write_caption(path: str, caption: str, ext: str = ".txt", append=False) -> None:
     from fizgig.web import caption_review
-    if caption_review.is_locked(os.path.dirname(path), os.path.basename(path)):
-        raise ValueError("Caption review lock: unlock the picture before AI captioning.")
-    with open(os.path.splitext(path)[0] + (ext or ".txt"), "w", encoding="utf-8") as f:
-        f.write(caption)
+    from fizgig.web.image_edit import write_atomic
+    target = os.path.splitext(path)[0] + (ext or ".txt")
+    with caption_review._lock:
+        if caption_review.is_locked(os.path.dirname(path), os.path.basename(path)):
+            raise ValueError("Caption review lock: unlock the picture before AI captioning.")
+        if append and os.path.isfile(target):
+            from fizgig.dataset.caption_file import read_caption
+            old = read_caption(target).strip()
+            if old and caption.strip() not in old.splitlines():
+                caption = old + "\n" + caption.strip()
+            elif old:
+                caption = old
+        write_atomic(target, caption.encode("utf-8"))
 
 
 class CaptionState:
@@ -227,7 +236,8 @@ def _run_job(state: CaptionState, job: dict) -> bool:
             if not caption:
                 print(f"FAIL: {base} (empty caption)", flush=True)
                 continue
-            _write_caption(path, caption, job.get("caption_ext") or ".txt")
+            _write_caption(path, caption, job.get("caption_ext") or ".txt",
+                           append=bool(job.get("append")))
             print(f"OK: {base}", flush=True)
         except Exception as exc:
             print(f"FAIL: {base} ({exc})", flush=True)
