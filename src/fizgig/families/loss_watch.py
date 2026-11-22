@@ -902,7 +902,7 @@ class Watch:
             frames = h3_clip.read_frames(source)
             family_clips.validate(source, self.driver.description.clip_spec,
                                   self.driver.description.display_name, frames=len(frames))
-            if not frames:
+            if len(frames) == 0:
                 raise ValueError("Video clip contains no frames")
             scratch.original_size = Image.fromarray(frames[0]).size
             scratch.content = [resize_image_to_bucket(Image.fromarray(frame), tuple(item.bucket_size))
