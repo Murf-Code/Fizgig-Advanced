@@ -13032,15 +13032,104 @@ function renderCaptionStudio(host,items,ext){
     if(captionMode==="prose"||naturalMode)captionText.value=existingText();
   };
   ta.addEventListener("input",()=>{remember();redraw();});
-  const pictureActions=el("div",{class:"field-row"},
-    btn("Edit image / crop",async()=>{
-      if(locked){say("Unlock the reviewed picture before editing its image.");return;}
-      try{await captionImageOpen(current);}
-      catch(e){say(e.message);}
-    }),
-    btn("Undo",()=>historyStep("undo")),
-    btn("Redo",()=>historyStep("redo"))
-  );
+  // Small inline tool strip. The original Image Prep editor retains all its
+  // advanced controls; Tags gets only Remove, Crop, history and Apply.
+  const canEditPicture=!locked&&!!current.size&&
+    /\.(png|jpe?g|webp|bmp|avif|jxl)$/i.test(current.name);
+  const pictureActions=el("div",{class:"studio-image-toolbar","aria-label":"Image tools"});
+  const removeButton=btn("Remove",()=>void selectInlineTool("remove"));
+  const cropButton=btn("Crop",()=>void selectInlineTool("crop"));
+  removeButton.title="Paint over the area to remove · click again to exit (J)";
+  cropButton.title="Drag a crop rectangle · click again to exit (C)";
+  removeButton.disabled=cropButton.disabled=!canEditPicture;
+  const sizeInput=el("input",{type:"range",min:"2",max:"400",step:"1",
+    "aria-label":"Remove brush size",title:"Remove brush size ([ / ])"});
+  sizeInput.value=$("meSize").value;
+  const sizeValue=el("span",{class:"studio-image-size-value",text:sizeInput.value+" px"});
+  const sizeLabel=el("label",{class:"studio-image-brush-size"},
+    el("span",{text:"Brush size"}),sizeInput,sizeValue);
+  sizeInput.addEventListener("input",()=>{
+    $("meSize").value=sizeInput.value;
+    sizeValue.textContent=sizeInput.value+" px";
+    meDraw();
+  });
+  const applyImage=btn("Apply",async()=>{
+    if(!S.cap.imageEditing?.inline||S.cap.imageEditing.path!==current.path)return;
+    const m=meState(),was=m.tool;
+    if(m.stepBusy)return;
+    if(was==="remove"&&!m.rmDirty){say("Paint the area to remove first.");return;}
+    if(was==="crop"&&meCropWhole()){say("Drag a crop box before applying.");return;}
+    try{
+      await meApply();
+      if(!pictureActions.isConnected)return;
+      if(was==="crop"&&meState().tool!=="crop"){
+        await captionImageClose();
+        return;
+      }
+      const status=$("meState")?.textContent;
+      if(status)say(status);
+      refreshInlineButtons();
+    }catch(e){say("Image edit failed: "+e.message);}
+  });
+  applyImage.classList.add("studio-image-apply","btn-primary");
+  applyImage.title="Apply the current Remove or Crop operation (Enter)";
+  const goBack=btn("Undo",async()=>{
+    try{
+      if(S.cap.imageEditing?.inline){
+        const history=studioHistory().past.at(-1);
+        if(history?.entry.kind!=="image"&&history){
+          await studioTravel("undo");
+        }else if(meState().undo.length){
+          await meRestore(meState().undo,meState().redo);
+        }else await studioTravel("undo");
+      }else historyStep("undo");
+    }catch(e){say("Undo failed: "+e.message);}
+  });
+  const goForward=btn("Redo",async()=>{
+    try{
+      if(S.cap.imageEditing?.inline){
+        const history=studioHistory().future.at(-1);
+        if(history?.entry.kind!=="image"&&history){
+          await studioTravel("redo");
+        }else if(meState().redo.length){
+          await meRestore(meState().redo,meState().undo);
+        }else await studioTravel("redo");
+      }else historyStep("redo");
+    }catch(e){say("Redo failed: "+e.message);}
+  });
+  const refreshInlineButtons=()=>{
+    if(!pictureActions.isConnected)return;
+    const active=!!S.cap.imageEditing?.inline&&S.cap.imageEditing.path===current.path;
+    const tool=active?meState().tool:"";
+    removeButton.classList.toggle("is-active",tool==="remove");
+    cropButton.classList.toggle("is-active",tool==="crop");
+    removeButton.setAttribute("aria-pressed",String(tool==="remove"));
+    cropButton.setAttribute("aria-pressed",String(tool==="crop"));
+    sizeLabel.hidden=tool!=="remove";
+    applyImage.hidden=!active||!["remove","crop"].includes(tool);
+    if(tool==="remove"){
+      sizeInput.value=$("meSize").value;
+      sizeValue.textContent=sizeInput.value+" px";
+      applyImage.disabled=!!meState().stepBusy;
+    }else if(tool==="crop")applyImage.disabled=!!meState().stepBusy;
+  };
+  const selectInlineTool=async(tool)=>{
+    if(!canEditPicture){say(locked?"Unlock this reviewed image to edit it.":"Select a still image to edit.");return;}
+    if(S.cap.imageEditing?.inline&&S.cap.imageEditing.path===current.path&&meState().tool===tool){
+      if(tool==="remove"&&meState().rmDirty){
+        if(!confirm("Leave Remove mode? Your red removal area will be saved as a watermark mask, not applied to the picture."))return;
+      }
+      await captionImageClose();
+      return;
+    }
+    try{await captionImageOpen(current,tool);refreshInlineButtons();}
+    catch(e){say(e.message);}
+  };
+  pictureActions.append(removeButton,cropButton,goBack,goForward,sizeLabel,applyImage);
+  S.cap.inlineRefreshControls=refreshInlineButtons;
+  // When an image is re-rendered after saving, the tool strip keeps the same
+  // current tool and its canvas; it is not a second editor instance.
+  refreshInlineButtons();
   const orderKey="fizgig_caption_order:"+String(S.imageFolder||"");
   let orderSettings=S.cap.studioOrderSettings;
   if(!orderSettings||orderSettings.key!==orderKey){
