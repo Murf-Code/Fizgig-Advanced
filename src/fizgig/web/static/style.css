@@ -5671,3 +5671,100 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
     left:0;right:auto;
   }
 }
+
+/* Full-range virtual thumb rail. One stable-height item per source image,
+   sized from its aspect ratio; only visible rows have DOM or decoded imagery. */
+#tab-captions .studio-host .studio-thumb-rail.is-windowed,
+#tab-captions.caption-theme-glass .studio-thumb-rail.is-windowed{
+  display:flex;
+  flex-direction:column;
+  align-items:stretch;
+  gap:0;
+  padding:10px;
+  overflow-y:auto;
+  overflow-x:hidden;
+  scrollbar-gutter:stable;
+  overscroll-behavior-y:contain;
+  scroll-behavior:auto;
+  contain:layout style;
+}
+#tab-captions .studio-thumb-rail.is-windowed .studio-thumb-spacer{
+  display:block;
+  width:100%;
+  min-height:0;
+  flex:0 0 auto;
+  pointer-events:none;
+}
+#tab-captions .studio-thumb-rail.is-windowed .studio-thumb-window{
+  display:flex;
+  flex:0 0 auto;
+  flex-direction:column;
+  align-items:stretch;
+  gap:14px;
+  min-width:0;
+}
+#tab-captions .studio-thumb-rail.is-windowed .studio-browser-row{
+  display:block;
+  position:relative;
+  box-sizing:border-box;
+  width:85%;
+  min-height:0;
+  max-width:100%;
+  flex:0 0 auto;
+  align-self:center;
+  margin:0;
+  overflow:visible;
+}
+#tab-captions .studio-thumb-rail.is-windowed .studio-file,
+#tab-captions.caption-theme-glass .studio-thumb-rail.is-windowed .studio-file{
+  display:flex;
+  flex-direction:column;
+  width:100%;
+  height:100%;
+  box-sizing:border-box;
+  justify-content:center;
+  padding:5px;
+  min-height:0;
+}
+#tab-captions .studio-thumb-rail.is-windowed .studio-file img,
+#tab-captions.caption-theme-glass .studio-thumb-rail.is-windowed .studio-file img{
+  flex:1 1 auto;
+  display:block;
+  width:100%;
+  height:100%;
+  min-height:0;
+  max-height:none;
+  object-fit:contain;
+}
+#tab-captions .studio-thumb-rail.is-windowed .studio-file .studio-thumb-placeholder{
+  min-height:0;
+  height:100%;
+}
+/* Selection rings should remain legible but never animate hundreds of pixels
+   or invoke drop-shadow filters while the rail is scrolling. */
+#tab-captions.caption-theme-glass .studio-thumb-rail.is-windowed .studio-file:is(.is-picked,.active){
+  animation:none;
+  filter:none;
+}
+#tab-captions .studio-workspace-status:not([open]){
+  max-width:100%;
+}
+#tab-captions .studio-top-actions>.studio-workspace-status,
+#tab-captions .studio-top-actions>.studio-workspace-status[open]{
+  flex:0 0 auto;
+  flex-basis:auto;
+  order:initial;
+  border-radius:9px;
+  padding:0;
+  background:var(--bg-surface);
+  min-width:0;
+}
+#tab-captions .studio-top-actions>.studio-workspace-status>summary{
+  border:0;
+  border-radius:9px;
+  padding:7px 10px;
+  background:transparent;
+}
+@media(max-width:850px){
+  #tab-captions .studio-thumb-rail.is-windowed .studio-thumb-window{gap:14px}
+}
