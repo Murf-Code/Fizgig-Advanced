@@ -7266,18 +7266,14 @@ function mePaint() {
     c.beginPath(); c.arc(m.samAt[0], m.samAt[1], 6 + ph * 22, 0, Math.PI * 2); c.stroke();
     c.fillStyle = themeColor("--pic-mask"); c.beginPath(); c.arc(m.samAt[0], m.samAt[1], 4, 0, Math.PI * 2); c.fill();
   }
-  if (m.cursor && !m.panning && m.tool !== "sam" && m.tool !== "crop") {    // the brush, its size on screen
-    // drawn as the difference with what's under it (XOR-like), so it shows on white, black and any picture (#271)
-    c.setTransform(1, 0, 0, 1, 0, 0);
-    c.globalCompositeOperation = "difference"; c.strokeStyle = "#fff"; c.lineWidth = 1.5;
-    c.beginPath(); c.arc(m.cursor[0], m.cursor[1], Number($("meSize").value) / 2, 0, Math.PI * 2); c.stroke();
-    c.globalCompositeOperation = "source-over";
-  }
+  // The brush ring is a GPU-composited overlay: no full-image canvas redraw
+  // is necessary while the pointer is only hovering over the preview.
 }
 function meAt(e) {
   const m = meState(), r = $("meCanvas").getBoundingClientRect();
   const sx = (e.clientX - r.left) * ($("meCanvas").width / r.width), sy = (e.clientY - r.top) * ($("meCanvas").height / r.height);
-  return {sx, sy, x: (sx - m.ox) / m.zoom, y: (sy - m.oy) / m.zoom};
+  return {sx, sy, x: (sx - m.ox) / m.zoom, y: (sy - m.oy) / m.zoom,
+    px:e.clientX-r.left,py:e.clientY-r.top,cssScale:r.width/$("meCanvas").width};
 }
 function meSnapshot() {
   const m = meState(), copy = el("canvas", {width: m.mask.width, height: m.mask.height});
@@ -7669,6 +7665,23 @@ function meWmAllClick() {
 function meWire() {
   const m = meState(), cv = $("meCanvas");
   let last = null, pan = null, space = false;
+  const cursor=el("div",{class:"me-brush-cursor",hidden:true,"aria-hidden":"true"});
+  $("meStage").append(cursor);
+  let cursorSize=0;
+  const moveCursor=p=>{
+    if(m.panning||m.stepBusy||!["brush","erase","remove"].includes(m.tool)){
+      cursor.hidden=true;return;
+    }
+    const size=Math.max(2,Number($("meSize").value)*p.cssScale);
+    if(cursorSize!==size){
+      cursorSize=size;
+      cursor.style.width=size+"px";cursor.style.height=size+"px";
+    }
+    // Moving this CSS layer does not repaint the photo or its 4MP mask.
+    cursor.style.transform="translate3d("+(p.px+cv.offsetLeft)+"px,"+
+      (p.py+cv.offsetTop)+"px,0) translate(-50%,-50%)";
+    cursor.hidden=false;
+  };
   $("maskEdit").addEventListener("toggle", () => {
     if ($("maskEdit").open && !meState().studioFolder) meOpen();
     else if (!$("maskEdit").open && meState().dirty) meSave();      // closing it saves
@@ -7725,7 +7738,7 @@ function meWire() {
     if (!m.mask) return;
     cv.setPointerCapture(e.pointerId);
     const p = meAt(e);
-    if (e.button === 1 || space) { pan = {sx: p.sx, sy: p.sy, ox: m.ox, oy: m.oy}; m.panning = true; e.preventDefault(); return; }
+    if (e.button === 1 || space) { pan = {sx: p.sx, sy: p.sy, ox: m.ox, oy: m.oy}; m.panning = true; cursor.hidden=true; e.preventDefault(); return; }
     if (m.stepBusy) return;
     if (m.tool === "crop") {                           // grab a handle, the box, or draw a new one
       if (e.button !== 0 || !m.crop) return;
@@ -7748,18 +7761,19 @@ function meWire() {
   });
   cv.addEventListener("pointermove", (e) => {
     const p = meAt(e);
-    m.cursor = [p.sx, p.sy];
+    moveCursor(p);
     if (pan) { m.ox = pan.ox + p.sx - pan.sx; m.oy = pan.oy + p.sy - pan.sy; }
     else if (m.cropDrag) { meCropMove(p); meImgBar(); }
     else if (last) { if (m.tool === "remove") meRmLine(last, p); else meStroke(last, p); last = p; }
     else if (m.tool === "crop" && m.crop && !m.stepBusy) cv.style.cursor = ME_CROP_CURSOR[meCropHit(p)];
-    meDraw();
+    // Hover should never redraw a multi-megapixel image.
+    if(pan||m.cropDrag||last)meDraw();
   });
   const up = () => {
     if (last && m.tool === "remove") meRmSave(true);  // stroke end: kept at once
     last = null; pan = null; m.panning = false; m.flip = false; m.cropDrag = null; meImgBar(); meDraw(); };
   cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
-  cv.addEventListener("pointerleave", () => { m.cursor = null; meDraw(); });
+  cv.addEventListener("pointerleave", () => { cursor.hidden=true; });
   cv.addEventListener("contextmenu", (e) => e.preventDefault());   // right-click: SAM's "take away", the brush's erase
   cv.addEventListener("wheel", (e) => {
     if (!m.mask) return;
