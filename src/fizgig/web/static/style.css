@@ -3572,3 +3572,28 @@ label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; 
  #tab-captions .studio-thumb-rail{grid-template-columns:repeat(3,minmax(0,1fr))}
  #tab-captions .caption-workspace-toolbar .caption-toolbar-summary span{display:none}
 }
+
+
+/* TagBench All Tags panel: no legacy header, separators or category dropdowns inline. */
+#tab-captions .studio-tag-index-pane{gap:9px;min-height:300px}
+#tab-captions .studio-pane-heading{display:flex;align-items:center;padding:2px 0 0}
+#tab-captions .studio-pane-heading strong{font-size:17px;letter-spacing:-.025em;font-weight:720}
+#tab-captions .studio-tag-search-wrap{background:var(--bg-inset);border-radius:9px;padding:2px}
+#tab-captions .studio-tag-search-wrap .studio-tag-search{background:transparent;border-color:var(--border)}
+#tab-captions .studio-tag-index-pane .studio-tag-sort{display:flex;align-items:center;gap:10px}
+#tab-captions .studio-tag-index-pane .studio-tag-sort select{flex:1;max-width:none}
+#tab-captions .studio-tag-index-pane .studio-explore{flex:1 1 auto;min-height:130px;display:flex;flex-direction:column}
+#tab-captions .studio-tag-index-pane .studio-explore>.studio-tag-list{flex:1 1 auto;height:100%;max-height:none;overflow-y:auto}
+#tab-captions .studio-tag-list-item .studio-index-tag{line-height:1.45;font-size:13px;padding:5px 8px}
+#tab-captions .studio-tag-advanced{margin-top:8px;border:1px solid var(--border);border-radius:8px;padding:8px 10px}
+#tab-captions .studio-tag-advanced>summary{cursor:pointer;font-size:12px;color:var(--text-secondary)}
+#tab-captions .studio-tag-advanced>.field-row{margin:12px 0}
+#tab-captions .studio-tag-advanced .studio-category-manager{margin-top:8px}
+#tab-captions .studio-view-rail{display:flex;align-items:center;gap:3px;margin-left:auto;
+ border:1px solid var(--border);border-radius:9px;padding:3px;background:var(--bg-inset)}
+#tab-captions .studio-view-rail .btn{border:0;background:transparent;font-size:12px;
+ color:var(--text-secondary);padding:7px 10px}
+#tab-captions .studio-view-rail .btn.is-on{background:var(--accent-subtle);color:var(--text-primary);
+ border-radius:6px;box-shadow:inset 0 0 0 1px var(--accent-border)}
+#tab-captions .studio-view-rail .btn:hover{background:var(--bg-hover)}
+@media(max-width:850px){#tab-captions .studio-view-rail{margin-left:0;width:100%;justify-content:space-around}}
