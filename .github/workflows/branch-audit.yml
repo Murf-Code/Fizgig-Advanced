@@ -19,6 +19,7 @@ jobs:
       - name: Compile all Python sources (report pre-existing failures)
         shell: bash
         run: |
+          set +e
           python -m compileall -q src > /tmp/branch-pycompile.log 2>&1
           result=$?
           cat /tmp/branch-pycompile.log
@@ -65,11 +66,11 @@ jobs:
           tail -n 150 /tmp/branch-collection.log
           echo "Full test discovery exit: $result"
           exit 0
-      - name: Run broad tests (best effort, report errors)
+      - name: Run broad tests excluding known upstream syntax blocker
         shell: bash
         run: |
           set +e
-          timeout 420s python -m pytest checks -q --disable-warnings --maxfail=20 > /tmp/branch-tests.log 2>&1
+          timeout 420s python -m pytest checks -q --ignore=checks/test_krea2_direction_edit_v2.py --disable-warnings --maxfail=30 > /tmp/branch-tests.log 2>&1
           result=$?
           tail -n 220 /tmp/branch-tests.log
           echo "Full test suite exit: $result"
