@@ -489,7 +489,19 @@ class Watch:
         pending = self._unscheduled_inputs()
         unsupported = sorted(getattr(self, "unsupported_media_keys", set()))
         invalid = sorted(getattr(self, "invalid_mask_keys", set()))
-        signature = (tuple(pending), tuple(unsupported), tuple(invalid))
+        blocked = sorted(getattr(self, "removed_keys", set()) | getattr(self, "stale_caption_keys", set()))
+        def queued(name):
+            p = os.path.join(self.output_dir, "loss_log", name)
+            try:
+                with open(p, encoding="utf-8") as f:
+                    values = json.load(f)
+                return sorted(values) if isinstance(values, dict) else []
+            except (OSError, ValueError):
+                return []
+        image_pending = queued("image_updates.json")
+        caption_pending = queued("caption_updates.json")
+        signature = (tuple(pending), tuple(unsupported), tuple(invalid),
+                     tuple(blocked), tuple(image_pending), tuple(caption_pending))
         if signature == getattr(self, "_unscheduled_last", None):
             return
         if pending:
@@ -501,7 +513,11 @@ class Watch:
         os.makedirs(os.path.dirname(status_path), exist_ok=True)
         payload = {
             "requires_restart": bool(unsupported),
-            "attention": bool(pending or unsupported or invalid),
+            "attention": bool(pending or unsupported or invalid or blocked or image_pending or caption_pending),
+            "pending_image_count": len(image_pending),
+            "pending_caption_count": len(caption_pending),
+            "blocked_count": len(blocked),
+            "blocked_examples": blocked[:30],
             "unscheduled_count": len(pending),
             "unscheduled_examples": pending[:40],
             "unsupported_media_count": len(unsupported),
@@ -512,7 +528,9 @@ class Watch:
                        "old cached batches have been excluded until restart." if unsupported else
                        "Some new files have not been admitted yet. Check captions, matching "
                        "bucket shapes and the training log." if pending else
-                       "Fix the invalid masks to let those images train." if invalid else ""),
+                       "Fix the invalid masks to let those images train." if invalid else
+                       "Some changed media/captions could not be refreshed yet and are "
+                       "excluded until a successful retry." if blocked else ""),
         }
         with open(status_path + ".tmp", "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
