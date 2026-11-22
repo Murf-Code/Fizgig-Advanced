@@ -4049,6 +4049,22 @@ class Handler(BaseHTTPRequestHandler):
             if not p.lower().endswith(".safetensors") or not os.path.isfile(p):
                 return self.json({"error": "not a checkpoint"}, 404)
             return self._stream(p)
+        if path == "/api/captions/live_status":
+            folder = os.path.realpath((qs.get("folder") or [""])[0] or "")
+            with _lock:
+                rid = _run.get("history_id")
+                live = _run.get("proc") is not None and _run["proc"].poll() is None
+            rec = history.get(rid) if live and rid else None
+            status = {"requires_restart": False, "unscheduled_count": 0, "unscheduled_examples": []}
+            if rec and folder and folder == os.path.realpath(str(rec.get("image_folder") or "")):
+                path_status = os.path.join(str(rec.get("output_dir") or ""), "loss_log",
+                                           "live_dataset_status.json")
+                try:
+                    with open(path_status, encoding="utf-8") as f:
+                        status = json.load(f)
+                except (OSError, ValueError):
+                    pass
+            return self.json(status)
         if path == "/api/captions/reviews":
             from fizgig.web import caption_review
             try:
