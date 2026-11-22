@@ -11178,13 +11178,239 @@ function captionRemovedPanel(ext) {
   if(panel.open)refresh();
   return panel;
 }
+// Scan perceptual near-duplicates across all captioned dataset pictures, not just
+// the visible page. The Python service never auto-deletes; every action is reviewed.
+function captionDuplicatePanel(ext){
+  const state=S.cap.studioDuplicates||(S.cap.studioDuplicates={
+    threshold:92,open:false,offset:0,choices:new Map()
+  });
+  const panel=el("details",{class:"studio-duplicate-browser"});
+  panel.open=!!state.open;
+  const heading=el("summary",{text:"Find near-duplicate images · compare and merge tags"});
+  const guide=el("div",{class:"field-hint",text:
+    "Perceptual image similarity (CPU only). Adjust the threshold to find resized or slightly edited copies. "+
+    "Matches are suggestions, not proof: review pictures before merging or removing anything."});
+  const threshold=el("input",{type:"range",min:"75",max:"100",step:"1",class:"studio-duplicate-threshold"});
+  threshold.value=String(state.threshold);
+  const percentage=el("strong",{text:threshold.value+"%"});
+  const progress=el("div",{class:"field-hint",text:"Choose Scan dataset to compare its pictures."});
+  const results=el("div",{class:"studio-duplicate-results"});
+  const scanBtn=el("button",{class:"btn btn-primary btn-sm",text:"Scan dataset"});
+  const prevBtn=el("button",{class:"btn btn-sm",text:"‹ Previous groups"});
+  const nextBtn=el("button",{class:"btn btn-sm",text:"More groups ›"});
+  const paging=el("span",{class:"field-hint"});
+  const page=el("div",{class:"field-row studio-duplicate-pages"},prevBtn,paging,nextBtn);
+  const eligible=()=>S.cap.items.filter(i=>i.size && /\.(png|jpe?g|webp|bmp|gif|tiff?|avif)$/i.test(i.name)
+    && !/-masklabel\./i.test(i.name)).map(i=>i.path);
+  const dataByPath=()=>new Map(S.cap.items.map(i=>[i.path,i]));
+  const draftExists=paths=>{
+    const drafts=S.cap.studioDrafts;
+    return paths.some(p=>drafts?.has(p) && drafts.get(p)!==(dataByPath().get(p)?.caption??""));
+  };
+  const read=async()=>{
+    if(!panel.isConnected||!panel.open)return;
+    let data;
+    try{
+      data=await api("/api/captions/duplicates/status?folder="+encodeURIComponent(S.imageFolder)+
+        "&threshold="+encodeURIComponent(state.threshold)+"&offset="+state.offset);
+    }catch(e){progress.textContent=e.message;return;}
+    if(!panel.isConnected||!panel.open)return;
+    progress.textContent=data.stage==="idle"?"No scan yet. Scan the dataset to compare all its pictures.":
+      data.stage==="scanning"?"Reading images: "+data.processed+" / "+data.total+"…":
+      data.stage==="matching"?"Matching perceptual signatures…":
+      data.stage==="error"?"Scan failed: "+data.error:
+      data.scanned+" images scanned · "+data.group_count+" potential duplicate group(s) · "+
+        data.pair_count+" similar pair(s) at "+data.threshold+"%"+
+        (data.truncated?" · Large duplicate set truncated; review cautiously":"")+
+        (data.failures?.length?" · "+data.failures.length+" image(s) couldn't be decoded":"");
+    results.replaceChildren();
+    scanBtn.disabled=data.stage==="scanning"||data.stage==="matching";
+    if(data.stage==="scanning"||data.stage==="matching"){
+      setTimeout(()=>{if(panel.isConnected&&panel.open)read();},1100);
+      return;
+    }
+    if(data.stage!=="done")return;
+    prevBtn.disabled=state.offset<=0;
+    nextBtn.disabled=data.next_offset==null;
+    paging.textContent=data.group_count?String(state.offset+1)+"–"+
+      String(Math.min(data.group_count,state.offset+(data.groups||[]).length))+
+      " of "+data.group_count:"No groups";
+    if(!(data.groups||[]).length){
+      results.append(el("div",{class:"field-hint",text:
+        "No matching image groups at this threshold. Lower the percentage or scan again after adding pictures."}));
+      return;
+    }
+    const items=dataByPath();
+    for(const group of data.groups){
+      const pictures=group.items.filter(i=>items.has(i.path));
+      if(pictures.length<2)continue;
+      let choice=state.choices.get(group.id);
+      if(!choice){
+        const best=[...pictures].sort((a,b)=>b.width*b.height-a.width*a.height)[0];
+        choice={keeper:best.path,checked:new Set(pictures.map(i=>i.path).filter(p=>p!==best.path))};
+        state.choices.set(group.id,choice);
+      }
+      if(!pictures.some(p=>p.path===choice.keeper))choice.keeper=pictures[0].path;
+      const card=el("div",{class:"studio-duplicate-group"});
+      const header=el("div",{class:"studio-duplicate-head"},
+        el("strong",{text:"Likely matches · "+group.similarity+"% minimum paired similarity"}),
+        el("span",{class:"field-hint",text:group.count+" images · choose which to keep"}));
+      const keeper=el("select",{class:"w-path",title:"Select the image whose caption will receive merged tags"});
+      for(const pic of pictures)keeper.append(el("option",{value:pic.path,
+        text:pic.name+" ("+pic.width+"×"+pic.height+")"}));
+      keeper.value=choice.keeper;
+      const pickers=el("div",{class:"studio-duplicate-cards"});
+      const detail=el("div",{class:"studio-duplicate-merge-note field-hint"});
+      const preview=el("div",{class:"studio-duplicate-merge-preview"});
+      const actions=el("div",{class:"field-row studio-duplicate-actions"});
+      const selected=()=>pictures.filter(p=>p.path!==choice.keeper&&choice.checked.has(p.path));
+      const refreshChoice=()=>{
+        pickers.replaceChildren();preview.replaceChildren();detail.textContent="";
+        for(const pic of pictures){
+          const it=items.get(pic.path);
+          const isKeep=pic.path===choice.keeper;
+          const locked=!!S.cap.studioReviewed?.has(pic.path);
+          const tick=el("input",{type:"checkbox"});
+          tick.checked=!isKeep&&choice.checked.has(pic.path);
+          tick.disabled=isKeep;
+          tick.setAttribute("aria-label","Include "+pic.name+" as a duplicate");
+          tick.addEventListener("change",()=>{
+            if(tick.checked)choice.checked.add(pic.path);
+            else choice.checked.delete(pic.path);
+            preview.replaceChildren();
+          });
+          const thumb=el("img",{loading:"lazy",alt:pic.name,
+            src:"/api/thumb?path="+encodeURIComponent(pic.path)+"&t="+encodeURIComponent(TOKEN)});
+          const status=el("div",{class:"field-hint",text:
+            (isKeep?"KEEPER · ":"")+(locked?"REVIEW LOCKED · ":"")+
+            pic.width+"×"+pic.height});
+          const open=el("button",{class:"btn btn-sm",text:"Open in editor",onclick:()=>{
+            S.cap.studioPath=pic.path;renderCaptions();
+          }});
+          pickers.append(el("div",{class:"studio-duplicate-card"+(isKeep?" keeper":"")},
+            thumb,el("div",{class:"studio-duplicate-card-info"},
+              el("strong",{text:pic.name}),status,
+              el("div",{class:"studio-duplicate-caption",text:it.caption||"No caption"}),
+              el("div",{class:"field-row"},tick,open))));
+        }
+      };
+      keeper.addEventListener("change",()=>{
+        const old=choice.keeper;
+        choice.keeper=keeper.value;
+        choice.checked.delete(choice.keeper);
+        if(old!==choice.keeper)choice.checked.add(old);
+        refreshChoice();
+      });
+      const snapshot=()=>{
+        const source=[choice.keeper,...selected().map(x=>x.path)];
+        if(source.length<2)throw new Error("Select at least one image to merge tags from.");
+        if(S.cap.studioReviewed?.has(choice.keeper))
+          throw new Error("This keeper is reviewed/locked. Unlock it before merging.");
+        if(draftExists(source))
+          throw new Error("Save unsaved caption drafts before merging tags.");
+        if(source.some(p=>studioCaptionMode(items.get(p))==="prose"))
+          throw new Error("A selected caption is prose. Merge its text manually to avoid breaking sentences.");
+        const expected={};
+        for(const p of source)expected[p]=items.get(p).caption??null;
+        return {folder:S.imageFolder,keeper:choice.keeper,donors:source.slice(1),
+          ext,delimiter:S.cap.studioDelimiter||",",expected};
+      };
+      const mergeBtn=el("button",{class:"btn btn-sm",text:"Preview tag merge",onclick:async()=>{
+        preview.replaceChildren();detail.textContent="Comparing captions…";
+        try{
+          const payload=snapshot();
+          const result=await api("/api/captions/duplicates/merge",{...payload,apply:false});
+          detail.textContent=result.added_count+" unique tag(s) to add to the keeper.";
+          const text=el("pre",{class:"studio-duplicate-caption-preview",text:result.caption||"(empty caption)"});
+          const confirmBtn=el("button",{class:"btn btn-primary btn-sm",text:"Apply merged caption",
+            onclick:async()=>{
+              confirmBtn.disabled=true;
+              try{
+                const done=await api("/api/captions/duplicates/merge",{...payload,apply:true});
+                detail.textContent=done.applied?"Merged "+done.added_count+" tags into "+
+                  items.get(payload.keeper).name+
+                  (done.queued?" · queued for next epoch":""):"No changes needed.";
+                preview.replaceChildren();
+                await loadCaptions();
+              }catch(e){detail.textContent=e.message;confirmBtn.disabled=false;}
+            }});
+          confirmBtn.disabled=!result.changed;
+          preview.append(el("div",{class:"field-hint",text:
+            "Preview of the keeper caption. No source captions or image files are changed."}),
+            text,confirmBtn);
+        }catch(e){detail.textContent=e.message;}
+      }});
+      const removeBtn=el("button",{class:"btn btn-sm",text:"Move checked duplicates to removed/",onclick:async()=>{
+        const donors=selected();
+        if(!donors.length){detail.textContent="Select images to remove first.";return;}
+        if(draftExists(donors.map(d=>d.path))){
+          detail.textContent="Save unsaved caption drafts before removing images.";return;
+        }
+        if(donors.some(d=>S.cap.studioReviewed?.has(d.path))){
+          detail.textContent="One or more duplicates are reviewed/locked. Uncheck or unlock them first.";return;
+        }
+        if(!confirm("Move "+donors.length+" selected picture(s) to removed/, with their captions and masks? "+
+          "This is SEPARATE from tag merging. Merge first if you want to preserve their unique tags. "+
+          "Nothing is permanently deleted."))return;
+        removeBtn.disabled=true;
+        let completed=0;
+        const failures=[];
+        for(const pic of donors){
+          const it=items.get(pic.path);
+          try{
+            await api("/api/captions/remove",{folder:capItemFolder(it),name:it.name,ext});
+            completed++;
+          }catch(e){failures.push(pic.name+": "+e.message);}
+        }
+        detail.textContent=completed+" moved to removed/."+
+          (failures.length?" Could not move: "+failures.join("; "):"");
+        try{
+          await loadCaptions();
+          const rest=S.cap.items.filter(i=>i.size&&/\.(png|jpe?g|webp|bmp|gif|tiff?|avif)$/i.test(i.name))
+            .map(i=>i.path);
+          await api("/api/captions/duplicates/scan",{folder:S.imageFolder,paths:rest});
+        }catch(e){console.warn("Duplicate refresh:",e);}
+      }});
+      actions.append(mergeBtn,removeBtn);
+      card.append(header,el("div",{class:"field-row"},el("span",{class:"field-label",text:"Keep:"}),keeper),
+        pickers,actions,detail,preview);
+      results.append(card);
+      refreshChoice();
+    }
+  };
+  const scan=async()=>{
+    state.offset=0;
+    scanBtn.disabled=true;progress.textContent="Starting image scan…";
+    try{
+      await api("/api/captions/duplicates/scan",{folder:S.imageFolder,paths:eligible()});
+      await read();
+    }catch(e){progress.textContent=e.message;scanBtn.disabled=false;}
+  };
+  scanBtn.addEventListener("click",scan);
+  const updateThreshold=debounce(()=>{state.threshold=Number(threshold.value);state.offset=0;read();},220);
+  threshold.addEventListener("input",()=>{
+    percentage.textContent=threshold.value+"%";updateThreshold();
+  });
+  prevBtn.addEventListener("click",()=>{state.offset=Math.max(0,state.offset-32);read();});
+  nextBtn.addEventListener("click",()=>{state.offset+=32;read();});
+  panel.append(heading,guide,el("div",{class:"field-row studio-duplicate-controls"},
+    el("span",{class:"field-label",text:"Similarity threshold:"}),threshold,percentage,scanBtn),
+    progress,page,results);
+  panel.addEventListener("toggle",()=>{
+    state.open=panel.open;
+    if(panel.open)read();
+  });
+  if(panel.open)read();
+  return panel;
+}
 function renderCaptionStudio(host,items,ext){
   const selection=S.cap.studioSelection||(S.cap.studioSelection=new Set());
   S.cap.studioDelimiter=S.cap.studioDelimiter||localStorage.getItem("fizgig_caption_separator")||",";
   const pageItems=items.slice(S.cap.page*CAP_PAGE,(S.cap.page+1)*CAP_PAGE);
   const current=pageItems.find(i=>i.path===S.cap.studioPath)||pageItems[0]||items[0];
   if(!current){
-    host.append(captionRemovedPanel(ext),el("div",{class:"field-hint",text:"No matching images. Restore a removed image above, or change your filter."}));
+    host.append(captionDuplicatePanel(ext),captionRemovedPanel(ext),
+      el("div",{class:"field-hint",text:"No matching images. Review duplicate scans or restore a removed image above, or change your filter."}));
     return;
   }
   S.cap.studioPath=current.path;
@@ -11442,7 +11668,7 @@ function renderCaptionStudio(host,items,ext){
   const liveStatus=el("div",{class:"studio-live-status field-hint",id:"studioLiveStatus",
     text:studioLiveSummary(S.cap.liveStatus)});
   liveStatus.classList.toggle("needs-attention",!!S.cap.liveStatus?.attention);
-  redraw();host.classList.add("studio-host");host.append(liveStatus,bulk,captionRemovedPanel(ext),
+  redraw();host.classList.add("studio-host");host.append(liveStatus,bulk,captionDuplicatePanel(ext),captionRemovedPanel(ext),
     el("div",{class:"studio-layout"},left,center,right));
 }
 
