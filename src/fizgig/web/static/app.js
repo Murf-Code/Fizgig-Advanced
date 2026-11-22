@@ -6591,7 +6591,7 @@ function downloadFailedText(err) {
 async function maskInfo() {
   if (!S.imageFolder) { $("maskInfo").textContent = ""; return; }
   // the editor follows the folder, and the masks a run just made
-  if ($("maskEdit").open && S.me && !S.me.dirty && (S.me.folder !== S.imageFolder || S.me.wantList)) {
+  if ($("maskEdit").open && S.me && !S.me.dirty && (S.me.folder !== (S.me.studioFolder||S.imageFolder) || S.me.wantList)) {
     S.me.wantList = false; meOpen();
   }
   const r = await api("/api/masks/info?folder=" + encodeURIComponent(S.imageFolder)).catch(() => null);
@@ -6979,6 +6979,7 @@ async function meDoRestoreOrig() {
       return;
     }
     m.undo.push({step: r.step, what: "restore"}); if (m.undo.length > ME_UNDO * 2) m.undo.shift();
+    captionImageChanged();
     m.redo = [];
     m.before = null;
     await meReload();
@@ -7051,14 +7052,16 @@ async function meRefreshFlags(name) {
   } catch (e) { /* keep what we had */ }
 }
 async function meOpen() {
-  const m = meState();
-  if (!S.imageFolder) { $("meState").textContent = "Choose the training folder on the Start tab first."; return; }
-  if (m.folder && m.folder !== S.imageFolder) {        // another folder: keep the red edits where they were made
-    await meRmSave(false); m.rm = null; m.rmBase = null; m.rmDirty = false;
+  const m = meState(), folder=m.studioFolder || S.imageFolder;
+  if (!folder) { $("meState").textContent = "Choose the training folder on the Start tab first."; return; }
+  if (m.folder && m.folder !== folder) {             // preserve unsaved masks on another dataset
+    if(m.dirty && !(await meSave())) return;
+    if(!(await meRmSave(false))) return;
+    m.rm = null; m.rmBase = null; m.rmDirty = false;
   }
   try {
-    const r = await api("/api/masks/edit/list?folder=" + encodeURIComponent(S.imageFolder));
-    m.list = r.pictures; m.folder = S.imageFolder; meWmBar();
+    const r = await api("/api/masks/edit/list?folder=" + encodeURIComponent(folder));
+    m.list = r.pictures; m.folder = folder; meWmBar();
   } catch (e) { $("meState").textContent = e.message; return; }
   const shown = meShown();
   const keep = shown.findIndex((p) => p.name === m.name);
@@ -7079,7 +7082,7 @@ async function meGo(i, force) {
   $("meCount").textContent = `${i + 1} of ${shown.length}`;
   $("meName").textContent = m.name;
   $("meState").textContent = "Loading…";
-  const q = `folder=${encodeURIComponent(S.imageFolder)}&name=${encodeURIComponent(m.name)}&t=${encodeURIComponent(TOKEN)}`;
+  const q = `folder=${encodeURIComponent(m.folder || S.imageFolder)}&name=${encodeURIComponent(m.name)}&t=${encodeURIComponent(TOKEN)}`;
   const pic = await meImage("/api/masks/edit/picture?" + q + "&v=" + m.ver).catch(() => null);
   if (!pic || m.name !== shown[i].name) { $("meState").textContent = pic ? "" : "Couldn't load the picture."; return; }
   const mask = meWorkCanvas(pic);
@@ -7232,6 +7235,7 @@ async function meRestore(from, to) {
     m.stepBusy = true; meBusy(undo ? "Undoing…" : "Redoing…");
     try {
       await api("/api/masks/edit/image_step", {step: top.step, redo: !undo});
+      captionImageChanged();
       from.pop(); to.push(top);
       m.before = null;
       await meRefreshFlags(m.name);                   // the mask and watermark mask may be back (or gone again)
@@ -7424,6 +7428,7 @@ async function mePicStep(path, body, what, busy) {
     const r = await api(path, {folder: m.folder || S.imageFolder, name: m.name, ...body});
     m.undo.push({step: r.step, what}); if (m.undo.length > ME_UNDO * 2) m.undo.shift();
     m.redo = [];
+    captionImageChanged();
     return r;
   } catch (e) { $("meState").textContent = e.message; return null; }
   finally { m.stepBusy = false; meBusy(""); }
@@ -7510,6 +7515,7 @@ async function meSave() {
     m.dirty = false;
     const item = m.list.find((p) => p.name === m.name);
     if (item) item.mask = !r.removed;
+    captionImageChanged();
     meStateLine();
     $("meState").textContent = r.removed ? "All black, so the mask was removed: this picture trains as normal." :
       `Saved ${m.name.replace(/\.[^.]+$/, "")}-masklabel.png.`;
@@ -7535,6 +7541,7 @@ async function meRemoveAllWm() {
         const item = m.list.find((p) => p.name === names[i]);
         if (item) { item.watermark = false; item.backup = true; }
         done++;
+        captionImageChanged();
         if (m.name === names[i]) await meReload();
       } catch (e) {
         if (/no watermark mask/i.test(e.message || "")) skipped++;
@@ -7573,7 +7580,8 @@ function meWire() {
   const m = meState(), cv = $("meCanvas");
   let last = null, pan = null, space = false;
   $("maskEdit").addEventListener("toggle", () => {
-    if ($("maskEdit").open) meOpen(); else if (meState().dirty) meSave();      // closing it saves
+    if ($("maskEdit").open && !meState().studioFolder) meOpen();
+    else if (!$("maskEdit").open && meState().dirty) meSave();      // closing it saves
   });
   window.addEventListener("beforeunload", (e) => {   // closing the window with edits not saved: ask first
     if (S.me && S.me.dirty) { e.preventDefault(); e.returnValue = ""; }
@@ -7676,7 +7684,8 @@ function meWire() {
     meDraw();
   }, {passive: false});
   document.addEventListener("keydown", (e) => {
-    if (!$("maskEdit").open || !$("tab-prep").classList.contains("active")) return;
+    if (!$("maskEdit").open || !($("tab-prep").classList.contains("active") ||
+        (S.cap?.imageEditing && $("tab-captions").classList.contains("active")))) return;
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement && document.activeElement.tagName) &&
         document.activeElement.type !== "range") return;
     const k = e.key;
@@ -11037,6 +11046,66 @@ function studioLiveSummary(status){
   return "Live dataset attention: "+parts.join(" · ")+". "+(status.reason||"")+
     (samples.length?" Examples: "+samples.join(", "):"");
 }
+// Caption Studio mounts the ONE existing Image Prep editor in its own workspace.
+// Moving the live DOM keeps canvas events, undo/redo and mask state intact.
+async function captionImageOpen(it) {
+  if (!it?.size || !/\.(png|jpe?g|webp|bmp|avif|jxl)$/i.test(it.name)) {
+    throw new Error("Image editing is available for still pictures; video and audio aren't supported.");
+  }
+  const mount=$("captionImageWorkspace"), slot=$("captionImageEditorSlot"), editor=$("maskEdit");
+  if (!mount||!slot||!editor) throw new Error("The picture editor isn't available in this layout.");
+  if (!S.cap.imageEditorHome) S.cap.imageEditorHome={parent:editor.parentNode,next:editor.nextSibling};
+  const current=S.cap.imageEditing;
+  if (current && (current.folder!==capItemFolder(it)||current.name!==it.name)) {
+    if (!(await captionImageFinishPending())) return;
+  }
+  S.cap.imageEditing={folder:capItemFolder(it),name:it.name,path:it.path};
+  meState().studioFolder=capItemFolder(it);
+  $("meFilter").value="all";
+  slot.append(editor);
+  mount.hidden=false;
+  editor.open=true;
+  $("captionImageWorkspaceTitle").textContent="Editing "+it.name;
+  $("captionImageWorkspaceNote").textContent="Changes to this image or its mask are queued for the next training epoch.";
+  await meOpen();
+  const idx=meShown().findIndex(p=>p.name===it.name);
+  if(idx<0) {
+    $("captionImageWorkspaceNote").textContent="This image isn't available in the editor's current list.";
+    return;
+  }
+  if(meState().name!==it.name) await meGo(idx,true);
+  meFit();
+  mount.scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+async function captionImageFinishPending() {
+  const m=meState();
+  if(m.stepBusy||m.samBusy||m.wmBusy) {
+    $("captionImageWorkspaceNote").textContent="Finish the current image operation before closing.";
+    return false;
+  }
+  if(m.dirty && !(await meSave())) return false;
+  if(!(await meRmSave(false))) return false;
+  return true;
+}
+async function captionImageClose() {
+  if(!S.cap?.imageEditing) return true;
+  if(!(await captionImageFinishPending())) return false;
+  const home=S.cap.imageEditorHome,editor=$("maskEdit");
+  meState().studioFolder=null;
+  S.cap.imageEditing=null;
+  if(home?.parent && editor) home.parent.insertBefore(editor,
+    home.next?.parentNode===home.parent?home.next:null);
+  if(editor) editor.open=false;
+  $("captionImageWorkspace").hidden=true;
+  await loadCaptions().catch(e=>console.warn("Caption Studio image refresh:",e));
+  return true;
+}
+function captionImageChanged() {
+  if(!S.cap?.imageEditing) return;
+  // Re-read sizes, masks and thumbnail mtime without disturbing unsaved captions.
+  loadCaptions().catch(e=>console.warn("Caption Studio image refresh:",e));
+}
+
 function studioCategories(){
   const key="fizgig_caption_categories:"+String(S.imageFolder||"");
   if(S.cap.studioCategories?.key===key)return S.cap.studioCategories;
@@ -11056,7 +11125,7 @@ function renderCaptionStudio(host,items,ext){
   let captionMode=studioCaptionMode(current);
   const locked=!!S.cap.studioReviewed?.has(current.path);
   const categoryState=studioCategories();
-  const editorCompose=tags=>editorCompose(tags,captionMode);
+  const editorCompose=tags=>studioCompose(ta.value,tags,captionMode);
   const left=el("aside",{class:"caption-studio-panel studio-browser"});
   const center=el("div",{class:"caption-studio-panel studio-editor"});
   const right=el("aside",{class:"caption-studio-panel studio-index"});
@@ -11162,21 +11231,10 @@ function renderCaptionStudio(host,items,ext){
       try{await capRun("/api/captions/ai",capJobBody({only:[current.path],overwrite:true}));}
       catch(e){say(e.message);}
     }),
-    btn("Edit image / crop",()=>{
+    btn("Edit image / crop",async()=>{
       if(locked){say("Unlock the reviewed picture before editing its image.");return;}
-      if(!current.size){say("Image tools work on pictures.");return;}
-      if(capItemFolder(current)!==S.imageFolder){
-        say("This image is in a subfolder. Open Image Prep to select that dataset.");return;
-      }
-      showTab("prep");
-      $("maskEdit").open=true;
-      setTimeout(async()=>{
-        try{
-          await meOpen();
-          const idx=meShown().findIndex(p=>p.name===current.name);
-          if(idx>=0)await meGo(idx,true);
-        }catch(e){$("meState").textContent=e.message;}
-      },0);
+      try{await captionImageOpen(current);}
+      catch(e){say(e.message);}
     }),
     btn("Remove from dataset",async()=>{
       if(locked){say("Unlock this reviewed picture before removing it.");return;}
@@ -12876,6 +12934,7 @@ function tabRunScroll(name) {
   return !!spot;
 }
 function showTab(name) {
+  if (name !== "captions" && S.cap?.imageEditing) captionImageClose();
   if (name !== "prep" && S.me && S.me.dirty) meSave();      // leaving Image Prep saves the mask being edited
   if (name !== activeTab()) ctxOnTab();                     // the job on show finished: the view moves on now
   // each tab keeps its own scroll place: back on Training, the loss chart is where you left it (the tabs share one
