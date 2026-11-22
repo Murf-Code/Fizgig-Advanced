@@ -78,6 +78,11 @@ def main():
         name = os.path.basename(fp)
         try:
             from fizgig.dataset.caption_file import read_caption
+            from fizgig.web import caption_review
+            if caption_review.is_caption_locked(fp):
+                skipped += 1
+                _say(f"SKIP: {name} (reviewed and locked)")
+                continue
             original = read_caption(fp).strip()          # as training reads it: a Windows-1252 caption no longer FAILs
             if not original:
                 skipped += 1
@@ -92,6 +97,10 @@ def main():
             if not chinese:
                 failed += 1
                 _say(f"FAIL: {name} (empty translation, kept as it was)")
+                continue
+            if caption_review.is_caption_locked(fp):
+                skipped += 1
+                _say(f"SKIP: {name} (reviewed while translating)")
                 continue
             with open(fp, "w", encoding="utf-8") as f:
                 f.write(f"{trigger}, {rest} - {chinese}" if trigger else f"{original} - {chinese}")
