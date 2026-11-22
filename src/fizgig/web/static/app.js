@@ -11650,8 +11650,8 @@ function renderCaptionStudio(host,items,ext){
   const pageItems=items.slice(S.cap.page*CAP_PAGE,(S.cap.page+1)*CAP_PAGE);
   const current=pageItems.find(i=>i.path===S.cap.studioPath)||pageItems[0]||items[0];
   if(!current){
-    host.append(captionStudioImportPanel(),captionDuplicatePanel(ext),captionRemovedPanel(ext),
-      el("div",{class:"field-hint",text:"No matching images. Import a dataset, review duplicate scans, restore a removed image or change your filter."}));
+    host.append(captionDuplicatePanel(ext),captionRemovedPanel(ext),
+      el("div",{class:"field-hint",text:"No matching images in the dataset selected on the Start tab. Change your filter, choose a dataset on Start, or restore a removed image."}));
     return;
   }
   S.cap.studioPath=current.path;
@@ -12592,7 +12592,6 @@ function renderCaptionStudio(host,items,ext){
   // A single expandable Edit Tags menu replaces the permanently repeated bulk toolbar.
   const editMenu=el("details",{class:"studio-edit-menu"});
   editMenu.append(el("summary",{text:"Edit Tags · batch operations"}),bulk);
-  const importPanel=captionStudioImportPanel();
   const duplicatePanel=captionDuplicatePanel(ext);
   const removedPanel=captionRemovedPanel(ext);
   const toolsRow=el("div",{class:"studio-main-actions"});
@@ -12601,7 +12600,6 @@ function renderCaptionStudio(host,items,ext){
     if(drawer){drawer.open=true;drawer.scrollIntoView({block:"start",behavior:"smooth"});}
   });
   const existingWildcard=exportWildcard;
-  const downloadBtn=btn("Download dataset",()=>{$("dsZip")?.click();});
   const dupBtn=btn("Find Duplicate Images",()=>{
     duplicatePanel.open=true;
     duplicatePanel.scrollIntoView({block:"start",behavior:"smooth"});
@@ -12620,7 +12618,7 @@ function renderCaptionStudio(host,items,ext){
     button.classList.toggle("is-on",indexMode.value===mode);
     viewButtons.append(button);
   });
-  actionBar.append(importPanel,downloadBtn,viewButtons);
+  actionBar.append(viewButtons);
   // TagBench shortcut parity. Only active inside Caption Workbench, and never
   // steals native typing shortcuts or Image Prep's own canvas bindings.
   const selectedForEdit=()=>imageTargets().filter(it=>!S.cap.studioReviewed?.has(it.path)&&
