@@ -11440,6 +11440,19 @@ async function studioTravel(direction){
   const op=from.at(-1);
   if(!op)return;
   const to=backward?history.future:history.past;
+  if(op.entry.kind==="captions"){
+    for(const row of op.entry.rows){
+      const draft=S.cap.studioDrafts?.get(row.path);
+      const current=S.cap.items.find(x=>x.path===row.path);
+      if(draft!==undefined && draft!==(current?.caption??""))
+        throw new Error("Save or discard the unsaved draft for "+row.name+" before undo/redo.");
+    }
+  }
+  if(op.entry.kind==="image" && S.cap.imageEditing){
+    const m=meState();
+    if(m.dirty || m.rmDirty || m.stepBusy)
+      throw new Error("Save or finish pending picture/mask edits before undo/redo.");
+  }
   history.busy=true;
   try{
     if(op.entry.kind==="captions"){
@@ -11491,8 +11504,8 @@ function captionStudioImportPanel(){
   const folderName=el("input",{type:"text",class:"w-path",placeholder:"New dataset folder name"});
   folderName.value=S.cap.studioImportName||"caption-studio-import";
   folderName.addEventListener("input",()=>S.cap.studioImportName=folderName.value);
-  const info=el("div",{class:"field-hint",text:"Creates a new dataset in Training Data. "+
-    "Uses Fizgig's resumable uploader; your current training folder is never overwritten."});
+  const info=el("div",{class:"field-hint",text:"Uses Fizgig's resumable uploader. "+
+    "Choose a unique dataset folder name; importing into an existing folder can replace files with matching names."});
   const status=el("div",{class:"field-hint",role:"status"});
   const fileInput=el("input",{type:"file",multiple:true,hidden:true,
     accept:"image/*,.txt,.json,.zip,.mp4,.wav,.mp3,.flac,.m4a"});
@@ -11508,6 +11521,8 @@ function captionStudioImportPanel(){
     if(!files?.length)return;
     const name=tidyName(folderName.value.trim());
     if(!name)return status.textContent="Enter a new dataset folder name.";
+    if(!confirm("Import into dataset folder '"+name+"'? Matching filenames in an existing folder can be replaced. "+
+      "Choose a unique folder name to keep an existing dataset untouched."))return;
     S.cap.studioImporting=true;drop.classList.add("busy");
     chooseFiles.disabled=chooseFolder.disabled=true;
     try{
