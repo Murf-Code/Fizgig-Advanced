@@ -320,7 +320,7 @@ class Watch:
                         and self.driver.description.key != "minimax"):
                     logger.warning("[live-dataset] %s uses a reference format this driver cannot live-encode", key)
                     continue
-                item = ItemInfo(key, read_caption(cap_path) if cap_path else "", im.size, bucket)
+                item = ItemInfo(key, read_caption(cap_path) if cap_path and os.path.isfile(cap_path) else "", im.size, bucket)
                 # Dataset cache filenames are based on source file basename, not
                 # subject prefixes such as "s2:" (invalid in Windows filenames).
                 import copy
@@ -343,7 +343,7 @@ class Watch:
                               if getattr(ds, "has_control", False) else [])
                 item.control_content = references or None
                 source_stat = (os.stat(source).st_size, os.stat(source).st_mtime_ns)
-                cap_stat = (os.stat(cap_path).st_size, os.stat(cap_path).st_mtime_ns) if cap_path else None
+                cap_stat = (os.stat(cap_path).st_size, os.stat(cap_path).st_mtime_ns) if cap_path and os.path.isfile(cap_path) else None
                 prepared.append((ds, key, source, cap_path, item, im, references, source_stat, cap_stat))
             except Exception:
                 logger.warning("[live-dataset] cannot prepare new image %s", key, exc_info=True)
@@ -399,7 +399,7 @@ class Watch:
                 ds, key, source, cap_path, item, _image, _refs, source_stat, cap_stat = row
                 original = os.stat(source)
                 now = (original.st_size, original.st_mtime_ns)
-                caption_now = (os.stat(cap_path).st_size, os.stat(cap_path).st_mtime_ns) if cap_path else None
+                caption_now = (os.stat(cap_path).st_size, os.stat(cap_path).st_mtime_ns) if cap_path and os.path.isfile(cap_path) else None
                 if now != source_stat or caption_now != cap_stat:
                     raise ValueError("Source or caption changed while encoding; will retry next boundary")
                 text_tmp = copy.copy(item)
