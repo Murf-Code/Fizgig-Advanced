@@ -12266,13 +12266,6 @@ function renderCaptionStudio(host,items,ext){
     catch(e){say(e.message);}
   };
   const pictureActions=el("div",{class:"field-row"},
-    btn("Re-caption image",async()=>{
-      if(locked){say("Unlock the reviewed picture before re-captioning.");return;}
-      if(!current.size){say("Select an image to use AI captioning.");return;}
-      say("Re-captioning…");
-      try{await capRun("/api/captions/ai",capJobBody({only:[current.path],overwrite:true}));}
-      catch(e){say(e.message);}
-    }),
     btn("Edit image / crop",async()=>{
       if(locked){say("Unlock the reviewed picture before editing its image.");return;}
       try{await captionImageOpen(current);}
