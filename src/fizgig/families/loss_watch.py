@@ -158,6 +158,8 @@ class Watch:
         self._source_snapshot = self._source_state()
         self._mask_snapshot = self._mask_state()
         self._unscheduled_last = None
+        self._pending_reference_text = {}
+        self.unsupported_media_keys = set()
         if auto_recaption and not self.image_dir:
             logger.warning("[auto-recaption] image_directory not found in the dataset config - auto-recaption off")
             auto_recaption = False
@@ -347,38 +349,122 @@ class Watch:
                         "validated " + path if path else "mask removed; training unmasked")
         self._mask_snapshot = current
 
+
+    def _owner_dataset(self, key):
+        """Find the original dataset block rather than guessing from a key prefix."""
+        for ds in getattr(self.group, "datasets", ()) or ():
+            if getattr(ds, "is_reg", False):
+                continue
+            bm = getattr(ds, "batch_manager", None)
+            if bm and any(str(it.item_key) == str(key) for bucket in bm.buckets.values() for it in bucket):
+                return ds
+        return None
+
+    def _source_for_key(self, key, listings=None):
+        """A training media path, with that dataset's permitted video/audio extensions."""
+        from fizgig.dataset.masks import is_mask_file
+        ds = self._owner_dataset(key)
+        if ds:
+            folder = getattr(ds, "image_directory", None) or ""
+            prefix = str(getattr(ds, "item_prefix", "") or "")
+        else:
+            prefix, folder = max(((p, d) for p, d in self.folders.items() if str(key).startswith(p)),
+                                 key=lambda pair: len(pair[0]), default=("", self.image_dir or ""))
+        stem = str(key)[len(prefix):].rsplit("/", 1)[-1].removesuffix("#still")
+        extensions = set(_picture_exts()) | {str(x).lower() for x in getattr(ds, "extra_extensions", ())}
+        if not folder:
+            return ""
+        if listings is not None and folder in listings:
+            names = listings[folder]
+        else:
+            try:
+                names = sorted(os.listdir(folder))
+            except OSError:
+                names = []
+            if listings is not None:
+                listings[folder] = names
+        for n in names:
+            base, ext = os.path.splitext(n)
+            if base == stem and ext.lower() in extensions and not is_mask_file(n):
+                p = os.path.join(folder, n)
+                if os.path.isfile(p):
+                    return p
+        return ""
+
+    def _reference_paths(self, key, source):
+        """Find controls currently on disk; datasource's startup list may now be stale."""
+        from fizgig.dataset.masks import is_mask_file
+        ds = self._owner_dataset(key)
+        if not ds or not getattr(ds, "has_control", False):
+            return []
+        stem = os.path.splitext(os.path.basename(source))[0].casefold()
+        extensions = {".mp4"} if source.lower().endswith(".mp4") else set(_picture_exts())
+        matches = []
+        for folder in (getattr(ds, "control_directory", None),
+                       getattr(ds, "extra_reference_directory", None)):
+            if not folder or not os.path.isdir(folder):
+                continue
+            for n in os.listdir(folder):
+                nstem, ext = os.path.splitext(n)
+                if (ext.lower() in extensions and not is_mask_file(n) and
+                    (nstem.casefold() == stem or nstem.casefold().startswith(stem + "_"))):
+                    p = os.path.join(folder, n)
+                    if os.path.isfile(p):
+                        matches.append(p)
+        def order(path):
+            suffix = os.path.splitext(os.path.basename(path))[0].casefold()[len(stem):]
+            return (0 if not suffix else 1, int(suffix[1:]) if suffix.startswith("_") and suffix[1:].isdigit() else 999999, path)
+        return sorted(set(matches), key=order)
+
+    def _reference_images(self, key, source, bucket):
+        """Resize before-images identically to the original cache phase."""
+        from fizgig.dataset.image_dataset import BucketSelector, _own_shape, resize_image_to_bucket
+        from fizgig.utils.upright import open_upright
+        ds = self._owner_dataset(key)
+        paths = self._reference_paths(key, source)
+        if not ds or not paths:
+            raise ValueError("Paired references are missing or their dataset cannot be found")
+        selector = BucketSelector(ds.resolution, ds.enable_bucket, ds.bucket_no_upscale, ds.reso_steps)
+        arrays = []
+        for i, path in enumerate(paths):
+            im = open_upright(path)
+            if im.mode not in ("RGB", "RGBA"):
+                im = im.convert("RGB")
+            target = bucket if i == 0 else _own_shape(im, bucket, selector.reso_steps)
+            arrays.append(resize_image_to_bucket(im, target))
+        return arrays
+
     def _source_state(self):
-        """Current source-file fingerprints, using the same item keys as cached training."""
+        """Fingerprint every active item's media, caption and paired controls."""
         seen, listings = {}, {}
         for key in _items(self.group):
-            folder, stem, best = "", str(key).rsplit("/", 1)[-1], -1
-            for prefix, directory in self.folders.items():
-                if str(key).startswith(prefix) and len(prefix) > best:
-                    folder, best = directory, len(prefix)
-                    stem = str(key)[len(prefix):].rsplit("/", 1)[-1]
-            if not folder:
-                folder = self.image_dir or ""
-            pic = _picture(folder, stem, listings) if folder else ""
-            caption = os.path.splitext(pic)[0] + self.caption_ext if pic else os.path.join(folder, stem + self.caption_ext)
+            ds = self._owner_dataset(key)
+            source = self._source_for_key(key, listings)
+            folder = getattr(ds, "image_directory", None) if ds else None
+            prefix = str(getattr(ds, "item_prefix", "") or "") if ds else ""
+            stem = str(key)[len(prefix):].rsplit("/", 1)[-1].removesuffix("#still")
+            folder = folder or os.path.dirname(source) or self.image_dir or ""
+            caption_ext = getattr(ds, "caption_extension", None) or self.caption_ext
+            caption = os.path.splitext(source)[0] + caption_ext if source else os.path.join(folder, stem + caption_ext)
             def stamp(path):
                 try:
                     st = os.stat(path)
                     return (os.path.realpath(path), st.st_size, st.st_mtime_ns)
                 except OSError:
                     return ("", 0, 0)
-            seen[str(key)] = (stamp(pic), stamp(caption), caption)
+            refs = tuple(stamp(p) for p in self._reference_paths(key, source)) if source else ()
+            seen[str(key)] = (stamp(source), stamp(caption), caption, refs)
         return seen
 
     def _scan_sources(self):
-        """Detect file edits independently of how they were made; no GPU work here."""
-        previous = getattr(self, "_source_snapshot", {})
-        latest = self._source_state()
+        """Detect on-disk edits even when UI routes did not enqueue a change."""
+        previous, latest = getattr(self, "_source_snapshot", {}), self._source_state()
         changed_images, changed_text = {}, {}
-        for key, (picture, cap, caption_path) in latest.items():
+        for key, (picture, cap, caption_path, refs) in latest.items():
             before = previous.get(key)
             if before is None:
                 continue
-            if picture != before[0]:
+            if picture != before[0] or refs != (before[3] if len(before) >= 4 else ()):
                 changed_images[key] = "updated" if picture[0] else "removed"
             if cap != before[1]:
                 try:
@@ -397,7 +483,7 @@ class Watch:
         # per-item losses. Skipping the whole batch is safer than training stale pixels.
         keys_to_check = keys if isinstance(keys, (list, tuple)) else [keys]
         if any(str(k) in self.removed_keys or str(k) in getattr(self, "invalid_mask_keys", ())
-               for k in keys_to_check):
+               or str(k) in getattr(self, "unsupported_media_keys", ()) for k in keys_to_check):
             return True
         if self.watch is None or self._reg_only(keys):
             return False
@@ -407,7 +493,7 @@ class Watch:
 
     def multiplier(self, batch):
         keys = batch.get("item_keys")
-        blocked = self.removed_keys | getattr(self, "invalid_mask_keys", set())
+        blocked = self.removed_keys | getattr(self, "invalid_mask_keys", set()) | getattr(self, "unsupported_media_keys", set())
         if (isinstance(keys, (list, tuple)) and len(keys) == 1 and str(keys[0]) in blocked):
             return 0.0
         if not isinstance(keys, (list, tuple)) and str(keys) in blocked:
@@ -434,7 +520,7 @@ class Watch:
         if per is None or len(keys) < 2 or int(per.shape[0]) != len(keys):
             return None
         raw = info.get("per_raw") or [float(x) for x in per.detach().float().cpu()]
-        blocked = self.removed_keys | getattr(self, "invalid_mask_keys", set())
+        blocked = self.removed_keys | getattr(self, "invalid_mask_keys", set()) | getattr(self, "unsupported_media_keys", set())
         out = [k in blocked or (self.watch is not None and k not in self.reg and self.watch.is_excluded([k])) for k in keys]
         kept = [i for i, o in enumerate(out) if not o]
         mult = [0.0 if out[i] else float(reg_mult) if reg_keys and k in reg_keys else
