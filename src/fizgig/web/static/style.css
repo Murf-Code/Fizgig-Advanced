@@ -5730,6 +5730,7 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
   scrollbar-gutter:stable;
   overscroll-behavior-y:contain;
   scroll-behavior:auto;
+  overflow-anchor:none; /* Spacer corrections must not fight Chromium's scroll anchoring. */
   contain:layout style;
 }
 #tab-captions .studio-thumb-rail.is-windowed .studio-thumb-spacer{
