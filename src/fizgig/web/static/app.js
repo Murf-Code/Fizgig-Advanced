@@ -7643,8 +7643,11 @@ function meImgBar() {
   // The same controls remain mounted for Caption Workbench's inline tools.
   const windowPanel=$("meDialogWindow");
   if(windowPanel){
-    windowPanel.dataset.tool=t==="erase"?"brush":t;
-    windowPanel.dataset.paint=t;
+    const visualTool=t==="erase"?"brush":t;
+    // Crop gestures call meImgBar repeatedly. Do not mutate attributes and
+    // trigger a new style/layout pass for every pointermove.
+    if(windowPanel.dataset.tool!==visualTool)windowPanel.dataset.tool=visualTool;
+    if(windowPanel.dataset.paint!==t)windowPanel.dataset.paint=t;
   }
   $("meRatioWrap").style.display = t === "crop" ? "" : "none";
   $("meCropSize").style.display = t === "crop" ? "" : "none";
