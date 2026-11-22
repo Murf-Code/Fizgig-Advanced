@@ -7994,9 +7994,10 @@ function meWire() {
   document.addEventListener("keydown",event=>{
     if(!meDialogVisible())return;
     if(event.key==="Escape"){
-      // First Escape cancels an active Remove/Crop action; a second one
-      // closes the window. The existing editor handler owns that first key.
-      if(m.tool==="crop"||m.tool==="remove"||m.rmDirty)return;
+      // First Escape cancels a pending crop/Remove stroke. With no pending
+      // edit, Escape dismisses the window even if the tool remains selected.
+      // This avoids trapping users in Remove mode after a cancelled stroke.
+      if(m.rmDirty||(m.tool==="crop"&&m.crop&&!meCropWhole()))return;
       event.preventDefault();event.stopImmediatePropagation();
       void meDialogDismiss();
     }else if(event.key==="Tab"){
