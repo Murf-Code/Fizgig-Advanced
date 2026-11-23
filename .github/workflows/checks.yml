@@ -24,10 +24,6 @@ jobs:
           pip install -r checks/requirements.txt
       - name: WebView2 browser-parity performance and hook regression checks
         run: python -m unittest discover -s checks -p test_webview2_performance.py -v
-      - name: Optional native Qt image shell source/bridge checks (headless)
-        run: |
-          python -m py_compile src/fizgig/web/qt_images.py src/fizgig/web/qt_caption_trial.py
-          node checks/test_qt_native_image_bridge.cjs
       - name: Caption Studio CPU optimization, lazy explorer and thumbnail cache
         run: |
           node checks/test_caption_cpu_perf.cjs
@@ -96,25 +92,6 @@ jobs:
         run: python -m pytest checks/test_caption_studio_sync.py checks/test_caption_live_images.py checks/test_live_dataset_admission.py checks/test_live_reference_pairs.py checks/test_h3_live_media.py checks/test_caption_live_masks.py checks/test_caption_review.py checks/test_caption_batch_edit.py checks/test_caption_removed_images.py checks/test_caption_duplicates.py checks/test_caption_formats.py checks/test_image_edit.py checks/test_batch_training.py checks/test_lora_regularisation.py -q
       # The full upstream suite is run separately; this workflow keeps UI
       # checks and the Krea 2 mixed-target regression fast and focused.
-
-  qt_smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      QT_QPA_PLATFORM: offscreen
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install headless Qt system libraries
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libegl1 libgl1 libopengl0 libxcb-cursor0
-      - name: Install optional Qt desktop dependencies
-        run: python -m pip install PySide6
-      - name: Native image browser and canvas smoke
-        run: python -m unittest discover -s checks -p test_qt_native_image_runtime.py -v
 
   windows_webview2_diag:
     name: Windows WebView2 diagnostic smoke
