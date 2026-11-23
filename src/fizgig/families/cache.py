@@ -49,6 +49,14 @@ def _latent_key(latent):
     return "latent_" + "x".join(str(d) for d in latent.shape[1:])
 
 
+def _source_mtime_ns(path):
+    """Nanosecond timestamp alongside the legacy second-resolution source stamp."""
+    try:
+        return str(os.stat(path).st_mtime_ns)
+    except (OSError, TypeError):
+        return ""
+
+
 def save_latents(desc, item, latent, controls=(), extra=None, vae_encoder=""):
     """extra: further tensors the driver stores beside the latent (e.g. a clip's audio rows), keyed as given."""
     os.makedirs(os.path.dirname(item.latent_cache_path), exist_ok=True)
@@ -61,6 +69,7 @@ def save_latents(desc, item, latent, controls=(), extra=None, vae_encoder=""):
         "architecture": desc.arch_id, "width": str(item.original_size[0]), "height": str(item.original_size[1]),
         "dtype": dtype_to_str(latent.dtype), "format_version": FORMAT_VERSION, "source": source_stamp(item.item_key),
         **({"alpha": item.alpha} if getattr(item, "alpha", "") else {}),
+        **({"source_mtime_ns": _source_mtime_ns(item.item_key)} if _source_mtime_ns(item.item_key) else {}),
         **({"vae_encoder": vae_encoder} if vae_encoder else {})})
 
 
