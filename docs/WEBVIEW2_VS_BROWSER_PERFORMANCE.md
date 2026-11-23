@@ -21,6 +21,32 @@ The GPU enabled process is the known-good path on this computer. Nothing in
 these measurements proves a fault in GPU acceleration, Meta Virtual Monitor,
 or the NVIDIA driver.
 
+### Completed Windows acceptance test
+
+**Reported November 23, 2026 (local Windows test).** With the app-window
+**Disable GPU** checkbox **unchecked**, Fizgig's regular pywebview/WebView2
+desktop window was reported to be **as smooth as the standalone browser**.
+
+All six interactive test categories passed:
+
+1. Caption Workbench thumbnail scrolling and selection
+2. Tag editing and search
+3. Waterfall and Constellation
+4. Image editor and brush responsiveness
+5. Image Prep and Samples
+6. Window resizing and fullscreen
+
+**Result: 6/6 passed, no remaining lag noted.** The GPU-enabled diagnostic
+showed no tracked GPU-disabling Chromium flags, and the RTX 4070 Ti reported
+working. This validates the configuration on this Windows machine; it is a
+qualitative user test, not benchmarked FPS/CPU data and not a universal claim
+about WebView2 on all hosts.
+
+**Decision:** Keep the GPU-disable checkbox **unchecked by default** and
+retain GPU-off only as an explicit troubleshooting option. Do **not** make
+the optional native Qt image-browser prototype a prerequisite for responsive
+Caption Workbench or migrate the whole image UI for performance reasons alone.
+
 ### Display-adapter result
 
 - RTX 4070 Ti: Windows status OK, `ConfigManagerErrorCode=0`
