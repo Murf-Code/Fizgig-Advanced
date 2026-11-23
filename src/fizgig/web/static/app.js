@@ -15061,6 +15061,9 @@ function renderCaptionStudio(host,items,ext){
   while(right.firstChild)tagIndexPane.append(right.firstChild);
   while(center.firstChild)editorPane.append(center.firstChild);
   editorPane.querySelector(".studio-caption-head")?.remove();
+  // The token readout is the bottom-most line of the Image Tags section,
+  // above the section boundary, including while an autosave note is visible.
+  editorPane.append(word);
   // There is no separate Tag settings & categories section. Tag colors are
   // edited from the tag context menu and applied to all visualizations.
   if(naturalMode){
