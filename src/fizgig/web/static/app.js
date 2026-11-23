@@ -2906,17 +2906,22 @@ function sideSpark(d) {
   box.title = `Loss, smoothed: ${ys[ys.length - 1].toFixed(4)} now`;
 }
 
-// steps left in the current epoch ("214 / 428"), from the run-wide step bar. Works on resume (the bar keeps the
-// absolute step) and when the step count runs past the planned total (Global replay): the epoch length stays the
-// planned total / epochs, and the remainder wraps.
+// Prefer the trainer's actual completed steps within this epoch. Recover from
+// legacy/desktop run reports with the old run-wide estimate only if necessary.
 function epochStepsLeft(p) {
+  const actualTotal = Number(p && p.steps_per_epoch), actualDone = Number(p && p.epoch_step);
+  if (p && p.steps_per_epoch != null && p.epoch_step != null &&
+      Number.isFinite(actualTotal) && actualTotal > 0 &&
+      Number.isFinite(actualDone) && actualDone >= 0) {
+    const total = Math.round(actualTotal), done = Math.min(total, Math.max(0, Math.round(actualDone)));
+    return `${total - done} / ${total}`;
+  }
   const step = Number(p && p.step), total = Number(p && p.total_steps), epochs = Number(p && p.total_epochs);
   if (!(step >= 0) || !(total > 0) || !(epochs > 0) || total < epochs) return "";
   const spe = Math.round(total / epochs);
   if (!(spe > 0)) return "";
   const done = step % spe;
-  const left = (done === 0 && step > 0) ? 0 : (spe - done);
-  return `${left} / ${spe}`;
+  return `${done === 0 && step > 0 ? 0 : spe - done} / ${spe}`;
 }
 
 // the run's figures (the same from a web run and from a desktop run): the bar, the tiles, the sidebar
