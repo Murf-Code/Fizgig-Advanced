@@ -163,6 +163,7 @@ class NativeImageRail(QListView):
     def __init__(self, model, parent=None):
         super().__init__(parent)
         self.setModel(model)
+        self.mode = ""
         self.setSelectionMode(QListView.SelectionMode.ExtendedSelection)
         self.setSelectionBehavior(QListView.SelectionBehavior.SelectRows)
         self.setUniformItemSizes(True)
@@ -208,6 +209,9 @@ class NativeImageRail(QListView):
                 if not self.visualRect(target).intersects(self.viewport().rect()):
                     self.scrollTo(target, QListView.ScrollHint.EnsureVisible)
 
+    def set_mode(self, mode):
+        self.mode = mode
+
     def _menu(self, position):
         index = self.indexAt(position)
         if not index.isValid():
@@ -216,8 +220,9 @@ class NativeImageRail(QListView):
         menu = QMenu(self)
         menu.addAction("Open native preview", lambda: self.open_preview.emit(path))
         menu.addAction("Copy file name(s)", lambda: self.request_action.emit("copy_names", path))
-        menu.addSeparator()
-        menu.addAction("Remove selected image(s)…", lambda: self.request_action.emit("remove", path))
+        if self.mode == "captions":
+            menu.addSeparator()
+            menu.addAction("Remove selected image(s)…", lambda: self.request_action.emit("remove", path))
         menu.exec(self.viewport().mapToGlobal(position))
 
 
