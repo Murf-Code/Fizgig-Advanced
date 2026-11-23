@@ -222,6 +222,10 @@ class NativeImageRail(QListView):
         menu.addAction("Copy file name(s)", lambda: self.request_action.emit("copy_names", path))
         if self.mode == "captions":
             menu.addSeparator()
+            menu.addAction("Toggle review complete", lambda: self.request_action.emit("review", path))
+            menu.addAction("Toggle validation images", lambda: self.request_action.emit("validation", path))
+            menu.addAction("Toggle sample images", lambda: self.request_action.emit("sample", path))
+            menu.addSeparator()
             menu.addAction("Remove selected image(s)…", lambda: self.request_action.emit("remove", path))
         menu.exec(self.viewport().mapToGlobal(position))
 
