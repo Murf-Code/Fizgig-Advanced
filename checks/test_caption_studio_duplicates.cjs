@@ -19,6 +19,13 @@ assert.match(css,/\.studio-duplicate-card>img:focus-visible/);
 assert.match(duplicatePanel,/el\("label",\{class:"field-row"\},tick," Keep this image"\)/);
 assert.match(duplicatePanel,/text:"Remove image\/s"/);
 assert.match(duplicatePanel,/captionConfirmRemoval\(/);
+assert.match(duplicatePanel,/text:"Compare images"/);
+assert.match(duplicatePanel,/text:"Side by side"/);
+assert.match(duplicatePanel,/text:"Overlay"/);
+assert.match(duplicatePanel,/choice\.kept\.size\+" kept/);
+assert.match(duplicatePanel,/text:" Merge tags into kept images"/);
+assert.doesNotMatch(duplicatePanel,/text:"Difference"/);
+
 
 assert.match(app,/min:"0",max:"16"/);
 assert.match(app,/state\.strictness/);
