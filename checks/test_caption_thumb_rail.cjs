@@ -91,7 +91,8 @@ async function main(){
   assert.doesNotMatch(app,/thumbs\.addEventListener\("wheel"/);
   assert.match(app,/thumbs\.addEventListener\("scroll",queueWindow,\{passive:true\}\)/);
   assert.match(app,/S\.cap\.studioThumbPreloader\?\.forget\(path\)/);
-  assert.match(app,/\&v="\+\s*\(S\.cap\.studioThumbRevisions\?\.get\(path\)\|\|0\)/);
+  assert.match(app,/S\.cap\.studioThumbRevisions\?\.get\(it\.path\)\|\|0/);
+  assert.match(app,/CaptionThumbRail\.imageSizeForRow\(railWidthForThumb,it\.size,/);
   assert.match(html,/src="\/caption_thumb_rail\.js"/);
   assert.match(server,/"\/caption_thumb_rail\.js"/);
 
