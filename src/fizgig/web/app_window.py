@@ -1106,9 +1106,9 @@ def main():
             # a window that appears but never runs the page (a white window: a broken WebView2, its sandbox on a
             # junctioned profile folder, a blocked GPU process) gives way to the browser rather than staying white.
             # Only for this computer's own page: a pod's may be an older Fizgig that doesn't report in
-            if first == url and not page_ready.wait(60):
+            if first == url and not page_ready.wait(30):
                 fallback[0] = ("the window opened, but the app page did not acknowledge its WebView2 bridge "
-                               "within 60 seconds (check for JavaScript or WebView2 startup errors)")
+                               "within 30 seconds (check for JavaScript or WebView2 startup errors)")
                 try:
                     window.destroy()
                 except Exception:
