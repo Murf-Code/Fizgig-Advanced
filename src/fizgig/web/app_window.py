@@ -799,7 +799,8 @@ def main():
     fallback = [""]                       # why the window gave way to the browser, when it did
     try:
         # Qt WebEngine only reads QTWEBENGINE_CHROMIUM_FLAGS at init (Preferences → App window)
-        if sys.platform.startswith("linux") and str(_prefs().get("qt_disable_gpu") or "") == "1":
+        from fizgig.web.webview2_performance import gpu_disabled
+        if sys.platform.startswith("linux") and gpu_disabled(_prefs()):
             flag = "--disable-gpu"
             cur = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
             if flag not in cur.split():
@@ -835,9 +836,11 @@ def main():
         else:
             os.environ.pop("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", None)
         _log("[app] WebView2 rendering: " + acceleration_warning(webview_args))
-        if str(_prefs().get("qt_disable_gpu") or "") == "1":
-            _log("[app] WARNING: Preferences > App window > Disable GPU is on. "
-                 "This can make image scrolling and canvas painting much slower than in a normal browser.")
+        if gpu_disabled(_prefs()):
+            _log("[app] App window GPU rendering DISABLED (Windows default or explicit preference). "
+                 "Normal browsers maintain their own GPU settings. Enable GPU in Preferences if needed.")
+        else:
+            _log("[app] App window GPU rendering enabled by preference/platform default.")
 
         class Api:
             """What a page in the window - a pod's page included - can ask of it: to come back to this computer, and
