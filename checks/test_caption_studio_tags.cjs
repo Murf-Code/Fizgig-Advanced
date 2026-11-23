@@ -59,3 +59,40 @@ assert.equal(T.search(["red hair"],disjunct),true);
 assert.equal(T.search(["blue"],disjunct),false);
 assert.equal(T.search(["blue","black"],disjunct),true);
 assert.throws(()=>T.addFilter("blue","red","invalid"),/Unknown filter mode/);
+
+
+// Click-away and cross-list focus must never leave two tag sets armed for
+// a later Delete action. The menu is exempt until its own action executes.
+const mockTarget=klass=>({
+  closest(selector) {
+    return selector.split(",").some(s=>s.trim()==="."+klass)?this:null;
+  },
+});
+assert.equal(T.tagSelectionScope(mockTarget("studio-image-tag")),"image");
+assert.equal(T.tagSelectionScope(mockTarget("studio-inline-image-tag")),"image");
+assert.equal(T.tagSelectionScope(mockTarget("studio-index-tag")),"all");
+assert.equal(T.tagSelectionScope(mockTarget("studio-inline-tag-edit")),"all");
+assert.equal(T.tagSelectionScope(mockTarget("studio-tag-context-menu")),"menu");
+assert.equal(T.tagSelectionScope(mockTarget("studio-image-context-menu")),"menu");
+assert.equal(T.tagSelectionScope(mockTarget("studio-tag-list")) ,null);
+assert.equal(T.tagSelectionScope(null),null);
+const imagePicked=new Set(["image tag"]);
+const allPicked=new Set(["dataset tag"]);
+assert.deepEqual(T.scopeTagSelections(imagePicked,allPicked,"menu"),
+  {image:false,all:false});
+assert.equal(imagePicked.size,1);
+assert.equal(allPicked.size,1);
+assert.deepEqual(T.scopeTagSelections(imagePicked,allPicked,"image"),
+  {image:false,all:true});
+assert.deepEqual([...imagePicked],["image tag"]);
+assert.equal(allPicked.size,0,"selecting an image tag disarms All Tags Delete");
+allPicked.add("dataset tag");
+assert.deepEqual(T.scopeTagSelections(imagePicked,allPicked,"all"),
+  {image:true,all:false});
+assert.equal(imagePicked.size,0,"selecting All Tags disarms Image Tags Delete");
+assert.deepEqual([...allPicked],["dataset tag"]);
+imagePicked.add("another image tag");
+assert.deepEqual(T.scopeTagSelections(imagePicked,allPicked,null),
+  {image:true,all:true});
+assert.equal(imagePicked.size,0,"clicking outside clears Image Tags");
+assert.equal(allPicked.size,0,"clicking outside clears All Tags");

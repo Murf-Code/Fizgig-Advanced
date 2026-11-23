@@ -12600,6 +12600,13 @@ function studioThumbIndex(offsets,position){
   return Math.max(0,Math.min(count-1,lo-1));
 }
 function renderCaptionStudio(host,items,ext){
+  // A render replaces the tag lists: remove old document-level listeners so
+  // stale selections and DOM references cannot survive the old workbench.
+  if(S.cap.studioTagPointerHandler){
+    document.removeEventListener("pointerdown",S.cap.studioTagPointerHandler,true);
+    document.removeEventListener("focusin",S.cap.studioTagPointerHandler,true);
+    S.cap.studioTagPointerHandler=null;
+  }
   // Shared with both the main toolbar and the empty-results fallback. Keep
   // the filter independent from colored selection rings.
   const createLearningFilterSelect=()=>{
@@ -12715,6 +12722,16 @@ function renderCaptionStudio(host,items,ext){
     return;
   }
   S.cap.studioPath=current.path;
+  // Tag selections never move to another image or dataset. Otherwise a
+  // previous image's highlighted tag could be deleted from the new image.
+  const tagSelectionKey=String(S.imageFolder||"")+"|"+ext+"|"+current.path;
+  if(S.cap.studioTagSelectionKey!==tagSelectionKey){
+    S.cap.studioImageTagPicked?.clear();
+    S.cap.studioPickedTags?.clear();
+    S.cap.studioImageTagAnchor=null;
+    S.cap.studioTagFocus=null;
+    S.cap.studioTagSelectionKey=tagSelectionKey;
+  }
   // TagBench: the active image is selected by default; dataset switches reset
   // the previous dataset's bulk selection, but clearing a selection stays clear.
   if(S.cap.studioSelectionFolder!==String(S.imageFolder||"")){
@@ -13865,6 +13882,12 @@ function renderCaptionStudio(host,items,ext){
   indexSearch.value=S.cap.studioIndexSearch||"";
   const tagCount=el("div",{class:"studio-tag-count field-hint"});
   const selectionState=S.cap.studioPickedTags||(S.cap.studioPickedTags=new Set());
+  const syncAllTagSelection=()=>{
+    for(const button of index.querySelectorAll(".studio-index-tag.is-picked")){
+      button.classList.remove("is-picked");
+      button.setAttribute("aria-pressed","false");
+    }
+  };
   let pendingTagClick=null;
   let tagEditing=null;
   const beginTagRename=(row,tag)=>{
@@ -13971,8 +13994,14 @@ function renderCaptionStudio(host,items,ext){
         if(e.detail>1)return;
         if(e.ctrlKey||e.metaKey){
           selectionState.has(tag)?selectionState.delete(tag):selectionState.add(tag);
-          tagBtn.classList.toggle("is-picked",selectionState.has(tag));return;
+          tagBtn.classList.toggle("is-picked",selectionState.has(tag));
+          tagBtn.setAttribute("aria-pressed",String(selectionState.has(tag)));
+          return;
         }
+        // Plain clicks filter; only Ctrl/Cmd-click is a tag selection.
+        selectionState.clear();
+        syncAllTagSelection();
+        S.cap.studioTagFocus=null;
         if(pendingTagClick)clearTimeout(pendingTagClick);
         pendingTagClick=setTimeout(()=>{
           pendingTagClick=null;
@@ -14871,11 +14900,19 @@ function renderCaptionStudio(host,items,ext){
       return;
     }
     if(cmd&&!e.altKey&&key==="k"){handled();void toggleImageReview();return;}
-    if((e.key==="Delete"||e.key==="Backspace")&&
+    if((e.key==="Delete"||e.key==="Backspace")&&!cmd&&!e.altKey&&
+       S.cap.studioTagFocus==="image"&&imageTagPicked.size){
+      handled();removePickedTags();return;
+    }
+    if((e.key==="Delete"||e.key==="Backspace")&&!cmd&&!e.altKey&&
        S.cap.studioTagFocus==="all"&&selectionState.size){
       handled();void deletePickedTags();return;
     }
-    if((e.key==="Delete"||cmd&&key==="delete")&&!e.altKey){
+    // Bare Delete removes images only from the image rail, never while the
+    // keyboard focus is in an All Tags or Image Tags control. Ctrl+Delete
+    // remains the explicit image-delete shortcut from anywhere in Studio.
+    if((cmd&&key==="delete"||
+       (e.key==="Delete"&&(target===thumbs||thumbs.contains(target))))&&!e.altKey){
       handled();void removeSelectedImages();return;
     }
     if(e.key==="Backspace")return;
@@ -14910,6 +14947,25 @@ function renderCaptionStudio(host,items,ext){
     else if(key==="o"){handled();openSelectedImage();}
   };
   document.addEventListener("keydown",S.cap.studioKeyHandler);
+  // Only one tag list can own a selection. Clicking whitespace, other
+  // controls, a different list, or another image clears stale highlights.
+  // Right-click menus retain their selection until the chosen action runs.
+  S.cap.studioTagPointerHandler=e=>{
+    if(!host.contains(layout)||!$("tab-captions").classList.contains("active")||
+       $("capView").value!=="studio")return;
+    const scope=CaptionStudioTags.tagSelectionScope(e.target);
+    if(scope==="menu")return;
+    const before=new Set(imageTagPicked);
+    const cleared=CaptionStudioTags.scopeTagSelections(imageTagPicked,selectionState,scope);
+    if(cleared.image){
+      S.cap.studioImageTagAnchor=null;
+      syncImageTagSelection(before);
+    }
+    if(cleared.all)syncAllTagSelection();
+    S.cap.studioTagFocus=scope;
+  };
+  document.addEventListener("pointerdown",S.cap.studioTagPointerHandler,true);
+  document.addEventListener("focusin",S.cap.studioTagPointerHandler,true);
   toolsRow.append(actionBar);
   layout.append(left,divider("left"),center,divider("right"),right);
   redraw();host.classList.add("studio-host");

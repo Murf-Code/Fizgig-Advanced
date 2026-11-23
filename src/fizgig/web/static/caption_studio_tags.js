@@ -149,7 +149,25 @@ const CaptionStudioTags = (() => {
   const wildcards = (values, delimiter = ",") => unique(values).sort((a, b) => a.localeCompare(b))
     .join("\n") + (values.length ? "\n" : "");
 
+  // A click in a menu should retain the selection until its action runs.
+  // Only a tag button (or its inline rename input) owns list selection.
+  function tagSelectionScope(target) {
+    if(!target?.closest)return null;
+    if(target.closest(".studio-image-context-menu, .studio-tag-context-menu"))return "menu";
+    if(target.closest(".studio-image-tag, .studio-inline-image-tag"))return "image";
+    if(target.closest(".studio-index-tag, .studio-inline-tag-edit"))return "all";
+    return null;
+  }
+
+  function scopeTagSelections(imagePicked, allPicked, scope) {
+    const cleared={image:scope!=="image"&&scope!=="menu",
+                   all:scope!=="all"&&scope!=="menu"};
+    if(cleared.image)imagePicked.clear();
+    if(cleared.all)allPicked.clear();
+    return cleared;
+  }
+
   return Object.freeze({kind, tags, compose, unique, search, compileSearch, addFilter,
-    order, captionWildcards, wildcards});
+    order, captionWildcards, wildcards, tagSelectionScope, scopeTagSelections});
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = CaptionStudioTags;
