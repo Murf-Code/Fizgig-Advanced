@@ -129,10 +129,17 @@ class Krea2Driver(FamilyDriver):
         return load_krea2_text_encoder(path, dtype=DTYPE, device=device)
 
     def unload_text_encoder(self, te):
-        try:
-            te.to("cpu")
-        except Exception:
-            pass
+        # Upstream #380 (@xGnome): free encoder weights in-place instead of copying
+        # gigabytes to CPU merely to discard them. Skip conversion for file-backed
+        # inference (its owner controls storage); retain CPU fallback when needed.
+        if not getattr(self, "_file_backed_inference", False):
+            try:
+                te.to("meta")
+            except Exception:
+                try:
+                    te.to("cpu")
+                except Exception:
+                    pass
         del te
         import gc
         gc.collect()
