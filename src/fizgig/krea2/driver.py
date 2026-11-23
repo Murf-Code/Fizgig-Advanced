@@ -384,7 +384,23 @@ class Krea2Driver(FamilyDriver):
     def selective_active_blocks(self):
         return sorted(getattr(self, "_selective_active", set()))
 
-    def _block_local_training_loss(self, dit, latents, noise, t, cond):
+    @staticmethod
+    def _block_local_objective(pred, target, mask_weight=None, base=None, prior=None):
+        """Same token-weighted Krea 2 loss as loss_at, evaluated on the saved replay readout.
+
+        Both the no-grad forward and the differentiable final-readout replay use this objective,
+        so a mask (and optional prior preservation) affects the exact gradient sent into every
+        transformer block, independent of which optimizer subsequently steps its parameters.
+        """
+        if mask_weight is None:
+            loss = F.mse_loss(pred.float(), target.float())
+        else:
+            loss = weighted_loss((pred.float() - target.float()).pow(2).mean(dim=-1), mask_weight)
+        if base is not None:
+            loss = with_prior(loss, prior, base, (pred.float() - base).pow(2).mean(dim=-1), mask_weight)
+        return loss
+
+    def _block_local_training_loss(self, dit, latents, noise, t, cond, *, loss_mask=None, prior=None):
         """Run a no-grad Krea 2 forward and save CPU activations for one-block-at-a-time backward replay.
 
         The returned loss is the ordinary full-model Krea 2 flow-matching loss from ``dit.last``;
@@ -405,6 +421,9 @@ class Krea2Driver(FamilyDriver):
         t_ = t.view(-1, 1, 1, 1).to(DTYPE)
         noised = (1.0 - t_) * latent + t_ * noise
         target, _, _ = patchify_block(noise - latent, patch)
+        mask_weight = (None if loss_mask is None else
+                       patchify_block(loss_mask.to(device=device).float(), patch)[0].mean(dim=-1))
+        base = prior_base(prior, loss_mask, lambda: self._forward(dit, noised, t, cond))
         txt, txtmask = self._text(cond, device)
         img, pos, mask = prepare(noised, txt.shape[1], patch, txtmask)
 
@@ -448,7 +467,7 @@ class Krea2Driver(FamilyDriver):
 
             # This is the exact readout used by normal training, validation, and sampling.
             pred = dit.last(combined, t_emb)[:, :imglen, :]
-            loss = F.mse_loss(pred.float(), target.float()).detach()
+            loss = self._block_local_objective(pred, target, mask_weight, base, prior).detach()
             final_hidden = combined.detach().to("cpu").contiguous()
 
         self._pending_block_local = {
@@ -460,6 +479,9 @@ class Krea2Driver(FamilyDriver):
             "freqs": freqs.detach(),
             "attn_params": attn_params,
             "target": target.detach(),
+            "mask_weight": mask_weight.detach() if mask_weight is not None else None,
+            "prior_base": base.detach() if base is not None else None,
+            "prior": prior if base is not None else None,
             "imglen": imglen,
             "device": device,
         }
@@ -482,7 +504,8 @@ class Krea2Driver(FamilyDriver):
             final_hidden = state["final_hidden"].to(state["device"], non_blocking=True).detach().requires_grad_(True)
             with torch.autocast(device_type=state["device"].type, dtype=DTYPE):
                 pred = dit.last(final_hidden, state["t_emb"])[:, :state["imglen"], :]
-                global_loss = F.mse_loss(pred.float(), state["target"].float())
+                global_loss = self._block_local_objective(
+                    pred, state["target"], state["mask_weight"], state["prior_base"], state["prior"])
             (global_loss * float(scale)).backward()
             grad = final_hidden.grad
             if grad is None:
@@ -550,9 +573,8 @@ class Krea2Driver(FamilyDriver):
         if self.global_replay and torch.is_grad_enabled():
             if diff_ref is not None or diff_weight:
                 raise RuntimeError("Global replay does not support paired/difference loss yet.")
-            if loss_mask is not None or prior is not None:
-                raise RuntimeError("Global replay does not support masked/prior loss yet.")
-            loss = self._block_local_training_loss(dit, latents, noise, t, cond)
+            loss = self._block_local_training_loss(
+                dit, latents, noise, t, cond, loss_mask=loss_mask, prior=prior)
             return loss, {"t": float(t.mean()), "block_local": True, "block_local_phase": "global_replay"}
         loss = self.loss_at(dit, latents, noise, t, cond, diff_ref=diff_ref, diff_weight=diff_weight,
                             loss_mask=loss_mask, prior=prior)

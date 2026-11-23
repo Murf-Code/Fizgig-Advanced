@@ -560,3 +560,69 @@ def test_global_replay_training_maps_are_not_rejected_by_start():
     assert not hasattr(launch, "krea2_method_problems")
     # The shared Start check does not need a special Global Replay exception:
     # map collection is a separate no-grad activity, not part of training backward.
+
+
+@pytest.mark.parametrize("method", ["global_replay", "selective_global_replay_h2d"])
+@pytest.mark.parametrize("mask_kind", ["hard", "soft", "prior", "all_white"])
+def test_masked_global_replay_matches_standard_loss_gradients_and_optimizer_step(method, mask_kind):
+    """The mask must shape every block's real gradient, not merely the logged scalar loss.
+
+    Tests patch averaging (patch=2), hard/soft weights, all-white compatibility and masked
+    prior preservation. AdamW and SGD receive the *same* masked gradients from either method.
+    """
+    import copy
+
+    torch.manual_seed(119)
+    replay_dit = _tiny_dit(layers=2, patch=2)
+    standard_dit = copy.deepcopy(replay_dit)
+    replay = Krea2Driver()
+    replay.set_options({"training_method": method})
+    standard = Krea2Driver()
+    latents = torch.randn(1, 2, 4, 4)
+    cond = {
+        "hidden_states": torch.randn(1, 3, 1, 16),
+        "attention_mask": torch.tensor([[True, True, True]]),
+    }
+    if mask_kind == "all_white":
+        mask = torch.ones(1, 1, 4, 4)
+    elif mask_kind == "hard":
+        mask = torch.ones(1, 1, 4, 4)
+        mask[..., :, :2] = 0.1  # the floor is already applied by the training loop
+    else:
+        mask = torch.tensor([[[[0.1, 0.4, 0.7, 1.0],
+                               [0.2, 0.5, 0.8, 1.0],
+                               [0.3, 0.5, 0.6, 0.9],
+                               [0.4, 0.6, 0.8, 1.0]]]])
+
+    class ShiftedPrior:
+        weight = 0.7
+
+        def base(self, forward):
+            # Deliberately different from the current prediction, to test prior gradients too.
+            return forward().detach().float() + 0.12
+
+    extra = {"loss_mask": mask}
+    if mask_kind == "prior":
+        extra["prior"] = ShiftedPrior()
+
+    replay_loss, info = replay.training_loss(
+        replay_dit, latents, cond, torch.Generator().manual_seed(5432), **extra)
+    direct_loss, _ = standard.training_loss(
+        standard_dit, latents, cond, torch.Generator().manual_seed(5432), **extra)
+    assert info["block_local"] is True
+    assert torch.allclose(replay_loss, direct_loss.detach(), rtol=2e-3, atol=2e-3)
+
+    replay.backward_training_loss(0.4)
+    (direct_loss * 0.4).backward()
+    replay_params = [block.mlp.gate.weight for block in replay_dit.blocks]
+    direct_params = [block.mlp.gate.weight for block in standard_dit.blocks]
+    for a, b in zip(replay_params, direct_params):
+        assert a.grad is not None and b.grad is not None
+        assert torch.allclose(a.grad, b.grad, rtol=2e-2, atol=2e-3)
+
+    optim_cls = torch.optim.AdamW if mask_kind in ("hard", "prior") else torch.optim.SGD
+    opts = [optim_cls(params, lr=1e-3) for params in (replay_params, direct_params)]
+    for opt in opts:
+        opt.step()
+    for a, b in zip(replay_params, direct_params):
+        assert torch.allclose(a, b, rtol=2e-3, atol=2e-3)

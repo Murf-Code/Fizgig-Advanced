@@ -1578,8 +1578,6 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             unsupported.append("slider training")
         if dop:
             unsupported.append("DOP")
-        if masked_training or float(mask_prior or 0.0) > 0.0:
-            unsupported.append("masked training / mask prior")
         if int8_rotated_backward:
             unsupported.append("rotated INT8 backward")
         # Training Maps run separate no-grad inference forwards at epoch boundaries, not through the
