@@ -4557,7 +4557,7 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   box-sizing:border-box;
   min-height:0;
   overflow:hidden;
-  padding:10px 12px 4px;
+  padding:10px 12px 0;
   gap:5px;
   border-bottom:0;
 }
@@ -4725,6 +4725,26 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   padding:0;
   font-size:10px;
   line-height:12px;
+}
+/* Keep the entire status line at the very bottom of Image Tags, directly
+   against the heading boundary, rather than floating above spare space. */
+#tab-captions .studio-host .studio-tag-editor-pane>.studio-caption-token-count {
+  flex:0 0 auto;
+  margin-top:auto;
+  margin-bottom:0;
+  padding:0 0 1px;
+  min-height:12px;
+  line-height:12px;
+  font-size:11px;
+  font-style:normal;
+  color:var(--text-secondary);
+}
+#tab-captions .studio-host .studio-tag-editor-pane>.studio-caption-token-count.studio-token-over-limit {
+  color:var(--danger,#f87171);
+  font-weight:650;
+}
+#tab-captions .studio-host .studio-tag-editor-pane>.field-hint:empty {
+  display:none;
 }
 #tab-captions .studio-host .studio-tag-count {
   flex:none;
