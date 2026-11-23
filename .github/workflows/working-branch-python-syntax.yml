@@ -1,0 +1,20 @@
+name: Working branch Python syntax
+
+on:
+  push:
+    branches:
+      - wip-test
+      - test/caption-workbench
+  workflow_dispatch:
+
+jobs:
+  python-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile Python source and checks
+        run: python -m compileall -q src checks
