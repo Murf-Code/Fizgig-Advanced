@@ -14521,8 +14521,9 @@ function renderCaptionStudio(host,items,ext){
   });
   // TagBench's All Tags separates the sort field and direction into two
   // compact dropdowns. Preserve Fizgig's six existing sort values internally.
-  const sortSelect=el("select",{class:"w-combo","aria-label":"Sort All Tags by"});
-  [["frequency","Frequency"],["alpha","Name"],["token","Tokenizer pieces"]]
+  const sortSelect=el("select",{class:"w-combo studio-tag-sort-field","aria-label":"Sort All Tags by",
+    title:"Sort tags by frequency, name, or tokenizer pieces"});
+  [["frequency","Frequency"],["alpha","Name"],["token","Tokens"]]
     .forEach(([value,label])=>sortSelect.append(el("option",{value,text:label})));
   const sortDirection=el("select",{class:"w-combo studio-tag-direction","aria-label":"All Tags sort direction"});
   [["desc","Desc"],["asc","Asc"]]
@@ -14768,7 +14769,7 @@ function renderCaptionStudio(host,items,ext){
     const a=document.createElement("a");a.href=url;a.download="fizgig_captions.txt";a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
   });
   right.append(el("div",{class:"studio-tag-search-wrap"},indexSearch),
-    el("div",{class:"studio-tag-sort"},el("span",{class:"field-label",text:"Sort by"}),sortSelect,sortDirection),
+    el("div",{class:"studio-tag-sort"},sortSelect,sortDirection),
     explore,tagCount);
   drawExplore();
   const bulk=el("div",{class:"studio-bulk"});
@@ -15047,7 +15048,69 @@ function renderCaptionStudio(host,items,ext){
   captionAiControlsMount(aiPane);
   rightDock.append(showAll,showAi);
   const tagHeader=el("div",{class:"studio-tag-header"},headerTitle,rightDock);
-  right.append(editorPane,tagHeader,tagIndexPane,aiPane);
+  // The divider lives beneath the lower panel's header (All Tags /
+  // Auto-Captioner) and above its search field. It resizes the Image Tags
+  // area while both panels keep independent scroll positions.
+  const tagSplitKey="fizgig_caption_tag_vertical_split_v1";
+  if(!Number.isFinite(S.cap.studioTagUpperShare)){
+    let saved=null;
+    try{saved=localStorage.getItem(tagSplitKey);}catch(_){}
+    const share=saved===null?NaN:Number(saved);
+    S.cap.studioTagUpperShare=Number.isFinite(share)?
+      Math.max(.2,Math.min(.8,share)):.49;
+  }
+  const tagHeightGrip=el("div",{class:"studio-tag-height-grip",role:"separator",
+    "aria-orientation":"horizontal","aria-label":"Resizable tag panel divider",
+    title:"Drag to resize · Double-click to reset"});
+  const applyTagShare=share=>{
+    S.cap.studioTagUpperShare=Math.max(.2,Math.min(.8,share));
+    right.style.setProperty("--studio-tag-upper-share",
+      (S.cap.studioTagUpperShare*100).toFixed(2)+"%");
+  };
+  const saveTagShare=()=>{
+    try{localStorage.setItem(tagSplitKey,String(S.cap.studioTagUpperShare));}catch(_){}
+  };
+  const positionTagShare=clientY=>{
+    const box=right.getBoundingClientRect();
+    if(!box.height)return;
+    // The header is between the Image Tags pane and this handle, so subtract
+    // it from the pointer's Y position to avoid a jump on the first drag.
+    const headerHeight=tagHeader.getBoundingClientRect().height;
+    const gripHeight=tagHeightGrip.getBoundingClientRect().height;
+    const maxTop=Math.max(180,box.height-headerHeight-gripHeight-240);
+    const top=Math.max(180,Math.min(maxTop,
+      clientY-box.top-headerHeight-gripHeight/2));
+    applyTagShare(top/box.height);
+  };
+  let tagPointer=null;
+  tagHeightGrip.addEventListener("pointerdown",e=>{
+    if(e.button!==0)return;
+    tagPointer=e.pointerId;
+    tagHeightGrip.setPointerCapture(e.pointerId);
+    tagHeightGrip.classList.add("is-dragging");
+    positionTagShare(e.clientY);
+    e.preventDefault();
+  });
+  tagHeightGrip.addEventListener("pointermove",e=>{
+    if(e.pointerId===tagPointer)positionTagShare(e.clientY);
+  });
+  const finishTagDrag=e=>{
+    if(e.pointerId!==tagPointer)return;
+    if(e.type==="pointerup")positionTagShare(e.clientY);
+    tagPointer=null;
+    tagHeightGrip.classList.remove("is-dragging");
+    saveTagShare();
+    if(tagHeightGrip.hasPointerCapture(e.pointerId))
+      tagHeightGrip.releasePointerCapture(e.pointerId);
+  };
+  for(const event of ["pointerup","pointercancel","lostpointercapture"])
+    tagHeightGrip.addEventListener(event,finishTagDrag);
+  tagHeightGrip.addEventListener("dblclick",()=>{
+    applyTagShare(.49);
+    saveTagShare();
+  });
+  right.append(editorPane,tagHeader,tagHeightGrip,tagIndexPane,aiPane);
+  applyTagShare(S.cap.studioTagUpperShare);
   showTabs(activeDock);
   // A single expandable Edit Tags menu replaces the permanently repeated bulk toolbar.
   // TagBench Find & Replace: literal, case-sensitive text replacement in the

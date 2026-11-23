@@ -4553,24 +4553,44 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   order:0;
   display:flex;
   flex-direction:column;
-  flex:1 1 49%;
+  flex:0 0 clamp(180px,var(--studio-tag-upper-share,49%),calc(100% - 290px));
+  box-sizing:border-box;
   min-height:0;
   overflow:hidden;
-  padding:12px 12px 8px;
-  gap:7px;
+  padding:10px 12px 4px;
+  gap:5px;
   border-bottom:0;
+}
+/* Slim grip below the All Tags / Auto-Captioner heading, above search;
+   resizing still changes the height of the Image Tags pane. */
+#tab-captions .studio-host .studio-tag-height-grip {
+  order:1;flex:none;position:relative;height:7px;min-height:7px;
+  box-sizing:border-box;border-top:1px solid var(--border);
+  border-bottom:1px solid var(--border);background:var(--bg-surface);
+  cursor:row-resize;touch-action:none;user-select:none;outline-offset:-2px;
+}
+#tab-captions .studio-host .studio-tag-height-grip::after {
+  content:"";position:absolute;top:50%;left:50%;
+  width:34px;height:2px;transform:translate(-50%,-50%);
+  border-radius:999px;background:var(--border-strong);
+}
+#tab-captions .studio-host .studio-tag-height-grip:is(:hover,:focus-visible,.is-dragging){
+  background:var(--accent-subtle);border-color:var(--accent-border);
+}
+#tab-captions .studio-host .studio-tag-height-grip:is(:hover,:focus-visible,.is-dragging)::after{
+  background:var(--accent);
 }
 #tab-captions .studio-host .studio-tag-index-pane {
   order:2;
-  flex:1 1 51%;
+  flex:1 1 0;
   min-height:0;
   overflow:hidden;
-  padding:11px 12px 12px;
-  gap:7px;
+  padding:8px 12px 8px;
+  gap:5px;
 }
 #tab-captions .studio-host .studio-ai-dock {
   order:2;
-  flex:1 1 51%;
+  flex:1 1 0;
   min-height:0;
   overflow-y:auto;
   padding:11px 12px 12px;
@@ -4678,17 +4698,33 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   font-size:11px;
   white-space:nowrap;
 }
+/* Global .w-combo uses width:260px!important; override it inside this
+   intentionally narrow sidebar so the sort criterion remains readable. */
 #tab-captions .studio-host .studio-tag-sort select {
-  flex:1 1 auto;
+  box-sizing:border-box;
+  width:auto!important;
+  flex:1 1 0;
   min-width:0;
-  max-width:none;
-  padding:6px 7px;
+  max-width:100%;
+  padding-left:8px;
   font-size:12px;
+}
+#tab-captions .studio-host .studio-tag-sort .studio-tag-sort-field {
+  flex:1 1 0;
+  min-width:0;
 }
 #tab-captions .studio-host .studio-tag-sort .studio-tag-direction {
   flex:0 0 74px;
-  width:74px;
-  min-width:0;
+  width:74px!important;
+  min-width:74px;
+}
+#tab-captions .studio-host .studio-tag-editor-pane>.field-hint {
+  flex:none;
+  min-height:0;
+  margin:0;
+  padding:0;
+  font-size:10px;
+  line-height:12px;
 }
 #tab-captions .studio-host .studio-tag-count {
   flex:none;
@@ -5128,7 +5164,7 @@ body.caption-glass-ui .studio-image-context-menu .studio-tag-color-swatch{
 #tab-captions .studio-host .studio-tag-header {
   order:1;flex:none;min-width:0;display:flex;align-items:center;
   gap:8px;padding:7px 12px;border-top:1px solid var(--border);
-  border-bottom:1px solid var(--border);
+  border-bottom:0; /* The immediately following grip owns the bottom edge. */
 }
 #tab-captions .studio-host .studio-tag-header>strong {
   flex:0 0 auto;font-size:15px;font-weight:700;letter-spacing:-.015em;
