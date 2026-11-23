@@ -10827,6 +10827,8 @@ function studioRollSeed() { S.st.seedUsed = 1 + Math.floor(Math.random() * (2 **
 // Adapt upstream Studio #394, retaining Advanced's one-tab-per-session ownership.
 async function studioSwapPrimary(key, seq) {
   const p = $("stPrimary").value.trim(), L = S.st.layout;
+  // The previous adapter's EQ bypass is not transferable to the new one.
+  if (S.st.eq && S.st.eq.primary) studioEq("primary", false);
   $("stStatus").textContent = "Switching primary LoRA…";
   try {
     await api("/api/studio/primary", {studio_session: studioSession(), path: p});
