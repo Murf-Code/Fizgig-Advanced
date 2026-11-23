@@ -17,6 +17,16 @@ _TQDM_PROGRESS_RE = re.compile(
     r"(?P<speed>[0-9]+(?:\.[0-9]+)?)(?P<unit>it/s|s/it)"
     r"(?:,\s*avr_loss=(?P<loss>[-+0-9.eE]+))?"
 )
+# A slow Global Replay step can produce an incomplete tqdm speed/ETA (e.g.
+# '2/120 [01:02<?, ?it/s]'); do not throw away its *valid count*.
+_TQDM_COUNTS_RE = re.compile(r"(?P<step>\d+)/(?P<total>\d+)\s+\[")
+_AVERAGE_LOSS_RE = re.compile(r"\bavr_loss=([-+0-9.eE]+)")
+# Emitted once when each trainer epoch starts, even before its first slow block replay.
+_EPOCH_START_RE = re.compile(
+    r"\[training-progress\]\s+epoch\s+(?P<epoch>\d+)/(?P<epochs>\d+)\s+"
+    r"start\s+step\s+(?P<step>\d+)/(?P<total>\d+),\s+"
+    r"(?P<done>\d+)/(?P<per_epoch>\d+)\s+in\s+epoch"
+)
 # the postfix's other figures, read on their own (tqdm sorts its postfix keys): the run summary's Learning
 _POSTFIX_RE = re.compile(r"[,\s](lr|gn)=([-+0-9.eE]+)")
 # The cache stages' own count (cache_progress below), for the run card:  [cache] captions 40/120
@@ -72,15 +82,20 @@ def parse_tqdm_progress_line(line: str):
     if re.search(r"(?:minimax-h3|steps):\s", clean) is None:
         return None
     match = _TQDM_PROGRESS_RE.search(clean)
-    if match is None:
+    counts = match or _TQDM_COUNTS_RE.search(clean)
+    if counts is None:
         return None
     try:
+        loss = match.group("loss") if match else None
+        if loss is None:
+            extra = _AVERAGE_LOSS_RE.search(clean)
+            loss = extra.group(1) if extra else None
         result = {
-            "step": int(match.group("step")),
-            "total_steps": int(match.group("total")),
-            "eta_text": match.group("eta").strip(),
-            "speed_text": f"{match.group('speed')} {match.group('unit')}",
-            "average_loss_text": match.group("loss"),
+            "step": int(counts.group("step")),
+            "total_steps": int(counts.group("total")),
+            "eta_text": match.group("eta").strip() if match else "",
+            "speed_text": f"{match.group('speed')} {match.group('unit')}" if match else "",
+            "average_loss_text": loss,
             **{{"lr": "lr_text", "gn": "grad_norm_text"}[k]: v for k, v in _POSTFIX_RE.findall(clean)},
         }
     except (TypeError, ValueError):
@@ -145,9 +160,23 @@ class TrainingProgressTracker:
             total_epochs = 1
         self.total_epochs = max(1, total_epochs)
         self.current_epoch = 1
+        self.steps_per_epoch = None
+        self.epoch_start_step = None
 
     def consume(self, line: str):
         """Return an update dictionary for a relevant line, otherwise ``None``."""
+        start = _EPOCH_START_RE.search(line)
+        if start:
+            epoch, epochs = int(start["epoch"]), int(start["epochs"])
+            step, total = int(start["step"]), int(start["total"])
+            done, per_epoch = int(start["done"]), int(start["per_epoch"])
+            if epochs > 0 and total > 0 and per_epoch > 0:
+                self.current_epoch, self.total_epochs = epoch, epochs
+                self.steps_per_epoch = per_epoch
+                self.epoch_start_step = step - done
+                return {"kind": "epoch_start", "epoch": epoch, "total_epochs": epochs,
+                        "step": step, "total_steps": total, "epoch_step": min(done, per_epoch),
+                        "steps_per_epoch": per_epoch}
         m = _CACHE_RE.search(line)
         if m:
             return {"kind": "cache", "what": m["what"], "n": int(m["n"]), "total": int(m["total"])}
@@ -174,14 +203,24 @@ class TrainingProgressTracker:
         # epoch. Deriving the epoch here avoids instrumentation in every trainer.
         step = displayed["step"]
         total_steps = displayed["total_steps"]
-        if total_steps >= self.total_epochs:
-            inferred = math.ceil(max(1, step) * self.total_epochs / total_steps)
-            self.current_epoch = max(1, min(self.total_epochs, inferred))
-
+        if self.epoch_start_step is not None and self.steps_per_epoch is not None:
+            # Real trainer epoch boundaries beat modulo arithmetic, especially
+            # after a Save & Stop resume or a replay that expands the step count.
+            epoch_done = max(0, min(self.steps_per_epoch, step - self.epoch_start_step))
+        else:
+            if total_steps >= self.total_epochs:
+                inferred = math.ceil(max(1, step) * self.total_epochs / total_steps)
+                self.current_epoch = max(1, min(self.total_epochs, inferred))
+            if self.steps_per_epoch is None and total_steps >= self.total_epochs:
+                self.steps_per_epoch = max(1, round(total_steps / self.total_epochs))
+            epoch_done = (max(0, step - (self.current_epoch - 1) * self.steps_per_epoch)
+                          if self.steps_per_epoch else None)
         return {
             "kind": "training",
             "epoch": self.current_epoch,
             "total_epochs": self.total_epochs,
+            **({"epoch_step": min(epoch_done, self.steps_per_epoch),
+                "steps_per_epoch": self.steps_per_epoch} if epoch_done is not None else {}),
             **displayed,
         }
 
