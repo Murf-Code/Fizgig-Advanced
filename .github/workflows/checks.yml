@@ -22,6 +22,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r checks/requirements.txt
+      - name: Krea 2 manual and automatic target selection regression
+        run: python -m pytest checks/test_krea2_direction_edit_v2.py -k "scan_fills_manual_targets_to_automatic_only_count or manual_target_is_skipped" -q
       - name: Global Replay step-count and epoch-progress regression checks
         run: |
           python -m pytest checks/test_replay_step_progress.py -q
@@ -72,6 +74,5 @@ jobs:
         run: python -m pytest checks/test_upright_orientation.py -q
       - name: Caption Studio regression checks
         run: python -m pytest checks/test_caption_studio_sync.py checks/test_caption_live_images.py checks/test_live_dataset_admission.py checks/test_live_reference_pairs.py checks/test_h3_live_media.py checks/test_caption_live_masks.py checks/test_caption_review.py checks/test_caption_batch_edit.py checks/test_caption_removed_images.py checks/test_caption_duplicates.py checks/test_caption_formats.py checks/test_image_edit.py checks/test_batch_training.py checks/test_lora_regularisation.py -q
-      # The upstream full suite is blocked by pre-existing syntax errors in
-      # src/fizgig/krea2/direction_edit_v2.py (unchanged from wip-test).
-      # Run the full suite after that baseline module is repaired.
+      # The full upstream suite is run separately; this workflow keeps UI
+      # checks and the Krea 2 mixed-target regression fast and focused.
