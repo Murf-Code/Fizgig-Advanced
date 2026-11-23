@@ -12,12 +12,12 @@ Fizgig Advanced 1.7 is the **Caption Workbench** release. The Captions tab is no
 
 ## Caption Workbench in pictures
 
-Four screenshots supplied for this release show **Tags**, **Waterfall**, the **Constellation** overview, and its **focused relationships** view. Image files must be committed under `docs/assets/screenshots/` before the four Markdown embeds below can be activated. The original full-resolution PNGs remain in the release screenshot package.
+Four screenshots show **Tags**, **Waterfall**, the **Constellation** overview, and its **focused relationships** view. The images below are embedded directly from this repository; the original full-resolution PNGs remain in the release screenshot package.
 
-<!-- ![Tags view with in-place image and caption editor](assets/screenshots/caption-workbench-tags.webp) -->
-<!-- ![Waterfall image gallery](assets/screenshots/caption-workbench-waterfall.webp) -->
-<!-- ![Constellation of caption tags](assets/screenshots/caption-workbench-constellation.webp) -->
-<!-- ![Constellation focus on a tag](assets/screenshots/caption-workbench-constellation-focus.webp) -->
+![Tags view with in-place image and caption editor](assets/screenshots/caption-workbench-tags.webp)
+![Waterfall image gallery](assets/screenshots/caption-workbench-waterfall.webp)
+![Constellation of caption tags](assets/screenshots/caption-workbench-constellation.webp)
+![Constellation focus on a tag](assets/screenshots/caption-workbench-constellation-focus.webp)
 
 ## New
 
