@@ -83,3 +83,35 @@ def test_parser_accepts_both_modes_without_old_cli_changes():
     assert p.get_default("best_checkpoint_mode") == "off"
     assert p.get_default("best_checkpoint_window") == 32
     assert p.get_default("best_checkpoint_min_delta") == 0.005
+
+
+def _training_command(tmp_path, best_mode):
+    from fizgig.families import form, launch
+    from fizgig.families.registry import get
+    desc = get("krea2")
+    vals = {**form.DEFAULTS, "LORA_NAME": "rolling", "LORA_OUTPUT_DIR": str(tmp_path),
+            "DATASET_CONFIG": str(tmp_path / "dataset.toml"),
+            "BEST_CHECKPOINT_MODE": best_mode, "VALIDATION_LOSS": False}
+    inputs = form.inputs(desc, vals, models={}, python="python",
+                         repo_dir=str(tmp_path), image_folder=str(tmp_path / "images"),
+                         cache_root=str(tmp_path / "cache"), samples_dir=str(tmp_path / "sample"))
+    return launch.train_command(desc, inputs, launch.LaunchPlan())
+
+
+def test_off_mode_keeps_training_arguments_unchanged(tmp_path):
+    cmd = _training_command(tmp_path, "Off")
+    assert "--best_checkpoint_mode" not in cmd
+
+
+def test_training_mode_enables_rolling_smoothing_without_validation(tmp_path):
+    cmd = _training_command(tmp_path, "Smoothed training loss")
+    assert cmd[cmd.index("--best_checkpoint_mode") + 1] == "train"
+    assert cmd[cmd.index("--best_checkpoint_window") + 1] == "32"
+    assert "--validation_loss" not in cmd
+
+
+def test_validation_best_enables_fixed_check_without_early_stop(tmp_path):
+    cmd = _training_command(tmp_path, "Fixed validation loss")
+    assert cmd[cmd.index("--best_checkpoint_mode") + 1] == "validation"
+    assert "--validation_loss" in cmd
+    assert "--validation_early_stop" not in cmd
