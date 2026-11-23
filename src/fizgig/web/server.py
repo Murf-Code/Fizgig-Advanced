@@ -685,6 +685,27 @@ def save_state(changes: dict):
 STUDIO_PRESETS = os.path.join(user_data.PRESETS_DIR, "repair_studio")
 
 
+def _frank_plan(desc, prefs):
+    """The H3 Video base and Turbo LoRA that make H3 Image's block graft meaningful.
+
+    Upstream 9.8.3 Frankenstein requires the Video-side Turbo LoRA; mixing
+    undistilled video blocks into H3 Image's six-step sampler otherwise produces
+    unusable previews. The mode is only exposed for opt-in compatible families.
+    """
+    if not getattr(desc, "frankenstein_with", ()):
+        raise ValueError("This model family has no supported live Frankenstein pairing.")
+    key, name, lora_key, strength = desc.frankenstein_with[0]
+    other = pref_path(prefs, key)
+    lora = pref_path(prefs, lora_key) if lora_key else ""
+    problems = []
+    if not other or not os.path.isfile(other):
+        problems.append(f"Frankenstein mode needs {name}'s base model in Preferences.")
+    if lora_key and not (lora and os.path.isfile(lora)):
+        problems.append(f"Frankenstein mode needs {name}'s Turbo LoRA in Preferences.")
+    return {"path": other, "name": name, "lora": lora,
+            "strength": float(strength)}, problems
+
+
 def _studio_desc(key):
     d = get_family(key)
     if d is None or d not in studio.families():
@@ -880,6 +901,14 @@ def _studio_post(what, b):
         else:
             kw, settings, status, problems = studio.plan(desc, prefs, pref_path, fast=b.get("fast", True) is not False,
                                                          samples=_studio_samples(desc), negative=b.get("negative"))
+        if b.get("frankenstein"):
+            # Base-model mixing is opt-in, H3 Image only, and not a training mode.
+            if not getattr(desc, "frankenstein_with", ()):
+                raise ValueError("Frankenstein mode isn't supported for this model.")
+            frank, extra_problems = _frank_plan(desc, prefs)
+            problems = list(problems) + extra_problems
+            kw = dict(kw, frankenstein=frank)
+            b = dict(b, primary="", donor="")
         if problems:
             raise ValueError(" ".join(problems))
         captions.unload()                       # the caption model leaves the GPU too
@@ -916,6 +945,22 @@ def _studio_post(what, b):
         if os.path.exists(out) and not b.get("overwrite"):
             return {"exists": True}
         studio.save(out, b.get("state") or {}, b.get("include_donor"))
+        return {"ok": True}
+    if what == "frank_export":
+        # Export a new H3 Image base checkpoint, never over either source.
+        out = os.path.abspath(str(b.get("out") or "").strip())
+        if not out.lower().endswith(".safetensors"):
+            raise ValueError("Name the blended model as a .safetensors file.")
+        if not os.path.isdir(os.path.dirname(out)):
+            raise ValueError("The output folder doesn't exist.")
+        own = studio.status().get("frank_out") or ""
+        if not studio.status().get("frankenstein"):
+            raise ValueError("Load Frankenstein mode before exporting a blend.")
+        if os.path.abspath(out) == os.path.abspath(own) and not b.get("overwrite"):
+            return {"exists": True}
+        if os.path.exists(out) and not b.get("overwrite"):
+            return {"exists": True}
+        studio.frank_export(out, b.get("state") or {})
         return {"ok": True}
     if what == "reset":
         studio.reset()
