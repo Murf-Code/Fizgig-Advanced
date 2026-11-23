@@ -14,10 +14,10 @@ Fizgig Advanced 1.7 is the **Caption Workbench** release. The Captions tab is no
 
 The new Captions tab has three ways to explore your dataset: **Tags**, **Waterfall**, and **Constellation**. The last screenshot shows Constellation focused on the tag **raindrops**.
 
-![Tags view with in-place image and caption editor](assets/screenshots/caption-workbench-tags.webp)
-![Waterfall image gallery](assets/screenshots/caption-workbench-waterfall.webp)
-![Constellation of caption tags](assets/screenshots/caption-workbench-constellation.webp)
-![Constellation focus on a tag](assets/screenshots/caption-workbench-constellation-focus.webp)
+![Tags view with in-place image and caption editor](assets/screenshots/caption-workbench-tags-edited.webp)
+![Waterfall image gallery](assets/screenshots/caption-workbench-waterfall-edited.webp)
+![Constellation of caption tags](assets/screenshots/caption-workbench-constellation-edited.webp)
+![Constellation focus on a tag](assets/screenshots/caption-workbench-constellation-focus-edited.webp)
 
 ## New
 
