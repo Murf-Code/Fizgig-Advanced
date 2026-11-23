@@ -2346,7 +2346,18 @@ def _run_stages(stages, out_dir):
                    "from: treating the run as ended.\n")
         paused = False
     with _lock:
-        _run.update(state="paused" if paused else "completed", proc=None, stage="", ended_at=time.time())
+        # Stop may arrive after the final stage's proc.wait() check but before
+        # this terminal transition. Never overwrite an acknowledged Stop.
+        stopped = _run["state"] == "stopped"
+        if stopped:
+            _run.update(proc=None, stage="")
+        else:
+            _run.update(state="paused" if paused else "completed", proc=None, stage="", ended_at=time.time())
+    if stopped:
+        history.end(_run.get("history_id"), "stopped", _run.get("progress"))
+        webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+        append_log("\n■ Stopped at the end of the final stage.\n")
+        return
     history.end(_run.get("history_id"), "paused" if paused else "finished", _run.get("progress"))
     webqueue.on_run_ended("paused" if paused else "finished", _run.get("lora"), _queue_starter)
     append_log(("\n⏸ Restore point saved and training stopped. Resume continues from it.\n" if _run.get("save_stop")
@@ -2439,10 +2450,15 @@ def _save_stop_check(r):
 def _stop():
     with _lock:
         proc = _run["proc"]
-        if proc is None or proc.poll() is not None:
+        if proc is None or _run["state"] not in ("starting", "running"):
             return False
+        # A stage subprocess can exit just before the watcher clears it and
+        # starts the next stage. Stop must still claim the run in that gap.
+        alive = proc.poll() is None
         _run["state"] = "stopped"
         _run["ended_at"] = time.time()
+        if not alive:
+            return True              # the watcher will acknowledge it; no PID is alive to kill
     if os.name == "nt":
         subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, **_NO_WINDOW)
     else:
