@@ -209,7 +209,7 @@ assert.match(css,/\[data-learning-status="stuck"\]\{--caption-learning-ring:#ff3
 // The loss status selector follows the Loss Status toggle rather than
 // remaining visible (and potentially filtering invisibly) when switched off.
 assert.match(app,/aria-label":"Loss Status"/);
-assert.match(app,/el\("span",\{text:"Loss Status"\}\)/);
+assert.match(app,/el\("span",\{text:"Loss"\}\)/);
 assert.doesNotMatch(app,/el\("span",\{text:"Learning colors"\}\)/);
 assert.match(app,/learningFilter\.hidden=view==="constellation"\|\|!learningCheck\.checked/);
 assert.match(app,/if\(!learningCheck\.checked\)S\.cap\.studioLearningFilter="all"/);
@@ -333,3 +333,15 @@ const server=fs.readFileSync("src/fizgig/web/server.py","utf8");
 assert.match(server,/if path == "\/api\/captions\/reveal_file":/);
 assert.match(server,/if on_pod\(\) or not self\._local_viewer\(\):/);
 assert.match(server,/from fizgig\.web\.file_location import reveal_file/);
+
+// Responsive toolbar preserves both secondary tools, icon actions and loss filter.
+assert.match(app,/settingsBtn\.replaceChildren\(toolbarIcon\(/);
+assert.match(app,/refreshBtn\.replaceChildren\(toolbarIcon\(/);
+assert.match(app,/const toolsMenu=el\("details",\{class:"studio-tools-menu"\}\)/);
+assert.match(app,/toolsOptions\.append\(dupBtn\)/);
+assert.match(app,/toolsOptions\.append\(existingWildcard\)/);
+assert.match(app,/toolsMenu\.addEventListener\("toggle"/);
+assert.match(app,/title:"Filter images by loss status"/);
+assert.match(css,/container:caption-toolbar \/ inline-size/);
+assert.match(css,/box-sizing:border-box;height:36px;min-height:36px;max-height:36px/);
+assert.match(css,/@container caption-toolbar \(max-width:740px\)/);
