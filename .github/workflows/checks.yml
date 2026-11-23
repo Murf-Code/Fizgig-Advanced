@@ -50,6 +50,8 @@ jobs:
         run: python -m pytest checks/test_edit_reference_size.py -q
       - name: MiniMax H3 Image optional half-size speed boost (upstream 5b81d3f)
         run: python -m pytest checks/test_h3_image_speed_boost.py -q
+      - name: Frankenstein base-model blending and export (upstream v9.8.3)
+        run: python -m pytest checks/test_frankenstein_blend.py -q
       - name: Global Replay step-count and epoch-progress regression checks
         run: |
           python -m pytest checks/test_replay_step_progress.py -q
