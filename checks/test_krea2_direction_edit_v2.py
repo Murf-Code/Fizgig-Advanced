@@ -361,8 +361,51 @@ def test_manual_target_is_skipped_when_not_suppressed():
     store = de.encode_prompts(prompts, None, "cpu", encoder=fake_encoder(weak={"tgt a"}))
     weak_rows = de.scan_measure(path, store, pairs)
     accepted = de.scan_select(cfg, pairs, weak_rows, meta, requested_targets=["tgt a"])
-    assert accepted["targets"] == ["tgt a"]
+    assert accepted["manual_targets"] == ["tgt a"]
+    assert accepted["targets"][0] == "tgt a"
+    assert len(accepted["targets"]) == accepted["auto_only_count"]
     store.close()
+
+
+
+def test_scan_fills_manual_targets_to_automatic_only_count():
+    """Manual concepts have priority, but must not increase the auto-only target budget."""
+    tags = [f"tag{i:02d}" for i in range(20)]
+    weak = {"tag01", "tag02", "tag03"}
+    cfg = dict(scan_stage="rf_1", scan_z=1.0, scan_targets=3, scan_controls=5)
+    meta = {"names": {t: t for t in tags}, "counts": {t: 40 for t in tags}}
+    pairs = [{"tag": t} for t in tags for _ in range(4)]
+    rows = [{"rf_1": 0.01 if p["tag"] in weak else 1.0} for p in pairs]
+
+    automatic = de.scan_select(cfg, pairs, rows, meta)
+    assert automatic["targets"] == ["tag01", "tag02", "tag03"]
+    assert automatic["manual_targets"] == []
+    assert automatic["auto_only_count"] == 3
+
+    combined = de.scan_select(cfg, pairs, rows, meta,
+                              requested_targets=["tag03", "tag03", "tag20"])
+    assert combined["manual_targets"] == ["tag03"], combined
+    assert combined["automatic_targets"] == ["tag01", "tag02"], combined
+    assert combined["targets"] == ["tag03", "tag01", "tag02"], combined
+    assert len(combined["targets"]) == len(automatic["targets"])
+    assert len(set(combined["targets"])) == 3
+    assert any(row["tag"] == "tag20" for row in combined["skipped_targets"])
+    assert all(row["confirmed_weak"] for row in combined["rows"] if row["role"] == "target")
+    assert not set(combined["targets"]) & set(combined["controls"])
+
+    # A manual target outside the strongest auto-only rank still displaces an
+    # auto-discovered target rather than increasing the target count.
+    limited = de.scan_select({**cfg, "scan_targets": 2}, pairs, rows, meta,
+                             requested_targets=["tag03"])
+    assert limited["targets"] == ["tag03", "tag01"], limited
+    assert len(limited["targets"]) == 2
+    assert limited["auto_only_count"] == 2
+
+    # Explicit user choices beyond the automatic budget are retained, not silently dropped.
+    manual_heavy = de.scan_select({**cfg, "scan_targets": 1}, pairs, rows, meta,
+                                  requested_targets=["tag03", "tag02"])
+    assert manual_heavy["manual_targets"] == ["tag03", "tag02"]
+    assert manual_heavy["automatic_targets"] == []
 
 
 def test_scan_counts_tags_beyond_context_cap():

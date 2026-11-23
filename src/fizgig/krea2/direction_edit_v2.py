@@ -49,6 +49,7 @@ import copy
 import functools
 import hashlib
 import json
+import logging
 import math
 import os
 import random
@@ -59,6 +60,7 @@ import tempfile
 import torch
 import torch.nn as nn
 
+logger = logging.getLogger(__name__)
 STAGES = ("taps", "lw_0", "lw_1", "rf_0", "rf_1", "txtmlp")
 BLOCK_IDS = ("txt_lw_0", "txt_lw_1", "txt_rf_0", "txt_rf_1")
 BLOCK_STAGE = {"txt_lw_0": "lw_0", "txt_lw_1": "lw_1", "txt_rf_0": "rf_0", "txt_rf_1": "rf_1"}
@@ -999,7 +1001,7 @@ def export(result, cfg, output_dir, output_name, *, checkpoint=None, extra=None)
     return {"lora": lora_path}
 
 
-# ---- whole-dataset scan: find the tags the text path barely hears, no hand-picked targets or controls ----------
+# ---- whole-dataset scan: find suppressed tags; manual targets take priority, auto fills the usual quota --------
 def plan_scan(cfg):
     """The ablation prompts for a scan of the caption folder: for each frequent tag (in at least scan_min_count
     captions, the scan_max_tags most frequent), up to scan_per_tag real captions that contain it, each as it stands
@@ -1092,9 +1094,12 @@ def scan_select(cfg, pairs, rows, meta, requested_targets=None):
     (rf_1 by default: txtmlp starts with an RMSNorm, which erases how loud a token is). A short or rare tag
     legitimately moves the vector less, so the score is regressed on log(characters) and log(caption count) and
     the residual, in standard deviations, is what is compared. A tag counts as weak only when BOTH halves of its
-    samples (alternate captions) fall below -scan_z. Targets: the weakest confirmed tags (scan_targets).
+    samples (alternate captions) fall below -scan_z. Automatic-only selection picks the weakest confirmed tags
+    (up to scan_targets). With manual requests, keep confirmed manual targets first and fill to the SAME automatic-only
+    target count using the weakest remaining confirmed tags; do not add extra targets beyond that count.
+    If more manual targets qualify than the automatic budget, preserve them rather than silently discard user input.
     Controls: tags near the middle (|z| <= 0.5) closest to the targets in length and frequency (scan_controls).
-    Returns {"targets", "controls", "rows"}."""
+    Returns {"targets", "manual_targets", "automatic_targets", "auto_only_count", "controls", "rows"}."""
     stage = cfg.get("scan_stage") or "rf_1"
     by_tag = {}
     for pr, row in zip(pairs, rows):
@@ -1104,7 +1109,8 @@ def scan_select(cfg, pairs, rows, meta, requested_targets=None):
         requested = list(requested_targets or cfg.get("target_tags") or [])
         skipped = [{"tag": t, "reason": f"only {len(tags)} distinct tags could be measured; at least 8 are needed"}
                    for t in requested]
-        return {"targets": [], "controls": [], "skipped_targets": skipped, "rows": [],
+        return {"targets": [], "manual_targets": [], "automatic_targets": [],
+                "auto_only_count": 0, "controls": [], "skipped_targets": skipped, "rows": [],
                 "fit": {"reason": f"only {len(tags)} distinct tags could be measured"}}
     mean = lambda v: sum(v) / len(v)          # noqa: E731
     y = torch.tensor([mean(by_tag[t]) for t in tags], dtype=torch.float64)
@@ -1123,9 +1129,10 @@ def scan_select(cfg, pairs, rows, meta, requested_targets=None):
     order = sorted(range(len(tags)), key=lambda i: float(z[i]))
     skipped = []
     requested = list(requested_targets or [])
+    auto_only = [i for i in order if confirmed[i]][:int(cfg["scan_targets"])]
+    manual = []
     if requested:
         by_key = {tag: i for i, tag in enumerate(tags)}
-        tgt = []
         for raw in requested:
             i = by_key.get(_norm(raw))
             if i is None:
@@ -1133,10 +1140,13 @@ def scan_select(cfg, pairs, rows, meta, requested_targets=None):
             elif not confirmed[i]:
                 skipped.append({"tag": raw, "reason": "no consistent measured suppression",
                                 "z": float(z[i]), "z_half_a": float(za[i]), "z_half_b": float(zb[i])})
-            else:
-                tgt.append(i)
-    else:
-        tgt = [i for i in order if confirmed[i]][:int(cfg["scan_targets"])]
+            elif i not in manual:
+                manual.append(i)
+    # The calibration is not made larger just because the user has entered targets.
+    # E.g. auto-only finds six; two qualifying manual targets + four auto targets = six.
+    # Manual targets outside the top automatic ranks still take priority.
+    automatic = [i for i in auto_only if i not in manual][:max(0, len(auto_only) - len(manual))]
+    tgt = manual + automatic
     target_names = [meta["names"][tags[i]] for i in tgt]
     ref = feat[tgt].mean(0) if tgt else feat.mean(0)
     near = sorted((i for i in range(len(tags)) if abs(float(z[i])) <= 0.5 and i not in tgt),
@@ -1162,7 +1172,9 @@ def scan_select(cfg, pairs, rows, meta, requested_targets=None):
                          "z_half_b": float(zb[i]), "confirmed_weak": confirmed[i],
                          "role": "target" if t in role else ("control" if t in control_keys else "")})
     out_rows.sort(key=lambda r: r["z"])
-    return {"targets": target_names, "controls": controls, "skipped_targets": skipped, "rows": out_rows,
+    return {"targets": target_names, "manual_targets": [meta["names"][tags[i]] for i in manual],
+            "automatic_targets": [meta["names"][tags[i]] for i in automatic],
+            "auto_only_count": len(auto_only), "controls": controls, "skipped_targets": skipped, "rows": out_rows,
             "fit": {"coefficients": [float(b) for b in beta[:, 0]], "residual_sd": sd}}
 
 
@@ -1182,6 +1194,17 @@ def _run_scan(cfg, store, *, dit_path, te_path, device, encoder, path_config, ou
         if device.type == "cuda":
             torch.cuda.empty_cache()
     selection = scan_select(cfg, pairs, rows, meta, requested_targets=cfg.get("target_tags") or [])
+    logger.info("[calibration] target scan: auto-only %d, combined %d (%d manual + %d automatic)",
+                selection["auto_only_count"], len(selection["targets"]),
+                len(selection["manual_targets"]), len(selection["automatic_targets"]))
+    manual_keys = {_norm(name) for name in selection["manual_targets"]}
+    for row in selection["rows"]:
+        if row["role"] == "target":
+            source = "manual" if _norm(row["tag"]) in manual_keys else "automatic"
+            logger.info("[calibration] candidate target: %s (%s; suppression z=%.2f; %d captions)",
+                        row["tag"], source, row["z"], row["count"])
+    for excluded in selection["skipped_targets"]:
+        logger.info("[calibration] manual target skipped: %s (%s)", excluded["tag"], excluded["reason"])
     store.clear()
     dataset_controls = selection["controls"]
     general_controls = builtin_controls(selection["targets"], seed=cfg["caption_seed"])
