@@ -22,8 +22,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r checks/requirements.txt
-      - name: Krea 2 manual and automatic target selection regression
-        run: python -m pytest checks/test_krea2_direction_edit_v2.py -k "scan_fills_manual_targets_to_automatic_only_count or manual_target_is_skipped" -q
+      - name: Krea 2 additive 4 percent auto-target and frequency regression
+        run: |
+          python -m pytest checks/test_krea2_direction_edit_v2.py -k "scan_adds_auto_targets_to_manual or manual_target_is_skipped or auto_selection_prefers_frequent_confirmed_targets or frequent_auto_pool_excludes_uncommon_tags_but_keeps_manual_tags" -q
+          python -m pytest checks/test_krea2_calibration_lifecycle.py -k "auto_target_budget_is_four_percent or fresh_calibration_reads_family_options" -q
       - name: Global Replay step-count and epoch-progress regression checks
         run: |
           python -m pytest checks/test_replay_step_progress.py -q
