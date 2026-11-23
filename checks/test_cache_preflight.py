@@ -37,6 +37,7 @@ def cached_still(tmp_path):
     def save():
         save_file({"latent_8x8": torch.zeros(2, 8, 8)}, str(latent),
                   metadata={"architecture": "krea2drv", "source": source_stamp(str(picture)),
+                            "source_mtime_ns": str(os.stat(picture).st_mtime_ns),
                             "vae_encoder": vae_stamp(str(vae))})
         save_file({"cond__hidden_states": torch.ones(1, 1)}, str(txtcache),
                   metadata={"architecture": "krea2drv", "caption1": caption.read_text(),
@@ -63,6 +64,13 @@ def test_caption_change_only_invalidates_text(cached_still):
 def test_image_edit_only_invalidates_latents(cached_still):
     s = os.stat(cached_still.image)
     os.utime(cached_still.image, ns=(s.st_atime_ns, s.st_mtime_ns + 2_000_000_000))
+    assert cached_still.inspect() == {"checked": 1, "latents": 1, "text": 0}
+
+
+def test_same_second_image_edit_invalidates_new_latent_cache(cached_still):
+    before = os.stat(cached_still.image)
+    os.utime(cached_still.image, ns=(before.st_atime_ns, before.st_mtime_ns + 1))
+    assert source_stamp(str(cached_still.image)) == source_stamp(str(cached_still.image))
     assert cached_still.inspect() == {"checked": 1, "latents": 1, "text": 0}
 
 
