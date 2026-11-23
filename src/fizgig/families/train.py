@@ -4313,12 +4313,20 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             _per = (_info.get("per_raw") or _info["per"].detach().float()) \
                 if not slider and _many and _wb is not None else None
             _later(_rec, lv=loss.detach().float(), per=_per)
-            # The current step's loss was compared only after _update() and _flush().
-            # The candidate is held until the *same* safe optimizer boundary, not
-            # scheduled for the next step (which would save different weights).
-            if pending == 0 and best_train_candidate[0] is not None:
-                _save_best_auto(best_train_candidate[0], epoch + 1)
-                best_train_candidate[0] = None
+            # In the ordinary fast loop the deferred loss callback is flushed on
+            # the *next* step. At an eligible best-save boundary synchronize the
+            # current loss instead: a checkpoint must contain this exact step's
+            # post-update weights, not the following optimizer step's parameters.
+            # The cooldown and warm-up skip synchronization when no save is possible.
+            if (best_tracker is not None and best_checkpoint_mode == "train"
+                    and pending == 0 and
+                    len(best_tracker.values) >= best_tracker.window - 1 and
+                    (best_tracker.step is None or
+                     step_off + global_step - best_tracker.step >= best_tracker.cooldown)):
+                _flush()
+                if best_train_candidate[0] is not None:
+                    _save_best_auto(best_train_candidate[0], epoch + 1)
+                    best_train_candidate[0] = None
             if validator is not None:
                 validator.offer(batch)
                 if pending == 0 and validator.due(global_step):
