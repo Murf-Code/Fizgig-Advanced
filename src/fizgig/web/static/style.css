@@ -3393,7 +3393,10 @@ label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; 
   overflow-wrap:anywhere}
 #tab-captions .studio-duplicate-card-info>strong{font-size:11px;max-width:100%}
 #tab-captions .studio-duplicate-caption{font-size:11px;color:var(--text-secondary);
-  max-height:72px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+  line-height:1.4;max-height:2.8em;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere;
+  cursor:pointer}
+#tab-captions .studio-duplicate-caption.expanded{max-height:220px;overflow:auto}
+#tab-captions .studio-duplicate-caption:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 #tab-captions .studio-duplicate-card-info .field-row{align-items:center}
 #tab-captions .studio-duplicate-actions{display:flex;gap:8px;flex-wrap:wrap}
 #tab-captions .studio-duplicate-merge-note{white-space:pre-wrap;overflow-wrap:anywhere}
