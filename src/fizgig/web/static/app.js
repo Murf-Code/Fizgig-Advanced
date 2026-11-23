@@ -12512,7 +12512,7 @@ function captionDuplicatePanel(ext){
             thumb,el("div",{class:"studio-duplicate-card-info"},
               el("strong",{text:pic.name}),status,
               el("div",{class:"studio-duplicate-caption",text:it.caption||"No caption"}),
-              el("label",{class:"field-row"},tick," Keep")));
+              el("label",{class:"field-row"},tick," Keep this image")));
         }
       };
       const snapshot=()=>{
