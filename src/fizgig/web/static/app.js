@@ -12181,9 +12181,11 @@ function captionDuplicatePanel(ext){
         if(donors.some(d=>S.cap.studioReviewed?.has(d.path))){
           detail.textContent="One or more duplicates are reviewed/locked. Uncheck or unlock them first.";return;
         }
-        if(!confirm("Move "+donors.length+" unkept picture(s) to removed/, with their captions and masks? "+
-          "This is SEPARATE from tag merging. Merge first if you want to preserve their unique tags. "+
-          "Nothing is permanently deleted."))return;
+        if(!(await captionConfirmRemoval({
+          title:"Remove "+donors.length+" duplicate image"+(donors.length===1?"":"s")+"?",
+          detail:"Move the unkept images, captions and masks into removed/. Tag merging is separate: merge first if you want to keep their unique tags. Nothing is permanently deleted.",
+          items:donors.map(pic=>pic.name),confirmLabel:"Move to removed/"
+        })))return;
         removeBtn.disabled=true;
         let completed=0;
         const failures=[];
@@ -12647,6 +12649,55 @@ function studioThumbIndex(offsets,position){
   }
   return Math.max(0,Math.min(count-1,lo-1));
 }
+// Confirmation for Caption Workbench image and tag removal. It is shared by
+// right-click actions, Delete shortcuts, the legacy caption cards and batch
+// tools; nothing is changed until the user explicitly confirms.
+function captionConfirmRemoval({title,detail,items=[],confirmLabel="Remove"}) {
+  if(document.querySelector(".caption-removal-backdrop"))return Promise.resolve(false);
+  return new Promise(resolve=>{
+    const lastFocus=document.activeElement;
+    const backdrop=el("div",{class:"caption-removal-backdrop"});
+    const modal=el("section",{class:"caption-removal-modal",role:"dialog",
+      "aria-modal":"true","aria-labelledby":"captionRemovalTitle",
+      "aria-describedby":"captionRemovalDetails",tabindex:"-1"});
+    const heading=el("h2",{id:"captionRemovalTitle",text:title});
+    const description=el("p",{class:"caption-removal-description",id:"captionRemovalDetails",text:detail});
+    const body=el("div",{class:"caption-removal-body"},description);
+    const list=items.filter(Boolean).map(name=>String(name));
+    if(list.length){
+      const names=el("ul",{class:"caption-removal-list","aria-label":"Affected items"});
+      for(const name of list.slice(0,6))names.append(el("li",{text:name}));
+      if(list.length>6)names.append(el("li",{class:"caption-removal-more",
+        text:"… and "+(list.length-6)+" more"}));
+      body.append(names);
+    }
+    let closed=false;
+    const close=confirmed=>{
+      if(closed)return;
+      closed=true;
+      backdrop.remove();
+      if(lastFocus?.isConnected)lastFocus.focus({preventScroll:true});
+      resolve(confirmed);
+    };
+    const cancel=el("button",{class:"btn",type:"button",text:"Cancel",onclick:()=>close(false)});
+    const proceed=el("button",{class:"btn btn-danger",type:"button",
+      text:confirmLabel,onclick:()=>close(true)});
+    const footer=el("div",{class:"caption-removal-actions"},cancel,proceed);
+    modal.append(el("header",{class:"caption-removal-heading"},heading),body,footer);
+    backdrop.append(modal);document.body.append(backdrop);
+    backdrop.addEventListener("pointerdown",e=>{if(e.target===backdrop)close(false);});
+    backdrop.addEventListener("keydown",e=>{
+      if(e.key==="Escape"){e.preventDefault();e.stopPropagation();close(false);return;}
+      if(e.key!=="Tab")return;
+      const focusable=[cancel,proceed],first=focusable[0],last=focusable[focusable.length-1];
+      if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
+      else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
+    });
+    // Cancel, never the destructive action, receives initial keyboard focus.
+    cancel.focus({preventScroll:true});
+  });
+}
+
 function renderCaptionStudio(host,items,ext){
   // A render replaces the tag lists: remove old document-level listeners so
   // stale selections and DOM references cannot survive the old workbench.
@@ -12867,8 +12918,11 @@ function renderCaptionStudio(host,items,ext){
     const drafts=S.cap.studioDrafts;
     if(chosen.some(it=>drafts?.has(it.path)&&drafts.get(it.path)!==(it.caption??"")))
       return say("Save or discard your caption drafts before removing these images.");
-    if(!confirm("Move "+chosen.length+" selected image"+(chosen.length===1?"":"s")+
-      " and their paired captions into removed/? You can restore them later."))return;
+    if(!(await captionConfirmRemoval({
+      title:"Remove "+chosen.length+" selected image"+(chosen.length===1?"":"s")+"?",
+      detail:"Move the selected images and their paired captions and masks into removed/. You can restore them later.",
+      items:chosen.map(it=>it.name),confirmLabel:"Move to removed/"
+    })))return;
     if(S.cap.imageEditing?.path && chosen.some(it=>it.path===S.cap.imageEditing.path)){
       if(!(await captionImageClose()))return;
     }
@@ -13504,12 +13558,20 @@ function renderCaptionStudio(host,items,ext){
     ta.value=studioCompose(ta.value,studioUnique(parts.map(t=>t===original?next:t)),"tags");
     imageTagPicked.clear();remember(true);redraw();
   };
-  const removePickedTags=()=>{
+  const removePickedTags=async(onlyTag=null)=>{
     if(locked||captionMode==="prose")return;
     const parts=studioTokens(ta.value,"tags");
-    if(!imageTagPicked.size)return;
-    ta.value=studioCompose(ta.value,parts.filter(t=>!imageTagPicked.has(t.toLowerCase())),"tags");
-    imageTagPicked.clear();remember(true);redraw();
+    const picked=onlyTag?new Set([onlyTag.toLowerCase()]):new Set(imageTagPicked);
+    const removing=parts.filter(tag=>picked.has(tag.toLowerCase()));
+    if(!removing.length)return;
+    if(!(await captionConfirmRemoval({
+      title:"Remove "+removing.length+" tag"+(removing.length===1?"":"s")+" from image?",
+      detail:"Remove these tags from "+current.name+". Other images and their captions are unchanged. You can undo the edit.",
+      items:removing,confirmLabel:"Remove "+(removing.length===1?"tag":"tags")
+    })))return;
+    ta.value=studioCompose(ta.value,parts.filter(t=>!picked.has(t.toLowerCase())),"tags");
+    for(const tag of picked)imageTagPicked.delete(tag);
+    remember(true);redraw();
   };
   const filterByTag=(tag,mode)=>{
     S.cap.studioQuery=CaptionStudioTags.addFilter(S.cap.studioQuery,tag,mode);
@@ -13540,14 +13602,7 @@ function renderCaptionStudio(host,items,ext){
     menuAction("Add to Filter (OR)",()=>filterByTag(tag,"or"));
     separator();
     const editable=!locked&&captionMode!=="prose";
-    menuAction('Remove "'+tag+'"',()=>{
-      if(!editable)return;
-      const parts=studioTokens(ta.value,"tags");
-      ta.value=studioCompose(ta.value,
-        parts.filter(t=>t.toLowerCase()!==tag.toLowerCase()),"tags");
-      imageTagPicked.delete(tag.toLowerCase());
-      remember(true);redraw();
-    },!editable);
+    menuAction('Remove "'+tag+'"',()=>void removePickedTags(tag),!editable);
     // Delete Tag operates on highlighted Image Tags only; selecting every
     // tag clears this image's tag line, not any other image's captions.
     menuAction("Delete Tag",removePickedTags,!editable);
@@ -14133,10 +14188,7 @@ function renderCaptionStudio(host,items,ext){
     if(affected.some(it=>drafts.has(it.path)&&drafts.get(it.path)!==it.caption)){
       alert("Save your unsaved caption drafts before a bulk tag operation.");return;
     }
-    const detail=mode==="remove"&&scope==="all"?
-      'Delete tag "'+old.trim()+'" from all eligible dataset captions?':
-      "Apply "+mode+" tag to "+affected.length+" caption(s)?";
-    if(!confirm(detail))return false;
+    if(mode!=="remove"&&!confirm("Apply "+mode+" tag to "+affected.length+" caption(s)?"))return false;
     const changes=[];
     for(const it of affected){
       if(S.cap.studioReviewed?.has(it.path)||studioCaptionMode(it)==="prose")continue;
@@ -14149,6 +14201,12 @@ function renderCaptionStudio(host,items,ext){
     }
     if(!changes.length){say("No editable captions match.");return false;}
     if(changes.length>1000){say("Too many changes for one atomic batch. Limit the selection to 1000 images.");return false;}
+    if(mode==="remove"&&!(await captionConfirmRemoval({
+      title:"Remove tag from "+changes.length+" image"+(changes.length===1?"":"s")+"?",
+      detail:'Remove "'+old.trim()+'" from '+changes.length+' editable caption'+(changes.length===1?"":"s")+
+        (scope==="all"?" across the dataset?":" in the selected scope?")+" This can be undone.",
+      items:[old.trim()],confirmLabel:"Remove tag"
+    })))return false;
     try{
       await api("/api/captions/batch_edit",{ext,edits:changes.map(c=>({
         folder:c.folder,name:c.name,expected:c.before,text:c.after
@@ -14843,7 +14901,11 @@ function renderCaptionStudio(host,items,ext){
         after:studioCompose(original,cleaned,"tags")};
     }).filter(r=>r.after!==r.before);
     if(!changes.length)return say("No "+(kind==="duplicate"?"duplicate":"empty")+" tags found.");
-    if(changes.length>1&&!confirm("Clean "+changes.length+" selected captions?"))return;
+    if(!(await captionConfirmRemoval({
+      title:"Remove "+(kind==="duplicate"?"duplicate":"empty")+" tags?",
+      detail:"Clean "+changes.length+" caption"+(changes.length===1?"":"s")+" in the selected images. This can be undone.",
+      items:changes.map(row=>row.name),confirmLabel:"Clean tags"
+    })))return;
     try{
       await api("/api/captions/batch_edit",{ext,edits:changes.map(r=>({
         folder:r.folder,name:r.name,expected:r.before,text:r.after
@@ -14886,9 +14948,12 @@ function renderCaptionStudio(host,items,ext){
         studioTokens(it.caption,"tags").filter(tag=>!wanted.has(tag.toLowerCase())),"tags")
     })).filter(row=>row.after!==(row.before||""));
     if(!changes.length){say("None of the selected images contain those tags.");return true;}
-    if(!confirm("Delete "+wanted.size+" selected tag"+(wanted.size===1?"":"s")+
-      " from "+changes.length+" selected image"+(changes.length===1?"":"s")+
-      "? This can be undone."))return true;
+    if(!(await captionConfirmRemoval({
+      title:"Delete "+wanted.size+" selected tag"+(wanted.size===1?"":"s")+"?",
+      detail:"Remove the selected tags from "+changes.length+" affected image"+
+        (changes.length===1?"":"s")+". This can be undone.",
+      items:picked,confirmLabel:"Delete "+(wanted.size===1?"tag":"tags")
+    })))return true;
     try{
       await api("/api/captions/batch_edit",{ext,edits:changes.map(row=>({
         folder:row.folder,name:row.name,expected:row.before,text:row.after
@@ -15117,6 +15182,11 @@ async function addText(apply) {
 
 async function capRemove(it, card, status) {
   // out of the training set (into removed/), with an Undo on the spot
+  if(!(await captionConfirmRemoval({
+    title:"Remove image?",
+    detail:"Move this image and its paired caption and masks to removed/. You can restore them later.",
+    items:[it.name],confirmLabel:"Move to removed/"
+  })))return false;
   const folder = capItemFolder(it);
   try {
     const r = await api("/api/captions/remove", {folder, name: it.name, ext: $("captionExt").value.trim() || ".txt"});
