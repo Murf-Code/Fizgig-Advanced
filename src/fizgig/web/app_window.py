@@ -530,6 +530,11 @@ def _unhook_requests():
             if not args.IsSuccess:
                 return
             core = sender.CoreWebView2
+            try:
+                runtime = str(core.Environment.BrowserVersionString)
+                _log("[app] WebView2 Runtime: " + runtime)
+            except Exception:
+                pass
             detached = []
             # These hooks send every thumbnail/media response over the .NET
             # -> Python boundary even when Fizgig has no event listeners.
@@ -556,7 +561,8 @@ def _unhook_requests():
                     detached.append("filter")
                 except Exception as exc:
                     _log(f"[app] WebView2 resource filter could not be removed: {type(exc).__name__}: {exc}")
-            _log("[app] WebView2 event hook removal: " + ", ".join(detached or ["none"]))
+            _log("[app] WebView2 event hook removal: " +
+                 (", ".join(detached) if detached else "not installed by this pywebview version"))
         except Exception as exc:
             _log(f"[app] WebView2 request hook setup failed: {type(exc).__name__}: {exc}")
         _text_menu(sender)
@@ -799,6 +805,11 @@ def main():
             if flag not in cur.split():
                 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{cur} {flag}".strip()
         import webview
+        try:
+            from importlib.metadata import version
+            _log("[app] pywebview version: " + version("pywebview"))
+        except Exception:
+            pass
         _log_pywebview()
         if os.name == "nt":            # the taskbar shows Fizgig's own button and icon, not pythonw's (as the old app)
             try:
