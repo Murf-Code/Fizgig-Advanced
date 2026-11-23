@@ -108,6 +108,31 @@ def test_fresh_calibration_reads_family_options_and_starts_scan(tmp_path, monkey
 
 
 
+def test_prompt_encoder_unloads_model_when_encoding_fails():
+    """A failed calibration encoding must not strand the text encoder on the GPU."""
+    from fizgig.krea2 import direction_edit_v2 as direction_edit
+
+    class FakeDriver:
+        def __init__(self):
+            self.loaded = 0
+            self.unloaded = 0
+
+        def load_text_encoder(self, _path, _device):
+            self.loaded += 1
+            return object()
+
+        def encode_text(self, _te, _prompts):
+            raise RuntimeError("simulated encoder error")
+
+        def unload_text_encoder(self, _te):
+            self.unloaded += 1
+
+    driver = FakeDriver()
+    with pytest.raises(RuntimeError, match="simulated encoder error"):
+        direction_edit.encode_prompts(["furry, mane"], "dummy-te", "cpu", driver=driver)
+    assert driver.loaded == 1 and driver.unloaded == 1
+
+
 class DummyNet:
     def save(self, path, **kwargs):
         with open(path, "wb") as f:
