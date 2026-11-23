@@ -3186,6 +3186,7 @@ async function loadGallery() {
   if (view === "grid" && g.items.length) host.append(previewGrid(g.items, g.prompts || [], eager));
   else for (const it of g.items.slice(0, 120))
     host.append(previewFigure(withLora(it, g.loras, S.fam && S.fam.key), g.prompts || [], eager, g.epoch_prompts));
+  S.nativeGalleryGeneration=(S.nativeGalleryGeneration||0)+1;
   S.gal = {items: g.items, run, sig};
   likenessShow(dir, g.items, run, view);
   styleShow(dir, g.items, run);
@@ -8789,6 +8790,7 @@ async function lookPoll() {
   const r = await api("/api/look/status").catch(() => null);
   if (!r) return;
   S.prep.look = r;
+  if(r.state==="done")S.prep.nativeLookGeneration=(S.prep.nativeLookGeneration||0)+1;
   // a scan that just finished saved the 3 baselines: the masks card's Only my subject can be ticked now (#242)
   const wasRunning = S.prep.lookRunning;
   S.prep.lookRunning = r.state === "running";
@@ -11572,6 +11574,8 @@ async function loadCaptions() {
   S.cap.studioPath=kept.active;
   S.cap.studioSelectionAnchor=kept.anchor;
   S.cap.items=items;
+  // Increment only after a successful dataset refresh, not on every selection.
+  S.cap.nativeDatasetGeneration=(S.cap.nativeDatasetGeneration||0)+1;
   S.cap.studioReviewed=reviewed;
   S.cap.liveStatus=liveStatus;
   renderCaptions();
@@ -11721,6 +11725,11 @@ function renderCaptions() {
   $("capPrev").disabled = S.cap.page === 0; $("capNext").disabled = S.cap.page >= pages - 1;
   host.classList.toggle("captions-as-table", $("capView").value === "table");
   host.classList.toggle("studio-host", $("capView").value === "studio");
+  // The Qt shell reads the exact filtered/sorted view without recomputing it.
+  S.cap.nativeVisibleItems=items;
+  S.cap.nativeVisibleKey=JSON.stringify([S.imageFolder||"",ext,q,filter,
+    $("capSort").value,S.cap.studioQuery||"",S.cap.studioLearningFilter||"all",
+    S.cap.nativeDatasetGeneration||0]);
   if ($("capView").value === "studio") { captionWorkbenchSettingsOpen(false,true); renderCaptionStudio(host, items, ext); return; }
   if ($("capView").value === "table") {
     host.append(captionsTable(items.slice(S.cap.page * CAP_PAGE, (S.cap.page + 1) * CAP_PAGE), ext));
@@ -13199,6 +13208,10 @@ function renderCaptionStudio(host,items,ext){
     });
     menu.querySelector("button:not(:disabled)")?.focus({preventScroll:true});
   };
+  // Qt context actions reuse the same validated handlers as the web rail.
+  // The Qt widget never bypasses review locks, history or removal confirmation.
+  S.cap.nativeImageActions={remove:removeSelectedImages,copy_names:copyImageNames,
+    review:toggleImageReview,validation:toggleValidationImages,sample:toggleSampleImages};
   // Single keyboard handler per render. Replace old handler so shortcuts never
   // close over a stale image or dataset.
   if(S.cap.studioDeleteKeyHandler){
@@ -13207,6 +13220,7 @@ function renderCaptionStudio(host,items,ext){
   }
   // Virtualized thumbnail stack: all images contribute to the scroll range,
   // but only a small viewport-sized slice creates buttons and <img> elements.
+  if(!window.__FizgigQtNativeRail){
   const activeIndex=items.findIndex(it=>it.path===current.path);
   const sameThumbView=S.cap.studioThumbViewKey===thumbViewKey;
   thumbs.classList.add("is-windowed");
@@ -13377,6 +13391,10 @@ function renderCaptionStudio(host,items,ext){
     if(revealActive||!sameThumbView)revealIndex(activeIndex);
   });
   left.append(thumbs,nav);
+  }else{
+    // Keep the filter and action footer; skip all browser thumbnail painting.
+    left.append(nav);
+  }
   const drafts=S.cap.studioDrafts||(S.cap.studioDrafts=new Map());
   const histories=S.cap.studioHistories||(S.cap.studioHistories=new Map());
   // Autosaves outlive this render: navigating to another image must not cancel
