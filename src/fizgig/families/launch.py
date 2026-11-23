@@ -2385,18 +2385,6 @@ def dop_problems(desc, v):
     return out
 
 
-def krea2_method_problems(desc, inputs):
-    """Krea 2's Global replay replays the model one block at a time, so the Samples tab's Training maps (which read
-    the whole backward) can't follow it: refused at Start, with the way out, rather than failing as the run begins."""
-    if desc.key != "krea2" or not inputs.get("TRAINING_MAPS"):
-        return []
-    method = str((inputs.get("FAMILY_OPTIONS") or {}).get("KREA2_TRAINING_METHOD", "")).strip().lower()
-    if "global replay" in method:
-        return ["Training maps can't be used with Krea 2's Global replay: it works one block at a time. Untick "
-                "Training maps (Samples tab), or set Training method to Standard."]
-    return []
-
-
 def start_problems(desc, inputs):
     """Everything Start refuses, in the order the desktop app lists it: the shared checks (fizgig.families.checks)
     with the family's own (problems) in their place. The dataset TOML is written by the plan itself, so only its
@@ -2421,7 +2409,6 @@ def start_problems(desc, inputs):
     out += dop_problems(desc, v)
     out += multi_person_problems(desc, v)
     out += tag_problems(desc, v)
-    out += krea2_method_problems(desc, v)
     if automagic(v) and not v.get("ADAPTIVE_LR") and not ft_on(desc, v):
         try:
             lr = float(v.get("LEARNING_RATE"))
