@@ -38,6 +38,8 @@ jobs:
         run: |
           python -m pytest checks/test_krea2_global_replay.py -k "masked_global_replay" -q
           python -m pytest checks/test_minimax_masks.py -k "reference_distillation_respects_still_mask" -q
+      - name: Upstream captioner header and video-only mask integration regressions
+        run: python -m pytest checks/test_captioner_header_guard.py checks/test_clips_only_masks.py -q
       - name: Global Replay step-count and epoch-progress regression checks
         run: |
           python -m pytest checks/test_replay_step_progress.py -q
