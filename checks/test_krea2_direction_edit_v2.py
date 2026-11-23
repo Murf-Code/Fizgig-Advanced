@@ -363,50 +363,48 @@ def test_manual_target_is_skipped_when_not_suppressed():
     accepted = de.scan_select(cfg, pairs, weak_rows, meta, requested_targets=["tgt a"])
     assert accepted["manual_targets"] == ["tgt a"]
     assert accepted["targets"][0] == "tgt a"
-    assert len(accepted["targets"]) == accepted["auto_only_count"]
+    assert len(accepted["targets"]) == (
+        len(accepted["manual_targets"]) + len(accepted["automatic_targets"]))
+    assert len(accepted["automatic_targets"]) <= cfg["scan_targets"]
     store.close()
 
 
 
-def test_scan_fills_manual_targets_to_automatic_only_count():
-    """Manual concepts have priority, but must not increase the auto-only target budget."""
+def test_scan_adds_auto_targets_to_manual():
+    """The full automatic quota is additive, and overlapping manual tags are backfilled."""
     tags = [f"tag{i:02d}" for i in range(20)]
-    weak = {"tag01", "tag02", "tag03"}
+    weak = {"tag01", "tag02", "tag03", "tag04"}
     cfg = dict(scan_stage="rf_1", scan_z=1.0, scan_targets=3, scan_controls=5)
     meta = {"names": {t: t for t in tags}, "counts": {t: 40 for t in tags}}
     pairs = [{"tag": t} for t in tags for _ in range(4)]
     rows = [{"rf_1": 0.01 if p["tag"] in weak else 1.0} for p in pairs]
 
     automatic = de.scan_select(cfg, pairs, rows, meta)
-    assert automatic["targets"] == ["tag01", "tag02", "tag03"]
-    assert automatic["manual_targets"] == []
+    assert automatic["targets"] == ["tag01", "tag02", "tag03"], automatic
     assert automatic["auto_only_count"] == 3
 
     combined = de.scan_select(cfg, pairs, rows, meta,
                               requested_targets=["tag03", "tag03", "tag20"])
     assert combined["manual_targets"] == ["tag03"], combined
-    assert combined["automatic_targets"] == ["tag01", "tag02"], combined
-    assert combined["targets"] == ["tag03", "tag01", "tag02"], combined
-    assert len(combined["targets"]) == len(automatic["targets"])
-    assert len(set(combined["targets"])) == 3
+    assert combined["automatic_targets"] == ["tag01", "tag02", "tag04"], combined
+    assert combined["targets"] == ["tag03", "tag01", "tag02", "tag04"], combined
+    assert len(combined["targets"]) == 4  # 1 manual + 3 automatic
+    assert len(set(combined["targets"])) == len(combined["targets"])
     assert any(row["tag"] == "tag20" for row in combined["skipped_targets"])
     assert all(row["confirmed_weak"] for row in combined["rows"] if row["role"] == "target")
     assert not set(combined["targets"]) & set(combined["controls"])
 
-    # A manual target outside the strongest auto-only rank still displaces an
-    # auto-discovered target rather than increasing the target count.
-    limited = de.scan_select({**cfg, "scan_targets": 2}, pairs, rows, meta,
-                             requested_targets=["tag03"])
-    assert limited["targets"] == ["tag03", "tag01"], limited
-    assert len(limited["targets"]) == 2
-    assert limited["auto_only_count"] == 2
+    # Manual concepts not in the automatic top three still add to its quota.
+    outside = de.scan_select(cfg, pairs, rows, meta, requested_targets=["tag04"])
+    assert outside["targets"] == ["tag04", "tag01", "tag02", "tag03"], outside
 
-    # Explicit user choices beyond the automatic budget are retained, not silently dropped.
+    # Even if manual targets exceed the auto allowance, the extra auto slot
+    # still exists when an eligible unselected common tag remains.
     manual_heavy = de.scan_select({**cfg, "scan_targets": 1}, pairs, rows, meta,
                                   requested_targets=["tag03", "tag02"])
     assert manual_heavy["manual_targets"] == ["tag03", "tag02"]
-    assert manual_heavy["automatic_targets"] == []
-
+    assert manual_heavy["automatic_targets"] == ["tag01"]
+    assert manual_heavy["targets"] == ["tag03", "tag02", "tag01"]
 
 
 def test_frequent_auto_pool_excludes_uncommon_tags_but_keeps_manual_tags():
@@ -445,9 +443,9 @@ def test_auto_selection_prefers_frequent_confirmed_targets():
     assert automatic["targets"] == ["tag01", "tag02"], automatic
     combined = de.scan_select(cfg, pairs, rows, meta, requested_targets=["tag15"])
     assert combined["manual_targets"] == ["tag15"], combined
-    assert combined["automatic_targets"] == ["tag01"], combined
-    assert combined["targets"] == ["tag15", "tag01"], combined
-    assert len(combined["targets"]) == 2
+    assert combined["automatic_targets"] == ["tag01", "tag02"], combined
+    assert combined["targets"] == ["tag15", "tag01", "tag02"], combined
+    assert len(combined["targets"]) == 3
 
 def test_scan_counts_tags_beyond_context_cap():
     d = tempfile.mkdtemp(prefix="de_v2_tail_tags_")

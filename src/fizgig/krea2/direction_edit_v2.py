@@ -1106,10 +1106,10 @@ def scan_select(cfg, pairs, rows, meta, requested_targets=None):
     (rf_1 by default: txtmlp starts with an RMSNorm, which erases how loud a token is). A short or rare tag
     legitimately moves the vector less, so the score is regressed on log(characters) and log(caption count) and
     the residual, in standard deviations, is what is compared. A tag counts as weak only when BOTH halves of its
-    samples (alternate captions) fall below -scan_z. Automatic-only selection picks the weakest confirmed tags
-    (up to scan_targets). With manual requests, keep confirmed manual targets first and fill to the SAME automatic-only
-    target count using the weakest remaining confirmed tags; do not add extra targets beyond that count.
-    If more manual targets qualify than the automatic budget, preserve them rather than silently discard user input.
+    samples (alternate captions) fall below -scan_z. Automatic-only selection picks up to scan_targets
+    confirmed-suppressed frequent tags. With manual requests, keep all confirmed manual targets and add
+    up to scan_targets OTHER qualifying automatic targets (manual targets do not consume those slots).
+    Overlapping tags are counted only once, and fewer auto targets may qualify than the budget.
     Controls: tags near the middle (|z| <= 0.5) closest to the targets in length and frequency (scan_controls).
     Returns {"targets", "manual_targets", "automatic_targets", "auto_only_count", "controls", "rows"}."""
     stage = cfg.get("scan_stage") or "rf_1"
@@ -1158,10 +1158,10 @@ def scan_select(cfg, pairs, rows, meta, requested_targets=None):
                                 "z": float(z[i]), "z_half_a": float(za[i]), "z_half_b": float(zb[i])})
             elif i not in manual:
                 manual.append(i)
-    # The calibration is not made larger just because the user has entered targets.
-    # E.g. auto-only finds six; two qualifying manual targets + four auto targets = six.
-    # Manual targets outside the top automatic ranks still take priority.
-    automatic = [i for i in auto_only if i not in manual][:max(0, len(auto_only) - len(manual))]
+    # Manual targets are ADDITIVE to the automatic budget: if a manual
+    # target would also have been chosen automatically, backfill from the
+    # remaining qualified common tags rather than wasting an automatic slot.
+    automatic = [i for i in order if confirmed[i] and i not in manual][:int(cfg["scan_targets"])]
     tgt = manual + automatic
     target_names = [meta["names"][tags[i]] for i in tgt]
     ref = feat[tgt].mean(0) if tgt else feat.mean(0)

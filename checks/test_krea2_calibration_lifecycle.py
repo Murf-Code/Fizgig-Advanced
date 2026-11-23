@@ -100,7 +100,7 @@ def test_fresh_calibration_reads_family_options_and_starts_scan(tmp_path, monkey
                                    "direction_edit_target_tags": "furry, paws"}
         assert seen["config"]["scan"] is True
         assert seen["config"]["caption_mode"] is True
-        assert seen["config"]["scan_targets"] == 1
+        assert seen["config"]["scan_targets"] == 1  # ceil(4% of eight captions)
         assert seen["config"]["scan_auto_top_fraction"] == 0.25
         assert seen["config"]["verification_records"] == {"held": "furry, paws, fur"}
     finally:
@@ -111,8 +111,8 @@ def test_fresh_calibration_reads_family_options_and_starts_scan(tmp_path, monkey
 
 
 
-def test_calibration_auto_target_budget_is_two_percent(tmp_path, monkeypatch):
-    """156 training images allocate four automatic selection slots."""
+def test_calibration_auto_target_budget_is_four_percent(tmp_path, monkeypatch):
+    """156 training images allocate seven ADDITIONAL automatic target slots."""
     from fizgig.krea2 import direction_edit_v2
     monkeypatch.setattr(direction_edit_v2, "captions_from_group",
                         lambda _: {str(i): "tag01, tag02" for i in range(156)})
@@ -125,7 +125,7 @@ def test_calibration_auto_target_budget_is_two_percent(tmp_path, monkeypatch):
         return {"status": "skipped", "verify": None}
     monkeypatch.setattr(direction_edit_v2, "run_direction_edit", fake_runner)
     assert call_prepare(tmp_path) is None
-    assert found["scan_targets"] == 4
+    assert found["scan_targets"] == 7
     assert found["scan_auto_top_fraction"] == 0.25
 
 def test_prompt_encoder_unloads_model_when_encoding_fails():
