@@ -27,6 +27,22 @@ def test_current_session_can_act_but_stale_session_cannot():
             studio._S.update(prior)
 
 
+def test_fresh_idle_studio_does_not_reject_unload():
+    with studio._lock:
+        prior = studio._S.copy()
+        studio._S.update(load_session="", load_id=0, state="idle")
+    try:
+        studio.require_studio_session("first-tab")  # no model is owned yet
+        with studio._lock:
+            studio._S.update(state="ready")
+        with pytest.raises(ValueError, match="Another Studio tab"):
+            studio.require_studio_session("first-tab")
+    finally:
+        with studio._lock:
+            studio._S.clear()
+            studio._S.update(prior)
+
+
 def test_server_scopes_studio_mutations():
     from pathlib import Path
     server = (Path(__file__).resolve().parents[1] / "src/fizgig/web/server.py").read_text()
