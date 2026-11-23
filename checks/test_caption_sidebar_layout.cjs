@@ -61,6 +61,17 @@ assert.match(css,/#tab-captions \.studio-image-stage \.studio-preview\{[^}]*flex
 assert.match(css,/#tab-captions \.studio-image-stage \.studio-preview img,[\s\S]*?max-height:100%;[\s\S]*?object-fit:contain/);
 assert.doesNotMatch(css,/\.studio-image-stage \.studio-preview img[^\n]*max-height:min\(68vh,750px\)/);
 
+// Keep a single production image renderer. The native Qt experiment was
+// removed after GPU-enabled WebView2 passed every image-heavy Windows test.
+assert.doesNotMatch(app,/__FizgigQtNativeRail|nativeVisibleItems|nativeImageActions|nativeDatasetGeneration/);
+assert.match(app,/left\.append\(thumbs,nav\)/);
+for (const retired of [
+  "src/fizgig/web/qt_caption_trial.py",
+  "src/fizgig/web/qt_images.py",
+  "src/fizgig/web/static/qt_native_image_bridge.js",
+  "Launch Fizgig Native Images.bat"
+]) assert.equal(fs.existsSync(retired),false,`retired Qt renderer reintroduced: ${retired}`);
+
 // Native Chromium wheel scrolling must not be blocked by JavaScript.
 assert.doesNotMatch(app,/thumbs\.addEventListener\("wheel"/);
 assert.match(app,/CaptionThumbRail\.reconcile\(windowRows,mountedThumbs/);
