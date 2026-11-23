@@ -4047,6 +4047,16 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             logger.info(f"[face boost] epoch {epoch + 1}: " + ("boosted" if face_phase["on"] else "normal (no boost)"))
         shared_epoch.value = epoch + 1
         driver.begin_epoch(epoch + 1 + (ftr.epochs_done if ftr is not None else 0))   # a continued fine-tune counts on
+        if not share_worker:
+            # The web counter must not depend on tqdm producing a numeric speed.
+            # Report the true epoch start even while the first (possibly long)
+            # Global Replay block backward is still running. Resume keeps the
+            # already completed micro-batches in the position.
+            _epoch_off = ftr.epochs_done if ftr is not None else 0
+            _done_at_start = max(0, min(steps_per_epoch, global_step - epoch * steps_per_epoch))
+            logger.info(f"[training-progress] epoch {epoch + 1 + _epoch_off}/{max_train_epochs + _epoch_off} "
+                        f"start step {step_off + global_step}/{step_off + steps_per_epoch * max_train_epochs}, "
+                        f"{_done_at_start}/{steps_per_epoch} in epoch")
         if share_worker and epoch + 1 == int(share_now[0]["epoch"]):   # a round's first epoch: the lead's LoRA
             _sj = share_now[0]
             if net.load_trainable(_sj["start"]) == 0:
