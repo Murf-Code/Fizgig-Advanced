@@ -1,5 +1,25 @@
 # Fizgig Advanced — Caption Workbench release notes (DRAFT)
 
+## The highlights
+
+**Caption Workbench is a whole new way to work with your training pictures.** The Captions tab is now a visual workspace: browse your dataset, edit pictures, work with tags or natural-language captions, find duplicates and see how individual images are learning, all without jumping between separate tools.
+
+**Edit pictures while a LoRA trains, and Fizgig re-caches what changed.** Crop an image, remove an object with local LaMa, change a caption or update a supported mask; at the next epoch boundary the trainer can re-encode the changed image or text instead of starting the whole cache over. Eligible new pictures can join an active run too. Unsupported changes are flagged rather than quietly used with stale caches. *Full live GPU acceptance is still pending.*
+
+**Pick your verification and sample pictures where you're already looking at them.** Right-click images in Tags or Waterfall to add or remove them from Validation Images or Sample Images, including multiple selections. Sample picks can use the picture's own caption as the preview prompt, while leaving your manually written prompts alone.
+
+**See which images are learning and which are stuck.** With Loss Status on, a second colored outline identifies images the training loss watcher considers **Stuck**, **Learning**, **Easy**, **Fully mined** or in another monitored state. Sort or filter by those results to find pictures worth revisiting. Selection highlighting stays separate.
+
+**Tags finally have a visual language of their own.** Related tags receive consistent colors across Image Tags, All Tags and Constellation. Right-click any tag to choose a preset or custom color, or return it to Auto. Edit comma-separated tags quickly, switch to a natural-language caption field, and keep prose intact when sorting or changing tags.
+
+**Explore your dataset as pictures or as relationships.** **Waterfall** lays the images out in a full-width gallery, preserving their different shapes. **Constellation** turns tag frequencies and co-occurrences into a colorful interactive map; click a tag to reveal its closest relationships. Selections carry back into the Tags editor.
+
+**Find near-duplicates before they waste training effort.** Compare likely copies, choose one or several to keep, preview copying useful tags from the others, and remove only the pictures you explicitly choose. Removed images can be restored, and reviewed pictures are protected.
+
+**The training and Studio tools have grown too.** Krea 2 keeps its new **Text-fusion calibration** and **Text fusion only** training, with Global replay improvements. Optional **mid-epoch best-loss checkpoints**, clearer step counts, faster compatible Studio LoRA switching and experimental model-blending tools round out the release. The separate experimental *Training Text Enhancer* is **not included**.
+
+The full feature explanations, screenshots, bug fixes, optimization notes and upstream credits follow.
+
 **Status:** Working draft, not a released build or production sign-off.  
 **Integration branch:** [`test/caption-workbench`](https://github.com/Murf-Code/Fizgig-Advanced/tree/test/caption-workbench)  
 **Compiled:** 2026-11-23. Recheck against the branch HEAD, CI, and live hardware before publication.  
