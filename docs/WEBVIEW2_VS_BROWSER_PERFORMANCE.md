@@ -136,6 +136,28 @@ Compare the output from GPU ON and GPU OFF launches, alongside
 Windows Performance Recorder WebView2 profile can capture a deeper
 GPU/compositor trace.
 
+## Observed Windows GPU-off versus GPU-on process flags (23 Nov 2026)
+
+The same Windows host and RTX 4070 Ti produced two WebView2 snapshots:
+
+| State | Browser process | Renderer process | GPU process |
+| --- | --- | --- | --- |
+| GPU disabled (fast) | `--disable-gpu` | `--disable-gpu-compositing` | `--use-angle=d3d11-warp-webgl --use-gl=angle` |
+| GPU enabled | No tracked graphics switches | No tracked graphics switches | No tracked graphics switches |
+
+The driver list showed **NVIDIA GeForce RTX 4070 Ti — OK** and
+**Meta Virtual Monitor — Error** in both runs, with no WebView2 GPU
+policy found in the two checked registry paths. No direct proof yet
+links the virtual monitor to WebView2 lag; the adapter's
+`ConfigManagerErrorCode` should be checked before deciding whether
+it is an unused display device or a malfunctioning driver.
+
+The snapshots **confirm the GPU toggle is applied correctly**, not that
+the root cause is identified. Next isolate WebView2's composition path
+versus the driver/display stack. A recent diagnostic enhancement adds
+the actual PnP error code, and WebView2 `ProcessFailed` logging adds
+GPU/renderer crash details to `user_data/app_window.log`.
+
 ## Scope / caveats
 
 No Windows GUI, GPU utilization, ETW or real scrolling FPS measurement has
