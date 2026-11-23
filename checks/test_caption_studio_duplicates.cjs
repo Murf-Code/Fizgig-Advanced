@@ -10,6 +10,12 @@ const duplicates=fs.readFileSync("src/fizgig/web/caption_duplicates.py","utf8");
 assert.match(app,/function captionDuplicatePanel\(ext\)/);
 const duplicatePanel=app.slice(app.indexOf("function captionDuplicatePanel(ext)"),app.indexOf("function captionDuplicatePanel(ext)")+16000);
 assert.doesNotMatch(duplicatePanel,/text:"View caption"/);
+assert.match(app,/\.studio-duplicate-card > img/);
+assert.match(app,/\.st-preview, \.studio-duplicate-cards/);
+assert.match(app,/title:"View full image"/);
+assert.match(app,/thumb\.addEventListener\("keydown"/);
+assert.match(css,/\.studio-duplicate-card>img:focus-visible/);
+
 assert.match(duplicatePanel,/el\("label",\{class:"field-row"\},tick," Keep this image"\)/);
 assert.match(duplicatePanel,/text:"Remove image\/s"/);
 assert.match(duplicatePanel,/captionConfirmRemoval\(/);
