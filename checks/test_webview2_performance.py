@@ -66,6 +66,8 @@ class WebView2PerformanceTests(unittest.TestCase):
         self.assertIn("core.WebResourceResponseReceived -= self.on_web_resource_response", app)
         self.assertIn("core.WebResourceRequested -= self.on_web_resource_request", app)
         self.assertIn("WebView2 event hook removal:", app)
+        self.assertIn("core.ProcessFailed += on_process_failed", app)
+        self.assertIn("self._fizgig_process_failed_handler = on_process_failed", app)
         self.assertNotIn('setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"', app)
 
 
