@@ -1284,6 +1284,8 @@ def encode_prompts(prompts, te_path, device, driver=None, encoder=None, te=None,
 
         def encode(part):
             return driver.encode_text(te, part)
+    try:
+        for i in range(0, len(todo), chunk):
             part = todo[i:i + chunk]
             for p, e in zip(part, encode(part)):
                 h, m = e["hidden_states"], e.get("attention_mask")
