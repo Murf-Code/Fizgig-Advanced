@@ -29,22 +29,22 @@ Read on for a closer look at the tools, screenshots, fixes, and upstream contrib
 Here are the three views of Caption Workbench, plus an example of selecting a tag in Constellation to see its connections.
 
 ### Tags — image and caption editor
-![Caption Workbench Tags editor](assets/screenshots/caption-workbench-tags.webp)
+![Caption Workbench Tags editor](assets/screenshots/caption-workbench-tags-edited.webp)
 
 **Tags:** Browse images on the left, edit the selected picture in the center, and manage its tags or caption on the right.
 
 ### Waterfall — image-first dataset exploration
-![Caption Workbench Waterfall gallery](assets/screenshots/caption-workbench-waterfall.webp)
+![Caption Workbench Waterfall gallery](assets/screenshots/caption-workbench-waterfall-edited.webp)
 
 **Waterfall:** Browse the whole dataset in a gallery that keeps each picture's aspect ratio.
 
 ### Constellation — tag frequency and co-occurrence
-![Caption Workbench tag constellation](assets/screenshots/caption-workbench-constellation.webp)
+![Caption Workbench tag constellation](assets/screenshots/caption-workbench-constellation-edited.webp)
 
 **Constellation:** Explore caption tags by frequency, color group, and their connections.
 
 ### Constellation — focused tag relationships
-![Caption Workbench focused constellation](assets/screenshots/caption-workbench-constellation-focus.webp)
+![Caption Workbench focused constellation](assets/screenshots/caption-workbench-constellation-focus-edited.webp)
 
 **Tag focus:** Selecting **raindrops** highlights related tags and their links while dimming the rest of the map.
 
