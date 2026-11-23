@@ -66,6 +66,21 @@ def test_inspect_and_mix_compatible_family(tmp_path, family, monkeypatch):
     assert info["family"] == family and info["blocks"] == {selected: 0.5}
 
 
+@pytest.mark.parametrize("family,prefix", [
+    ("moss_image", "model.diffusion_model.layers."),
+    ("anima", "net.blocks."),
+    ("anima", "model.diffusion_model.blocks."),
+    ("krea2", "diffusion_model.blocks."),
+])
+def test_only_root_transformer_blocks_are_blendable(family, prefix):
+    suffix = "layers" if family == "moss_image" else "blocks"
+    assert mix.block_of(family, prefix + "3.attn.weight") == (
+        "layer_3" if family == "moss_image" else "block_3")
+    assert mix.block_of(family, "llm_adapter.blocks.3.attn.weight") is None
+    assert mix.block_of(family, "text_encoder.layers.3.self_attn.weight") is None
+    assert mix.block_of(family, "text_fusion.refiner_blocks.0.attn.weight") is None
+
+
 def test_donor_endpoint_preserves_exact_tensor_bytes(tmp_path):
     base, donor, ids, a, b = fixture_pair(tmp_path, dtype=torch.float16)
     plan = mix.inspect_pair(str(base), str(donor), "anima")
