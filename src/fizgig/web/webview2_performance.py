@@ -1,10 +1,9 @@
 """WebView2 renderer defaults for Fizgig's Windows desktop shell.
 
-Keep WebView2's Chromium rendering settings independently configurable
-from Edge/Chrome. On Windows, prefer software GPU rendering by default after
-observed extreme WebView2 lag with GPU acceleration, while respecting explicit
-user choices. Linux keeps the earlier accelerated default. Software video
-decoding remains a separate opt-in compatibility workaround.
+Keep WebView2's Chromium rendering defaults independently configurable
+from Edge/Chrome. Windows and Linux use hardware acceleration by default.
+The GPU-disable preference is an opt-in compatibility workaround; software
+video decoding is independently opt-in.
 
 This module intentionally imports no pywebview/Windows dependencies so it can
 be regression-tested without a desktop runtime.
@@ -19,10 +18,10 @@ def _has_flag(arguments, flag):
 
 
 def gpu_disabled(prefs=None, platform=None):
-    """Windows desktop uses software rendering by default; explicit 0/1 wins.
+    """Disable embedded desktop acceleration only when explicitly requested.
 
-    This preference applies only to Fizgig's embedded app window, not Chrome
-    or Edge. Linux Qt WebEngine retains its GPU-enabled default.
+    The default remains hardware acceleration on both Windows and Linux.
+    This option has no effect on standalone Chrome or Edge.
     """
     prefs = prefs or {}
     setting = str(prefs.get("qt_disable_gpu", "")).strip()
@@ -30,16 +29,15 @@ def gpu_disabled(prefs=None, platform=None):
         return True
     if setting == "0":
         return False
-    return (platform or sys.platform) == "win32"
+    return False
 
 
 def browser_arguments(prefs=None, inherited="", software_video=False, platform=None):
     """Build WebView2 flags without overriding explicitly inherited flags.
 
-    On Windows software GPU rendering is now the default based on improved
-    responsiveness in the embedded WebView2 shell. Users can opt back into
-    GPU acceleration with the same existing toggle; no change to browsers.
-    Hardware video decoding remains separately configurable.
+    Both Windows and Linux retain browser-like GPU acceleration by default.
+    The user can explicitly disable GPU acceleration for embedded desktop
+    compatibility. Hardware video decoding remains separately configurable.
     """
     prefs = prefs or {}
     result = str(inherited or "").strip()
