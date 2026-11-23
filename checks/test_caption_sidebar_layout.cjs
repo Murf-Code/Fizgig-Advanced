@@ -13,7 +13,7 @@ assert.match(app,/right\.querySelector\("\.studio-image-tags-heading"\)/);
 assert.match(app,/right\.querySelector\("\.studio-add-tag"\),tags,word/);
 assert.match(app,/while\(right\.firstChild\)tagIndexPane\.append\(right\.firstChild\)/);
 assert.match(app,/rightDock\.append\(showAll,showAi\)/);
-assert.match(app,/right\.append\(editorPane,tagHeader,tagIndexPane,aiPane\)/);
+assert.match(app,/right\.append\(editorPane,tagHeader,tagHeightGrip,tagIndexPane,aiPane\)/);
 assert.match(app,/const showAll=btn\("All Tags",\(\)=>\{/);
 assert.match(app,/const showAi=btn\("Auto-Captioner",\(\)=>\{/);
 assert.doesNotMatch(app,/editorPane\.hidden\s*=/);
@@ -51,6 +51,25 @@ assert.match(app,/Math\.max\(6,Math\.min\(30,sizes\.left\)\)/);
 assert.match(app,/minmax\(96px,/);
 assert.match(css,/#tab-captions \.studio-thumb-rail \.studio-browser-row\s*\{[^}]*width:85%;/);
 assert.match(css,/max-height:calc\(var\(--caption-settings-preview-height,360px\) \* \.85\)/);
+
+// The image total is shown once (in current/total progress), and the narrow
+// thumbnail footer stacks its controls rather than letting them collide.
+assert.match(app,/el\("strong",\{text:"Images"\}\)\)\)/);
+assert.doesNotMatch(app,/el\("span",\{class:"field-hint",text:String\(items\.length\)\}\)/);
+assert.match(app,/missingBtn\.dataset\.compact=/);
+assert.match(app,/selectionCount\.hidden=selection\.size<=1/);
+assert.match(css,/#tab-captions \.studio-host \.studio-thumb-footer\s*\{\s*display:grid;/);
+assert.match(css,/@container \(max-width:170px\)/);
+assert.match(css,/\.studio-missing-filter::after\s*\{\s*content:attr\(data-compact\)/);
+
+// Saved is represented by a green light; pending writes, errors and required
+// image actions still keep explanatory text. Status details remain accessible.
+assert.match(app,/liveLabel\.textContent=label/);
+assert.match(app,/liveSummary\.setAttribute\("aria-label","Dataset status: "\+label/);
+assert.match(css,/\.studio-workspace-status\[data-state="saved"\] \.studio-status-label\s*\{/);
+assert.match(css,/\.studio-workspace-status\[data-state="saved"\] summary::after\s*\{\s*display:none;/);
+assert.match(css,/\.studio-workspace-status\[data-state="saved"\] \.studio-status-dot\s*\{/);
+assert.match(css,/\.studio-workspace-status\[data-state="attention"\] \.studio-status-dot\s*\{/);
 
 // The stage expands to fill the available notebook viewport, rather than
 // being capped at 82dvh/950px. Short windows still scroll normally.
@@ -134,7 +153,7 @@ assert.match(css,/studio-tag-color-swatches/);
 // Natural language replaces the lower All Tags list using the one autosaved
 // textarea; clicking All Tags restores the list.
 assert.match(app,/tagIndexPane\.replaceChildren\(/);
-assert.match(app,/S\.cap\.studioNaturalMode=false;S\.cap\.studioDock="all";renderCaptions\(\)/);
+assert.match(app,/naturalModes\.set\(current\.path,false\);S\.cap\.studioDock="all";renderCaptions\(\)/);
 assert.match(app,/const naturalEditor=el\("section",\{class:"studio-natural-pane"\},captionText,captionHelp\)/);
 assert.match(css,/#tab-captions \.studio-host \.studio-tag-index-pane>\.studio-natural-pane/);
 assert.match(css,/#tab-captions\.caption-theme-glass \.studio-host \.studio-natural-toggle:has\(input:checked\)/);
