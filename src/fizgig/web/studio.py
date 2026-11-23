@@ -383,6 +383,10 @@ def require_studio_session(studio_session=None):
         return
     with _lock:
         active = _S.get("load_session") or ""
+        # No tab owns a freshly started, idle worker. Unload/Reset is harmless
+        # before a first model load or after an unscoped server reset.
+        if not active and _S.get("state") == "idle":
+            return
         if active != studio_session:
             raise ValueError("Another Studio tab or window loaded a different model. Press Start here to load your setup again.")
 
