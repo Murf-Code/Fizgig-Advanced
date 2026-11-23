@@ -14008,7 +14008,60 @@ function renderCaptionStudio(host,items,ext){
     queueAutosave(true);
     redraw();
   };
-  const word=el("div",{class:"field-hint"});
+  // Count the full caption with the selected model's real tokenizer.
+  // Requests are debounced and cached across image changes; no whitespace
+  // estimate is substituted if a model tokenizer is unavailable.
+  const word=el("div",{class:"field-hint studio-caption-token-count",
+    text:"Tokens: …","aria-live":"polite"});
+  const tokenCache=S.cap.studioCaptionTokenCache||
+    (S.cap.studioCaptionTokenCache=new Map());
+  const tokenPending=S.cap.studioCaptionTokenPending||
+    (S.cap.studioCaptionTokenPending=new Map());
+  let tokenTimer=null,tokenRevision=0;
+  const showTokenCount=count=>{
+    const valid=Number.isInteger(count)&&count>=0;
+    word.textContent=valid?count+" tokens":"Tokens: —";
+    word.classList.toggle("studio-token-over-limit",valid&&count>75);
+    if(valid)word.removeAttribute("title");
+  };
+  const refreshTokenCount=()=>{
+    const caption=ta.value;
+    const family=S.family;
+    const revision=++tokenRevision;
+    clearTimeout(tokenTimer);
+    if(!caption.trim()){showTokenCount(0);return;}
+    const key=JSON.stringify([family,caption]);
+    if(tokenCache.has(key)){showTokenCount(tokenCache.get(key));return;}
+    word.textContent="Tokens: …";
+    word.classList.remove("studio-token-over-limit");
+    word.removeAttribute("title");
+    tokenTimer=setTimeout(async()=>{
+      if(!word.isConnected||revision!==tokenRevision)return;
+      let request=tokenPending.get(key);
+      if(!request){
+        request=api("/api/captions/caption_tokens",{family,caption})
+          .then(result=>{
+            const count=Number(result.tokens);
+            if(!Number.isInteger(count)||count<0)
+              throw new Error("Tokenizer returned an invalid token count");
+            tokenCache.set(key,count);
+            if(tokenCache.size>200)tokenCache.delete(tokenCache.keys().next().value);
+            return count;
+          }).finally(()=>tokenPending.delete(key));
+        tokenPending.set(key,request);
+      }
+      try{
+        const count=await request;
+        if(word.isConnected&&revision===tokenRevision&&ta.value===caption&&S.family===family)
+          showTokenCount(count);
+      }catch(error){
+        if(word.isConnected&&revision===tokenRevision&&ta.value===caption){
+          showTokenCount(null);
+          word.title="Tokenizer unavailable: "+error.message;
+        }
+      }
+    },200);
+  };
   // Hover styles on rows under a stationary mouse can flash rapidly while a
   // scroll list moves. Suppress hover only for the duration of actual scroll;
   // focus and persistent selection states are never suppressed.
@@ -14054,8 +14107,7 @@ function renderCaptionStudio(host,items,ext){
       ta.value=prefix+(captionText.value?"\n"+captionText.value:"");
     }
     remember();
-    word.textContent=String(studioTokens(ta.value,captionMode).length)+
-      " tags · "+String(ta.value.trim()?ta.value.trim().split(/\s+/).length:0)+" words";
+    refreshTokenCount();
   });
   const editImageTag=(original,next)=>{
     if(locked)return say("Unlock this reviewed image first.");
@@ -14144,8 +14196,7 @@ function renderCaptionStudio(host,items,ext){
     // not change. Prevents flicker/DOM reallocation on caption drafts.
     if(previousTagKeys&&keys.length===previousTagKeys.length&&
        keys.every((key,i)=>key===previousTagKeys[i])){
-      word.textContent=String(distinct.length)+" tags · "+
-        String(ta.value.trim()?ta.value.trim().split(/\s+/).length:0)+" words";
+      refreshTokenCount();
       if(captionMode==="prose"||naturalMode)captionText.value=existingText();
       return;
     }
@@ -14222,7 +14273,7 @@ function renderCaptionStudio(host,items,ext){
       row.append(button);tags.append(row);
     }
     tags.scrollTop=previousScroll;
-    word.textContent=String(distinct.length)+" tags · "+String(ta.value.trim()?ta.value.trim().split(/\\s+/).length:0)+" words";
+    refreshTokenCount();
     if(captionMode==="prose"||naturalMode)captionText.value=existingText();
   };
   ta.addEventListener("input",()=>{remember();redraw();});
