@@ -2361,10 +2361,16 @@ def _run_stages(stages, out_dir):
         # this terminal transition. Never overwrite an acknowledged Stop.
         stopped = _run["state"] == "stopped"
         if stopped:
-            _run.update(proc=None, stage="")
+            _run.update(proc=None, stage="", resume="", resume_mode="")
         else:
             _run.update(state="paused" if paused else "completed", proc=None, stage="", ended_at=time.time())
     if stopped:
+        # A Pause's state file may have been written moments before Stop landed.
+        # Otherwise restart could incorrectly resurrect the stopped run as paused.
+        try:
+            os.remove(os.path.join(out_dir, PAUSED_FILE))
+        except OSError:
+            pass
         history.end(_run.get("history_id"), "stopped", _run.get("progress"))
         webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
         append_log("\n■ Stopped at the end of the final stage.\n")
