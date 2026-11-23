@@ -535,17 +535,22 @@ def _unhook_requests():
             # -> Python boundary even when Fizgig has no event listeners.
             # Detach each independently; a filter API change must not leave
             # the expensive response hook silently enabled.
-            for name, remove in (
-                ("request", lambda: core.WebResourceRequested.__isub__(self.on_web_resource_request)),
-                ("response", lambda: core.WebResourceResponseReceived.__isub__(self.on_web_resource_response)),
-                ("filter", lambda: core.RemoveWebResourceRequestedFilter(
-                    "*", ec.CoreWebView2WebResourceContext.All)),
-            ):
-                try:
-                    remove()
-                    detached.append(name)
-                except Exception as exc:
-                    _log(f"[app] WebView2 {name} hook could not be removed: {type(exc).__name__}: {exc}")
+            try:
+                core.WebResourceRequested -= self.on_web_resource_request
+                detached.append("request")
+            except Exception as exc:
+                _log(f"[app] WebView2 request hook could not be removed: {type(exc).__name__}: {exc}")
+            try:
+                core.WebResourceResponseReceived -= self.on_web_resource_response
+                detached.append("response")
+            except Exception as exc:
+                _log(f"[app] WebView2 response hook could not be removed: {type(exc).__name__}: {exc}")
+            try:
+                core.RemoveWebResourceRequestedFilter(
+                    "*", ec.CoreWebView2WebResourceContext.All)
+                detached.append("filter")
+            except Exception as exc:
+                _log(f"[app] WebView2 resource filter could not be removed: {type(exc).__name__}: {exc}")
             _log("[app] WebView2 event hook removal: " + ", ".join(detached or ["none"]))
         except Exception as exc:
             _log(f"[app] WebView2 request hook setup failed: {type(exc).__name__}: {exc}")
