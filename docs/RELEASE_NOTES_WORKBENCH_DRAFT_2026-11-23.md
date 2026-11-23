@@ -3,6 +3,7 @@
 **Status:** Working draft, not a released build or production sign-off.  
 **Integration branch:** [`test/caption-workbench`](https://github.com/Murf-Code/Fizgig-Advanced/tree/test/caption-workbench)  
 **Compiled:** 2026-11-23. Recheck against the branch HEAD, CI, and live hardware before publication.  
+**History review:** 654 Workbench-base-to-current commits were inventoried and the user-facing features curated. This draft is not a substitute for live GPU sign-off.
 **Scope:** Changes made on Advanced/Workbench since the `wip-test` base, including selective upstream Fizgig 9.8.x adaptations. This document is curated, not an assertion that *every* upstream feature was imported.
 
 ## Screenshot gallery — Caption Workbench (assets pending repository upload)
@@ -140,8 +141,8 @@ Fizgig is authored upstream by **[Peter Neill / shootthesound](https://github.co
 | [#389](https://github.com/shootthesound/Fizgig/pull/389) | AMD MIOpen workaround / database path handling. Credit contributors named on upstream PR, including @scryptio where applicable. |
 | [#394](https://github.com/shootthesound/Fizgig/pull/394) | Primary-LoRA Studio hot swap; adapted to Advanced's single-worker architecture. |
 | [#395](https://github.com/shootthesound/Fizgig/pull/395) | Multi-tab Studio ownership/isolation. |
-| [#398](https://github.com/shootthesound/Fizgig/pull/398) and [#399](https://github.com/shootthesound/Fizgig/pull/399) by [@spaghettified26](https://github.com/spaghettified26) | Pillow safety and PNG metadata performance were reviewed during performance work. **Do not claim these exact PR changes shipped until integration is code-verified.** |
-| [TagBench / TagGUI](https://github.com/) | UI/workflow inspiration for captioning, tag browsing, Waterfall and Constellation. **Replace this generic citation with the exact project's canonical repository and author before publication**. This is an inspiration acknowledgement, not a claim of wholesale code import. |
+| [#398](https://github.com/shootthesound/Fizgig/pull/398) and [#399](https://github.com/shootthesound/Fizgig/pull/399) by [@spaghettified26](https://github.com/spaghettified26) | **Integrated.** Pillow 13.0.0 update for PNG EXIF safety (#398) and faster PNG dimension/header reading without full image decoding in dataset listings (#399), with regression tests and source credits. See [Pillow commit](https://github.com/Murf-Code/Fizgig-Advanced/commit/aaa1062363) and [PNG optimization](https://github.com/Murf-Code/Fizgig-Advanced/commit/72759c1aa2). |
+| **TagBench / TagGUI** (user-supplied TagBench 1.2 reference) | Inspiration for caption editing, Waterfall, Constellation and duplicate review. The branch [explicitly credits TagGUI](https://github.com/Murf-Code/Fizgig-Advanced/commit/0c963857). Add the confirmed upstream URL/author before publication rather than inventing one. Fizgig adapts the experience to its own services and retains local LaMa. |
 
 ### Explicitly not shipping / intentionally handled differently
 - **Krea 2 Training Text Enhancer:** **not included**. The experimental training-conditioning integration was introduced in [57d7b18a](https://github.com/Murf-Code/Fizgig-Advanced/commit/57d7b18a969825e39de73c5c477a64740ee9de9d) and then deliberately **reverted** in [021af047](https://github.com/Murf-Code/Fizgig-Advanced/commit/021af047c0584e269bd948f527779d7f3ba888a8). Do not advertise it as a feature. It was derived from upstream [#393](https://github.com/shootthesound/Fizgig/pull/393) by @spaghettified26, which credits the original Krea2T-Enhancer by Capitan01R. Existing **Text-fusion calibration** is a different feature and remains.
