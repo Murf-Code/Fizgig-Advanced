@@ -870,7 +870,7 @@ def _studio_post(what, b):
     # Studio has one GPU worker. A stale browser tab must not update, cancel,
     # unload or save another tab's current model. Unscoped legacy/internal
     # requests remain compatible; new web tabs always supply a session.
-    if what in ("keep", "map", "render", "cancel", "donor", "settings", "save",
+    if what in ("keep", "map", "render", "cancel", "donor", "primary", "settings", "save",
                 "frank_export", "reset"):
         studio.require_studio_session(b.get("studio_session"))
     if what == "download_setup":
@@ -922,13 +922,24 @@ def _studio_post(what, b):
                               status, b.get("turbo", True), canvas=b.get("canvas") if desc.video_workbench else None,
                               studio_session=b.get("studio_session") or "")
         return {"ok": True, "load_id": load_id}
+    if what == "primary":
+        if _gpu_training():
+            raise ValueError("A training run is using the GPU.")
+        from fizgig.web import tools
+        if tools.holding_gpu():
+            raise ValueError("The Profiler is using the GPU.")
+        return {"ok": True, "load_id": studio.primary(str(b.get("path") or "").strip())}
     if what == "keep":
         return {"path": studio.keep_tweaked()}
     if what == "map":                        # maps over the Tweaked render (where the LoRA acts, the tweaks, the trigger)
         return studio.map_request(b.get("state") or {}, b.get("trigger") or "", bool(b.get("blocks")))
     if what == "render":
-        return studio.render(b.get("state") or {}, extra={k: b.get(k) for k in ("video", "audio", "keyframes", "ref_mode", "mix")
-                                                          if b.get(k) is not None})
+        extra = {k: b.get(k) for k in ("video", "audio", "keyframes", "ref_mode", "mix")
+                 if b.get(k) is not None}
+        setup = b.get("setup")
+        if isinstance(setup, dict) and setup.get("fizgig_repair_setup"):
+            extra["_setup"] = setup
+        return studio.render(b.get("state") or {}, extra=extra)
     if what == "cancel":
         studio._send({"cmd": "cancel"})
         return {"ok": True}
@@ -3846,12 +3857,15 @@ class Handler(BaseHTTPRequestHandler):
             dl = re.sub(r'[\\/:*?"<>|]+', "_", (qs.get("dl") or [""])[0])        # a Save / Download button
             if dl:                                    # the name the page asks for, with the file's own extension
                 dl = os.path.splitext(dl)[0] + os.path.splitext(p)[1]
-            if dl and (qs.get("which") or [""])[0] == "tweaked" and _STUDIO_DL_SETUP:
-                # Download tweaked: the setup on the page when it was pressed, inside the PNG (drop it on Studio)
-                png = studio.png_with_setup(p, _STUDIO_DL_SETUP[0])
+            if dl and (qs.get("which") or [""])[0] in ("baseline", "tweaked"):
+                # Use the metadata pinned when the render started, not a later slider edit.
+                setup = studio.render_setup_for((qs.get("gen") or [""])[0])
+                if not setup and (qs.get("which") or [""])[0] == "tweaked" and _STUDIO_DL_SETUP:
+                    setup = _STUDIO_DL_SETUP[0]  # compatibility with older clients
+                png = studio.png_with_setup(p, setup) if setup else None
                 if png is not None:
                     return self._send(200, png, "image/png",
-                                      [("Content-Disposition", f"attachment; filename=\"{dl}\"")])
+                                      [("Content-Disposition", f'attachment; filename="{dl}"')])
             return self._stream(p, attachment=bool(dl), filename=dl or None, keep=bool((qs.get("gen") or [""])[0]))
         if path == "/api/studio/peaks":             # a song's waveform for the player's strip
             p = studio.image((qs.get("which") or [""])[0], (qs.get("gen") or [""])[0])
