@@ -69,8 +69,10 @@ def test_image_edit_only_invalidates_latents(cached_still):
 
 def test_same_second_image_edit_invalidates_new_latent_cache(cached_still):
     before = os.stat(cached_still.image)
-    os.utime(cached_still.image, ns=(before.st_atime_ns, before.st_mtime_ns + 1))
-    assert source_stamp(str(cached_still.image)) == source_stamp(str(cached_still.image))
+    old_stamp = source_stamp(str(cached_still.image))
+    ns = before.st_mtime_ns + (1 if before.st_mtime_ns % 1_000_000_000 < 999_999_999 else -1)
+    os.utime(cached_still.image, ns=(before.st_atime_ns, ns))
+    assert source_stamp(str(cached_still.image)) == old_stamp  # the legacy stamp misses this
     assert cached_still.inspect() == {"checked": 1, "latents": 1, "text": 0}
 
 
