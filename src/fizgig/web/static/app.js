@@ -9045,8 +9045,11 @@ async function studioFamily(res, w, h) {
   S.st.hist = []; S.st.redo = [];
   studioLuckyCounts();
   studioMasters();
+  $("stFrank").checked = false;  // Never enter experimental mode silently on family change.
+  S.st.frankAsked = false;
   studioPresets();
   studioRows();
+  studioFrankUi();
 }
 
 // H3 (clips) and ACE-Step (songs): their own controls, the desktop's
@@ -10305,6 +10308,76 @@ function studioNegRow() {
 
 // ---- the sliders ----
 const stFmt = (v) => Math.abs(v - 1) < 1e-9 ? "1.00" : (v >= 0 ? "+" : "") + v.toFixed(2);
+
+function studioFrankAsked() {
+  return !!((S.st.layout || {}).frankenstein || []).length && $("stFrank").checked;
+}
+function studioFrankUi() {
+  const L = S.st.layout || {}, available = !!(L.frankenstein || []).length, on = studioFrankAsked();
+  $("stFrankRow").style.display = available ? "" : "none";
+  $("stFrankNote").textContent = on ? "H3 Image + " + L.frankenstein[0] +
+    ": 0 is the original base, 1 is H3 Video. 12 GB operation is experimental." :
+    "Optional experimental block blending; regular LoRA Studio is unchanged.";
+  for (const id of ["stPrimaryRow", "stDonorRow", "stMixRows", "stDmixRows"])
+    $(id).style.display = on ? "none" : "";
+  $("stSaveCard").style.display = on ? "none" : "";
+  $("stFrankCard").style.display = on ? "" : "none";
+  for (const row of document.querySelectorAll("#stBlocks .st-block .st-row:not(.donor)")) {
+    const range = row.querySelector('input[type="range"]');
+    if (range) { range.min = on ? "0" : "-3"; range.max = on ? "1" : "3"; }
+  }
+  studioSync();
+}
+function studioFrankTick() {
+  const on = studioFrankAsked();
+  if (on === !!S.st.frankAsked) { studioFrankUi(); return; }
+  S.st.frankAsked = on;
+  clearTimeout(S.st.timer);
+  for (const b of Object.values(S.st.blocks || {}))
+    Object.assign(b, {pe: true, ps: on ? 0 : 1, de: true, ds: 1});
+  S.st.hist = [studioSnap()]; S.st.redo = [];
+  $("stLuckyLo").value = "0";
+  $("stLuckyHi").value = on ? "0.6" : "1.5";
+  studioFrankUi();
+  studioPresets();
+  $("stStatus").textContent = on ?
+    "Frankenstein selected. Press Start to load the H3 Image + H3 Video blend." :
+    "LoRA Studio selected. Press Start to load your LoRA.";
+}
+function studioFrankStatus(st) {
+  const active = !!st.frankenstein, saving = st.frank_saving;
+  if (active && !$("stFrankOut").value.trim() && st.frank_out)
+    $("stFrankOut").value = st.frank_out;
+  $("stFrankProgress").style.display = saving || st.frank_exported ? "" : "none";
+  const pct = saving && saving.total ? Math.min(100, 100 * saving.done / saving.total) :
+    st.frank_exported ? 100 : 0;
+  $("stFrankProgress").value = pct;
+  $("stFrankExport").disabled = !active || !!saving || st.state !== "ready";
+  if (saving) $("stFrankMsg").textContent = "Writing new H3 Image model... " +
+    pct.toFixed(0) + "% (" + ((saving.done || 0) / 1e9).toFixed(1) + " GB)";
+  else if (st.frank_error) $("stFrankMsg").textContent = "Save failed: " + st.frank_error;
+  else if (st.frank_exported) $("stFrankMsg").textContent = "Saved: " + st.frank_exported;
+}
+async function studioFrankExport(overwrite=false) {
+  if (!S.st.ready || !S.st.loadedFrank) {
+    $("stFrankMsg").textContent = "Start Frankenstein mode first."; return;
+  }
+  const out = $("stFrankOut").value.trim();
+  if (!out) { $("stFrankMsg").textContent = "Choose a new checkpoint filename."; return; }
+  try {
+    const r = await api("/api/studio/frank_export", {out, state: studioState(), overwrite});
+    if (r.exists) {
+      $("stFrankMsg").replaceChildren(document.createTextNode("That file exists. "),
+        el("button", {class: "btn btn-sm btn-danger", text: "Confirm overwrite",
+                      onclick: () => studioFrankExport(true)}));
+      return;
+    }
+    $("stFrankMsg").textContent = "Saving the new H3 Image base...";
+    studioPoll();
+  } catch(e) { $("stFrankMsg").textContent = e.message; }
+}
+// ---- experimental H3 Frankenstein mode -----------------------------------------------------------
+
 function studioRows() {
   const host = $("stBlocks");
   host.innerHTML = "";
@@ -10324,7 +10397,8 @@ function studioRow(b) {
     const en = side === "p" ? "pe" : "de", sv = side === "p" ? "ps" : "ds";
     const tick = el("input", {type: "checkbox", title: side === "p" ? "This block on" : "The donor's block on",
       onchange: (e) => studioSet(b.id, en, e.target.checked)});
-    const range = el("input", {type: "range", min: "-3", max: "3", step: "0.05",
+    const range = el("input", {type: "range", min: studioFrankAsked() && side === "p" ? "0" : "-3",
+      max: studioFrankAsked() && side === "p" ? "1" : "3", step: "0.05",
       oninput: (e) => studioSet(b.id, sv, Number(e.target.value), true), onchange: () => studioCommit()});
     // the value: type one in (Enter or leaving the box sets it, -3 to 3), Esc puts the slider's back
     const val = el("input", {type: "text", class: "st-val", title: "Type a value from -3 to 3, then Enter",
@@ -10397,7 +10471,7 @@ function studioTweaked(id, side) {                 // a slider moved from its de
   const b = S.st.blocks[id];
   if (!b) return false;
   if (side === "d") return !!(S.st.donor && S.st.donorBlocks.has(id) && (b.ds !== 1 || !b.de));
-  return !(S.st.ready && !S.st.primaryBlocks.has(id)) && (b.ps !== 1 || !b.pe);
+  return !(S.st.ready && !S.st.primaryBlocks.has(id)) && (b.ps !== (studioFrankAsked() ? 0 : 1) || !b.pe);
 }
 
 function studioFreezeState() {
@@ -10443,7 +10517,8 @@ function studioActivity() {
     box._rows[0].querySelectorAll("input,button").forEach((i) => { i.disabled = pAbsent; });
     box._rows[1].querySelectorAll("input,button").forEach((i) => { i.disabled = dAbsent; });
     const b = S.st.blocks[id];
-    if (pAbsent && b && (!b.pe || b.ps !== 1)) { b.pe = true; b.ps = 1; reset = true; }
+    const neutral = studioFrankAsked() ? 0 : 1;
+    if (pAbsent && b && (!b.pe || b.ps !== neutral)) { b.pe = true; b.ps = neutral; reset = true; }
   });
   if (reset) studioSync();
   document.querySelectorAll(".st-donor-only").forEach((x) => { x.style.display = S.st.donor ? "" : "none"; });
@@ -10455,6 +10530,7 @@ function studioActivity() {
 
 function studioSet(id, k, v, live) {
   if ((k === "ds" || k === "de" ? S.st.dlocks : S.st.locks).has(id)) { studioSync([id]); return; }
+  if (studioFrankAsked() && k === "ps") v = Math.min(1, Math.max(0, Number(v) || 0));
   S.st.blocks[id][k] = v;
   studioSync([id]);
   studioSchedule(live);
@@ -10532,10 +10608,11 @@ async function studioPresets() {
   sel.innerHTML = "";
   sel.append(el("option", {value: "", text: "Presets…"}));
   // every model's: the primary and the donor evenly, block by block (needs a donor loaded)
-  sel.append(el("option", {value: "x:even", text: "Primary + donor, 50/50", title: "Every block both LoRAs touch: " +
-    "each at 0.5. A block only one of them touches: that one at full strength. Needs a donor LoRA loaded."}));
-  for (const p of L.presets) sel.append(el("option", {value: "b:" + p.name, text: p.name}));
-  if (user.length) sel.append(el("optgroup", {label: "Your presets"}, ...user.map((n) => el("option", {value: "u:" + n, text: n}))));
+  if (!studioFrankAsked()) sel.append(el("option", {value: "x:even", text: "Primary + donor, 50/50"}));
+  for (const p of ((studioFrankAsked() ? L.frank_presets : L.presets) || []))
+    sel.append(el("option", {value: "b:" + p.name, text: p.name}));
+  if (!studioFrankAsked() && user.length)
+    sel.append(el("optgroup", {label: "Your presets"}, ...user.map((n) => el("option", {value: "u:" + n, text: n}))));
 }
 
 async function studioPresetApply(v) {
@@ -10558,11 +10635,11 @@ async function studioPresetApply(v) {
     $("stStatus").textContent = `Primary + donor, 50/50: ${both} block(s) at 0.5 each, ${one} touched by one LoRA ` +
       "at full strength" + (S.st.locks.size + S.st.dlocks.size ? "; locked sliders left alone." : ".");
   } else if (v.startsWith("b:")) {
-    const p = L.presets.find((x) => x.name === v.slice(2));
+    const p = (studioFrankAsked() ? L.frank_presets : L.presets).find((x) => x.name === v.slice(2));
     for (const [id, b] of Object.entries(S.st.blocks)) {
       if (!S.st.dlocks.has(id)) Object.assign(b, {de: true, ds: 1});
       if (S.st.locks.has(id)) continue;
-      Object.assign(b, {pe: true, ps: 1});
+      Object.assign(b, {pe: true, ps: studioFrankAsked() ? 0 : 1});
       if (p.keep) b.pe = p.keep.includes(L.category_of[id]);
       if (p.blocks && id in p.blocks) { b.pe = true; b.ps = Number(p.blocks[id]); }
     }
@@ -10588,8 +10665,10 @@ function seedOf(id) { const n = parseInt($(id).value, 10); return Number.isFinit
 function studioBulk(kind) {
   const L = S.st.layout;
   // Min / Max as the desktop reads them: within the sliders' -3..3, a box that isn't a number its default, in order
-  const bound = (id, d) => { const t = $(id).value.trim(), x = Number(t); return t === "" || !isFinite(x) ? d : Math.max(-3, Math.min(3, x)); };
-  const [lo, hi] = [bound("stLuckyLo", 0), bound("stLuckyHi", 1.5)].sort((x, y) => x - y);
+  const bound = (id, d) => { const t = $(id).value.trim(), x = Number(t);
+    return t === "" || !isFinite(x) ? d : Math.max(studioFrankAsked() ? 0 : -3,
+      Math.min(studioFrankAsked() ? 0.6 : 3, x)); };
+  const [lo, hi] = [bound("stLuckyLo", 0), bound("stLuckyHi", studioFrankAsked() ? 0.6 : 1.5)].sort((x, y) => x - y);
   const order = L.groups.flatMap((g) => g.blocks.map((b) => b.id));
   // Alternate / Toggle detail blocks (the desktop's, H3's 0-49 and 46-49): for a model naming its detail blocks
   // (description detail_blocks); Alternate runs over its main blocks, its biggest group
@@ -10606,7 +10685,7 @@ function studioBulk(kind) {
   let rolled = 0;
   for (const [id, b] of Object.entries(S.st.blocks)) {
     const p = !S.st.locks.has(id), d = !S.st.dlocks.has(id);
-    if (kind === "reset") { if (p) Object.assign(b, {pe: true, ps: 1}); if (d) Object.assign(b, {de: true, ds: 1}); }
+    if (kind === "reset") { if (p) Object.assign(b, {pe: true, ps: studioFrankAsked() ? 0 : 1}); if (d) Object.assign(b, {de: true, ds: 1}); }
     else if (kind === "off") { if (p) b.pe = false; }
     else if (kind === "on") { if (p) b.pe = true; }
     else if (kind === "invert") { if (p) b.pe = !b.pe; }
@@ -10632,6 +10711,8 @@ function studioBulk(kind) {
       rolled++;
     }
   }
+  if (studioFrankAsked()) for (const b of Object.values(S.st.blocks))
+    b.ps = Math.min(1, Math.max(0, Number(b.ps) || 0));
   studioSync(); studioCommit(); studioSchedule();
   if (kind === "lucky") $("stStatus").textContent = `Lucky mix: ${rolled} slider(s) rolled, ${lo} to ${hi}` +
     `${S.st.locks.size + S.st.dlocks.size ? `, ${S.st.locks.size + S.st.dlocks.size} locked or frozen slider(s) left alone` : ""} (Undo for the mix before; Freeze tweaked to keep ` +
@@ -10661,7 +10742,9 @@ function studioPresetSaveOpen() {
 // ---- rendering ----
 function studioState() {
   const blocks = {};
-  for (const [id, b] of Object.entries(S.st.blocks)) blocks[id] = {primary_enabled: b.pe, primary_strength: b.ps, donor_enabled: b.de, donor_strength: b.ds};
+  for (const [id, b] of Object.entries(S.st.blocks)) blocks[id] = {primary_enabled: b.pe,
+    primary_strength: studioFrankAsked() ? Math.max(0, Math.min(1, Number(b.ps) || 0)) : b.ps,
+    donor_enabled: b.de, donor_strength: b.ds};
   const num = (id, d) => { const v = Number($(id).value); return isFinite(v) ? v : d; };
   return {blocks, seed: seedOf("stSeed"), prompt: $("stPrompt").value.trim(), preview_width: Number($("stW").value) || 768,
     preview_height: Number($("stH").value) || 768, ref_image_path: $("stRefRow").style.display === "none" ? "" : $("stRef").value.trim(),
@@ -10706,12 +10789,15 @@ function studioPending() {
 }
 
 function studioSchedule(live) {
-  if (!S.st.ready) return;
+  if (!S.st.ready || studioFrankAsked() !== !!S.st.loadedFrank) return;
   clearTimeout(S.st.timer);
   S.st.timer = setTimeout(studioRender, live ? ($("stTurbo").checked ? 150 : 400) : 100);
 }
 
 async function studioRender() {
+  if (studioFrankAsked() !== !!S.st.loadedFrank) {
+    $("stStatus").textContent = "Studio mode changed. Press Start to load it."; return;
+  }
   if (!$("stPrompt").value.trim()) { $("stStatus").textContent = "Enter a prompt (include the LoRA's trigger word) to see previews."; return; }
   // seed 0: random, rolled by Update / Start (studioStart) and kept while sliders and the other controls render, so
   // a tweak is judged on the same picture; Baseline and Tweaked share it
@@ -10737,17 +10823,21 @@ async function studioStart() {
     const rc = await api("/api/studio/render_choice?family=" + encodeURIComponent(L.key)).catch(() => null);
     if (rc && rc.key === L.key) Object.assign(L, rc);
     const fast = (document.querySelector('input[name="stDit"]:checked') || {}).value !== "full";
-    const key = [L.key, $("stPrimary").value.trim(), fast, L.kind === "video" ? $("stH3Model").value + $("stH3Base").value : "",
-      (L.render_choice || {}).value || "", L.follow_ck || "", L.follow_look || "", L.follow_turbo || ""].join("|");
-    if (st.state === "ready" && S.st.loadedKey === key) {     // the same LoRA: the donor may change, then a render
-      if ($("stDonor").value.trim() !== (st.donor || "")) await api("/api/studio/donor", {path: $("stDonor").value.trim()});
+    const frank = studioFrankAsked();
+    const key = [L.key, frank ? "" : $("stPrimary").value.trim(), fast, L.kind === "video" ? $("stH3Model").value + $("stH3Base").value : "",
+      (L.render_choice || {}).value || "", L.follow_ck || "", L.follow_look || "", L.follow_turbo || "",
+      frank ? "frankenstein" : "lora"].join("|");
+    if (st.state === "ready" && S.st.loadedKey === key && !!st.frankenstein === frank) {     // the same LoRA: the donor may change, then a render
+      if (!frank && $("stDonor").value.trim() !== (st.donor || ""))
+        await api("/api/studio/donor", {path: $("stDonor").value.trim()});
       // the Samples tab's steps and CFG (a model that follows it) apply without a reload: sent before each render
       if (L.follows_samples) await api("/api/studio/settings", {family: L.key, negative: $("stNeg").value.trim()});
       studioRender();
       return;
     }
     S.st.ready = false;
-    await api("/api/studio/load", {family: L.key, primary: $("stPrimary").value.trim(), donor: $("stDonor").value.trim(),
+    await api("/api/studio/load", {family: L.key, primary: frank ? "" : $("stPrimary").value.trim(),
+      donor: frank ? "" : $("stDonor").value.trim(), frankenstein: frank,
       fast, turbo: $("stTurbo").checked, negative: $("stNeg").value.trim(),
       h3_model: L.kind === "video" ? $("stH3Model").value : "", base: L.kind === "video" ? $("stH3Base").value : "",
       canvas: studioCanvas()});
@@ -10764,6 +10854,14 @@ async function studioPoll() {
   try { st = await api("/api/studio/status"); } catch (e) { return; }
   const wasReady = S.st.ready;
   S.st.ready = st.state === "ready";
+  S.st.loadedFrank = !!st.frankenstein;
+  if (S.st.ready && S.st.loadedFrank && !studioFrankAsked()) {
+    $("stFrank").checked = true; studioFrankTick();
+  }
+  if (S.st.ready && !S.st.loadedFrank && studioFrankAsked()) {
+    $("stStatus").textContent = "Press Start to load the selected Frankenstein mode.";
+  }
+  studioFrankStatus(st);
   S.st.donor = !!st.donor;
   S.st.primaryBlocks = new Set(st.primary_blocks || []); S.st.donorBlocks = new Set(st.donor_blocks || []);
   // a donor loaded (or unloaded) after the model: its rows and buttons show (or go) now, not at the next load
@@ -10831,9 +10929,11 @@ async function studioPoll() {
     studioMapsAfterRender(S.st.same);
     studioDownloads(st, q);
     const ps = Number($("stPScale").value) || 1;
-    $("stBaseCap").textContent = (ps === 1 ? "Baseline (LoRA at default 1.0)" : `Baseline (LoRA at ${ps})`) +
+    $("stBaseCap").textContent = st.frankenstein ? "Baseline (original H3 Image)" :
+      (ps === 1 ? "Baseline (LoRA at default 1.0)" : `Baseline (LoRA at ${ps})`) +
       (st.donor ? " - the donor is not in the baseline" : "");
-    $("stTweakCap").textContent = "Tweaked (current sliders)" + (st.donor ? " - includes the donor" : "");
+    $("stTweakCap").textContent = st.frankenstein ? "Tweaked (H3 Image + H3 Video blocks)" :
+      "Tweaked (current sliders)" + (st.donor ? " - includes the donor" : "");
   }
   studioNoLoraPane(st);
   studioAceNotes(st.notes);
@@ -11205,6 +11305,12 @@ function wireBaseMixer() {
 
 function wireStudio() {
   wireBaseMixer();
+  $("stFrank").addEventListener("change", studioFrankTick);
+  $("stFrankOutPick").addEventListener("click", () => pick($("stFrankOut").value || "", true, (p) => {
+    const leaf = ($("stFrankOut").value.trim().split(/[\\/]/).pop() || "h3_image_frankenstein.safetensors");
+    $("stFrankOut").value = p.replace(/[\\/]$/, "") + (p.includes("\\") ? "\\" : "/") + leaf;
+  }));
+  $("stFrankExport").addEventListener("click", () => studioFrankExport(false));
   $("stDockOpen").addEventListener("click", () => studioDock(true));
   $("stDockBack").addEventListener("click", () => studioDock(false));
   new MutationObserver(studioDockPlay).observe($("stPlayBoth"), {attributes: true, attributeFilter: ["style"]});
