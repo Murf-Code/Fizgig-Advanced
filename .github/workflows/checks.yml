@@ -22,6 +22,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r checks/requirements.txt
+      - name: WebView2 browser-parity performance and hook regression checks
+        run: python -m unittest discover -s checks -p test_webview2_performance.py -v
       - name: Optional native Qt image shell source/bridge checks (headless)
         run: |
           python -m py_compile src/fizgig/web/qt_images.py src/fizgig/web/qt_caption_trial.py
