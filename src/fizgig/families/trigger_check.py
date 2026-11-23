@@ -188,3 +188,20 @@ def count_tag_tokens(family, tags):
     tokenizer = _tokenizer(family)
     return {tag: len(tokenizer(" " + tag.strip(), add_special_tokens=False)["input_ids"])
             for tag in tags if tag.strip()}
+
+
+def count_caption_tokens(family, caption):
+    """Count an entire caption using this model family's actual text tokenizer (CPU only).
+
+    Unlike whitespace splitting or summing the tokens for individual tags,
+    tokenizing the full string preserves separators and punctuation. This is
+    an informational UI count; it does not change training or truncate text.
+    """
+    if family not in _SPECS:
+        raise ValueError("This training family's tokenizer is not supported.")
+    if not isinstance(caption, str) or len(caption) > 20000:
+        raise ValueError("Provide a caption of at most 20,000 characters.")
+    if not caption.strip():
+        return 0
+    tokenizer = _tokenizer(family)
+    return len(tokenizer(caption, add_special_tokens=False)["input_ids"])
