@@ -113,9 +113,9 @@ def scan(desc, toml_text, *, held_paths=None, vae_model="", text_model=""):
         enabled = bool(general.get("enable_bucket", True))
         no_upscale = bool(general.get("bucket_no_upscale", False))
         selector = BucketSelector(resolution, enabled, no_upscale, desc.bucket_step)
-        from fizgig.families.cache import encoder_stamp
+        from fizgig.families.cache import encoder_stamp, vae_stamp
         txt_stamp = encoder_stamp(text_model)
-        vae_stamp = encoder_stamp(vae_model)
+        latent_stamp = vae_stamp(vae_model)
         count = stale_lat = stale_text = 0
         accepted = {e.lower() for e in IMAGE_EXTENSIONS}
         for ds in sets:
@@ -142,14 +142,17 @@ def scan(desc, toml_text, *, held_paths=None, vae_model="", text_model=""):
                 expected_text.add(os.path.normcase(os.path.normpath(txt)))
                 caption = read_caption(os.path.splitext(source)[0] + ext).strip()
                 count += 1
-                if not _latent_ok(lat, source, stamp, bucket, desc.arch_id, vae_stamp):
+                if not _latent_ok(lat, source, stamp, bucket, desc.arch_id, latent_stamp):
                     stale_lat += 1
                 if not _text_ok(txt, caption, desc.arch_id, txt_stamp):
                     stale_text += 1
 
             # An orphan is a stale entry as well: an image removed from the dataset must
             # not leave extra caches behind. The encoder's cleanup handles these.
-            for directory in (cache_dir, os.path.join(cache_dir, HOLDOUT_CACHE)):
+            directories = [cache_dir]
+            if held:
+                directories.append(os.path.join(cache_dir, HOLDOUT_CACHE))
+            for directory in directories:
                 if not os.path.isdir(directory):
                     continue
                 for name in os.listdir(directory):
