@@ -16,23 +16,6 @@ Everything works on Krea 2:
 
 Output is ComfyUI-ready.
 
-## Training Text Enhancer (experimental)
-
-The Training tab's **Other Options → ✨ Text Enhancer (training)** applies the Krea 2 Text Enhancer from
-[PR #393](https://github.com/shootthesound/Fizgig/pull/393) inside the actual DiT forward pass used to
-calculate training loss. It is not a preview-only effect: the normal, batched, and Global replay training
-paths all use the same enhanced text-fusion result. In-app previews during that run use the same settings.
-
-The enhancer makes a second text-fusion pass over gain-scaled versions of Krea 2's twelve text-encoder taps,
-then adds the difference back as a per-token residual capped at 0.75 of the original token RMS. The optional
-**Enhancer strength** is clamped to 0–2 (1.0 is the donor default); **Text output scale** independently scales
-the txtmlp output from 0.25–4 (1.0 is neutral). Both default to 1.0. The feature is off by default. It adds
-one text-fusion pass to each training forward and can increase both step time and peak memory.
-
-The enhancement is part of the LoRA's training recipe, not stored in the LoRA weights. To reproduce the same
-conditioning outside Fizgig, use a compatible Krea 2 Text Enhancer at inference with the same strength and
-text output scale. Standard inference without the enhancer may produce different prompt adherence.
-
 ## VRAM: 8 GB is enough
 
 Users train full Krea 2 LoRAs on 8 GB with everything on **Auto** and batch size 1. Auto reads your *free* VRAM and picks INT8 or NF4 plus the right block swap — the console explains its choice. On longer runs the transformer blocks **torch.compile** automatically for roughly 2× faster steps.
