@@ -10806,7 +10806,7 @@ function studioSession() {
 }
 
 async function studioRender() {
-  if (S.st.foreign) return studioStart(); // Load this tab's own setup rather than the other tab's.
+  if (S.st.foreign || !S.st.loadedKey) return studioStart(); // Never render on an unverified/failed LoRA selection.
   if (studioFrankAsked() !== !!S.st.loadedFrank) {
     $("stStatus").textContent = "Studio mode changed. Press Start to load it."; return;
   }
@@ -10843,6 +10843,7 @@ async function studioSwapPrimary(key, seq) {
       }
       if ((s.primary_seq || 0) > seq) {
         if (s.primary !== p || s.error) {
+          S.st.loadedKey = ""; // old adapter restored; prevent a mismatched subsequent render
           $("stStatus").textContent = s.status || "Couldn't switch the primary LoRA.";
           studioPoll();
           return; // The worker restored the old LoRA, not a reason to reload the model.
