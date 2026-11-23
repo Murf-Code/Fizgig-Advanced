@@ -78,6 +78,8 @@ jobs:
           node checks/test_studio_tab_ownership.cjs
       - name: Studio primary hot-swap and render metadata regression (#394)
         run: python -m pytest checks/test_studio_primary_swap_advanced.py -q
+      - name: Stop/pause lifecycle boundary regression
+        run: python -m pytest checks/test_stop_stage_boundary.py checks/test_stop_paused.py -q
       - name: AMD MIOpen opt-in and Windows DB fallback (#389)
         run: python -m pytest checks/test_rocm_miopen_switch.py -q
       - name: All browser scripts are served by HTTP routes
