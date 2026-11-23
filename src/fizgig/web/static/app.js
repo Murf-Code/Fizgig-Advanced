@@ -15058,17 +15058,13 @@ function renderCaptionStudio(host,items,ext){
     S.cap.studioTagUpperShare=Number.isFinite(share)?
       Math.max(.2,Math.min(.8,share)):.49;
   }
-  const tagHeightGrip=el("div",{class:"studio-tag-height-grip",role:"separator",tabindex:"0",
-    "aria-orientation":"horizontal","aria-label":"Resize Image Tags and lower tag panel",
-    "aria-valuemin":"20","aria-valuemax":"80",
-    title:"Drag up or down to resize · Arrow keys to adjust · Double-click to reset"});
+  const tagHeightGrip=el("div",{class:"studio-tag-height-grip",role:"separator",
+    "aria-orientation":"horizontal","aria-label":"Resizable tag panel divider",
+    title:"Drag to resize · Double-click to reset"});
   const applyTagShare=share=>{
     S.cap.studioTagUpperShare=Math.max(.2,Math.min(.8,share));
     right.style.setProperty("--studio-tag-upper-share",
       (S.cap.studioTagUpperShare*100).toFixed(2)+"%");
-    const percentage=Math.round(S.cap.studioTagUpperShare*100);
-    tagHeightGrip.setAttribute("aria-valuenow",String(percentage));
-    tagHeightGrip.setAttribute("aria-valuetext","Image Tags "+percentage+" percent");
   };
   const saveTagShare=()=>{
     try{localStorage.setItem(tagSplitKey,String(S.cap.studioTagUpperShare));}catch(_){}
@@ -15104,19 +15100,6 @@ function renderCaptionStudio(host,items,ext){
   };
   for(const event of ["pointerup","pointercancel","lostpointercapture"])
     tagHeightGrip.addEventListener(event,finishTagDrag);
-  tagHeightGrip.addEventListener("keydown",e=>{
-    if(!["ArrowUp","ArrowDown","Home","End"].includes(e.key))return;
-    e.preventDefault();
-    const box=right.getBoundingClientRect();
-    if(!box.height)return;
-    const min=180,max=Math.max(min,box.height-240);
-    const now=editorPane.getBoundingClientRect().height;
-    const step=e.shiftKey?40:12;
-    const target=e.key==="Home"?min:e.key==="End"?max:
-      now+(e.key==="ArrowDown"?step:-step);
-    applyTagShare(Math.max(min,Math.min(max,target))/box.height);
-    saveTagShare();
-  });
   tagHeightGrip.addEventListener("dblclick",()=>{
     applyTagShare(.49);
     saveTagShare();
