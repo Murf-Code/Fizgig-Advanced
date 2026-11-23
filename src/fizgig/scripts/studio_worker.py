@@ -51,7 +51,8 @@ def _frank_swap(desc, dit_path):
     On 12GB cards reserve less render headroom (1024px experimental only),
     and blend in smaller row groups. Physical GPU testing is still required.
     """
-    from fizgig.families.quant import free_vram_gb, swap_blocks_for
+    from fizgig.families.quant import free_vram_gb
+    import math
     try:
         import torch
         drv = desc.load_driver()
@@ -65,7 +66,9 @@ def _frank_swap(desc, dit_path):
         room = 2.25 if total <= 13.5 else FRANK_ROOM_GB
         per = ((getattr(desc, "train_memory", None) or {}).get("int8") or ((), 0))[1] \
               or model_gb / max(1, cap + 2)
-        needed = swap_blocks_for(desc, per, model_gb + room - free)
+        short_gb = model_gb + room - free
+        ring_slots = int(getattr(desc, "swap_ring_slots", 0) or 0)
+        needed = ring_slots + math.ceil(short_gb / per) if short_gb > 0 else 0
         if needed > cap:
             raise ValueError("Not enough VRAM for int8 Frankenstein even with maximum block streaming. "
                              "Close other GPU applications or try a larger card.")
