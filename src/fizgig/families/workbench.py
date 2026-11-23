@@ -193,6 +193,9 @@ class WorkbenchEngine:
         """The blend (at the state's sliders, or as it is now) as a new base file in the loaded model's format."""
         if self.frank is None:
             raise ValueError("Frankenstein mode isn't on.")
+        if any(os.path.realpath(out_path) == os.path.realpath(p)
+               for p in (self.dit_path, self.frank.other_path)):
+            raise ValueError("Never replace the original models with a blend.")
         if state is not None:
             self.frank.set(self.frank_weights(state))
         if not any(w > 0 for w in self.frank.weights().values()):
@@ -1310,6 +1313,9 @@ class WorkbenchEngine:
         self._prompt_cache.clear()
 
     def reset(self):
+        # Release the upstream H3 blender's open safetensors readers before destroying the model.
+        if self.frank is not None:
+            self.frank.close()
         from fizgig.utils.device import release_module_tensors
         # a driver's VAE may be a dict of modules (a video family's: picture + sound decoders)
         vaes = list(self.vae.values()) if isinstance(self.vae, dict) else [self.vae]

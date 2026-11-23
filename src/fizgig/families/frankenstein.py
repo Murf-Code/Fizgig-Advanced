@@ -376,6 +376,14 @@ class DiTBlend:
         sol = torch.linalg.lstsq(X, target).solution            # [9, out]
         return sol[:-1].T.contiguous().cpu(), sol[-1].contiguous().cpu()
 
+    def close(self):
+        """Close both lazy checkpoint readers promptly on Studio unload (Windows file handle safety)."""
+        for handle in (getattr(self, "other_f", None), getattr(self, "own_f", None)):
+            file = getattr(handle, "file", None)
+            if file is not None and not file.closed:
+                file.close()
+        self.other_f = self.own_f = None
+
     def export(self, src_path, out_path, metadata=None, log=None, progress=None):
         """The blend as a new base file, in the loaded model's own format (ComfyUI loads it as it loads src_path):
         every tensor of src_path, with the blended blocks' current values in place - int8 codes and scales as they
