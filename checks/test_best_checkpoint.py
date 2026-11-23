@@ -24,7 +24,7 @@ def test_train_optimize_boundary_and_invalid_losses():
     assert t.training(float("inf"), 2) is None
     assert t.training(-1, 3) is None
     assert t.training(0.3, 4, ready=False) is None
-    assert t.training(0.2, 5, ready=True) == 0.25
+    assert math.isclose(t.training(0.2, 5, ready=True), 0.25)
 
 
 def test_validation_ignores_noise_and_resets_when_validation_set_changes():
@@ -41,7 +41,7 @@ def test_validation_ignores_noise_and_resets_when_validation_set_changes():
 def test_best_score_advances_only_after_saver_commits():
     t = RollingBest("train", window=2, cooldown=10)
     assert t.training(0.2, 1) is None
-    assert t.training(0.1, 2) == 0.15
+    assert math.isclose(t.training(0.1, 2), 0.15)
     assert t.best is None  # save failed or was never called
     assert t.training(0.1, 3) == 0.1
     t.saved(0.1, 3, 1)
@@ -69,12 +69,12 @@ def test_saved_metadata_is_atomic_json(tmp_path):
     assert not (tmp_path / "rolling.json.tmp").exists()
 
 
-def test_validation_source_wiring_and_output_filename():
-    """The launch command must be able to enable mid-epoch fixed validation itself."""
-    from fizgig.families import launch
-    assert "validation" in launch.train_command.__code__.co_consts or callable(launch.train_command)
+def test_checkpoint_modes_and_ui_choices():
+    from fizgig.families import form
     from fizgig.training.best_checkpoint import MODES
     assert MODES == ("off", "train", "validation")
+    assert form.DEFAULTS["BEST_CHECKPOINT_MODE"] == "Off"
+    assert form.DEFAULTS["BEST_CHECKPOINT_COOLDOWN"] == "100"
 
 
 def test_parser_accepts_both_modes_without_old_cli_changes():
