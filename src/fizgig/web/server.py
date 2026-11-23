@@ -834,6 +834,18 @@ _STUDIO_DL_SETUP = []      # the setup Download tweaked writes into the picture 
 
 def _studio_post(what, b):
     """Repair Studio's actions (fizgig/web/studio.py runs them in its worker)."""
+
+    # Experimental offline checkpoint mixing: separate CPU worker; never alters training or loaded Studio state.
+    if what.startswith("checkpoint_mix/"):
+        from fizgig.web import checkpoint_mixer
+        action = what.split("/", 1)[1]
+        if action == "inspect":
+            return checkpoint_mixer.inspect(b)
+        if action == "start":
+            return checkpoint_mixer.start(b)
+        if action == "cancel":
+            return checkpoint_mixer.cancel()
+        raise ValueError("Unknown checkpoint mixer action.")
     if what == "download_setup":
         data = b.get("data") or {}
         if not isinstance(data, dict) or not data.get("fizgig_repair_setup"):
@@ -3750,6 +3762,9 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 return self.json({"error": str(e)}, 400)
             return self.json(studio.layout(desc, load_prefs(), pref_path, samples=_studio_samples(desc)))
+        if path == "/api/studio/checkpoint_mix/status":
+            from fizgig.web import checkpoint_mixer
+            return self.json(checkpoint_mixer.status())
         if path == "/api/studio/status":
             return self.json(studio.status())
         if path == "/api/refmod/info":              # RefMod Toolkit: its choices, the desktop's last setup, presets
