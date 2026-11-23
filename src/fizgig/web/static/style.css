@@ -6463,12 +6463,12 @@ body:has(.caption-removal-backdrop){overflow:hidden}
 }
 #tab-captions .studio-top-actions>.studio-view-rail{
   display:flex;flex:0 0 auto;align-items:center;gap:2px;
-  box-sizing:border-box;height:36px;min-height:36px;
+  box-sizing:border-box;height:40px;min-height:40px;
   width:auto;margin-left:0;padding:2px;
 }
 #tab-captions .studio-top-actions>.studio-view-rail>.btn{
   display:flex;align-items:center;justify-content:center;
-  box-sizing:border-box;height:30px;min-height:30px;margin:0;padding:0 9px;
+  box-sizing:border-box;height:36px;min-height:36px;margin:0;padding:0 9px;
 }
 #tab-captions .studio-top-actions>.studio-workspace-status,
 #tab-captions .studio-top-actions>.studio-workspace-status[open]{
