@@ -6283,3 +6283,97 @@ body:has(.caption-removal-backdrop){overflow:hidden}
  #tab-captions .studio-duplicate-card>img{height:clamp(180px,40vw,260px)}
  #tab-captions .studio-duplicate-count{width:100%}
 }
+
+
+/* Caption Workbench: the thumbnail rail may be squeezed to 96px. Keep the
+   missing-caption filter and progress/selection status on separate tidy rows.
+   The heading no longer repeats the image total visible in the footer. */
+#tab-captions .studio-host .studio-browser {
+  container-type:inline-size;
+}
+#tab-captions .studio-host .studio-thumb-footer {
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  grid-auto-rows:min-content;
+  align-items:center;
+  gap:5px 6px;
+  padding:6px 8px;
+  min-width:0;
+}
+#tab-captions .studio-host .studio-thumb-footer .studio-missing-filter {
+  grid-column:1 / -1;
+  display:block;
+  box-sizing:border-box;
+  width:100%;
+  min-width:0;
+  max-width:100%;
+  padding:6px 8px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  text-align:center;
+}
+#tab-captions .studio-host .studio-thumb-footer .studio-position {
+  grid-column:1;
+  min-width:0;
+  white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+}
+#tab-captions .studio-host .studio-thumb-footer .studio-selection-count {
+  grid-column:2;
+  min-width:0;
+  white-space:nowrap;
+  text-align:right;
+}
+#tab-captions .studio-host .studio-thumb-footer .studio-selection-count[hidden] {
+  display:none!important;
+}
+@container (max-width:170px) {
+  #tab-captions .studio-host .studio-thumb-footer .studio-missing-filter {
+    font-size:0;
+    padding:6px 4px;
+  }
+  #tab-captions .studio-host .studio-thumb-footer .studio-missing-filter::after {
+    content:attr(data-compact);
+    font-size:11px;
+  }
+  #tab-captions .studio-host .studio-thumb-footer {
+    padding-inline:4px;
+    column-gap:3px;
+    font-size:10px;
+  }
+}
+
+/* Green light only for a healthy, fully saved workspace. The same existing
+   details control remains clickable; in-progress, pending and error states
+   still show text so a status change cannot go unnoticed. */
+#tab-captions .studio-workspace-status[data-state="saved"] {
+  background:transparent;
+  border-color:transparent;
+}
+#tab-captions .studio-workspace-status[data-state="saved"] summary {
+  gap:0;
+  min-height:30px;
+  padding:7px 9px;
+}
+#tab-captions .studio-workspace-status[data-state="saved"] .studio-status-label {
+  position:absolute;
+  width:1px;
+  height:1px;
+  padding:0;
+  margin:-1px;
+  overflow:hidden;
+  clip-path:inset(50%);
+  white-space:nowrap;
+}
+#tab-captions .studio-workspace-status[data-state="saved"] summary::after {
+  display:none;
+}
+#tab-captions .studio-workspace-status[data-state="saved"] .studio-status-dot {
+  width:9px;
+  height:9px;
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--success) 18%,transparent);
+}
+#tab-captions .studio-workspace-status[data-state="saved"] summary:hover {
+  background:var(--accent-subtle);
+}
