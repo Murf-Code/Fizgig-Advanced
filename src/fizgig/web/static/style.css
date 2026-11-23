@@ -3387,7 +3387,8 @@ label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; 
   overflow:hidden;background:var(--bg-surface)}
 #tab-captions .studio-duplicate-card.keeper{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent-border)}
 #tab-captions .studio-duplicate-card>img{width:100%;height:148px;object-fit:contain;display:block;
-  background:var(--bg-deep)}
+  background:var(--bg-deep);cursor:zoom-in}
+#tab-captions .studio-duplicate-card>img:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 #tab-captions .studio-duplicate-card-info{display:flex;flex-direction:column;gap:5px;padding:8px;
   overflow-wrap:anywhere}
 #tab-captions .studio-duplicate-card-info>strong{font-size:11px;max-width:100%}
