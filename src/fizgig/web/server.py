@@ -2267,7 +2267,13 @@ def _run_stages(stages, out_dir):
                 _run["progress"] = None          # the last stage's cache count isn't this stage's
         append_log(f"\n▶ {stage.name}\n")
         try:
-            proc = _popen(stage.cmd)
+            with _lock:
+                # Atomically claim the next stage and its subprocess. Stop must
+                # not land between the old exited Popen and the next launch.
+                skipped = _run["state"] == "stopped"
+                if not skipped:
+                    proc = _popen(stage.cmd)
+                    _run["proc"] = proc
         except OSError as e:
             append_log(f"✖ {stage.name} could not start: {e}\n" + _log_where())
             with _lock:
@@ -2275,8 +2281,13 @@ def _run_stages(stages, out_dir):
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
             webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
             return
-        with _lock:
-            _run["proc"] = proc
+        if skipped:
+            append_log(f"\n■ Stopped before starting {stage.name}.\n")
+            with _lock:
+                _run["proc"] = None
+            history.end(_run.get("history_id"), "stopped", _run.get("progress"))
+            webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+            return
         mem = oom.Watch()                       # GPU / system-RAM messages, and the Auto plan the trainer chose
         for line in proc.stdout:
             append_log(line)
