@@ -517,7 +517,8 @@ def _unhook_requests():
         return
     try:
         from webview.platforms import edgechromium as ec
-    except Exception:
+    except Exception as exc:
+        _log(f"[app] WebView2 request optimization unavailable: {type(exc).__name__}: {exc}")
         return
     ready = ec.EdgeChrome.on_webview_ready
     if getattr(ready, "_fizgig", False):
@@ -526,12 +527,28 @@ def _unhook_requests():
     def on_ready(self, sender, args):
         ready(self, sender, args)
         try:
+            if not args.IsSuccess:
+                return
             core = sender.CoreWebView2
-            core.WebResourceRequested -= self.on_web_resource_request
-            core.WebResourceResponseReceived -= self.on_web_resource_response
-            core.RemoveWebResourceRequestedFilter("*", ec.CoreWebView2WebResourceContext.All)
-        except Exception:
-            pass
+            detached = []
+            # These hooks send every thumbnail/media response over the .NET
+            # -> Python boundary even when Fizgig has no event listeners.
+            # Detach each independently; a filter API change must not leave
+            # the expensive response hook silently enabled.
+            for name, remove in (
+                ("request", lambda: core.WebResourceRequested.__isub__(self.on_web_resource_request)),
+                ("response", lambda: core.WebResourceResponseReceived.__isub__(self.on_web_resource_response)),
+                ("filter", lambda: core.RemoveWebResourceRequestedFilter(
+                    "*", ec.CoreWebView2WebResourceContext.All)),
+            ):
+                try:
+                    remove()
+                    detached.append(name)
+                except Exception as exc:
+                    _log(f"[app] WebView2 {name} hook could not be removed: {type(exc).__name__}: {exc}")
+            _log("[app] WebView2 event hook removal: " + ", ".join(detached or ["none"]))
+        except Exception as exc:
+            _log(f"[app] WebView2 request hook setup failed: {type(exc).__name__}: {exc}")
         _text_menu(sender)
     on_ready._fizgig = True
     ec.EdgeChrome.on_webview_ready = on_ready
@@ -784,13 +801,22 @@ def main():
             raise RuntimeError(why)
         _unhook_requests()
         _downloads_remember_folder()
-        # clips decode on the CPU in this window: the first clip played froze the window (pointer included) while
-        # WebView2 brought up the GPU's video decoder, on more than one machine; Fizgig's previews are small clips
-        # the CPU decodes with ease. (pywebview's own flag is kept: this variable stands in for its arguments.)
-        # Preferences > App window's Disable GPU: WebView2's own switch, read at its start as Qt's is on Linux
-        os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-                              "--disable-features=ElasticOverscroll --disable-accelerated-video-decode"
-                              + (" --disable-gpu" if str(_prefs().get("qt_disable_gpu") or "") == "1" else ""))
+        # Unlike the normal Edge browser, the former app wrapper forcibly
+        # disabled hardware video decoding. Keep Chromium's normal renderer
+        # flags for image-heavy tabs and make that video workaround opt-in.
+        # A saved Disable GPU preference still wins (and is reported below).
+        from fizgig.web.webview2_performance import browser_arguments, acceleration_warning
+        inherited = os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "")
+        video_fallback = os.environ.get("FIZGIG_WEBVIEW2_SOFTWARE_VIDEO", "") == "1"
+        webview_args = browser_arguments(_prefs(), inherited, software_video=video_fallback)
+        if webview_args:
+            os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = webview_args
+        else:
+            os.environ.pop("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", None)
+        _log("[app] WebView2 rendering: " + acceleration_warning(webview_args))
+        if str(_prefs().get("qt_disable_gpu") or "") == "1":
+            _log("[app] WARNING: Preferences > App window > Disable GPU is on. "
+                 "This can make image scrolling and canvas painting much slower than in a normal browser.")
 
         class Api:
             """What a page in the window - a pod's page included - can ask of it: to come back to this computer, and
