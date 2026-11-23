@@ -188,10 +188,24 @@ def _krea_resume(tmp_path, monkeypatch):
     cdir = launch.cache_dir_for(str(tmp_path / "cache"), str(img))
     os.makedirs(os.path.join(cdir, holdout.HOLDOUT_CACHE))
     held = ["p2.png", "p7.png"]
+    # Real safetensors headers: Start now checks image source stamps, captions and
+    # cached latent geometry rather than treating zero-byte filenames as a valid cache.
+    import torch
+    from PIL import Image
+    from safetensors.torch import save_file
+    from fizgig.dataset.image_dataset import source_stamp
     for i in range(10):
         d = os.path.join(cdir, holdout.HOLDOUT_CACHE) if f"p{i}.png" in held else cdir
-        for name in (f"p{i}_0064x0064_{krea.arch_id}.safetensors", f"p{i}_{krea.arch_id}_te.safetensors"):
-            open(os.path.join(d, name), "wb").close()
+        picture = img / f"p{i}.png"
+        with Image.open(picture) as im:
+            w, h = im.size
+        latent = os.path.join(d, f"p{i}_{w:04d}x{h:04d}_{krea.arch_id}.safetensors")
+        caption = os.path.join(d, f"p{i}_{krea.arch_id}_te.safetensors")
+        save_file({f"latent_{h // krea.spatial_factor}x{w // krea.spatial_factor}":
+                   torch.zeros(2, h // krea.spatial_factor, w // krea.spatial_factor)},
+                  latent, metadata={"architecture": krea.arch_id, "source": source_stamp(str(picture))})
+        save_file({"cond__hidden_states": torch.ones(1, 1)}, caption,
+                  metadata={"architecture": krea.arch_id, "caption1": (img / f"p{i}.txt").read_text()})
     state = tmp_path / "out" / "t-000001-state"
     state.mkdir(parents=True)
     paths = [str(img / n) for n in held]
