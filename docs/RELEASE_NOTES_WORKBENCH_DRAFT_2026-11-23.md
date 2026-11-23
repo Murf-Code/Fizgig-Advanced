@@ -28,35 +28,35 @@ The full feature explanations, screenshots, bug fixes, optimization notes and up
 **History review:** 654 Workbench-base-to-current commits were inventoried and the user-facing features curated. This draft is not a substitute for live GPU sign-off.
 **Scope:** Changes made on Advanced/Workbench since the `wip-test` base, including selective upstream Fizgig 9.8.x adaptations. This document is curated, not an assertion that *every* upstream feature was imported.
 
-## Screenshot gallery — Caption Workbench (assets pending repository upload)
+## Screenshot gallery — Caption Workbench
 
-**Four real application screenshots supplied 2026-11-23.** The original PNGs and a ready-to-render Markdown gallery are packaged in `Fizgig_Workbench_Release_Notes_Screenshots.zip` alongside the release-note draft. **These image files have not yet been checked into this public GitHub repository**. The descriptions below are part of the draft, but the four image embeds must be activated after placing the PNGs in `docs/assets/screenshots/`. Do not publish with missing images.
+**Four real application screenshots supplied 2026-11-23**, embedded below as 1,500px WebP files in `docs/assets/screenshots/`. The original full-resolution PNGs remain in the release screenshot package.
 
 ### Tags — image and caption editor
-<!-- After PNG upload, activate: ![Caption Workbench Tags editor](assets/screenshots/caption-workbench-tags.png) -->
+![Caption Workbench Tags editor](assets/screenshots/caption-workbench-tags.webp)
 
-**Screenshot: `caption-workbench-tags.png`.** Three-panel image and caption workspace: left dataset thumbnails, a large selected macaw preview with Remove/Crop and Undo/Redo, plus Image Tags and the searchable All Tags panel. This illustrates the TagBench-inspired integrated editing workflow.
+**Screenshot: `caption-workbench-tags.webp`.** Three-panel image and caption workspace: left dataset thumbnails, a large selected macaw preview with Remove/Crop and Undo/Redo, plus Image Tags and the searchable All Tags panel. This illustrates the TagBench-inspired integrated editing workflow.
 
 ### Waterfall — image-first dataset exploration
-<!-- After PNG upload, activate: ![Caption Workbench Waterfall](assets/screenshots/caption-workbench-waterfall.png) -->
+![Caption Workbench Waterfall gallery](assets/screenshots/caption-workbench-waterfall.webp)
 
-**Screenshot: `caption-workbench-waterfall.png`.** Full-width masonry-style dataset gallery that preserves varying image aspect ratios. Illustrates dense visual browsing without leaving Caption Workbench.
+**Screenshot: `caption-workbench-waterfall.webp`.** Full-width masonry-style dataset gallery that preserves varying image aspect ratios. Illustrates dense visual browsing without leaving Caption Workbench.
 
 ### Constellation — tag frequency and co-occurrence
-<!-- After PNG upload, activate: ![Caption Workbench Constellation](assets/screenshots/caption-workbench-constellation.png) -->
+![Caption Workbench tag constellation](assets/screenshots/caption-workbench-constellation.webp)
 
-**Screenshot: `caption-workbench-constellation.png`.** Full-canvas colored tag graph with frequency-sized nodes and relationships, plus search and zoom controls.
+**Screenshot: `caption-workbench-constellation.webp`.** Full-canvas colored tag graph with frequency-sized nodes and relationships, plus search and zoom controls.
 
 ### Constellation — focused tag relationships
-<!-- After PNG upload, activate: ![Caption Workbench Constellation selected-tag focus](assets/screenshots/caption-workbench-constellation-focus.png) -->
+![Caption Workbench focused constellation](assets/screenshots/caption-workbench-constellation-focus.webp)
 
-**Screenshot: `caption-workbench-constellation-focus.png`.** Selecting **raindrops** highlights linked tags and connections, dims unrelated nodes, and displays a ranked related-tag list. Distinct from the general graph overview.
+**Screenshot: `caption-workbench-constellation-focus.webp`.** Selecting **raindrops** highlights linked tags and connections, dims unrelated nodes, and displays a ranked related-tag list. Distinct from the general graph overview.
 
 **Verification note:** These screenshots document interface appearance and workflows; they do not constitute performance benchmarks or live GPU-training validation.
 
 ## What's new — a complete dataset workbench
 
-This release turns the old Captions page into **Caption Workbench**, a visual home for preparing, tagging, editing and inspecting the same pictures that train your LoRA. These are the feature highlights a first-time user should see, not a chronological stream of implementation commits. The [four screenshot captions above](#screenshot-gallery--caption-workbench-assets-pending-repository-upload) illustrate Tags, Waterfall and Constellation.
+This release turns the old Captions page into **Caption Workbench**, a visual home for preparing, tagging, editing and inspecting the same pictures that train your LoRA. These are the feature highlights a first-time user should see, not a chronological stream of implementation commits. The [four screenshots above](#screenshot-gallery--caption-workbench) illustrate Tags, Waterfall and Constellation.
 
 ### Edit a training image — the cache follows your changes
 
