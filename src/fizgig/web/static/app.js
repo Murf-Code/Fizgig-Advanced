@@ -12556,10 +12556,19 @@ function captionDuplicatePanel(ext){
           const status=el("div",{class:"field-hint",text:
             (locked?"REVIEW LOCKED · ":"")+
             pic.width+"×"+pic.height+" · "+studioTokens(it.caption||"").length+" tags"});
+          const caption=el("div",{class:"studio-duplicate-caption",text:it.caption||"No caption",
+            title:"Click to expand caption",tabindex:"0",role:"button","aria-expanded":"false"});
+          const toggleCaption=()=>{
+            const expanded=caption.classList.toggle("expanded");
+            caption.setAttribute("aria-expanded",String(expanded));
+          };
+          caption.addEventListener("click",toggleCaption);
+          caption.addEventListener("keydown",e=>{
+            if(e.key==="Enter"||e.key===" "){e.preventDefault();toggleCaption();}
+          });
           pickers.append(el("div",{class:"studio-duplicate-card"+(isKeep?" keeper":"")},
             thumb,el("div",{class:"studio-duplicate-card-info"},
-              el("strong",{text:pic.name}),status,
-              el("div",{class:"studio-duplicate-caption",text:it.caption||"No caption"}),
+              el("strong",{text:pic.name}),status,caption,
               el("label",{class:"field-row"},tick," Keep this image")));
         }
       };
