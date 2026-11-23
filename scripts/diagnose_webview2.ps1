@@ -15,7 +15,23 @@ try {
     $adapters = @(Get-CimInstance Win32_VideoController)
     Write-Host "Display adapters / drivers:"
     foreach ($gpu in $adapters) {
-        Write-Host ("  {0} | driver {1} | status {2}" -f $gpu.Name, $gpu.DriverVersion, $gpu.Status)
+        # WMI 'Status=Error' by itself doesn't tell us if a virtual display
+        # is merely disconnected, intentionally disabled, or actually broken.
+        # PnP error codes distinguish those cases without modifying the device.
+        $code = $gpu.ConfigManagerErrorCode
+        $detail = switch ($code) {
+            0  { "working" }
+            10 { "cannot start" }
+            22 { "disabled" }
+            28 { "driver not installed" }
+            31 { "driver malfunction" }
+            43 { "stopped by Windows after reporting a problem" }
+            45 { "not connected" }
+            $null { "unavailable" }
+            default { "check Device Manager" }
+        }
+        Write-Host ("  {0} | driver {1} | status {2} | PnP error {3} ({4})" -f
+            $gpu.Name, $gpu.DriverVersion, $gpu.Status, $(if ($null -eq $code) { "N/A" } else { $code }), $detail)
     }
     if ($adapters.Count -eq 0) { Write-Host "  None reported by WMI." }
 } catch {
@@ -114,3 +130,5 @@ Write-Host ""
 Write-Host "Check user_data\app_window.log for 'WebView2 Runtime', 'rendering',"
 Write-Host "and 'event hook removal'. Compare a run with GPU ON against GPU OFF."
 Write-Host "Only the app-window switch changes WebView2; normal Edge/Chrome is separate."
+Write-Host "PnP code 22 (disabled) or 45 (not connected) may be expected for an unused"
+Write-Host "virtual monitor; code 10, 31 or 43 warrants investigating its driver."
