@@ -18,7 +18,12 @@ assert.match(caret[1],/transform:rotate\(45deg\)/);
 assert.match(app,/Caption generation & batch tools/);
 assert.match(app,/AI captioning models, trigger words, and batch caption actions/);
 assert.match(html,/id="meDialogWindow"/);
-assert.match(html,/class="me-dialog-quick-note"/);
+// Image Prep moved to a full-window glass editor with an explanatory header
+// and contextual tools in the Advanced disclosure; the retired quick-note
+// and old guide dropdown are no longer required.
+assert.match(html,/All edits use Fizgig's existing editor/);
+assert.match(html,/class="me-advanced-panel" id="meAdvancedPanel"/);
+assert.match(html,/Mask, view &amp; watermark options/);
 assert.doesNotMatch(html,/class="me-dialog-guide"/);
 assert.match(html,/4\. Open Image Editor/);
 assert.equal((html.match(/id="meCanvas"/g)||[]).length,1);

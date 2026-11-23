@@ -219,7 +219,11 @@ assert.match(app,/menuAction\("Exclude from Filter"/);
 assert.match(app,/addAction\("Exclude from Filter"/);
 assert.match(app,/menuAction\("Delete Tag",removePickedTags,!editable\)/);
 assert.match(app,/addAction\("Delete Tag",\(\)=>void deletePickedTags\(tag\)\)/);
-assert.match(app,/Delete tag "'\+old\.trim\(\)\+'" from all eligible dataset captions/);
+// The old window.confirm prompt was replaced by the scoped, keyboard-accessible
+// removal dialog. Check the actual confirmation branch, not deleted wording.
+assert.match(app,/if\(mode==="remove"&&!\(await captionConfirmRemoval\(/);
+assert.match(app,/scope==="all"\?" across the dataset\?"/);
+assert.match(app,/items:\[old\.trim\(\)\],confirmLabel:"Remove tag"/);
 assert.match(app,/const category=el\("details",\{class:"studio-tag-color-category"\}\)/);
 assert.match(css,/\.studio-tag-context-menu \.studio-tag-color-category>summary\{/);
 
