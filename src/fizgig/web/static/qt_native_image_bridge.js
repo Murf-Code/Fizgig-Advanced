@@ -38,6 +38,11 @@
     if(typeof S==="undefined")return empty;
     const kind=tab();
     if(kind==="captions"&&Array.isArray(S.cap?.items)){
+      // Constellation/Waterfall own the entire visual stage. Give them the
+      // whole window and do not poll/decode the dormant native image rail.
+      if((S.cap.studioExploreMode||"list")!=="list"||S.cap.imageEditing?.inline)
+        return {tab:kind,key:"captions|explore|"+(S.cap.studioExploreMode||"list")+
+          "|"+Boolean(S.cap.imageEditing?.inline),items:[],selected:[],active:""};
       const items=S.cap.nativeVisibleItems||S.cap.items;
       const selected=Array.from(S.cap.studioSelection||[]);
       return {
