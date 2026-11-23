@@ -41,6 +41,7 @@ class NativeShell(QMainWindow):
         self._generation = 0
         self._source_key = None
         self._selection_key = None
+        self._pending_selection_key = None
         self._busy = False
         self._preview_dialog = None
 
@@ -122,6 +123,7 @@ class NativeShell(QMainWindow):
                 lambda snapshot: self._snapshot(generation, snapshot))
             return
         if state.get("selection") != self._selection_key:
+            self._pending_selection_key = state.get("selection")
             self.web.page().runJavaScript(
                 "window.FizgigNativeImages.selection()",
                 lambda selection: self._selection(generation, selection))
@@ -154,18 +156,20 @@ class NativeShell(QMainWindow):
             self._source_key = None
             return
         self._set_selection(selection)
+        self._selection_key = self._pending_selection_key
 
     def _set_selection(self, selection):
         selected = selection.get("selected") or []
         active = selection.get("active") or ""
         self.rail.sync_selection(selected, active)
-        # Recreate the same signature as the JS bridge, without a second
-        # poll; it will also re-sync after web-originated selection changes.
-        # None forces only one cheap selection status refresh.
+        # A snapshot requires one status round-trip to establish its
+        # selection fingerprint; subsequent idle polls do not rebuild Qt ranges.
         self._selection_key = None
 
     def _native_selection(self, selected, active):
         payload = json.dumps([selected, active], ensure_ascii=True)
+        # Avoid applying a stale web selection while a native selection is pending.
+        self._selection_key = None
         self.web.page().runJavaScript(
             f"window.FizgigNativeImages?.select?.(...{payload})")
 
