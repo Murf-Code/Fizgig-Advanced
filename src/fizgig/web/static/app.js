@@ -15047,7 +15047,82 @@ function renderCaptionStudio(host,items,ext){
   captionAiControlsMount(aiPane);
   rightDock.append(showAll,showAi);
   const tagHeader=el("div",{class:"studio-tag-header"},headerTitle,rightDock);
-  right.append(editorPane,tagHeader,tagIndexPane,aiPane);
+  // Drag the horizontal partition to give Image Tags or the lower panel more
+  // room. Keep each list's own scroll position and preserve the share across
+  // image changes, view changes, and launches on this device.
+  const tagSplitKey="fizgig_caption_tag_vertical_split_v1";
+  if(!Number.isFinite(S.cap.studioTagUpperShare)){
+    let saved=null;
+    try{saved=localStorage.getItem(tagSplitKey);}catch(_){}
+    const share=saved===null?NaN:Number(saved);
+    S.cap.studioTagUpperShare=Number.isFinite(share)?
+      Math.max(.2,Math.min(.8,share)):.49;
+  }
+  const tagHeightGrip=el("div",{class:"studio-tag-height-grip",role:"separator",tabindex:"0",
+    "aria-orientation":"horizontal","aria-label":"Resize Image Tags and lower tag panel",
+    "aria-valuemin":"20","aria-valuemax":"80",
+    title:"Drag up or down to resize · Arrow keys to adjust · Double-click to reset"});
+  const applyTagShare=share=>{
+    S.cap.studioTagUpperShare=Math.max(.2,Math.min(.8,share));
+    right.style.setProperty("--studio-tag-upper-share",
+      (S.cap.studioTagUpperShare*100).toFixed(2)+"%");
+    const percentage=Math.round(S.cap.studioTagUpperShare*100);
+    tagHeightGrip.setAttribute("aria-valuenow",String(percentage));
+    tagHeightGrip.setAttribute("aria-valuetext","Image Tags "+percentage+" percent");
+  };
+  const saveTagShare=()=>{
+    try{localStorage.setItem(tagSplitKey,String(S.cap.studioTagUpperShare));}catch(_){}
+  };
+  const positionTagShare=clientY=>{
+    const box=right.getBoundingClientRect();
+    if(!box.height)return;
+    // Reserve room for Image Tags controls and the lower panel's heading,
+    // search, sort controls and scrollable tag list.
+    const top=Math.max(180,Math.min(Math.max(180,box.height-240),clientY-box.top));
+    applyTagShare(top/box.height);
+  };
+  let tagPointer=null;
+  tagHeightGrip.addEventListener("pointerdown",e=>{
+    if(e.button!==0)return;
+    tagPointer=e.pointerId;
+    tagHeightGrip.setPointerCapture(e.pointerId);
+    tagHeightGrip.classList.add("is-dragging");
+    positionTagShare(e.clientY);
+    e.preventDefault();
+  });
+  tagHeightGrip.addEventListener("pointermove",e=>{
+    if(e.pointerId===tagPointer)positionTagShare(e.clientY);
+  });
+  const finishTagDrag=e=>{
+    if(e.pointerId!==tagPointer)return;
+    if(e.type==="pointerup")positionTagShare(e.clientY);
+    tagPointer=null;
+    tagHeightGrip.classList.remove("is-dragging");
+    saveTagShare();
+    if(tagHeightGrip.hasPointerCapture(e.pointerId))
+      tagHeightGrip.releasePointerCapture(e.pointerId);
+  };
+  for(const event of ["pointerup","pointercancel","lostpointercapture"])
+    tagHeightGrip.addEventListener(event,finishTagDrag);
+  tagHeightGrip.addEventListener("keydown",e=>{
+    if(!["ArrowUp","ArrowDown","Home","End"].includes(e.key))return;
+    e.preventDefault();
+    const box=right.getBoundingClientRect();
+    if(!box.height)return;
+    const min=180,max=Math.max(min,box.height-240);
+    const now=editorPane.getBoundingClientRect().height;
+    const step=e.shiftKey?40:12;
+    const target=e.key==="Home"?min:e.key==="End"?max:
+      now+(e.key==="ArrowDown"?step:-step);
+    applyTagShare(Math.max(min,Math.min(max,target))/box.height);
+    saveTagShare();
+  });
+  tagHeightGrip.addEventListener("dblclick",()=>{
+    applyTagShare(.49);
+    saveTagShare();
+  });
+  right.append(editorPane,tagHeightGrip,tagHeader,tagIndexPane,aiPane);
+  applyTagShare(S.cap.studioTagUpperShare);
   showTabs(activeDock);
   // A single expandable Edit Tags menu replaces the permanently repeated bulk toolbar.
   // TagBench Find & Replace: literal, case-sensitive text replacement in the
