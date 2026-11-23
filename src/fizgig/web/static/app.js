@@ -2431,7 +2431,7 @@ async function pollRun() {
   $("btnResume").style.display = !live && r.resume && !moveBusy ? "" : "none";
   renderWebQueue(r.web_queue || {items: []});
   queueSummary(r.web_queue || {items: []}, r);
-  if (activeTab() === "training" && !document.hidden) runLossTick(live);
+  runLossTick(live);
   // Per-image loss on the run card while a run with the loss watch trains (Runs & outputs has it after): any of its
   // ticks runs the watch - per-image LR, the look warm-up and auto-recaption track every image too
   // always there for a model with the loss watch: greyed (its hover says which ticks turn it on) until a run tracks it
@@ -6375,7 +6375,8 @@ async function runLossTick(training) {
   if (training && now - (S.lossAt || 0) < 10000) return;
   S.lossAt = now; S.lossDone = !training;
   const d = await api("/api/runs/loss?live=1").catch(() => null);
-  sideSpark(d);
+  sideSpark(d); // the sidebar sparkline stays current even when Training is not open
+  if (activeTab() !== "training" || document.hidden) return;
   const host = $("runLoss");
   if (!d || !d.points || d.points.length < 2) { host.replaceChildren(); return; }
   host.replaceChildren(lossGraph(d));
