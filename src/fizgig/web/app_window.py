@@ -868,7 +868,9 @@ def main():
             to read this computer's training folders (read-only, those folders only: local_bridge) so a pod's page
             can send one up with its own upload."""
             def ready(self):
-                """The page's script ran (app.js calls this as the bridge arrives): the window shows the web UI."""
+                """The page's script ran and the app window can keep displaying it."""
+                if not page_ready.is_set():
+                    _log("[app] desktop page acknowledged the WebView2 bridge")
                 page_ready.set()
 
             def home(self):
@@ -1104,9 +1106,9 @@ def main():
             # a window that appears but never runs the page (a white window: a broken WebView2, its sandbox on a
             # junctioned profile folder, a blocked GPU process) gives way to the browser rather than staying white.
             # Only for this computer's own page: a pod's may be an older Fizgig that doesn't report in
-            if first == url and not page_ready.wait(30):
-                fallback[0] = ("the window opened but the page never ran in it (WebView2 may be failing to draw, or "
-                               "be blocked by security software)")
+            if first == url and not page_ready.wait(60):
+                fallback[0] = ("the window opened, but the app page did not acknowledge its WebView2 bridge "
+                               "within 60 seconds (check for JavaScript or WebView2 startup errors)")
                 try:
                     window.destroy()
                 except Exception:
