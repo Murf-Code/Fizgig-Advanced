@@ -858,10 +858,10 @@ def main():
         if os.environ.get("FIZGIG_WEBVIEW2_NO_BLUR") == "1":
             _log("[app] DIAGNOSTIC: backdrop blur disabled in desktop WebView2 only")
         if gpu_disabled(_prefs()):
-            _log("[app] App window GPU rendering DISABLED (Windows default or explicit preference). "
-                 "Normal browsers maintain their own GPU settings. Enable GPU in Preferences if needed.")
+            _log("[app] App window GPU rendering DISABLED by explicit preference. "
+                 "This software path may significantly slow image scrolling.")
         else:
-            _log("[app] App window GPU rendering enabled by preference/platform default.")
+            _log("[app] App window GPU rendering enabled (default or explicit preference).")
 
         class Api:
             """What a page in the window - a pod's page included - can ask of it: to come back to this computer, and
