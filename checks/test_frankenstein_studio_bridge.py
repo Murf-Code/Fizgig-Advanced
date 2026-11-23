@@ -69,6 +69,7 @@ def test_small_card_auto_swap_requires_int8_streaming(monkeypatch):
     monkeypatch.setenv("FIZGIG_SIM_VRAM_GB", "12")
     monkeypatch.setattr(quant, "free_vram_gb", lambda: 12.0)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "get_device_properties",
                         lambda index: SimpleNamespace(total_memory=int(12 * 1024**3)))
     driver = SimpleNamespace(dit_gb=lambda path: 21.0, max_blocks_to_swap=lambda: 40)
