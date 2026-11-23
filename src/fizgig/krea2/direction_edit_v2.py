@@ -1004,7 +1004,7 @@ def export(result, cfg, output_dir, output_name, *, checkpoint=None, extra=None)
     return {"lora": lora_path}
 
 
-# ---- whole-dataset scan: find suppressed tags; manual targets take priority, auto fills the usual quota --------
+# ---- whole-dataset scan: automatic discovery only; manual targets are scored directly vs controls ----------------
 def plan_scan(cfg):
     """The ablation prompts for a scan of the caption folder: for each frequent tag (in at least scan_min_count
     captions, the scan_max_tags most frequent), up to scan_per_tag real captions that contain it, each as it stands
@@ -1024,16 +1024,16 @@ def plan_scan(cfg):
         for t in head:
             names.setdefault(_norm(t), t.strip())
     counts = {k: len(v) for k, v in where.items()}
-    requested = {_norm(t) for t in cfg.get("target_tags") or []}
     frequent = sorted((k for k, n in counts.items() if n >= cfg["scan_min_count"]),
                       key=lambda k: (-counts[k], k))[:cfg["scan_max_tags"]]
-    # Scan common tags automatically; explicit manual requests can enter the
-    # scan below the frequency tier when there are at least four captions.
-    # Keep at least eight automatic candidates for regression/control fitting.
+    # Scan frequent caption tags only. Manually requested concepts do not
+    # need to occur in any captions: the subsequent text/control comparison
+    # will measure them directly on held-out prompt contexts.
+    # Keep eight candidates when possible to fit the frequency regression.
     common_count = min(len(frequent), max(8, math.ceil(
         len(frequent) * float(cfg.get("scan_auto_top_fraction", 1.0)))))
     common = frequent[:common_count]
-    tags = list(dict.fromkeys(common + [k for k in sorted(requested) if counts.get(k, 0) >= 4]))
+    tags = common
     rng = random.Random(cfg["caption_seed"] + 31)
     pairs, prompts = [], []
     for k in tags:
@@ -1106,23 +1106,31 @@ def scan_select(cfg, pairs, rows, meta, requested_targets=None):
     (rf_1 by default: txtmlp starts with an RMSNorm, which erases how loud a token is). A short or rare tag
     legitimately moves the vector less, so the score is regressed on log(characters) and log(caption count) and
     the residual, in standard deviations, is what is compared. A tag counts as weak only when BOTH halves of its
-    samples (alternate captions) fall below -scan_z. Automatic-only selection picks up to scan_targets
-    confirmed-suppressed frequent tags. With manual requests, keep all confirmed manual targets and add
-    up to scan_targets OTHER qualifying automatic targets (manual targets do not consume those slots).
-    Overlapping tags are counted only once, and fewer auto targets may qualify than the budget.
-    Controls: tags near the middle (|z| <= 0.5) closest to the targets in length and frequency (scan_controls).
+    samples (alternate captions) fall below -scan_z. Only frequent automatic candidates must pass
+    that discovery threshold. All explicitly requested manual targets are retained for the
+    subsequent target-versus-control measurement, regardless of caption frequency or scan z.
+    Up to scan_targets OTHER qualifying automatic targets are added; duplicates are backfilled.
+    Controls: tags near the middle (|z| <= 0.5) closest to observed targets in length and
+    frequency (scan_controls).
     Returns {"targets", "manual_targets", "automatic_targets", "auto_only_count", "controls", "rows"}."""
     stage = cfg.get("scan_stage") or "rf_1"
     by_tag = {}
     for pr, row in zip(pairs, rows):
         by_tag.setdefault(pr["tag"], []).append(math.log(max(row[stage], 1e-12)))
     tags = sorted(t for t, v in by_tag.items() if len(v) >= 2)
+    requested = _tag_list(requested_targets if requested_targets is not None else cfg.get("target_tags") or [])
+    # Preserve order and deduplicate by the same normalization used for auto tags.
+    manual, seen = [], set()
+    for name in requested:
+        key = _norm(name)
+        if key and key not in seen:
+            manual.append(name)
+            seen.add(key)
     if len(tags) < 8:
-        requested = list(requested_targets or cfg.get("target_tags") or [])
-        skipped = [{"tag": t, "reason": f"only {len(tags)} distinct tags could be measured; at least 8 are needed"}
-                   for t in requested]
-        return {"targets": [], "manual_targets": [], "automatic_targets": [],
-                "auto_only_count": 0, "controls": [], "skipped_targets": skipped, "rows": [],
+        # The automatic regression needs eight observed tags, not the manual
+        # path. The latter is tested directly against controls later.
+        return {"targets": manual, "manual_targets": manual, "automatic_targets": [],
+                "auto_only_count": 0, "controls": [], "skipped_targets": [], "rows": [],
                 "fit": {"reason": f"only {len(tags)} distinct tags could be measured"}}
     mean = lambda v: sum(v) / len(v)          # noqa: E731
     y = torch.tensor([mean(by_tag[t]) for t in tags], dtype=torch.float64)
@@ -1143,29 +1151,16 @@ def scan_select(cfg, pairs, rows, meta, requested_targets=None):
     # confirmed weak concepts prefer prevalence, then stronger suppression.
     order = sorted((i for i in range(len(tags)) if tags[i] in auto_keys),
                    key=lambda i: (-meta["counts"][tags[i]], float(z[i]), tags[i]))
-    skipped = []
-    requested = list(requested_targets or [])
     auto_only = [i for i in order if confirmed[i]][:int(cfg["scan_targets"])]
-    manual = []
-    if requested:
-        by_key = {tag: i for i, tag in enumerate(tags)}
-        for raw in requested:
-            i = by_key.get(_norm(raw))
-            if i is None:
-                skipped.append({"tag": raw, "reason": "not present often enough in the training captions to measure"})
-            elif not confirmed[i]:
-                skipped.append({"tag": raw, "reason": "no consistent measured suppression",
-                                "z": float(z[i]), "z_half_a": float(za[i]), "z_half_b": float(zb[i])})
-            elif i not in manual:
-                manual.append(i)
-    # Manual targets are ADDITIVE to the automatic budget: if a manual
-    # target would also have been chosen automatically, backfill from the
-    # remaining qualified common tags rather than wasting an automatic slot.
-    automatic = [i for i in order if confirmed[i] and i not in manual][:int(cfg["scan_targets"])]
-    tgt = manual + automatic
-    target_names = [meta["names"][tags[i]] for i in tgt]
-    ref = feat[tgt].mean(0) if tgt else feat.mean(0)
-    near = sorted((i for i in range(len(tags)) if abs(float(z[i])) <= 0.5 and i not in tgt),
+    # The manual path requires no caption occurrence or scan qualification.
+    # All manual targets reach direct target/control tests in run_on_path.
+    automatic = [i for i in order if confirmed[i] and tags[i] not in seen][:int(cfg["scan_targets"])]
+    target_names = manual + [meta["names"][tags[i]] for i in automatic]
+    observed_manual = [i for i, tag in enumerate(tags) if tag in seen]
+    ref_idx = observed_manual + automatic
+    ref = feat[ref_idx].mean(0) if ref_idx else feat.mean(0)
+    role_keys = {_norm(name) for name in target_names}
+    near = sorted((i for i in range(len(tags)) if abs(float(z[i])) <= 0.5 and tags[i] not in role_keys),
                   key=lambda i: float(((feat[i] - ref) ** 2).sum()))
     controls = []
     for i in near:
@@ -1175,10 +1170,10 @@ def scan_select(cfg, pairs, rows, meta, requested_targets=None):
         controls.append(nm)
         if len(controls) >= int(cfg["scan_controls"]):
             break
-    if tgt and len(controls) < 3:
+    if target_names and len(controls) < 3:
         raise ValueError(f"the scan found only {len(controls)} mid-range tags to use as controls (needs 3): "
                          "raise scan_max_tags or lower scan_min_count.")
-    role = {tags[i] for i in tgt}
+    role = {_norm(name) for name in target_names}
     control_keys = {_norm(c) for c in controls}
     out_rows = []
     for i, t in enumerate(tags):
@@ -1188,10 +1183,34 @@ def scan_select(cfg, pairs, rows, meta, requested_targets=None):
                          "z_half_b": float(zb[i]), "confirmed_weak": confirmed[i],
                          "role": "target" if t in role else ("control" if t in control_keys else "")})
     out_rows.sort(key=lambda r: r["z"])
-    return {"targets": target_names, "manual_targets": [meta["names"][tags[i]] for i in manual],
+    return {"targets": target_names, "manual_targets": manual,
             "automatic_targets": [meta["names"][tags[i]] for i in automatic],
-            "auto_only_count": len(auto_only), "controls": controls, "skipped_targets": skipped, "rows": out_rows,
+            "auto_only_count": len(auto_only), "controls": controls, "skipped_targets": [], "rows": out_rows,
             "fit": {"coefficients": [float(b) for b in beta[:, 0]], "residual_sd": sd}}
+
+
+
+def manual_control_probe(rel, targets, controls, stage="txtmlp"):
+    """Check each manual concept directly against the same controls over paired base prompts.
+
+    No target caption occurrences are required. A concept is accepted when its relative
+    response is weaker than the mean control response on BOTH independent halves
+    of the prompt bases. This is a selection check, not proof of an edit benefit;
+    held-out verification and image validation remain mandatory.
+    """
+    ref = torch.stack([rel[stage][control] for control in controls]).mean(0).clamp_min(1e-12)
+    result = {}
+    for target in targets:
+        ratio = (rel[stage][target] / ref).float()
+        halves = [ratio[0::2], ratio[1::2]]
+        half_ratios = [float(part.mean()) for part in halves if part.numel()]
+        avg = float(ratio.mean())
+        result[target] = {
+            "accepted": len(half_ratios) == 2 and all(x < 1.0 for x in half_ratios),
+            "relative_response": avg,
+            "half_ratios": half_ratios,
+        }
+    return result
 
 
 def _run_scan(cfg, store, *, dit_path, te_path, device, encoder, path_config, output_dir, output_name):
@@ -1199,35 +1218,40 @@ def _run_scan(cfg, store, *, dit_path, te_path, device, encoder, path_config, ou
     if not dit_path or not os.path.isfile(dit_path):
         raise ValueError(f"the Krea 2 DiT {dit_path!r} doesn't exist.")
     prompts, pairs, meta = plan_scan(cfg)
-    if not pairs:
-        raise ValueError("the scan found no tag in enough captions: lower scan_min_count.")
-    encode_prompts(prompts, te_path, device, encoder=encoder, store=store)
-    path = load_fusion_path(dit_path, path_config, device=device, dtype=DTYPES[cfg["compute_dtype"]])
-    try:
-        rows = scan_measure(path, store, pairs)
-    finally:
-        del path
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
+    if pairs:
+        encode_prompts(prompts, te_path, device, encoder=encoder, store=store)
+        path = load_fusion_path(dit_path, path_config, device=device, dtype=DTYPES[cfg["compute_dtype"]])
+        try:
+            rows = scan_measure(path, store, pairs)
+        finally:
+            del path
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+    else:
+        rows = []
+        logger.info("[calibration] automatic scan found no measurable frequent tags; "
+                    "manual targets will still be compared directly to controls")
     selection = scan_select(cfg, pairs, rows, meta, requested_targets=cfg.get("target_tags") or [])
     logger.info("[calibration] target scan: eligible frequent tags %d of %d; automatic budget %d",
                 meta["auto_pool_count"], meta["frequent_count"], cfg["scan_targets"])
     logger.info("[calibration] target scan: auto-only %d, combined %d (%d manual + %d automatic)",
                 selection["auto_only_count"], len(selection["targets"]),
                 len(selection["manual_targets"]), len(selection["automatic_targets"]))
-    manual_keys = {_norm(name) for name in selection["manual_targets"]}
+    for name in selection["manual_targets"]:
+        logger.info("[calibration] candidate target: %s (manual; direct target/control test; %d captions)",
+                    name, meta["counts"].get(_norm(name), 0))
+    automatic_keys = {_norm(name) for name in selection["automatic_targets"]}
     for row in selection["rows"]:
-        if row["role"] == "target":
-            source = "manual" if _norm(row["tag"]) in manual_keys else "automatic"
-            logger.info("[calibration] candidate target: %s (%s; suppression z=%.2f; %d captions)",
-                        row["tag"], source, row["z"], row["count"])
-    for excluded in selection["skipped_targets"]:
-        logger.info("[calibration] manual target skipped: %s (%s)", excluded["tag"], excluded["reason"])
+        if _norm(row["tag"]) in automatic_keys:
+            logger.info("[calibration] candidate target: %s (automatic; suppression z=%.2f; %d captions)",
+                        row["tag"], row["z"], row["count"])
     store.clear()
     dataset_controls = selection["controls"]
     general_controls = builtin_controls(selection["targets"], seed=cfg["caption_seed"])
     all_controls = list(dict.fromkeys(dataset_controls + general_controls))
     cfg["target_tags"], cfg["control_tags"], cfg["auto_control_tags"] = selection["targets"], all_controls, False
+    cfg["_calibration_manual_candidates"] = list(selection["manual_targets"])
+    cfg["_calibration_auto_candidates"] = list(selection["automatic_targets"])
 
 
 # ---- the whole run --------------------------------------------------------------------------------------------
@@ -1422,6 +1446,29 @@ def run_direction_edit(cfg, *, dit_path, te_path, vae_path=None, output_dir, out
         else:
             encode_prompts(prompts, te_path, device, encoder=encoder, store=store)
         path = load_fusion_path(dit_path, path_config, device=device, dtype=DTYPES[cfg["compute_dtype"]])
+        manual_candidates = list(cfg.get("_calibration_manual_candidates") or [])
+        if manual_candidates:
+            probe_cfg = {**cfg, "target_tags": manual_candidates}
+            probe_prompts = _needed(cfg["base_prompts"], manual_candidates, cfg["control_tags"])
+            probe_rel = contributions(measure(path, store, probe_prompts), probe_cfg)[1]
+            outcomes = manual_control_probe(probe_rel, manual_candidates, cfg["control_tags"],
+                                            stage=cfg.get("score_stage") or "txtmlp")
+            kept_manual = []
+            for tag in manual_candidates:
+                outcome = outcomes[tag]
+                halves = outcome["half_ratios"]
+                logger.info("[calibration] manual direct probe: %s %s (response %.2fx controls; "
+                            "split halves %.2fx / %.2fx)",
+                            tag, "accepted" if outcome["accepted"] else "rejected",
+                            outcome["relative_response"], halves[0], halves[1])
+                if outcome["accepted"]:
+                    kept_manual.append(tag)
+            cfg["target_tags"] = kept_manual + list(cfg.get("_calibration_auto_candidates") or [])
+            logger.info("[calibration] targets after direct control probe: %d manual + %d automatic",
+                        len(kept_manual), len(cfg.get("_calibration_auto_candidates") or []))
+            if not cfg["target_tags"]:
+                logger.info("[calibration] no measurable suppressed targets remain; skipping edit")
+                return {"status": "skipped", "verify": None}
         result = run_on_path(path, store, cfg)
         del path
         files = export(result, cfg, output_dir, output_name)

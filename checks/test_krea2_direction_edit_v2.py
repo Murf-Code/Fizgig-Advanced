@@ -345,7 +345,7 @@ def test_run_direction_edit_end_to_end_with_scan_rounds_and_spill():
 
 
 
-def test_manual_target_is_skipped_when_not_suppressed():
+def test_manual_target_is_kept_even_if_scan_does_not_show_suppression():
     d = make_folder(n=180)
     cfg = de.make_config({"direction_edit_caption_folder": d, "direction_edit_scan": "1",
                           "direction_edit_target_tags": "tag00"})
@@ -354,9 +354,10 @@ def test_manual_target_is_skipped_when_not_suppressed():
     prompts, pairs, meta = de.plan_scan(cfg)
     path = tiny_path()
     neutral_rows = [{stage: 1.0 for stage in de.STAGES} for _ in pairs]
-    rejected = de.scan_select(cfg, pairs, neutral_rows, meta, requested_targets=["tag00"])
-    assert rejected["targets"] == []
-    assert rejected["skipped_targets"] and rejected["skipped_targets"][0]["tag"] == "tag00"
+    accepted_neutral = de.scan_select(cfg, pairs, neutral_rows, meta, requested_targets=["tag00"])
+    assert accepted_neutral["manual_targets"] == ["tag00"]
+    assert accepted_neutral["targets"] == ["tag00"]
+    assert accepted_neutral["skipped_targets"] == []
 
     store = de.encode_prompts(prompts, None, "cpu", encoder=fake_encoder(weak={"tgt a"}))
     weak_rows = de.scan_measure(path, store, pairs)
@@ -385,12 +386,12 @@ def test_scan_adds_auto_targets_to_manual():
 
     combined = de.scan_select(cfg, pairs, rows, meta,
                               requested_targets=["tag03", "tag03", "tag20"])
-    assert combined["manual_targets"] == ["tag03"], combined
+    assert combined["manual_targets"] == ["tag03", "tag20"], combined
     assert combined["automatic_targets"] == ["tag01", "tag02", "tag04"], combined
-    assert combined["targets"] == ["tag03", "tag01", "tag02", "tag04"], combined
-    assert len(combined["targets"]) == 4  # 1 manual + 3 automatic
+    assert combined["targets"] == ["tag03", "tag20", "tag01", "tag02", "tag04"], combined
+    assert len(combined["targets"]) == 5  # 2 manual (one uncaptained) + 3 automatic
     assert len(set(combined["targets"])) == len(combined["targets"])
-    assert any(row["tag"] == "tag20" for row in combined["skipped_targets"])
+    assert combined["skipped_targets"] == []
     assert all(row["confirmed_weak"] for row in combined["rows"] if row["role"] == "target")
     assert not set(combined["targets"]) & set(combined["controls"])
 
@@ -424,8 +425,15 @@ def test_frequent_auto_pool_excludes_uncommon_tags_but_keeps_manual_tags():
     assert meta["frequent_count"] == 20
     assert meta["auto_pool_count"] == 8  # minimum required for scanner regression
     assert meta["auto_keys"] == {f"tag{i:02d}" for i in range(8)}
-    assert {pair["tag"] for pair in pairs} == meta["auto_keys"] | {"rare manual"}
+    assert {pair["tag"] for pair in pairs} == meta["auto_keys"]
     assert meta["counts"]["rare manual"] == 4
+    # The rare manual request is never in the automatic scan but is
+    # nevertheless included for the downstream target/control comparison.
+    neutral_rows = [{"rf_1": 1.0} for _ in pairs]
+    sel = de.scan_select(cfg, pairs, neutral_rows, meta,
+                         requested_targets=["rare manual"])
+    assert sel["targets"] == ["rare manual"]
+    assert sel["manual_targets"] == ["rare manual"]
 
 
 def test_auto_selection_prefers_frequent_confirmed_targets():
@@ -446,6 +454,60 @@ def test_auto_selection_prefers_frequent_confirmed_targets():
     assert combined["automatic_targets"] == ["tag01", "tag02"], combined
     assert combined["targets"] == ["tag15", "tag01", "tag02"], combined
     assert len(combined["targets"]) == 3
+
+def test_manual_probe_keeps_weak_concept_not_strong_or_inconsistent():
+    """Cat is strong, crying weak, and an inconsistent concept fails a split-half check."""
+    controls = ["portrait", "dog", "lamp"]
+    manual = ["cat", "crying", "sometimes weak"]
+    values = {name: torch.tensor([1.0, 1.0, 1.0, 1.0]) for name in controls}
+    values.update({
+        "cat": torch.tensor([1.15, 1.25, 1.2, 1.1]),
+        "crying": torch.tensor([0.35, 0.4, 0.3, 0.45]),
+        "sometimes weak": torch.tensor([0.45, 1.35, 0.4, 1.3]),
+    })
+    outcome = de.manual_control_probe({"txtmlp": values}, manual, controls)
+    assert not outcome["cat"]["accepted"]
+    assert outcome["crying"]["accepted"]
+    assert not outcome["sometimes weak"]["accepted"]
+    assert outcome["crying"]["relative_response"] < 1
+    assert outcome["cat"]["relative_response"] > 1
+
+
+def test_manual_target_without_any_caption_is_measured_against_controls():
+    """The text path can score uncaptained manual concepts directly with paired prompts."""
+    d = make_folder(n=90)
+    cfg = caption_cfg(d, target_tags=["hypnosis"], control_tags=["tag00", "tag01", "tag02"],
+                      verify_count=2)
+    prompts, pairs, meta = de.plan_scan({**cfg, "scan_min_count": 8,
+                                         "scan_max_tags": 500, "scan_auto_top_fraction": 0.25})
+    assert meta["counts"].get("hypnosis", 0) == 0
+    # Explicit targets are absent from scanner pairs, but later appended to
+    # prompt bases for direct score-vs-controls evaluation.
+    assert not any(p["tag"] == "hypnosis" for p in pairs)
+    de.apply_captions(cfg)
+    measured_prompts = de.prompt_list(cfg)
+    assert any(p.endswith(", hypnosis") for p in measured_prompts)
+    encoded = de.encode_prompts(measured_prompts, None, "cpu", encoder=fake_encoder(weak={"hypnosis"}))
+    try:
+        vecs = de.measure(tiny_path(), encoded, measured_prompts)
+        _c, rel = de.contributions(vecs, cfg)
+        scores = de.score(rel, cfg)
+        assert scores["hypnosis"]["role"] == "target"
+        assert all(control in scores for control in ["tag00", "tag01", "tag02"])
+    finally:
+        encoded.close()
+
+
+def test_manual_target_survives_when_automatic_scan_cannot_fit():
+    cfg = dict(scan_stage="rf_1", scan_z=1.0, scan_targets=7, scan_controls=12)
+    meta = {"names": {"one": "one"}, "counts": {"one": 5}, "auto_keys": {"one"}}
+    sel = de.scan_select(cfg, [{"tag": "one"}, {"tag": "one"}],
+                         [{"rf_1": 0.8}, {"rf_1": 0.8}], meta,
+                         requested_targets=["never in captions", "NEVER_IN_CAPTIONS"])
+    assert sel["targets"] == ["never in captions"]
+    assert sel["automatic_targets"] == []
+    assert sel["skipped_targets"] == []
+
 
 def test_scan_counts_tags_beyond_context_cap():
     d = tempfile.mkdtemp(prefix="de_v2_tail_tags_")
