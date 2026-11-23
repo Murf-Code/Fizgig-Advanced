@@ -76,6 +76,8 @@ jobs:
         run: |
           python -m pytest checks/test_studio_tab_ownership.py -q
           node checks/test_studio_tab_ownership.cjs
+      - name: AMD MIOpen opt-in and Windows DB fallback (#389)
+        run: python -m pytest checks/test_rocm_miopen_switch.py -q
       - name: All browser scripts are served by HTTP routes
         run: node checks/test_web_static_routes.cjs
       - name: Caption Studio tag-query unit checks
