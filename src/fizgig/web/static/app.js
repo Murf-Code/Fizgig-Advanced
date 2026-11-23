@@ -5518,7 +5518,7 @@ function wireRoyale() {
   $("ryStop").addEventListener("click", () => api("/api/royale/cancel", {}).then(royalePoll));
   $("tab-royale").addEventListener("click", (e) => { if (e.target.matches('[id$="Go"]')) setTimeout(ryTravelPoll, 400); });
   $("ryUnload").addEventListener("click", async () => {
-    await api("/api/studio/reset", {});            // the shared GPU worker quits (Studio's Unload)
+    await api("/api/studio/reset", {studio_session: studioSession(), });            // the shared GPU worker quits (Studio's Unload)
     $("ryStatus").textContent = "Model unloaded - the renders stay here until the next render.";
   });
   $("ryScrub").addEventListener("input", royaleScrub);
@@ -9653,7 +9653,7 @@ function wireStudioAce() {
   wireSong();
   $("stKeepBtn").addEventListener("click", async () => {
     try {
-      const r = await api("/api/studio/keep", {});
+      const r = await api("/api/studio/keep", {studio_session: studioSession(), });
       $("stSrcOn").checked = true; $("stSrcPath").value = r.path;
       if ($("stSrcMode").value === "song") $("stSrcMode").value = "repaint";
       studioAceLayout(); studioAceRemember(); studioRegionDraw();
@@ -9697,7 +9697,7 @@ function studioEq(role, on, restore = true) {
   if (on) {
     if (role === "primary") { $("stStatus").textContent = "Model EQ as the primary: press Start / Update to load it (1.0 = the stock model).";
       if (S.st.ready) $("stStart").textContent = "Update"; }
-    else if (S.st.ready) api("/api/studio/donor", {path: L.model_eq}).then(studioPoll).catch((e) => { $("stStatus").textContent = e.message; });
+    else if (S.st.ready) api("/api/studio/donor", {studio_session: studioSession(), path: L.model_eq}).then(studioPoll).catch((e) => { $("stStatus").textContent = e.message; });
     stRemember();
     return;
   }
@@ -9711,7 +9711,7 @@ function studioEq(role, on, restore = true) {
     if (S.st.ready) $("stStart").textContent = "Update";
   } else {
     $(pathId).value = prev;
-    if (S.st.ready) api("/api/studio/donor", {path: prev}).then(() => { studioPoll(); studioPending(); });
+    if (S.st.ready) api("/api/studio/donor", {studio_session: studioSession(), path: prev}).then(() => { studioPoll(); studioPending(); });
   }
   stRemember();
 }
@@ -9957,7 +9957,7 @@ async function studioMapRequest() {
   busy(true);
   stMapNote("");
   try {
-    const r = await api("/api/studio/map", {state, trigger: $("stMapTrig").value.trim(), blocks: m.kind === "blocks"});
+    const r = await api("/api/studio/map", {studio_session: studioSession(), state, trigger: $("stMapTrig").value.trim(), blocks: m.kind === "blocks"});
     if (r.error) { busy(false); stMapNote(r.error); return; }
     if (!$("stMapTrig").value.trim() && r.trigger) $("stMapTrig").placeholder = r.trigger;
     for (let i = 0; i < 240 && want === m.want; i++) {        // the worker answers in seconds; up to two minutes
@@ -10368,7 +10368,7 @@ async function studioFrankExport(overwrite=false) {
   const out = $("stFrankOut").value.trim();
   if (!out) { $("stFrankMsg").textContent = "Choose a new checkpoint filename."; return; }
   try {
-    const r = await api("/api/studio/frank_export", {out, state: studioState(), overwrite});
+    const r = await api("/api/studio/frank_export", {studio_session: studioSession(), out, state: studioState(), overwrite});
     if (r.exists) {
       $("stFrankMsg").replaceChildren(document.createTextNode("That file exists. "),
         el("button", {class: "btn btn-sm btn-danger", text: "Confirm overwrite",
@@ -10771,7 +10771,7 @@ function studioOptionsDraw(L) {
       o.value = v;
       try {
         await api("/api/prefs", {changes: {[`studio_opt_${o.key}`]: v}});
-        if (S.st.ready) { await api("/api/studio/settings", {family: L.key, options: 1}); studioPending(); }
+        if (S.st.ready) { await api("/api/studio/settings", {studio_session: studioSession(), family: L.key, options: 1}); studioPending(); }
       } catch (e) { showProblems([e.message]); }
     };
     const row = el("div", {class: "field-row"}, el("span", {class: "field-label", text: o.label + ":"}),
@@ -10797,7 +10797,16 @@ function studioSchedule(live) {
   S.st.timer = setTimeout(studioRender, live ? ($("stTurbo").checked ? 150 : 400) : 100);
 }
 
+// Per-browser-tab Studio ownership. The worker is shared, but one tab must
+// never silently render on, unload, or modify the model another tab loaded.
+// This is state isolation, not an authentication credential.
+function studioSession() {
+  return S.st.session || (S.st.session = (typeof crypto !== "undefined" && crypto.randomUUID ?
+    crypto.randomUUID() : String(Date.now()) + "-" + Math.random().toString(36).slice(2)));
+}
+
 async function studioRender() {
+  if (S.st.foreign) return studioStart(); // Load this tab's own setup rather than the other tab's.
   if (studioFrankAsked() !== !!S.st.loadedFrank) {
     $("stStatus").textContent = "Studio mode changed. Press Start to load it."; return;
   }
@@ -10809,13 +10818,14 @@ async function studioRender() {
     if (!S.st.seedUsed) studioRollSeed();
     state.seed = S.st.seedUsed;
   }
-  try { await api("/api/studio/render", {state, ...studioExtra(), ...studioMixExtra()}); studioPoll(); }
+  try { await api("/api/studio/render", {studio_session: studioSession(), state, ...studioExtra(), ...studioMixExtra()}); studioPoll(); }
   catch (e) { $("stStatus").textContent = e.message; }
 }
 
 function studioRollSeed() { S.st.seedUsed = 1 + Math.floor(Math.random() * (2 ** 31 - 2)); }
 
 async function studioStart() {
+  studioSession();
   stRemember();
   if (seedOf("stSeed") === 0) studioRollSeed();      // Update with seed 0: a new random picture
   const L = S.st.layout;
@@ -10830,21 +10840,22 @@ async function studioStart() {
     const key = [L.key, frank ? "" : $("stPrimary").value.trim(), fast, L.kind === "video" ? $("stH3Model").value + $("stH3Base").value : "",
       (L.render_choice || {}).value || "", L.follow_ck || "", L.follow_look || "", L.follow_turbo || "",
       frank ? "frankenstein" : "lora"].join("|");
-    if (st.state === "ready" && S.st.loadedKey === key && !!st.frankenstein === frank) {     // the same LoRA: the donor may change, then a render
+    if (st.state === "ready" && st.load_session === studioSession() && S.st.loadedKey === key && !!st.frankenstein === frank) {     // the same LoRA: the donor may change, then a render
       if (!frank && $("stDonor").value.trim() !== (st.donor || ""))
-        await api("/api/studio/donor", {path: $("stDonor").value.trim()});
+        await api("/api/studio/donor", {studio_session: studioSession(), path: $("stDonor").value.trim()});
       // the Samples tab's steps and CFG (a model that follows it) apply without a reload: sent before each render
-      if (L.follows_samples) await api("/api/studio/settings", {family: L.key, negative: $("stNeg").value.trim()});
+      if (L.follows_samples) await api("/api/studio/settings", {studio_session: studioSession(), family: L.key, negative: $("stNeg").value.trim()});
       studioRender();
       return;
     }
     S.st.ready = false;
-    await api("/api/studio/load", {family: L.key, primary: frank ? "" : $("stPrimary").value.trim(),
+    await api("/api/studio/load", {studio_session: studioSession(), family: L.key, primary: frank ? "" : $("stPrimary").value.trim(),
       donor: frank ? "" : $("stDonor").value.trim(), frankenstein: frank,
       fast, turbo: $("stTurbo").checked, negative: $("stNeg").value.trim(),
       h3_model: L.kind === "video" ? $("stH3Model").value : "", base: L.kind === "video" ? $("stH3Base").value : "",
       canvas: studioCanvas()});
     if (S.st.mix && S.st.mix.mode !== "off" || (S.st.dmix && S.st.dmix.on)) studioMixReset();
+    S.st.foreign = false;
     S.st.loadedKey = key;
     S.st.pendingFirst = true;
     studioPoll();
@@ -10855,6 +10866,27 @@ async function studioPoll() {
   clearTimeout(S.st.poll);
   let st;
   try { st = await api("/api/studio/status"); } catch (e) { return; }
+  if (st.load_id && st.load_session !== studioSession()) {
+    // Unlike shared worker state, this tab's pictures and setup belong to it.
+    // Treat another tab's model load or unload as foreign and don't repaint its
+    // progress, outputs, LoRA labels or Cancel/Unload controls into this tab.
+    S.st.foreign = true;
+    S.st.ready = false;
+    S.st.loadedKey = "";
+    S.st.pendingFirst = false;
+    $("stStatus").textContent = "Another Studio tab or window changed the loaded model. " +
+      "Your setup and pictures are unchanged. Press Start to load this tab's setup again.";
+    $("stBadge").textContent = "Other tab";
+    $("stBadge").dataset.state = "idle";
+    $("stBar").style.width = "0";
+    $("stBar").parentElement.classList.toggle("indeterminate", false);
+    $("stStart").textContent = "Start";
+    $("stUnload").disabled = true;
+    if ($("tab-studio").classList.contains("active")) S.st.poll = setTimeout(studioPoll, 2000);
+    return;
+  }
+  S.st.foreign = false;
+  $("stUnload").disabled = false;
   const wasReady = S.st.ready;
   S.st.ready = st.state === "ready";
   S.st.loadedFrank = !!st.frankenstein;
@@ -11012,7 +11044,7 @@ async function studioSave(overwrite) {
   const st = studioState();
   const includeDonor = S.st.donor && Object.values(S.st.blocks).some((b) => b.de);
   try {
-    const r = await api("/api/studio/save", {out: $("stOut").value.trim(), state: st, include_donor: includeDonor, overwrite: !!overwrite});
+    const r = await api("/api/studio/save", {studio_session: studioSession(), out: $("stOut").value.trim(), state: st, include_donor: includeDonor, overwrite: !!overwrite});
     if (r.exists) {
       $("stSaveMsg").replaceChildren(el("div", {class: "field-row"}, el("span", {class: "field-hint", text: "That file is there already."}),
         el("button", {class: "btn btn-sm btn-danger", text: "Replace it", onclick: () => studioSave(true)})));
@@ -11338,13 +11370,13 @@ function wireStudio() {
   wireStudioMetrics();
   wireStudioSetups();
   $("stEqD").addEventListener("click", () => studioEq("donor", !S.st.eq.donor));
-  $("stUnload").addEventListener("click", async () => { await api("/api/studio/reset", {}); S.st.ready = false; S.st.loadedKey = ""; studioPoll(); });
+  $("stUnload").addEventListener("click", async () => { await api("/api/studio/reset", {studio_session: studioSession(), }); S.st.ready = false; S.st.loadedKey = ""; studioPoll(); });
   $("stPrimaryPick").addEventListener("click", () => pick($("stPrimary").value || loraStart(), false, (p) => { $("stPrimary").value = p; stRemember(); }));
   $("stDonorPick").addEventListener("click", () => pick($("stDonor").value || $("stPrimary").value, false, (p) => { $("stDonor").value = p; stRemember();
     studioDmixOff();
-    if (S.st.ready) api("/api/studio/donor", {path: p}).then(studioPoll).catch((e) => { $("stStatus").textContent = e.message; }); }));
+    if (S.st.ready) api("/api/studio/donor", {studio_session: studioSession(), path: p}).then(studioPoll).catch((e) => { $("stStatus").textContent = e.message; }); }));
   $("stDonorUnload").addEventListener("click", () => { $("stDonor").value = ""; stRemember(); studioDmixOff();
-    if (S.st.ready) api("/api/studio/donor", {path: ""}).then(() => { studioPoll(); studioPending(); }); });
+    if (S.st.ready) api("/api/studio/donor", {studio_session: studioSession(), path: ""}).then(() => { studioPoll(); studioPending(); }); });
   $("stRefPick").addEventListener("click", () => pick($("stRef").value || refStart(), false, (p) => { $("stRef").value = p; stRemember(); studioPending(); }));
   $("stRefClear").addEventListener("click", () => { $("stRef").value = ""; stRemember(); studioPending(); });
   // ↻ New seed renders at once, as Update would (with any other change still waiting); typing a seed still waits
@@ -11361,8 +11393,8 @@ function wireStudio() {
   $("stFreeze").addEventListener("click", () => studioFreeze(true));
   $("stUnfreeze").addEventListener("click", () => studioFreeze(false));
   $("stNeg").addEventListener("change", () => { stRemember();
-    if (S.st.ready) api("/api/studio/settings", {family: S.st.layout.key, negative: $("stNeg").value.trim()}).then(studioPending); });
-  $("stTurbo").addEventListener("change", () => { stRemember(); if (S.st.ready) api("/api/studio/settings", {family: S.st.layout.key, turbo: $("stTurbo").checked}); });
+    if (S.st.ready) api("/api/studio/settings", {studio_session: studioSession(), family: S.st.layout.key, negative: $("stNeg").value.trim()}).then(studioPending); });
+  $("stTurbo").addEventListener("change", () => { stRemember(); if (S.st.ready) api("/api/studio/settings", {studio_session: studioSession(), family: S.st.layout.key, turbo: $("stTurbo").checked}); });
   $("stH3Turbo").addEventListener("input", () => { studioNegRow(); studioClipNote(); });
   $("stH3Steps").addEventListener("input", studioClipNote);
   document.querySelectorAll('input[name="stDit"]').forEach((r) => r.addEventListener("change", () => {
@@ -16209,7 +16241,7 @@ function rmWire() {
   $("rmSweep").addEventListener("click", () => rmGo("sweep"));
   $("rmCancel").addEventListener("click", () => api("/api/refmod/cancel", {}).then(rmPollStart).catch(() => {}));
   $("rmUnload").addEventListener("click", async () => {
-    await api("/api/studio/reset", {}).catch(() => {});   // the shared GPU worker quits (Studio's Unload)
+    await api("/api/studio/reset", {studio_session: studioSession(), }).catch(() => {});   // the shared GPU worker quits (Studio's Unload)
     $("rmStatus").textContent = "Model unloaded - the next Render loads it again.";
   });
   playTogether($("rmPlayBothBtn"), () => ["rmTweakVid", "rmBaseVid"]);
