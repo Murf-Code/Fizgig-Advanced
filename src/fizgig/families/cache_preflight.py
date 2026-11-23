@@ -66,6 +66,12 @@ def _latent_ok(path, source, stamp, bucket, arch, vae_stamp):
         return False
     if md.get("vae_encoder") and md["vae_encoder"] != vae_stamp:
         return False
+    if md.get("source_mtime_ns"):
+        try:
+            if md["source_mtime_ns"] != str(os.stat(source).st_mtime_ns):
+                return False
+        except OSError:
+            return False
     if md.get("source"):
         if md["source"] != stamp:
             return False
