@@ -2160,6 +2160,7 @@ def _progress_dict(upd):
     """The tracker's update as the page shows it (the desktop app sends the same from its own tracker)."""
     step, total = int(upd.get("step") or 0), int(upd.get("total_steps") or 0)
     return {"epoch": upd.get("epoch"), "total_epochs": upd.get("total_epochs"), "step": step, "total_steps": total,
+            "epoch_step": upd.get("epoch_step"), "steps_per_epoch": upd.get("steps_per_epoch"),
             "speed": upd.get("speed_text") or "", "loss": upd.get("average_loss_text") or "",
             "eta": upd.get("eta_text") or "", "percent": 100.0 * min(step, total) / total if total else 0.0,
             "note": "", "lr": upd.get("lr_text") or "", "grad_norm": upd.get("grad_norm_text") or ""}
@@ -2222,6 +2223,17 @@ def _run_stages(stages, out_dir):
                     elif upd.get("kind") == "preview":
                         p = dict(_run.get("progress") or _progress_dict({}))
                         p["note"] = {"start": "Making previews…", "complete": ""}.get(upd.get("phase"), "")
+                        _run["progress"] = p
+                    elif upd.get("kind") == "epoch_start":
+                        # The trainer reports the exact position at the start of
+                        # each epoch. Preserve the last known loss/speed while
+                        # its first, potentially long, replay step completes.
+                        p = dict(_run.get("progress") or _progress_dict({}))
+                        step, total = int(upd["step"]), int(upd["total_steps"])
+                        p.update(epoch=upd["epoch"], total_epochs=upd["total_epochs"],
+                                 step=step, total_steps=total,
+                                 epoch_step=upd["epoch_step"], steps_per_epoch=upd["steps_per_epoch"],
+                                 percent=100.0 * min(step, total) / total if total else 0.0, note="")
                         _run["progress"] = p
                     else:
                         _run["progress"] = _progress_dict(upd)
