@@ -2069,10 +2069,10 @@ function qtGpuCard() {
   const on = el("input", {type: "checkbox"});
   on.checked = !!G.saved;
   const say = el("div", {class: "field-hint"});
-  const base = "On Windows this is ON by default: software rendering can avoid severe WebView2 " +
-    "GPU-compositing lag and improve image scrolling. On other machines it may be slower, " +
-    "so you can turn it off if hardware acceleration works better. " +
-    "Restart the desktop window to apply changes. This does not affect Chrome or Edge.";
+  const base = "Leave this unchecked for normal GPU acceleration and responsive image scrolling. " +
+    "Checking it forces WebView2 into a software rendering path that can be much slower. " +
+    "Only use it to troubleshoot graphics crashes or blank windows. " +
+    "Restart the desktop window to apply changes. Chrome and Edge are unaffected.";
   const paint = () => {
     say.textContent = (G.changed ? "Saved: restart Fizgig for it to apply. " : "") + base;
   };
