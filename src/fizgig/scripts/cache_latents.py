@@ -134,6 +134,9 @@ def encode_datasets(datasets, encode_fn, args):
                             md = f.metadata() or {}
                         if getattr(item, "alpha", "") != md.get("alpha", ""):
                             return True         # cached on its hidden colour (or another way than now)
+                        stamped_ns = md.get("source_mtime_ns")
+                        if stamped_ns and stamped_ns != str(os.stat(item.item_key).st_mtime_ns):
+                            return True  # catches same-second edits to an image of the same size
                         was = md.get("source")
                         if was:
                             return was != source_stamp(item.item_key)
