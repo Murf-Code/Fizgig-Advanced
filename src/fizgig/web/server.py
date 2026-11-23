@@ -1327,8 +1327,9 @@ def output_folders() -> list:
     return out
 
 
-# an epoch's checkpoint, a Save now (-step0001234), or early stop's best so far (-best)
-_CKPT = re.compile(r"^(.*)-(?:(\d{6})|step(\d{7})|best)$")
+# an epoch checkpoint, Save now (-step0001234), early stop (-best) or rolling best.
+# Keep the longest suffixes before plain -best, so these stay grouped under the run.
+_CKPT = re.compile(r"^(.*)-(?:(\d{6})|step(\d{7})|best(?:-train|-val)?)$")
 
 
 def list_outputs(fizgig_only=True) -> dict:
