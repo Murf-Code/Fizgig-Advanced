@@ -45,7 +45,7 @@ def test_stop_between_stage_check_and_spawn_does_not_launch(monkeypatch, tmp_pat
                         lambda result, lora, starter: ended.append("queue:" + result))
 
     def log(message):
-        if message.startswith("\\n▶"):
+        if message.startswith("\n▶"):
             assert server._stop() is True
 
     monkeypatch.setattr(server, "append_log", log)
