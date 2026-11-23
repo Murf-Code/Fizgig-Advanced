@@ -408,6 +408,47 @@ def test_scan_fills_manual_targets_to_automatic_only_count():
     assert manual_heavy["automatic_targets"] == []
 
 
+
+def test_frequent_auto_pool_excludes_uncommon_tags_but_keeps_manual_tags():
+    """The automatic scan takes common tags; rare manual tags are still considered."""
+    cfg = de.make_config({"direction_edit_scan": "1",
+                          "direction_edit_target_tags": "rare manual"},
+                         default_caption_folder="synthetic training dataset")
+    cfg.update(scan_min_count=8, scan_auto_top_fraction=0.25, scan_max_tags=500)
+    cfg["caption_records"] = {
+        f"image{i}.png": ", ".join(
+            [f"tag{j:02d}" for j in range(20) if i < 100 - 3*j]
+            + (["rare manual"] if i % 25 == 0 else []))
+        for i in range(100)
+    }
+    prompts, pairs, meta = de.plan_scan(cfg)
+    assert prompts
+    assert meta["frequent_count"] == 20
+    assert meta["auto_pool_count"] == 8  # minimum required for scanner regression
+    assert meta["auto_keys"] == {f"tag{i:02d}" for i in range(8)}
+    assert {pair["tag"] for pair in pairs} == meta["auto_keys"] | {"rare manual"}
+    assert meta["counts"]["rare manual"] == 4
+
+
+def test_auto_selection_prefers_frequent_confirmed_targets():
+    """Low-frequency tags are left to the user, while auto chooses common weak tags."""
+    tags = [f"tag{i:02d}" for i in range(20)]
+    weak = {"tag01", "tag02", "tag15"}
+    cfg = dict(scan_stage="rf_1", scan_z=1.0, scan_targets=2, scan_controls=5)
+    counts = {t: 40 for t in tags}
+    counts.update(tag01=70, tag02=60, tag15=4)
+    meta = {"names": {t: t for t in tags}, "counts": counts,
+            "auto_keys": set(tags[:10])}
+    pairs = [{"tag": t} for t in tags for _ in range(4)]
+    rows = [{"rf_1": 0.005 if p["tag"] in weak else 1.0} for p in pairs]
+    automatic = de.scan_select(cfg, pairs, rows, meta)
+    assert automatic["targets"] == ["tag01", "tag02"], automatic
+    combined = de.scan_select(cfg, pairs, rows, meta, requested_targets=["tag15"])
+    assert combined["manual_targets"] == ["tag15"], combined
+    assert combined["automatic_targets"] == ["tag01"], combined
+    assert combined["targets"] == ["tag15", "tag01"], combined
+    assert len(combined["targets"]) == 2
+
 def test_scan_counts_tags_beyond_context_cap():
     d = tempfile.mkdtemp(prefix="de_v2_tail_tags_")
     common = [f"common{i:02d}" for i in range(45)]

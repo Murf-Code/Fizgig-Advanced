@@ -107,6 +107,7 @@ DEFAULTS = {
     "scan_per_tag": 6,
     "scan_max_tags": 500,
     "scan_targets": 8,
+    "scan_auto_top_fraction": 1.0,  # automatic eligible frequency rank; calibration run overrides
     "scan_controls": 12,
     "scan_z": 1.0,                      # weak = below -scan_z standard deviations in BOTH halves of its samples
     "scan_stage": "rf_1",               # stage the scan reads (txtmlp starts with an RMSNorm, which erases magnitude)
@@ -238,7 +239,7 @@ def _normalise(cfg):
                   "rounds", "verify_count", "activation_prompts", "scan_min_count", "scan_per_tag", "scan_max_tags",
                   "scan_targets", "scan_controls"):
             cfg[k] = int(cfg[k])
-        for k in ("strength", "ram_budget_gb", "scan_z"):
+        for k in ("strength", "ram_budget_gb", "scan_z", "scan_auto_top_fraction"):
             cfg[k] = float(cfg[k])
     except (TypeError, ValueError) as e:
         raise ValueError(f"a Direction edit setting isn't a number ({e}).") from None
@@ -246,6 +247,8 @@ def _normalise(cfg):
         raise ValueError("Edit strength must be a finite number.")
     if not all(math.isfinite(cfg[k]) and cfg[k] >= 0 for k in ("ram_budget_gb", "scan_z")):
         raise ValueError("ram_budget_gb and scan_z must be finite numbers, 0 or more.")
+    if not math.isfinite(cfg["scan_auto_top_fraction"]) or not 0 < cfg["scan_auto_top_fraction"] <= 1:
+        raise ValueError("scan_auto_top_fraction must be greater than 0 and at most 1.")
     for k, least in (("caption_count", 2), ("caption_max_tags", 1), ("caption_min_tags", 1),
                      ("control_tags_per_target", 1), ("control_min_captions", 1), ("columns", 0),
                      ("num_directions", 1), ("rank", 1), ("rounds", 1), ("verify_count", 0),
@@ -1024,7 +1027,13 @@ def plan_scan(cfg):
     requested = {_norm(t) for t in cfg.get("target_tags") or []}
     frequent = sorted((k for k, n in counts.items() if n >= cfg["scan_min_count"]),
                       key=lambda k: (-counts[k], k))[:cfg["scan_max_tags"]]
-    tags = list(dict.fromkeys(frequent + [k for k in sorted(requested) if counts.get(k, 0) >= 4]))
+    # Scan common tags automatically; explicit manual requests can enter the
+    # scan below the frequency tier when there are at least four captions.
+    # Keep at least eight automatic candidates for regression/control fitting.
+    common_count = min(len(frequent), max(8, math.ceil(
+        len(frequent) * float(cfg.get("scan_auto_top_fraction", 1.0)))))
+    common = frequent[:common_count]
+    tags = list(dict.fromkeys(common + [k for k in sorted(requested) if counts.get(k, 0) >= 4]))
     rng = random.Random(cfg["caption_seed"] + 31)
     pairs, prompts = [], []
     for k in tags:
@@ -1041,7 +1050,10 @@ def plan_scan(cfg):
             ablated = ", ".join(t for t in context if _norm(t) != k)
             pairs.append({"tag": k, "caption": i, "full": full, "ablated": ablated})
             prompts += [full, ablated]
-    return list(dict.fromkeys(prompts)), pairs, {"names": names, "counts": counts, "files": files}
+    return list(dict.fromkeys(prompts)), pairs, {
+        "names": names, "counts": counts, "files": files, "auto_keys": set(common),
+        "auto_pool_count": len(common), "frequent_count": len(frequent)
+    }
 
 
 @torch.no_grad()
@@ -1126,7 +1138,11 @@ def scan_select(cfg, pairs, rows, meta, requested_targets=None):
     z, za, zb = resid / sd, (ya - fit) / sd, (yb - fit) / sd
     zmin = float(cfg["scan_z"])
     confirmed = [bool(za[i] < -zmin and zb[i] < -zmin) for i in range(len(tags))]
-    order = sorted(range(len(tags)), key=lambda i: float(z[i]))
+    auto_keys = set(meta.get("auto_keys", tags))
+    # Only the most common eligible tags can be automatic targets; among
+    # confirmed weak concepts prefer prevalence, then stronger suppression.
+    order = sorted((i for i in range(len(tags)) if tags[i] in auto_keys),
+                   key=lambda i: (-meta["counts"][tags[i]], float(z[i]), tags[i]))
     skipped = []
     requested = list(requested_targets or [])
     auto_only = [i for i in order if confirmed[i]][:int(cfg["scan_targets"])]
@@ -1194,6 +1210,8 @@ def _run_scan(cfg, store, *, dit_path, te_path, device, encoder, path_config, ou
         if device.type == "cuda":
             torch.cuda.empty_cache()
     selection = scan_select(cfg, pairs, rows, meta, requested_targets=cfg.get("target_tags") or [])
+    logger.info("[calibration] target scan: eligible frequent tags %d of %d; automatic budget %d",
+                meta["auto_pool_count"], meta["frequent_count"], cfg["scan_targets"])
     logger.info("[calibration] target scan: auto-only %d, combined %d (%d manual + %d automatic)",
                 selection["auto_only_count"], len(selection["targets"]),
                 len(selection["manual_targets"]), len(selection["automatic_targets"]))

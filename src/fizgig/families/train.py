@@ -130,7 +130,12 @@ def _prepare_krea2_direction_edit(desc, family_options, network_type, slider, fi
         cfg["scan_min_count"] = 8
         cfg["scan_per_tag"] = 6
         cfg["scan_max_tags"] = 500
-        cfg["scan_targets"] = 8
+        # Two percent of training images, rounded up. Qualified manual tags
+        # take priority; auto candidates fill only the remaining slots.
+        cfg["scan_targets"] = max(1, math.ceil(len(training_records) * 0.02))
+        # Automatic discovery considers the highest-frequency quarter of tags,
+        # while uncommon concepts can still be manually requested.
+        cfg["scan_auto_top_fraction"] = 0.25
         cfg["scan_controls"] = 12
         cfg["scan_z"] = 1.0
         cfg["scan_stage"] = "rf_1"
