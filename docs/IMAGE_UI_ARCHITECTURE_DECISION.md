@@ -1,4 +1,4 @@
-# Architecture decision: one Chromium image interface
+# Architecture decision: one shared web image interface
 
 **Date:** 2026-11-23  
 **Status:** Accepted — remove native Qt image shell from `test/caption-workbench`
@@ -7,8 +7,9 @@
 
 **Fizgig uses one production image UI:** the existing browser-based Caption
 Workbench, Image Prep and Samples implementation. Windows desktop uses
-pywebview/WebView2 with hardware acceleration enabled by default; normal
-Chrome and Edge connect to the same backend. No native Qt image renderer,
+pywebview/WebView2 with hardware acceleration enabled by default; browsers
+connect to the same backend. On Linux, pywebview may use another supported
+web engine; it does not need a separate native image component. No native Qt image renderer,
 second preview stack, independent image-selection model, optional Qt launcher,
 or periodic Qt/JavaScript synchronization bridge is retained.
 
@@ -45,7 +46,7 @@ This is an architecture choice, not a claim that Qt itself performs poorly.
 2. **Keep Qt as an optional second shell** — avoids a disruptive transition
    but doubles UI integration paths, QA, packaging and support, and relies on
    ongoing selection synchronization. Rejected to avoid permanent complexity.
-3. **Keep one GPU-enabled Chromium interface** — preserves tested behavior,
+3. **Keep one shared web image interface** — preserves tested behavior,
    one UI architecture across the browser and desktop, and shared fixes.
    **Chosen.**
 
