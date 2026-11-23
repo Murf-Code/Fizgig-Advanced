@@ -52,6 +52,8 @@ jobs:
         run: python -m pytest checks/test_h3_image_speed_boost.py -q
       - name: Frankenstein base-model blending and export (upstream v9.8.3)
         run: python -m pytest checks/test_frankenstein_blend.py -q
+      - name: H3 Frankenstein Studio bridge and simulated low-memory planner
+        run: python -m pytest checks/test_frankenstein_studio_bridge.py -q
       - name: CPU streamed multi-family checkpoint mixing (MOSS, Anima, Krea 2, SDXL)
         run: python -m pytest checks/test_checkpoint_mix.py -q
       - name: Global Replay step-count and epoch-progress regression checks
