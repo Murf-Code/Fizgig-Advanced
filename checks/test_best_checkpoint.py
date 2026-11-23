@@ -43,7 +43,7 @@ def test_best_score_advances_only_after_saver_commits():
     assert t.training(0.2, 1) is None
     assert math.isclose(t.training(0.1, 2), 0.15)
     assert t.best is None  # save failed or was never called
-    assert t.training(0.1, 3) == 0.1
+    assert math.isclose(t.training(0.1, 3), 0.1)
     t.saved(0.1, 3, 1)
     assert t.best == 0.1 and t.step == 3 and t.epoch == 1
 
