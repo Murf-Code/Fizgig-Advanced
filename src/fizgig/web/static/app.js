@@ -14521,8 +14521,9 @@ function renderCaptionStudio(host,items,ext){
   });
   // TagBench's All Tags separates the sort field and direction into two
   // compact dropdowns. Preserve Fizgig's six existing sort values internally.
-  const sortSelect=el("select",{class:"w-combo","aria-label":"Sort All Tags by"});
-  [["frequency","Frequency"],["alpha","Name"],["token","Tokenizer pieces"]]
+  const sortSelect=el("select",{class:"w-combo studio-tag-sort-field","aria-label":"Sort All Tags by",
+    title:"Sort tags by frequency, name, or tokenizer pieces"});
+  [["frequency","Frequency"],["alpha","Name"],["token","Tokens"]]
     .forEach(([value,label])=>sortSelect.append(el("option",{value,text:label})));
   const sortDirection=el("select",{class:"w-combo studio-tag-direction","aria-label":"All Tags sort direction"});
   [["desc","Desc"],["asc","Asc"]]
@@ -14768,7 +14769,7 @@ function renderCaptionStudio(host,items,ext){
     const a=document.createElement("a");a.href=url;a.download="fizgig_captions.txt";a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
   });
   right.append(el("div",{class:"studio-tag-search-wrap"},indexSearch),
-    el("div",{class:"studio-tag-sort"},el("span",{class:"field-label",text:"Sort by"}),sortSelect,sortDirection),
+    el("div",{class:"studio-tag-sort"},sortSelect,sortDirection),
     explore,tagCount);
   drawExplore();
   const bulk=el("div",{class:"studio-bulk"});
