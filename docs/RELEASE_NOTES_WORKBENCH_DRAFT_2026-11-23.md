@@ -31,36 +31,88 @@
 
 **Verification note:** These screenshots document interface appearance and workflows; they do not constitute performance benchmarks or live GPU-training validation.
 
-## Highlights — features to describe in the public release
+## What's new — a complete dataset workbench
 
-### Caption Workbench / dataset management
-- **Overhauled Captions tab:** a three-pane Tags workspace with an image rail, center preview/editor, and separate **Image Tags** and **All Tags** panels. Panels resize and the layout expands to available window space.
-- **Three linked ways to explore:** Tags, image-frequency **Waterfall**, and interactive tag-co-occurrence **Constellation**. Image selection, range selection, and active-image handoff are shared between views.
-- **TagBench-inspired tag workflows:** autocomplete, immediate text search, Boolean AND/OR/NOT filtering, double-click text editing, tag reordering and sorts, context-menu operations, customizable colors, selected-image and multi-image changes, keyboard navigation, and tag/caption exports.
-- **Safer editing:** automatic saves for supported edits, grouped session undo/redo, review locks across covered writers, confirmation before destructive image/tag operations, dataset removal/restore journal, and explicit refresh.
-- **Duplicates and bulk captions:** duplicate review/merge, bulk tag operations, selected-image AI captioning using existing local captioners, user-confirmed overwrite/append workflows, and ZIP / image-plus-caption imports using the existing uploader.
-- **Image editor integrations:** crop and object removal in the compact editor, with the existing local **LaMa** removal backend preserved rather than importing TagBench's remover. Image Prep's watermark editor retains its glass-overlay workflow.
+This release turns the old Captions page into **Caption Workbench**, a visual home for preparing, tagging, editing and inspecting the same pictures that train your LoRA. These are the feature highlights a first-time user should see, not a chronological stream of implementation commits. The [four screenshot captions above](#screenshot-gallery--caption-workbench-assets-pending-repository-upload) illustrate Tags, Waterfall and Constellation.
 
-### Live training / LoRA improvements
-- **Dataset changes during training:** supported caption and image edits are detected, queued, and re-encoded at epoch boundaries. Cache writes are atomic; removed files and failed refreshes are guarded against stale training. This is still awaiting live GPU acceptance tests.
-- **Krea 2:** Standard and **Global replay**, with opt-in selective block checking, and the existing separate **Text-fusion calibration** system. Global replay includes PoLoRA and masked-training compatibility work.
-- **Training controls and checkpoints:** Save Now, improved Pause/Stop confirmation, resume step/progress and compatible cache reuse, optional loss-based best checkpoint, image validation and loss views, plus clearer save/restore states.
-- **More training configuration:** per-subfolder weights and repeats, validation image groups/hold-outs, revised optimizer and Adaptive LR handling, training method visibility/compatibility, and mask-related safeguards. Verify model-specific compatibility before promising universal support.
-- **Model/conditioning safeguards:** offline-first cached tokenizers, faster Krea 2 text-encoder release, safe model-header reads, and robust error handling for unsupported captioner models.
+### Edit a training image — the cache follows your changes
 
-### Studio / model experimentation
-- **Faster primary-LoRA switching:** selectively adapted from upstream **#394**, with failure rollback, load-session tracking and regression coverage. Do not describe this as an imported upstream queue: Advanced's queue architecture is different.
-- **Saved render setups:** save the setup associated with each rendered image, not a later state of the controls; retain PNG setup metadata. Multi-tab ownership and stale-tab guardrails were adapted from upstream **#395**.
-- **Edit-model references:** preserve each reference image's own Reference MP / aspect sizing; Studio Reference MP control for supported edit models.
-- **MiniMax H3 Image speed boost:** optional half-resolution early render steps; **off by default**.
-- **Experimental Frankenstein Studio:** H3 model blending, experimental low-VRAM streaming planning, and compatible-family checkpoint mixing. Experimental model mixing is **not** cross-family compatibility or a promise that 12 GB hardware is verified; CPU planner checks do not replace live GPU proof.
+**Crop, repair or remove unwanted objects without leaving Caption Workbench.** Select an image, use the streamlined **Crop** or **Remove** tools underneath the large preview, and Undo/Redo applied edits. The existing Fizgig **local LaMa** system does the object removal; while training occupies the GPU, the editor can use the CPU. The Image Prep watermark editor remains available separately in its floating glass overlay.
 
-### UI, responsiveness and memory
-- **One GPU-accelerated Chromium image UI:** the superseded native Qt image-renderer experiment was removed. WebView2 runs with GPU acceleration on by default; GPU disable remains only a troubleshooting preference.
-- **Windows acceptance:** on the user's Windows hardware, all six interactive GPU-on WebView2 checks were reported smooth: Caption Workbench, tag search/edit, Waterfall/Constellation, image editor, Image Prep/Samples, resize/fullscreen. This is qualitative testing, not measured FPS or a cross-platform guarantee.
-- **Reduced UI work while idle:** avoid Constellation layout when not in Constellation, lazy/deferred thumbnail and gallery loading, bounded All Tags and Waterfall nodes, cached thumbnail decoding, and more efficient tag search.
-- **Constellation benchmark:** one synthetic 1,200-caption graph-construction workload fell from about 192 ms to 15 ms with identical edges. This is not an overall application or CPU-utilization benchmark.
-- **UX polish:** responsive panels, more compact editing controls, revised color/theme consistency, confirmation states, fullscreen scaling, and improvements to scrolling, selection and state preservation.
+More importantly, **the training dataset is live**. For supported images and caption formats, committed edits are detected and the appropriate **VAE latent or text-encoder cache is refreshed at the next epoch boundary**. Edited masks and supported paired/control references also participate in the refresh. Re-encodes use atomic replacement and guard against the trainer consuming a stale cache after a failed, interrupted or superseded write. A removal takes effect through the live dataset update path instead of requiring the user to rebuild the whole cache manually.
+
+**Add images during a run** where the existing training bucket supports their shape: new eligible stills can be encoded and admitted to a rotating pool while retaining the original number of optimizer steps. New aspect-ratio buckets, unsupported media/layout changes and unsafe updates are reported as needing attention or a restart rather than silently trained with old data. Live image/caption/mask/paired-reference handling has automated tests but **still requires end-to-end real-GPU acceptance before release sign-off**.
+
+Implementation history includes [live still-image admission](https://github.com/Murf-Code/Fizgig-Advanced/commit/4885af56), [mask refresh](https://github.com/Murf-Code/Fizgig-Advanced/commit/7e8e3a3b), and [atomic cache protection](https://github.com/Murf-Code/Fizgig-Advanced/commit/b3cbf33d).
+
+### Choose Validation Images and Sample Images right from your pictures
+
+**Right-click a picture in Tags or Waterfall** to add it to, or remove it from, **Validation Images** or **Sample Images**. Select several pictures to manage them together; the menu reflects whether the current selection is already included. No trip back to Training or Samples settings is necessary, and the same existing training settings are updated rather than creating another list.
+
+For Sample Images, Workbench **uses that picture's caption as the initial preview prompt** and pairs it with the selected training image. Captions that are empty are skipped with feedback. Removing a Workbench-created sample pairing does **not** erase unrelated manual prompts or a prompt the user has since edited. Detail crops are intentionally excluded from these image-pick actions.
+
+See [training-image context actions](https://github.com/Murf-Code/Fizgig-Advanced/commit/7c4ed76b) and `caption_studio_training_picks.js`.
+
+### Training intelligence, visible on every image
+
+Turn on **Loss Status** to see a **second, color-coded outline** around a dataset thumbnail in Tags and Waterfall. The original selection ring stays visible, so selecting an image and seeing its learning state are independent.
+
+Statuses come from Fizgig's **actual per-image loss watcher**, not from guessing that a low raw loss equals an easy image. The UI can distinguish **Stuck**, **Suspect**, **Watching**, **Learning**, **Easy**, **Fully mined**, **Warming up** and **Excluded**. Filter images by these verdicts, or sort by higher/lower relative loss, to review the pictures most in need of attention. An actively tracked training run automatically enables its loss colors unless the user opted out for that run; an old finished run does not silently force the option on.
+
+This turns training-loss analysis into a **visual dataset-review workflow** instead of making users hunt through separate graphs. See [learning-status rings](https://github.com/Murf-Code/Fizgig-Advanced/commit/22402621) and [image-status filter](https://github.com/Murf-Code/Fizgig-Advanced/commit/bc34024a).
+
+### Tag colors that mean something — and stay consistent
+
+Tags are not assigned random unrelated colors in each view. **Constellation groups and tag relationships inform a shared automatic palette**, reused in Image Tags, All Tags and Constellation so the same tag keeps the same color across the workspace.
+
+**Right-click a tag** to override its color: pick from eight prepared swatches, choose a custom color, or **reset to Auto color**. Saved manual choices take priority over the learned palette; existing dataset category assignments continue to be read. The color preferences are **remembered locally for that dataset in the browser**. The current UI no longer needs the old bulky color-settings panel.
+
+See [shared colors and context palette](https://github.com/Murf-Code/Fizgig-Advanced/commit/f6737e21), [shared Constellation palette](https://github.com/Murf-Code/Fizgig-Advanced/commit/909bb941).
+
+### Tags and natural-language captions, without mangling either
+
+Workbench understands the difference between **comma-separated tag captions** and **natural-language prose**. Use Image Tags for quick select/edit of individual tags, with autocomplete; choose the **Natural language** caption mode to work in an expanding text field instead of the tag list. Switching back to **All Tags** brings back the searchable tag index.
+
+With a mixed caption, the **first line may contain tags and subsequent lines may contain prose**. Tag sorting, deduplication and bulk actions preserve those prose lines rather than rewriting the whole caption as tags. The format detector favors prose when ambiguous, protecting ordinary sentences from accidental tag operations.
+
+**Edits save automatically**; selected tag edits are sent promptly, while draft/history state and serialized saves protect against rapid repeated changes. Double-click an existing tag to rename it; leaving its replacement blank restores the original. Use Enter or a clickable autocomplete suggestion to add a tag, and select multiple tags for context actions, batch operations, drag/reorder or deletion. Session undo/redo covers supported committed edits; the local brush canvas has its own uncommitted stroke history.
+
+See [format-safe tag operations](https://github.com/Murf-Code/Fizgig-Advanced/commit/2a828556), [natural-language editor](https://github.com/Murf-Code/Fizgig-Advanced/commit/f6737e21), and [autosave](https://github.com/Murf-Code/Fizgig-Advanced/commit/8c2e197c).
+
+### See your dataset three different ways
+
+- **Tags:** A focused full-height image, narrow scrollable thumbnail rail, two independently scrollable lists for Image Tags and All Tags, right-click actions, search-as-you-type, and in-place editing. Use Ctrl/Cmd and Shift to select multiple images, arrow keys to navigate, and shortcuts to focus searches or invoke common operations.
+- **Waterfall:** A **full-width masonry gallery of the actual images**, not merely a tag-frequency bar chart. Thumbnail proportions are preserved, and selecting a picture carries the same active selection back into Tags; double-click to open the chosen image there. Context actions, including Validation and Sample Image picks, work here too.
+- **Constellation:** A large interactive **tag co-occurrence map** with frequency-sized colored orbs, linked relationships, clusters, search, pan and zoom. Select a tag to spotlight related tags and their connection strengths while unrelated nodes dim. The focused view includes a ranked list of related tags. This is especially useful for finding patterns and inconsistent descriptions in a dataset.
+
+The **Glass / Classic** appearance switch, responsive/resizable panels, compact editing toolbar and full-window layouts make these tools feel like one application rather than separate forms. The four supplied screenshots belong immediately above these highlights. See [full-size Waterfall and Constellation](https://github.com/Murf-Code/Fizgig-Advanced/commit/072920e2).
+
+### Find near-duplicates without risking your originals
+
+**Find Duplicate Images** scans for exact and visually similar images, using perceptual difference hashes and a color-grid comparison. Adjust the **0–16 similarity tolerance** (larger values are more lenient), inspect side-by-side thumbnails, and choose **one or multiple pictures to keep**.
+
+Optionally **preview a tag merge** from unkept images into every chosen keeper; prose remains intact. Tag merging is separate from any deletion. Only the explicitly chosen **unkept images** are moved to a reversible `removed/` folder, with their related captions/masks and collision safeguards. Reviewed/locked pictures are protected. The scan is CPU-based and does not load a GPU training model. See [duplicate review guide](CAPTION_STUDIO_DUPLICATE_REVIEW.md).
+
+### Faster captioning and safer bulk editing
+
+Use Fizgig's existing local AI captioners on your **selected pictures**, rather than always captioning a whole folder. Choose to **caption missing images only**, **replace selected captions**, or **append an AI caption as another line**; reviewed items are protected and destructive choices require confirmation. Batch Find & Replace includes a preview and undoable commit. Tag queries support **AND / OR / NOT, exact quoted tags and exclusions**; live search and sorting make large tag lists approachable. Export a **caption wildcard** containing the complete caption for each image, instead of a de-duplicated vocabulary list.
+
+Use **Mark Complete / Incomplete** and persistent review locks to protect pictures whose tags are finished. Delete image/tag actions require confirmation, and removed image groups can be restored without blindly overwriting existing files. The workbench avoids unwanted re-captioning of the entire dataset when an explicitly selected target is invalid or empty.
+
+### Training workflow improvements worth showing users
+
+- **Krea 2 Text-fusion calibration remains included.** Manually requested concepts get directly tested against controls, with an additional automatic target budget of up to 4% of training-image count; measured suppression and held-out verification determine whether an edit is retained. This is **not** the experimental Training Text Enhancer, which was deliberately reverted.
+- **Text fusion only** is a separate Krea 2 training choice for the text-fusion blocks, alongside **Standard** and **Global replay** training with optional selective block checks. Global replay's compatibility work includes PoLoRA, training masks and Training Maps where supported.
+- **Optional rolling best LoRA checkpoint** can capture a promising low-loss point **mid-epoch**, not just at the ordinary save interval. It supports training-loss or fixed validation-loss selection, smoothing/cooldown safeguards, and resume bookkeeping. The manual **Save Now** action and epoch saves still exist.
+- **Clearer training feedback:** real epoch steps remaining for Global replay/resume, separate validation groups on the loss graph, and more useful pause/stop, Save Now and run-output states.
+- **Smarter resume and caching:** skip demonstrably clean text/VAE cache stages; re-encode only changed images or captions; retain compatible caches and respect explicit cache policy where necessary. Cache validity includes fine-grained file timestamps, encoder provenance and safe fallbacks for complex datasets.
+- **Studio upgrades:** upstream-adapted primary-LoRA quick switching with rollback; render-specific PNG setup metadata; per-browser-tab ownership protections; edit-reference aspect/Reference MP control; optional MiniMax H3 Image speed boost; and clearly flagged experimental Frankenstein/block-based model blending.
+
+### Built for large datasets
+
+Under the hood, Caption Workbench uses **recycled native-scrolling thumbnail rows**, deferred image decoding, bounded preview caches, progressively loaded Waterfall pictures and All Tags rows, **Constellation calculation only when needed**, compiled tag-search predicates, and reduced work from inactive tabs. The Remove brush uses a lightweight overlay, bounded/tiled history and an offscreen painting worker with a safe fallback. These choices aim to keep image navigation and editing responsive without wasting RAM and CPU.
+
+**Release-note framing:** because this is the first public Workbench experience, describe these as *large-dataset design benefits*, not claims of a speedup over a Workbench version users never used. Benchmark numbers belong in technical notes after reproducible hardware measurements, not the opening feature story.
 
 ## Fixes and safety improvements
 - Prevent incorrect selected-only AI caption operations from silently expanding to caption the whole dataset.
