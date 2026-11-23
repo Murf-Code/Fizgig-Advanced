@@ -3655,7 +3655,7 @@ class Handler(BaseHTTPRequestHandler):
                               # answers), until Don't show this again
                               "sysmem_tip": sys.platform == "win32" and str(p.get("sysmem_tip_hidden") or "") != "1"
                               and _has_nvidia(),
-                              "qt_disable_gpu": str(p.get("qt_disable_gpu") or "") == "1",
+                              "qt_disable_gpu": __import__("fizgig.web.webview2_performance", fromlist=["gpu_disabled"]).gpu_disabled(p),
                               # the app window's GPU switch: Linux's (Qt WebEngine) and Windows' (WebView2) windows
                               "qt_gpu_option": sys.platform.startswith("linux") or sys.platform == "win32",
                               "password_env": bool(os.environ.get("FIZGIG_PASSWORD")) or getattr(self, "password_arg", False),
