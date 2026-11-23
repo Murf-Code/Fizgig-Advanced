@@ -23,6 +23,17 @@
     return paths.length+":"+hash+":"+String(active||"");
   };
   let sideSelection = {samples:new Set(),prep:new Set()};
+  const sourceCache={samples:{ref:null,items:[]},prep:{ref:null,items:[]}};
+  function pictureItems(kind,raw){
+    const cache=sourceCache[kind];
+    if(cache.ref!==raw){
+      cache.ref=raw;
+      cache.items=raw.filter(x=>picture(x.name)&&x.path);
+      const allowed=new Set(cache.items.map(x=>x.path));
+      sideSelection[kind]=new Set([...sideSelection[kind]].filter(p=>allowed.has(p)));
+    }
+    return cache.items;
+  }
   function source(){
     if(typeof S==="undefined")return empty;
     const kind=tab();
@@ -36,9 +47,7 @@
       };
     }
     if(kind==="samples"&&Array.isArray(S.gal?.items)){
-      const items=S.gal.items.filter(x=>picture(x.name)&&x.path);
-      const allowed=new Set(items.map(x=>x.path));
-      sideSelection.samples=new Set([...sideSelection.samples].filter(p=>allowed.has(p)));
+      const items=pictureItems("samples",S.gal.items);
       return {
         tab:kind, items, selected:[...sideSelection.samples],
         active:[...sideSelection.samples][0]||"",
@@ -47,9 +56,7 @@
     }
     if(kind==="prep"&&S.prep?.look?.state==="done"&&
        S.prep.look.folder===S.imageFolder&&Array.isArray(S.prep.look.rows)){
-      const items=S.prep.look.rows.filter(x=>picture(x.name)&&x.path);
-      const allowed=new Set(items.map(x=>x.path));
-      sideSelection.prep=new Set([...sideSelection.prep].filter(p=>allowed.has(p)));
+      const items=pictureItems("prep",S.prep.look.rows);
       return {
         tab:kind, items, selected:[...sideSelection.prep],
         active:[...sideSelection.prep][0]||"",
@@ -77,7 +84,7 @@
     const src=source();
     const visible=new Set(src.items.map(x=>x.path));
     const chosen=(Array.isArray(paths)?paths:[]).filter(p=>visible.has(p));
-    const current=visible.has(active)?active:(chosen.at(-1)||"");
+    const current=chosen.includes(active)?active:(chosen.at(-1)||"");
     if(src.tab==="captions"){
       // Mutate the original Set to preserve handlers captured during render.
       const selected=S.cap.studioSelection||(S.cap.studioSelection=new Set());
