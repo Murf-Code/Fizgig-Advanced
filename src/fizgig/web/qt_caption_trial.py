@@ -139,6 +139,7 @@ class NativeShell(QMainWindow):
         tab = snapshot.get("tab", "")
         entries = snapshot.get("items") or []
         self.model.replace(entries)
+        self.rail.set_mode(tab)
         self._source_key = (tab, snapshot.get("key"))
         self._set_selection(snapshot)
         self.rail.setVisible(bool(entries) and tab in ("captions", "samples", "prep"))
