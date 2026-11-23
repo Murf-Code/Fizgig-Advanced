@@ -8977,6 +8977,7 @@ async function studioOpen() {
   }
   if (S.st.openWith) await studioTake();
   studioPoll();
+  if ($("stBaseMixPanel").open) baseMixPoll();
 }
 
 // a LoRA row's Studio button: the LoRA as the primary, on the model its file is for (from its key names; the run's
@@ -11038,7 +11039,172 @@ function studioDockPlay() {                        // the panel's Play together:
   if ($("stDockPlay")) $("stDockPlay").style.display = $("stPlayBoth").style.display === "none" ? "none" : "";
 }
 
+// ---- CPU-only experimental base checkpoint mixer ---------------------------------------------------
+// This is not Studio's GPU render worker. It is deliberately lazy: do not poll or
+// build dozens of sliders until the user opens this panel and checks two files.
+const BASE_MIX = {plan: null, timer: null, overwrite: "", busy: false, rendered: false};
+
+function baseMixInvalidate() {
+  BASE_MIX.plan = null;
+  BASE_MIX.overwrite = "";
+  $("stBaseMixControls").style.display = "none";
+  $("stBaseMixExport").textContent = "Save merged checkpoint";
+  $("stBaseMixInfo").textContent = "Select two checkpoints and check their compatibility.";
+  $("stBaseMixStatus").textContent = "";
+}
+
+function baseMixValues() {
+  const out = {};
+  for (const node of $("stBaseMixBlocks").querySelectorAll("input[data-base-mix]"))
+    out[node.dataset.baseMix] = Number(node.value);
+  return out;
+}
+
+function baseMixBlockRows(plan) {
+  const host = $("stBaseMixBlocks");
+  host.replaceChildren();
+  for (const g of plan.blocks || []) {
+    const range = el("input", {type: "range", min: "0", max: "1", step: "0.05", value: "0",
+      "data-base-mix": g.id, title: "0: all Base; 1: all Blend in", "aria-label": g.id + " blend"});
+    const num = el("input", {type: "number", min: "0", max: "1", step: "0.05", value: "0",
+      class: "w-num", title: "Blend this block: 0 to 1", "aria-label": g.id + " blend amount"});
+    range.addEventListener("input", () => { num.value = Number(range.value).toFixed(2); BASE_MIX.overwrite = ""; });
+    num.addEventListener("change", () => {
+      const n = Math.max(0, Math.min(1, Number(num.value) || 0));
+      range.value = String(n);
+      num.value = n.toFixed(2);
+      BASE_MIX.overwrite = "";
+    });
+    host.append(el("div", {class: "field-row"}, el("span", {class: "field-label", text: g.id}),
+      range, num, el("span", {class: "field-hint",
+        text: g.tensors + " tensors · " + (g.bytes / 1e6).toFixed(1) + " MB"})));
+  }
+}
+
+async function baseMixInspect() {
+  const button = $("stBaseMixInspect");
+  button.disabled = true;
+  $("stBaseMixStatus").textContent = "Checking tensor layouts, shapes and data types…";
+  BASE_MIX.plan = null;
+  $("stBaseMixControls").style.display = "none";
+  try {
+    const input = {family: $("stBaseMixFamily").value, base: $("stBaseMixA").value.trim(),
+      donor: $("stBaseMixB").value.trim()};
+    const plan = await api("/api/studio/checkpoint_mix/inspect", input);
+    BASE_MIX.plan = plan;
+    BASE_MIX.overwrite = "";
+    baseMixBlockRows(plan);
+    $("stBaseMixInfo").textContent = plan.blocks.length + " compatible blocks; " +
+      plan.mixed_tensor_count + " block tensors. Other weights remain from the Base.";
+    $("stBaseMixControls").style.display = "";
+    $("stBaseMixStatus").textContent = "Compatible. Select block strengths; this writes a full standalone checkpoint.";
+    if (!$("stBaseMixOut").value.trim()) {
+      $("stBaseMixOut").value = input.base.replace(/\.safetensors$/i, "_mixed.safetensors");
+    }
+  } catch (error) {
+    $("stBaseMixInfo").textContent = "Not compatible.";
+    $("stBaseMixStatus").textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function baseMixCanPoll() {
+  return $("stBaseMixPanel").open && $("tab-studio").classList.contains("active");
+}
+
+function baseMixPoll() {
+  if (BASE_MIX.timer) { clearTimeout(BASE_MIX.timer); BASE_MIX.timer = null; }
+  if (!baseMixCanPoll()) return;
+  api("/api/studio/checkpoint_mix/status").then((x) => {
+    const busy = x.state === "running" || x.state === "cancelling";
+    BASE_MIX.busy = busy;
+    $("stBaseMixExport").disabled = busy || !BASE_MIX.plan;
+    $("stBaseMixCancel").disabled = !busy;
+    $("stBaseMixInspect").disabled = busy;
+    $("stBaseMixProgress").style.display = busy || x.state === "completed" ? "" : "none";
+    const pct = x.bytes_total ? Math.min(100, Math.round(x.bytes_done * 100 / x.bytes_total)) : 0;
+    $("stBaseMixProgress").value = pct;
+    if (busy) $("stBaseMixStatus").textContent =
+      (x.state === "cancelling" ? "Cancelling after the current chunk…" : "Exporting checkpoint…") +
+      " " + pct + "% (" + (x.bytes_done / 1e9).toFixed(1) + " / " + (x.bytes_total / 1e9).toFixed(1) + " GB)";
+    else if (x.state === "completed") $("stBaseMixStatus").textContent = "Saved: " + x.output;
+    else if (x.state === "failed") $("stBaseMixStatus").textContent = "Export failed: " + x.error;
+    else if (x.state === "cancelled") $("stBaseMixStatus").textContent = "Export cancelled; original files unchanged.";
+    if (busy && baseMixCanPoll()) BASE_MIX.timer = setTimeout(baseMixPoll, 900);
+  }).catch((e) => { $("stBaseMixStatus").textContent = e.message; });
+}
+
+async function baseMixExport() {
+  if (!BASE_MIX.plan || BASE_MIX.busy) return;
+  const output = $("stBaseMixOut").value.trim();
+  const weights = baseMixValues();
+  if (!Object.values(weights).some((n) => n > 0)) {
+    $("stBaseMixStatus").textContent = "Move at least one block slider above zero before exporting.";
+    return;
+  }
+  const data = {family: $("stBaseMixFamily").value, base: $("stBaseMixA").value.trim(),
+    donor: $("stBaseMixB").value.trim(), output, weights, overwrite: BASE_MIX.overwrite === output};
+  try {
+    const response = await api("/api/studio/checkpoint_mix/start", data);
+    if (response.exists) {
+      BASE_MIX.overwrite = output;
+      $("stBaseMixExport").textContent = "Confirm overwrite";
+      $("stBaseMixStatus").textContent = "That output exists. Click Confirm overwrite to replace that output only.";
+      return;
+    }
+    BASE_MIX.overwrite = "";
+    $("stBaseMixExport").textContent = "Save merged checkpoint";
+    $("stBaseMixStatus").textContent = "Checkpoint export started; your GPU remains free.";
+    baseMixPoll();
+  } catch (e) { $("stBaseMixStatus").textContent = e.message; }
+}
+
+function wireBaseMixer() {
+  const panel = $("stBaseMixPanel");
+  panel.addEventListener("toggle", () => { if (panel.open) baseMixPoll(); });
+  for (const name of ["stBaseMixA", "stBaseMixB", "stBaseMixFamily"]) {
+    $(name).addEventListener("change", baseMixInvalidate);
+  }
+  $("stBaseMixOut").addEventListener("input", () => {
+    BASE_MIX.overwrite = ""; $("stBaseMixExport").textContent = "Save merged checkpoint";
+  });
+  $("stBaseMixAPick").addEventListener("click", () => pick($("stBaseMixA").value || "", false, (p) => {
+    $("stBaseMixA").value = p; baseMixInvalidate();
+  }));
+  $("stBaseMixBPick").addEventListener("click", () => pick($("stBaseMixB").value || $("stBaseMixA").value, false, (p) => {
+    $("stBaseMixB").value = p; baseMixInvalidate();
+  }));
+  $("stBaseMixOutPick").addEventListener("click", () => pick($("stBaseMixOut").value || $("stBaseMixA").value,
+    true, (p) => {
+      const prev = $("stBaseMixOut").value.trim();
+      const leaf = prev.split(/[\\/]/).pop() || "model_mixed.safetensors";
+      $("stBaseMixOut").value = p.replace(/[\\/]$/, "") + (p.includes("\\") ? "\\" : "/") + leaf;
+      BASE_MIX.overwrite = "";
+      $("stBaseMixExport").textContent = "Save merged checkpoint";
+    }));
+  $("stBaseMixInspect").addEventListener("click", baseMixInspect);
+  $("stBaseMixExport").addEventListener("click", baseMixExport);
+  $("stBaseMixCancel").addEventListener("click", async () => {
+    try { await api("/api/studio/checkpoint_mix/cancel", {}); baseMixPoll(); }
+    catch (e) { $("stBaseMixStatus").textContent = e.message; }
+  });
+  panel.querySelectorAll("[data-base-mix-all]").forEach((b) => b.addEventListener("click", () => {
+    const val = Number(b.dataset.baseMixAll);
+    for (const node of $("stBaseMixBlocks").querySelectorAll("input[data-base-mix]")) {
+      node.value = String(val);
+      const num = node.nextElementSibling;
+      if (num) num.value = val.toFixed(2);
+    }
+    BASE_MIX.overwrite = "";
+    $("stBaseMixExport").textContent = "Save merged checkpoint";
+  }));
+}
+
+// ---- end experimental checkpoint mixer -----------------------------------------------------------
+
 function wireStudio() {
+  wireBaseMixer();
   $("stDockOpen").addEventListener("click", () => studioDock(true));
   $("stDockBack").addEventListener("click", () => studioDock(false));
   new MutationObserver(studioDockPlay).observe($("stPlayBoth"), {attributes: true, attributeFilter: ["style"]});
