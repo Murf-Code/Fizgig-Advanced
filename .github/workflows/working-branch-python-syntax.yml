@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - wip-test
+      - fizgig-advanced
       - test/caption-workbench
   workflow_dispatch:
 
