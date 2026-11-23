@@ -11,7 +11,17 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
-from fizgig.web.qt_images import NativeImageModel, NativeImageRail, NativeImageCanvas
+# The regular fizgig.web package imports the full training server (torch/numpy).
+# This lightweight UI smoke test needs only the isolated shared Qt module.
+import importlib.util
+module_path = Path(__file__).resolve().parents[1] / "src/fizgig/web/qt_images.py"
+spec = importlib.util.spec_from_file_location("qt_images_smoke", module_path)
+qt_images = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = qt_images
+spec.loader.exec_module(qt_images)
+NativeImageModel = qt_images.NativeImageModel
+NativeImageRail = qt_images.NativeImageRail
+NativeImageCanvas = qt_images.NativeImageCanvas
 
 
 class NativeImageWidgetTests(unittest.TestCase):
