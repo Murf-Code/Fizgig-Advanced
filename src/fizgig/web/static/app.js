@@ -13937,12 +13937,17 @@ function renderCaptionStudio(host,items,ext){
   ta.value=drafts.has(current.path)?drafts.get(current.path):(current.caption||"");
   captionMode=CaptionStudioTags.kind(ta.value,S.cap.studioModes?.get(current.path)||"auto",
     S.cap.studioDelimiter||",");
-  const naturalMode=S.cap.studioNaturalMode??(captionMode==="prose");
+  // Natural Language is a per-image view choice. A toggle made for one image
+  // must not force unrelated tag captions into the prose editor.
+  const naturalModes=S.cap.studioNaturalModes||
+    (S.cap.studioNaturalModes=new Map());
+  const naturalMode=naturalModes.has(current.path)?
+    naturalModes.get(current.path):(captionMode==="prose");
   const naturalCheckbox=el("input",{type:"checkbox",class:"studio-natural-check",
     "aria-label":"Show natural-language caption"});
   naturalCheckbox.checked=naturalMode;
   naturalCheckbox.addEventListener("change",()=>{
-    S.cap.studioNaturalMode=naturalCheckbox.checked;
+    naturalModes.set(current.path,naturalCheckbox.checked);
     if(naturalCheckbox.checked)S.cap.studioDock="all";
     renderCaptions();
     if(naturalCheckbox.checked)
@@ -15090,11 +15095,11 @@ function renderCaptionStudio(host,items,ext){
     showAi.setAttribute("aria-selected",String(S.cap.studioDock==="ai"));
   };
   const showAll=btn("All Tags",()=>{
-    if(naturalMode){S.cap.studioNaturalMode=false;S.cap.studioDock="all";renderCaptions();}
+    if(naturalMode){naturalModes.set(current.path,false);S.cap.studioDock="all";renderCaptions();}
     else showTabs("all");
   });
   const showAi=btn("Auto-Captioner",()=>{
-    if(naturalMode){S.cap.studioNaturalMode=false;S.cap.studioDock="ai";renderCaptions();}
+    if(naturalMode){naturalModes.set(current.path,false);S.cap.studioDock="ai";renderCaptions();}
     else showTabs("ai");
   });
   showAll.setAttribute("role","tab");
