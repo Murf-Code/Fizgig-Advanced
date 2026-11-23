@@ -23,7 +23,8 @@ _lock = threading.Lock()
 _S = {"proc": None, "sock": None, "port": 0, "state": "idle", "family": "", "primary": "", "donor": "", "primary_blocks": [],
       "donor_blocks": [], "hash": "", "status": "", "progress": None, "gen": 0, "shown": 0, "baseline": "",
       "tweaked": "", "pending": None, "rendering": False, "error": "", "saved": None, "profile": None,
-      "used": 0.0, "log": []}
+      "used": 0.0, "log": [], "frankenstein": "", "frank_out": "", "frank_exported": None,
+      "frank_saving": None, "frank_error": ""}
 
 
 _send_lock = threading.Lock()
@@ -146,7 +147,10 @@ def _event(ev):
             if kind == "loaded":
                 _S.update(nolora="", nolora_media="", nolora_gen=0, nolora_busy=False)
                 _S.update(state="ready", family=ev.get("family", ""), primary=ev.get("primary", ""),
-                          donor=ev.get("donor", ""), status="Loaded.", error="")
+                          donor=ev.get("donor", ""), status="Loaded.", error="",
+                          frankenstein=ev.get("frankenstein") or "",
+                          frank_out=ev.get("frank_out") or "", frank_error="", frank_exported=None,
+                          frank_saving=None)
                 _S["profile"] = _profile(ev.get("hash", ""))
             else:
                 _S.update(donor=ev.get("donor", ""), status="Donor loaded, fully on in its blocks: turn a block down or off to use less of it."
@@ -182,17 +186,25 @@ def _event(ev):
             _S.update(error=ev.get("msg", ""), progress=None,
                       status=("Preview error: " if where == "render" else "Couldn't load: " if where == "load" else "")
                       + ev.get("msg", ""))
+            if where == "frank_export":
+                _S.update(frank_saving=None, frank_error=ev.get("msg", ""))
             if where == "render":
                 _S["rendering"] = False
                 nxt, _S["pending"] = _S["pending"], None
             elif where == "load":
                 _S["state"] = "idle"
+        elif kind == "frank_progress":
+            _S["frank_saving"] = {"done": ev.get("done", 0), "total": ev.get("total", 0)}
+        elif kind == "frank_exported":
+            _S.update(frank_exported=ev.get("out", ""), frank_saving=None, frank_error="",
+                      status="Saved blended base model.")
         elif kind == "saved":
             _S["saved"] = {"out": ev.get("out"), "summary": ev.get("summary")}
             _S["status"] = "Saved."
         elif kind == "reset":
             _S.update(state="idle", primary="", donor="", primary_blocks=[], donor_blocks=[], hash="", profile=None,
-                      rendering=False, pending=None, progress=None, status="Models unloaded.")
+                      rendering=False, pending=None, progress=None, status="Models unloaded.",
+                      frankenstein="", frank_out="", frank_saving=None, frank_exported=None, frank_error="")
     if nxt is not None:
         render(*nxt)
 
@@ -332,14 +344,15 @@ def studio_tokens(desc, prefs):
 
 
 def load(desc, primary, donor, kw, settings, status, turbo, canvas=None):
-    if not primary or not os.path.isfile(primary):
+    if not kw.get("frankenstein") and (not primary or not os.path.isfile(primary)):
         raise ValueError("Choose a primary LoRA first (that file isn't there).")
     if donor and not os.path.isfile(donor):
         raise ValueError("That donor LoRA isn't there.")
     with _lock:
         other = _S["family"] and _S["family"] != desc.key
         _S.update(state="loading", status="Starting the Studio worker…", error="", progress=None, pending=None,
-                  family=desc.key, used=time.time())
+                  family=desc.key, used=time.time(), frankenstein="", frank_out="", frank_saving=None,
+                  frank_exported=None, frank_error="")
 
     def go():                                    # the worker's first start imports torch: not in the request
         try:
@@ -483,13 +496,30 @@ def save(out, state, include_donor):
     _send({"cmd": "save", "out": out, "state": state, "include_donor": bool(include_donor)})
 
 
+def frank_export(out, state):
+    """Export the active H3 Frankenstein block mix as a standalone base model checkpoint."""
+    with _lock:
+        if _S.get("state") != "ready" or not _S.get("frankenstein"):
+            raise ValueError("Load Frankenstein mode before saving a blended base.")
+        if _S.get("frank_saving"):
+            raise ValueError("A blended base export is already running.")
+        _S.update(frank_exported=None, frank_error="", frank_saving={"done": 0, "total": 0})
+    try:
+        _send({"cmd": "frank_export", "out": out, "state": state})
+    except Exception:
+        with _lock:
+            _S["frank_saving"] = None
+        raise
+
+
 def reset():
     """Unload: the worker quits, so the card and the RAM it held come back whole (the request waits for it - a
     Start pressed straight after finds no half-stopped worker)."""
     stop_worker()
     with _lock:
         _S.update(state="idle", primary="", donor="", primary_blocks=[], donor_blocks=[], hash="", profile=None,
-                  rendering=False, pending=None, progress=None, family="", status="Models unloaded.")
+                  rendering=False, pending=None, progress=None, family="", status="Models unloaded.",
+                  frankenstein="", frank_out="", frank_saving=None, frank_exported=None, frank_error="")
 
 
 def stop_worker():
@@ -745,6 +775,11 @@ def status():
     with _lock:
         d = {k: _S[k] for k in ("state", "family", "primary", "donor", "primary_blocks", "donor_blocks", "status",
                                 "progress", "shown", "rendering", "error", "saved", "profile")}
+        d["frankenstein"] = _S.get("frankenstein") or "" if d.get("state") == "ready" else ""
+        d["frank_out"] = _S.get("frank_out") or ""
+        d["frank_saving"] = _S.get("frank_saving")
+        d["frank_exported"] = _S.get("frank_exported")
+        d["frank_error"] = _S.get("frank_error") or ""
         d["notes"] = _S.get("notes")
         d["same"] = bool(_S.get("same"))           # the Tweaked render on screen is the Baseline
         d["eq"] = _S.get("eq") or {}
@@ -908,6 +943,11 @@ def layout(desc, prefs, pref_path, samples=None):
     audio_vae = desc.model_path("audio_vae", look) if kind == "video" else ""
     vc = desc.video_controls
     return {"key": desc.key, "name": desc.display_name, "groups": groups, "kind": kind,
+            "frankenstein": [w[1] for w in getattr(desc, "frankenstein_with", ())],
+            "frank_presets": ([{"name": "✨Reset All", "blocks": {}}] +
+                              [{"name": n, "blocks": dict(b)} for n, b in
+                               (desc.frankenstein_presets or ())])
+                             if getattr(desc, "frankenstein_with", ()) else [],
             "video": {"lengths": [n for n, _ in vc.lengths], "length_frames": dict(vc.lengths),
                       "length": vc.default_length or vc.lengths[0][0], "dims": [str(d) for d in vc.sizes],
                       "size": [str(d) for d in vc.default_size],
