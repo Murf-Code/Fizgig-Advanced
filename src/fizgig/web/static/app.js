@@ -13220,6 +13220,8 @@ function renderCaptionStudio(host,items,ext){
   }
   // Virtualized thumbnail stack: all images contribute to the scroll range,
   // but only a small viewport-sized slice creates buttons and <img> elements.
+  // Shared with Stage disposal even when Qt skips the browser rail entirely.
+  let prefetchTimer=null;
   if(!window.__FizgigQtNativeRail){
   const activeIndex=items.findIndex(it=>it.path===current.path);
   const sameThumbView=S.cap.studioThumbViewKey===thumbViewKey;
@@ -13287,7 +13289,7 @@ function renderCaptionStudio(host,items,ext){
   const bottomSpace=el("div",{class:"studio-thumb-spacer","aria-hidden":"true"});
   thumbs.append(topSpace,windowRows,bottomSpace);
   let geometry=null,paintStart=-1,paintEnd=-1,railWidth=0,queued=false;
-  let pendingResizePosition=null,previousPaintTop=null,prefetchTimer=null;
+  let pendingResizePosition=null,previousPaintTop=null;
   const rebuildGeometry=()=>{
     const width=thumbs.clientWidth||S.cap.studioThumbWidth||180;
     if(geometry&&Math.abs(width-railWidth)<1)return;
