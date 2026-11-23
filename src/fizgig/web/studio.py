@@ -23,7 +23,7 @@ _lock = threading.Lock()
 _S = {"proc": None, "sock": None, "port": 0, "state": "idle", "family": "", "primary": "", "donor": "", "primary_blocks": [],
       "donor_blocks": [], "hash": "", "status": "", "progress": None, "gen": 0, "shown": 0, "baseline": "",
       "tweaked": "", "pending": None, "rendering": False, "error": "", "saved": None, "profile": None,
-      "used": 0.0, "log": [], "frankenstein": "", "frank_out": "", "frank_exported": None,
+      "used": 0.0, "log": [], "load_id": 0, "load_session": "", "frankenstein": "", "frank_out": "", "frank_exported": None,
       "frank_saving": None, "frank_error": ""}
 
 
@@ -343,15 +343,18 @@ def studio_tokens(desc, prefs):
     return opts
 
 
-def load(desc, primary, donor, kw, settings, status, turbo, canvas=None):
+def load(desc, primary, donor, kw, settings, status, turbo, canvas=None, studio_session=""):
     if not kw.get("frankenstein") and (not primary or not os.path.isfile(primary)):
         raise ValueError("Choose a primary LoRA first (that file isn't there).")
     if donor and not os.path.isfile(donor):
         raise ValueError("That donor LoRA isn't there.")
     with _lock:
         other = _S["family"] and _S["family"] != desc.key
+        load_id = int(_S.get("load_id") or 0) + 1
         _S.update(state="loading", status="Starting the Studio worker…", error="", progress=None, pending=None,
-                  family=desc.key, used=time.time(), frankenstein="", frank_out="", frank_saving=None,
+                  family=desc.key, used=time.time(), load_id=load_id,
+                  load_session=str(studio_session or ""),
+                  frankenstein="", frank_out="", frank_saving=None,
                   frank_exported=None, frank_error="")
 
     def go():                                    # the worker's first start imports torch: not in the request
@@ -367,6 +370,21 @@ def load(desc, primary, donor, kw, settings, status, turbo, canvas=None):
             with _lock:
                 _S.update(state="idle", error=str(e), status=f"Couldn't start: {e}")
     threading.Thread(target=go, daemon=True).start()
+    return load_id
+
+
+def require_studio_session(studio_session=None):
+    """Reject an outdated Studio tab mutating another tab's loaded model.
+
+    This is a UI consistency guard, not an authentication boundary; normal
+    in-process callers and legacy clients without a session remain supported.
+    """
+    if not studio_session:
+        return
+    with _lock:
+        active = _S.get("load_session") or ""
+        if active != studio_session:
+            raise ValueError("Another Studio tab or window loaded a different model. Press Start here to load your setup again.")
 
 
 def donor(path):
@@ -517,7 +535,8 @@ def reset():
     Start pressed straight after finds no half-stopped worker)."""
     stop_worker()
     with _lock:
-        _S.update(state="idle", primary="", donor="", primary_blocks=[], donor_blocks=[], hash="", profile=None,
+        _S.update(load_id=int(_S.get("load_id") or 0) + 1, load_session="",
+                  state="idle", primary="", donor="", primary_blocks=[], donor_blocks=[], hash="", profile=None,
                   rendering=False, pending=None, progress=None, family="", status="Models unloaded.",
                   frankenstein="", frank_out="", frank_saving=None, frank_exported=None, frank_error="")
 
@@ -775,6 +794,8 @@ def status():
     with _lock:
         d = {k: _S[k] for k in ("state", "family", "primary", "donor", "primary_blocks", "donor_blocks", "status",
                                 "progress", "shown", "rendering", "error", "saved", "profile")}
+        d["load_id"] = int(_S.get("load_id") or 0)
+        d["load_session"] = str(_S.get("load_session") or "")
         d["frankenstein"] = _S.get("frankenstein") or "" if d.get("state") == "ready" else ""
         d["frank_out"] = _S.get("frank_out") or ""
         d["frank_saving"] = _S.get("frank_saving")
