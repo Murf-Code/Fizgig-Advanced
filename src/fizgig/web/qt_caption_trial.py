@@ -1,7 +1,7 @@
 """Optional native Qt thumbnail-rail A/B trial for a running local Fizgig server.
 
 Install: pip install PySide6 PySide6-Addons
-Run: python -m fizgig.web.qt_caption_trial --url http://127.0.0.1:7860
+Run: python -m fizgig.web.qt_caption_trial
 The existing pywebview/browser UI is not replaced.
 """
 import argparse
@@ -188,9 +188,23 @@ class Trial(QMainWindow):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", required=True, help="Running local Fizgig URL")
+    parser.add_argument("--url", help="Optional local Fizgig URL; autodetected by default")
     args = parser.parse_args(argv)
-    url = QUrl(args.url)
+    if args.url:
+        chosen = args.url
+    else:
+        from fizgig.user_data import PREFS_FILE
+        from fizgig.web.port import saved_port, is_fizgig
+        try:
+            with open(PREFS_FILE, encoding="utf-8") as file:
+                prefs = json.load(file)
+        except (OSError, ValueError):
+            prefs = {}
+        port = saved_port(prefs)
+        if not is_fizgig(port):
+            parser.error(f"Fizgig is not running on saved port {port}. Start Fizgig first, or pass --url.")
+        chosen = f"http://127.0.0.1:{port}"
+    url = QUrl(chosen)
     if url.scheme() not in ("http", "https") or url.host() not in (
             "localhost", "127.0.0.1", "::1"):
         parser.error("Only loopback URLs are permitted")
