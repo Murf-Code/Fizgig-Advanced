@@ -120,6 +120,7 @@ def cmd_load(c):
             eng = desc.make_workbench_engine()
         S["engine"], S["desc"] = eng, desc
         S["plan_sig"] = _plan_sig(c["plan"])
+        S["frank_active"] = bool(frank)
         eng.render_options = dict(ro)
         S["nolora_out"] = S["nolora_song"] = None
         S["mix_files"] = {}
@@ -887,6 +888,33 @@ def _rm_bundle(job):
     return latents, describe, entries, sched
 
 
+def cmd_primary(c):
+    """Switch a primary LoRA without reloading the model (upstream #394)."""
+    with _engine_lock:
+        eng = S["engine"]
+        if eng is None or eng.primary_network is None:
+            raise ValueError("Press Start first: the model isn't loaded.")
+        if S.get("frank_active") or getattr(S.get("desc"), "video_workbench", False):
+            raise ValueError("Primary switching is unavailable in Frankenstein and video modes.")
+        old = eng.primary_path or ""
+        path = c.get("path") or ""
+        if not path or not os.path.isfile(path):
+            emit(ev="primary", primary=old, error="That primary LoRA isn't there.", **_blocks(eng))
+            return
+        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(old)):
+            emit(ev="primary", primary=old, **_blocks(eng))
+            return
+        eng.unload_primary()
+        try:
+            eng.load_primary(path)
+        except Exception as exc:
+            eng.load_primary(old)
+            emit(ev="primary", primary=old, error=str(exc) or type(exc).__name__, **_blocks(eng))
+            return
+        S.setdefault("mix_files", {}).pop("primary", None)
+        emit(ev="primary", primary=path, **_blocks(eng))
+
+
 def _rm_sync_lora(eng, path):
     """The engine's LoRA is the page's (swapped in place when the structure matches, else the old one off and the
     new one wired), or none - the desktop's _rms_sync_lora."""
@@ -1016,6 +1044,7 @@ def cmd_reset(_c):
         if S["engine"] is not None:
             S["engine"].reset()
         S["engine"] = S["desc"] = None
+        S["frank_active"] = False
     try:
         import gc
         import torch
@@ -1050,7 +1079,7 @@ def cmd_map(c):
         emit(ev="status", text="Ready.")
 
 
-HANDLERS = {"load": cmd_load, "donor": cmd_donor, "settings": cmd_settings, "render": cmd_render, "map": cmd_map,
+HANDLERS = {"load": cmd_load, "donor": cmd_donor, "primary": cmd_primary, "settings": cmd_settings, "render": cmd_render, "map": cmd_map,
             "cancel": cmd_cancel, "save": cmd_save, "frank_export": cmd_frank_export,
             "reset": cmd_reset, "royale": cmd_royale,
             "royale_travel": cmd_royale_travel, "refmod": cmd_refmod}
