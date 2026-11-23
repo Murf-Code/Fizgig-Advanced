@@ -24,7 +24,7 @@ _S = {"proc": None, "sock": None, "port": 0, "state": "idle", "family": "", "pri
       "donor_blocks": [], "hash": "", "status": "", "progress": None, "gen": 0, "shown": 0, "baseline": "",
       "tweaked": "", "pending": None, "rendering": False, "error": "", "saved": None, "profile": None,
       "used": 0.0, "log": [], "load_id": 0, "load_session": "", "frankenstein": "", "frank_out": "", "frank_exported": None,
-      "frank_saving": None, "frank_error": ""}
+      "frank_saving": None, "frank_error": "", "primary_busy": False, "primary_seq": 0, "render_setups": {}}
 
 
 _send_lock = threading.Lock()
@@ -142,10 +142,19 @@ def _event(ev):
                       error=ev.get("error") or ("" if ok else "No renders produced."),
                       status=("Stopped." if ev.get("cancelled") else
                               f"Rendered {len(ok)} of {_R['total']}." if ok else "No renders produced."))
+        elif kind == "primary":
+            _S.update(primary=ev.get("primary") or "", primary_busy=False,
+                      primary_seq=int(_S.get("primary_seq") or 0) + 1,
+                      primary_blocks=ev.get("primary_blocks") or [],
+                      donor_blocks=ev.get("donor_blocks") or [], hash=ev.get("hash") or "",
+                      eq=ev.get("eq") or {}, error=ev.get("error") or "",
+                      status=("Couldn't switch primary: " + str(ev["error"])) if ev.get("error")
+                             else "Primary LoRA switched.")
+            _S["profile"] = _profile(ev.get("hash", ""))
         elif kind in ("loaded", "donor"):
             _S.update({k: ev.get(k) for k in ("primary_blocks", "donor_blocks", "hash", "eq")})
             if kind == "loaded":
-                _S.update(nolora="", nolora_media="", nolora_gen=0, nolora_busy=False)
+                _S.update(nolora="", nolora_media="", nolora_gen=0, nolora_busy=False, primary_busy=False)
                 _S.update(state="ready", family=ev.get("family", ""), primary=ev.get("primary", ""),
                           donor=ev.get("donor", ""), status="Loaded.", error="",
                           frankenstein=ev.get("frankenstein") or "",
@@ -186,6 +195,10 @@ def _event(ev):
             _S.update(error=ev.get("msg", ""), progress=None,
                       status=("Preview error: " if where == "render" else "Couldn't load: " if where == "load" else "")
                       + ev.get("msg", ""))
+            if where == "primary":
+                _S.update(primary_busy=False, primary_seq=int(_S.get("primary_seq") or 0) + 1,
+                          state="idle", primary="", status="Primary switch failed; press Start to reload: "
+                          + ev.get("msg", ""))
             if where == "frank_export":
                 _S.update(frank_saving=None, frank_error=ev.get("msg", ""))
             if where == "render":
@@ -203,7 +216,7 @@ def _event(ev):
             _S["status"] = "Saved."
         elif kind == "reset":
             _S.update(state="idle", primary="", donor="", primary_blocks=[], donor_blocks=[], hash="", profile=None,
-                      rendering=False, pending=None, progress=None, status="Models unloaded.",
+                      rendering=False, pending=None, progress=None, status="Models unloaded.", primary_busy=False, render_setups={},
                       frankenstein="", frank_out="", frank_saving=None, frank_exported=None, frank_error="")
     if nxt is not None:
         render(*nxt)
@@ -352,7 +365,7 @@ def load(desc, primary, donor, kw, settings, status, turbo, canvas=None, studio_
         other = _S["family"] and _S["family"] != desc.key
         load_id = int(_S.get("load_id") or 0) + 1
         _S.update(state="loading", status="Starting the Studio worker…", error="", progress=None, pending=None,
-                  family=desc.key, used=time.time(), load_id=load_id,
+                  family=desc.key, used=time.time(), load_id=load_id, primary_busy=False, render_setups={},
                   load_session=str(studio_session or ""),
                   frankenstein="", frank_out="", frank_saving=None,
                   frank_exported=None, frank_error="")
@@ -371,6 +384,29 @@ def load(desc, primary, donor, kw, settings, status, turbo, canvas=None, studio_
                 _S.update(state="idle", error=str(e), status=f"Couldn't start: {e}")
     threading.Thread(target=go, daemon=True).start()
     return load_id
+
+
+def primary(path):
+    """Switch the primary adapter on an idle model, preserving Advanced's session (#394)."""
+    if not path or not os.path.isfile(path):
+        raise ValueError("Choose an existing primary LoRA.")
+    with _lock:
+        if (_S["state"] != "ready" or _S.get("frankenstein") or _S.get("primary_busy")
+                or _S.get("rendering") or _S.get("nolora_busy")
+                or _R["state"] == "rendering" or _M["state"] == "rendering"
+                or any(t["state"] == "rendering" for t in _T.values())):
+            raise ValueError("Studio is busy or in Frankenstein mode; wait or press Start to reload.")
+        if os.path.normcase(os.path.abspath(_S.get("primary") or "")) == os.path.normcase(os.path.abspath(path)):
+            return int(_S.get("load_id") or 0)
+        previous = int(_S.get("load_id") or 0)
+        _S.update(primary_busy=True, load_id=previous + 1, status="Switching primary LoRA…", error="")
+    try:
+        _send({"cmd": "primary", "path": path})
+    except Exception:
+        with _lock:
+            _S.update(primary_busy=False, load_id=previous)
+        raise
+    return previous + 1
 
 
 def require_studio_session(studio_session=None):
@@ -409,18 +445,28 @@ def settings(turbo=None, preview_settings=None, render_options=None):
 
 
 def render(state, extra=None):
+    extra = dict(extra or {})
+    setup = extra.pop("_setup", None)
     """Render this slider state: now if nothing renders, else it waits (replacing any older wait) and the render
     going is cancelled - the newest state is what renders next."""
     with _lock:
         if _S["state"] != "ready":
             return {"error": "Load a LoRA first."}
+        if _S.get("primary_busy"):
+            raise ValueError("Wait for the primary LoRA switch to finish.")
         _S["used"] = time.time()
         if _S["rendering"]:
-            _S["pending"] = (state, extra)
+            pending_extra = dict(extra)
+            if setup is not None:
+                pending_extra["_setup"] = setup
+            _S["pending"] = (state, pending_extra)
             busy, cut = True, False
         else:
             _S["gen"] += 1
             gen = _S["gen"]
+            if isinstance(setup, dict) and setup.get("fizgig_repair_setup"):
+                _S.setdefault("render_setups", {})[gen] = setup
+            _S["render_setups"] = {k: v for k, v in _S.get("render_setups", {}).items() if k >= gen - 12}
             _S.update(rendering=True, progress=None, status="Generating preview…")
             busy = False
             cut = _S.get("nolora_busy")
@@ -430,6 +476,17 @@ def render(state, extra=None):
         return {"ok": True, "queued": True}
     _send({"cmd": "render", "gen": gen, "state": state, "out_dir": OUT_DIR, **(extra or {})})
     return {"ok": True, "gen": gen}
+
+
+def render_setup_for(gen=None):
+    """The setup attached to this rendered generation, not a later slider edit."""
+    with _lock:
+        shown = int(_S.get("shown") or 0)
+        try:
+            wanted = int(gen or shown)
+        except (TypeError, ValueError):
+            return None
+        return _S.get("render_setups", {}).get(wanted) if wanted == shown else None
 
 
 def lora_trigger(path):
@@ -801,6 +858,8 @@ def status():
                                 "progress", "shown", "rendering", "error", "saved", "profile")}
         d["load_id"] = int(_S.get("load_id") or 0)
         d["load_session"] = str(_S.get("load_session") or "")
+        d["primary_busy"] = bool(_S.get("primary_busy"))
+        d["primary_seq"] = int(_S.get("primary_seq") or 0)
         d["frankenstein"] = _S.get("frankenstein") or "" if d.get("state") == "ready" else ""
         d["frank_out"] = _S.get("frank_out") or ""
         d["frank_saving"] = _S.get("frank_saving")
