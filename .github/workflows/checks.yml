@@ -46,6 +46,8 @@ jobs:
         run: python -m pytest checks/test_offline_tokenizers.py -q
       - name: Krea 2 text encoder release avoids CPU weight copy (upstream #380)
         run: python -m pytest checks/test_krea2_te_release.py -q
+      - name: Studio and Royale edit-reference native shape (upstream 43c88d8)
+        run: python -m pytest checks/test_edit_reference_size.py -q
       - name: Global Replay step-count and epoch-progress regression checks
         run: |
           python -m pytest checks/test_replay_step_progress.py -q
