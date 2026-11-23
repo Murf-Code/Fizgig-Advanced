@@ -92,7 +92,7 @@ def test_bad_layouts_and_quantized_weights_are_rejected(tmp_path):
     base, donor, ids, a, b = fixture_pair(tmp_path)
     del b[ids[0]]
     safe.save_file(b, str(donor))
-    with pytest.raises(ValueError, match="different tensor names"):
+    with pytest.raises(ValueError, match="expected Anima blocks|Different block layouts"):
         mix.inspect_pair(str(base), str(donor), "anima")
     b[ids[0]] = torch.ones((3, 4), dtype=torch.bfloat16)
     safe.save_file(b, str(donor))
