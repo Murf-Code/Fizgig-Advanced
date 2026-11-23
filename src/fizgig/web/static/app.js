@@ -2069,8 +2069,10 @@ function qtGpuCard() {
   const on = el("input", {type: "checkbox"});
   on.checked = !!G.saved;
   const say = el("div", {class: "field-hint"});
-  const base = "Keeps the app window off the GPU so it does not share VRAM " +
-    "with training, and can stop some setups where the window crashes or stays blank. Used from the next start (close Fizgig and open it again; not a browser tab).";
+  const base = "Compatibility setting for blank or crashing desktop windows only. " +
+    "Disabling GPU acceleration can severely slow thumbnail scrolling, image editing and animations. " +
+    "Leave OFF for browser-like performance; restart the desktop window for changes to take effect. " +
+    "This setting does not affect the normal browser version.";
   const paint = () => {
     say.textContent = (G.changed ? "Saved: restart Fizgig for it to apply. " : "") + base;
   };
