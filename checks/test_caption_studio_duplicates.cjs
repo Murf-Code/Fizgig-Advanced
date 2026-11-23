@@ -11,7 +11,7 @@ assert.match(app,/function captionDuplicatePanel\(ext\)/);
 const duplicatePanel=app.slice(app.indexOf("function captionDuplicatePanel(ext)"),app.indexOf("function captionDuplicatePanel(ext)")+16000);
 assert.doesNotMatch(duplicatePanel,/text:"View caption"/);
 assert.match(duplicatePanel,/el\("label",\{class:"field-row"\},tick," Keep"\)/);
-assert.match(duplicatePanel,/text:"Remove unkept"/);
+assert.match(duplicatePanel,/text:"Remove image\/s"/);
 assert.match(duplicatePanel,/captionConfirmRemoval\(/);
 
 assert.match(app,/min:"0",max:"16"/);
