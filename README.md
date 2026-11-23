@@ -1,10 +1,10 @@
-## Fizgig Advanced 1.5.1
+## Fizgig Advanced 1.7
 
-Fizgig Advanced is Fizgig with extra features. It's kept up to date with upstream [shootthesound/Fizgig](https://github.com/shootthesound/Fizgig), so you get everything in Fizgig plus the extras below. This version matches **Fizgig v9.5.0**, plus Fizgig Advanced's extras.
+Fizgig Advanced builds on [shootthesound/Fizgig](https://github.com/shootthesound/Fizgig), with added training, dataset and Studio tools. **Version 1.7** introduces **Caption Workbench**, live image/caption re-caching, visual per-image training-loss statuses, Krea 2 Text-fusion calibration and experimental block-based model blending. It builds on the Fizgig v9.7.6 base used for Advanced 1.6, with selected newer upstream 9.8.x features and fixes.
 
 **Caption Workbench UI inspiration:** Thanks to **TagGUI** for inspiring the image-browsing, tag-management and visual-exploration interface. Fizgig Advanced adapts these ideas to its own training and caption systems. This acknowledgment is for design inspiration and does not imply affiliation or endorsement.
 
-**Upstream contributions incorporated in `test/caption-workbench`:** Thanks to **[@spaghettified26](https://github.com/spaghettified26)** for investigating and submitting both improvements to [shootthesound/Fizgig](https://github.com/shootthesound/Fizgig). Fizgig Advanced has adapted their work in this experimental branch:
+**Upstream contributions included in Advanced 1.7:** Thanks to **[@spaghettified26](https://github.com/spaghettified26)** for investigating and submitting both improvements to [shootthesound/Fizgig](https://github.com/shootthesound/Fizgig). Fizgig Advanced has adapted their work in this release:
 
 - **[Upstream PR #398 — Upgrade to Pillow 13.0.0 to solve defect](https://github.com/shootthesound/Fizgig/pull/398):** Updates Pillow to 13.0.0 to address the costly, potentially malicious PNG EXIF parsing issue. Credit: @spaghettified26.
 - **[Upstream PR #399 — Captions: avoid slow getexif() on PNGs without it](https://github.com/shootthesound/Fizgig/pull/399):** Avoids fully decoding ordinary PNGs just to read their dimensions when no EXIF orientation metadata is present, while preserving EXIF-aware fallback behavior. Credit: @spaghettified26.
@@ -37,7 +37,7 @@ git fetch advanced
 git checkout -b fizgig-advanced advanced/fizgig-advanced
 ```
 
-**What's new in 1.5.1:** Auto Blocks Swap now fits 12 GB cards (Krea 2 at 0.25 MP on a 4070 Ti goes from Auto 17, spilling at 22–66 s/step, to 20 at about 4 s/step), hover text on every Optimizer option, Remove Tool now uses LaMa, Image Editor / Remove Tool / Crop Image names, and Restore Original Image. See the [1.5.1 release notes](docs/RELEASE_NOTES_advanced-1.5.1.md) ([1.5](docs/RELEASE_NOTES_advanced-1.5.md), [1.4](docs/RELEASE_NOTES_advanced-1.4.md)).
+**What's new in 1.7:** **Caption Workbench** replaces the old Captions layout with Tags, a full-width Waterfall gallery and an interactive Constellation; image editing, per-image loss-status colors, validation/sample image picks, duplicate detection and automatic next-epoch cache refresh are all in one workspace. Krea 2 adds **Text-fusion calibration**, Studio gains experimental multi-family block checkpoint mixing, and runs can save an optional rolling best checkpoint mid-epoch. See the **[1.7 release notes (with screenshots)](docs/RELEASE_NOTES_advanced-1.7.md)**, or earlier releases: [1.6](https://github.com/Murf-Code/Fizgig-Advanced/releases/tag/advanced-1.6), [1.5.2](docs/RELEASE_NOTES_advanced-1.5.2.md), [1.5.1](docs/RELEASE_NOTES_advanced-1.5.1.md).
 
 Several of these features have been offered upstream: [#289](https://github.com/shootthesound/Fizgig/pull/289), [#290](https://github.com/shootthesound/Fizgig/pull/290), [#291](https://github.com/shootthesound/Fizgig/pull/291), [#292](https://github.com/shootthesound/Fizgig/pull/292), [#293](https://github.com/shootthesound/Fizgig/pull/293), [#294](https://github.com/shootthesound/Fizgig/pull/294).
 
