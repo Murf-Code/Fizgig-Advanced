@@ -15,7 +15,7 @@ from pathlib import Path
 import sys
 
 try:
-    from PySide6.QtCore import QUrl, QTimer
+    from PySide6.QtCore import QUrl, QTimer, QSignalBlocker
     from PySide6.QtWidgets import (
         QApplication, QHBoxLayout, QMainWindow, QWidget
     )
@@ -76,7 +76,8 @@ class NativeShell(QMainWindow):
         self._busy = False
         self._source_key = None
         self._selection_key = None
-        self.model.replace([])
+        with QSignalBlocker(self.rail.selectionModel()):
+            self.model.replace([])
         self.rail.setVisible(False)
         if not ok:
             self.statusBar().showMessage("Couldn't load the local Fizgig web server")
@@ -138,7 +139,10 @@ class NativeShell(QMainWindow):
             return
         tab = snapshot.get("tab", "")
         entries = snapshot.get("items") or []
-        self.model.replace(entries)
+        # A model reset emits a cleared selection; it must not erase the
+        # browser's active image before the restored selection is applied.
+        with QSignalBlocker(self.rail.selectionModel()):
+            self.model.replace(entries)
         self.rail.set_mode(tab)
         self._source_key = (tab, snapshot.get("key"))
         self._set_selection(snapshot)
