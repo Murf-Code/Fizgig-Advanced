@@ -4557,21 +4557,21 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   box-sizing:border-box;
   min-height:0;
   overflow:hidden;
-  padding:12px 12px 8px;
-  gap:7px;
+  padding:10px 12px 4px;
+  gap:5px;
   border-bottom:0;
 }
 /* Drag the partition between Image Tags and the lower All Tags / Auto-Captioner
-   pane. The grip occupies only 11px; each list retains independent scrolling. */
+   pane. A thin 7px grip keeps both lists independently scrollable. */
 #tab-captions .studio-host .studio-tag-height-grip {
-  order:1;flex:none;position:relative;height:11px;min-height:11px;
+  order:1;flex:none;position:relative;height:7px;min-height:7px;
   box-sizing:border-box;border-top:1px solid var(--border);
   border-bottom:1px solid var(--border);background:var(--bg-surface);
   cursor:row-resize;touch-action:none;user-select:none;outline-offset:-2px;
 }
 #tab-captions .studio-host .studio-tag-height-grip::after {
   content:"";position:absolute;top:50%;left:50%;
-  width:48px;height:3px;transform:translate(-50%,-50%);
+  width:34px;height:2px;transform:translate(-50%,-50%);
   border-radius:999px;background:var(--border-strong);
 }
 #tab-captions .studio-host .studio-tag-height-grip:is(:hover,:focus-visible,.is-dragging){
@@ -4585,8 +4585,8 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   flex:1 1 0;
   min-height:0;
   overflow:hidden;
-  padding:11px 12px 12px;
-  gap:7px;
+  padding:8px 12px 8px;
+  gap:5px;
 }
 #tab-captions .studio-host .studio-ai-dock {
   order:2;
@@ -4698,17 +4698,33 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   font-size:11px;
   white-space:nowrap;
 }
+/* Global .w-combo uses width:260px!important; override it inside this
+   intentionally narrow sidebar so the sort criterion remains readable. */
 #tab-captions .studio-host .studio-tag-sort select {
-  flex:1 1 auto;
+  box-sizing:border-box;
+  width:auto!important;
+  flex:1 1 0;
   min-width:0;
-  max-width:none;
-  padding:6px 7px;
+  max-width:100%;
+  padding-left:8px;
   font-size:12px;
+}
+#tab-captions .studio-host .studio-tag-sort .studio-tag-sort-field {
+  flex:1 1 0;
+  min-width:0;
 }
 #tab-captions .studio-host .studio-tag-sort .studio-tag-direction {
   flex:0 0 74px;
-  width:74px;
-  min-width:0;
+  width:74px!important;
+  min-width:74px;
+}
+#tab-captions .studio-host .studio-tag-editor-pane>.field-hint {
+  flex:none;
+  min-height:0;
+  margin:0;
+  padding:0;
+  font-size:10px;
+  line-height:12px;
 }
 #tab-captions .studio-host .studio-tag-count {
   flex:none;
