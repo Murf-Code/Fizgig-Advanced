@@ -9,6 +9,7 @@ This module intentionally imports no pywebview/Windows dependencies so it can
 be regression-tested without a desktop runtime.
 """
 import re
+import sys
 
 
 def _has_flag(arguments, flag):
@@ -16,17 +17,33 @@ def _has_flag(arguments, flag):
     return bool(re.search(r"(?<!\S)" + re.escape(flag) + r"(?=\s|=|$)", arguments or ""))
 
 
-def browser_arguments(prefs=None, inherited="", software_video=False):
+def gpu_disabled(prefs=None, platform=None):
+    """Windows desktop uses software rendering by default; explicit 0/1 wins.
+
+    This preference applies only to Fizgig's embedded app window, not Chrome
+    or Edge. Linux Qt WebEngine retains its GPU-enabled default.
+    """
+    prefs = prefs or {}
+    setting = str(prefs.get("qt_disable_gpu", "")).strip()
+    if setting == "1":
+        return True
+    if setting == "0":
+        return False
+    return (platform or sys.platform) == "win32"
+
+
+def browser_arguments(prefs=None, inherited="", software_video=False, platform=None):
     """Build WebView2 flags without overriding explicitly inherited flags.
 
-    Prior versions disabled accelerated video decoding for every user.
-    That workaround is opt-in now so video, canvas and image-heavy views use
-    Chromium's normal acceleration by default.
+    On Windows software GPU rendering is now the default based on improved
+    responsiveness in the embedded WebView2 shell. Users can opt back into
+    GPU acceleration with the same existing toggle; no change to browsers.
+    Hardware video decoding remains separately configurable.
     """
     prefs = prefs or {}
     result = str(inherited or "").strip()
     requested = []
-    if str(prefs.get("qt_disable_gpu") or "") == "1":
+    if gpu_disabled(prefs, platform):
         requested.append("--disable-gpu")
     if software_video:
         requested.append("--disable-accelerated-video-decode")
