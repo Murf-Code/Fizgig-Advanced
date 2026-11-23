@@ -5365,6 +5365,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": f"Too short: {len(pwd)} of at least 8 characters."}, 400)
                 update_prefs({"web_password": pwd})
                 return self.json({"ok": True, "saved": bool(pwd)})
+            if path == "/api/captions/reveal_file":
+                # OS file-manager actions belong on the machine running Fizgig,
+                # never on a remote browser or GPU pod.
+                if on_pod() or not self._local_viewer():
+                    return self.json({"error": "Open File Location is available only on the local computer running Fizgig."}, 403)
+                from fizgig.web.file_location import reveal_file
+                try:
+                    return self.json(reveal_file(b.get("path"), b.get("folder"), b.get("name")))
+                except ValueError as e:
+                    return self.json({"error": str(e)}, 400)
             if path == "/api/gizmo/open":           # Gizmo, the clip / voice / music prep app, on this computer
                 if on_pod() or not self._local_viewer():
                     return self.json({"error": "Gizmo opens on the computer running Fizgig - use it there."}, 400)
