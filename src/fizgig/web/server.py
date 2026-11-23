@@ -970,7 +970,7 @@ def _studio_post(what, b):
         studio.frank_export(out, b.get("state") or {})
         return {"ok": True}
     if what == "reset":
-        studio.reset()
+        studio.reset(studio_session=b.get("studio_session") or "")
         return {"ok": True}
     if what in ("preset_save", "preset_load"):
         key = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(b.get("family") or ""))
