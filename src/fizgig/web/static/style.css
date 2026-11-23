@@ -4553,7 +4553,7 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   order:0;
   display:flex;
   flex-direction:column;
-  flex:0 0 clamp(180px,var(--studio-tag-upper-share,49%),calc(100% - 240px));
+  flex:0 0 clamp(180px,var(--studio-tag-upper-share,49%),calc(100% - 290px));
   box-sizing:border-box;
   min-height:0;
   overflow:hidden;
@@ -4561,8 +4561,8 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   gap:5px;
   border-bottom:0;
 }
-/* Drag the partition between Image Tags and the lower All Tags / Auto-Captioner
-   pane. A thin 7px grip keeps both lists independently scrollable. */
+/* Slim grip below the All Tags / Auto-Captioner heading, above search;
+   resizing still changes the height of the Image Tags pane. */
 #tab-captions .studio-host .studio-tag-height-grip {
   order:1;flex:none;position:relative;height:7px;min-height:7px;
   box-sizing:border-box;border-top:1px solid var(--border);
@@ -5164,7 +5164,7 @@ body.caption-glass-ui .studio-image-context-menu .studio-tag-color-swatch{
 #tab-captions .studio-host .studio-tag-header {
   order:1;flex:none;min-width:0;display:flex;align-items:center;
   gap:8px;padding:7px 12px;border-top:1px solid var(--border);
-  border-bottom:1px solid var(--border);
+  border-bottom:0; /* The immediately following grip owns the bottom edge. */
 }
 #tab-captions .studio-host .studio-tag-header>strong {
   flex:0 0 auto;font-size:15px;font-weight:700;letter-spacing:-.015em;
