@@ -121,13 +121,16 @@ async function boot() {
   welcomeShow(pr);
   sysmemTipShow(pr);
   pollRun(); pollStats(); followLog();
-  setInterval(pollRun, 2000); setInterval(pollStats, 2000); setInterval(galleryRefresh, 15000);
+  setInterval(pollRun, 2000); setInterval(pollStats, 2000);
+  // Sample thumbnails are expensive to fetch and rebuild; refresh only while the Samples view is open.
+  setInterval(() => { if (activeTab() === "samples" && !document.hidden) galleryRefresh(); }, 15000);
   // F5 / Ctrl+R reload the page in the app window as in a browser (the window has no reload of its own)
   document.addEventListener("keydown", (e) => {
     if (e.key === "F5" || ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "r")) {
       e.preventDefault(); location.reload(); }
   });
-  setInterval(loadCheckpoints, 15000);
+  // Checkpoint directory scans and DOM rebuilds are only needed on the visible Training view.
+  setInterval(() => { if (activeTab() === "training" && !document.hidden) loadCheckpoints(); }, 15000);
 }
 
 // fresh (you picked another model at the top): the model's first preset goes over its saved values, so no setting
@@ -199,8 +202,8 @@ function renderAll() {
   renderPrefs();
   watchFetch();
   checkModels();
-  loadGallery();
-  loadCheckpoints();
+  if (activeTab() === "samples" && !document.hidden) loadGallery();
+  if (activeTab() === "training" && !document.hidden) loadCheckpoints();
 }
 
 // ---- the generated forms -----------------------------------------------------------------------------------
@@ -2372,7 +2375,7 @@ async function pollRun() {
   startupOffer();
   resumeMarks();
   jobPillShow();
-  runSummary();
+  if (activeTab() === "training" && !document.hidden) runSummary();
   if (training() !== S.wasTraining) {             // the LoRA lists' Studio buttons show only between runs
     if (S.wasTraining !== undefined && $("tab-training").classList.contains("active")) loadCheckpoints();
     S.wasTraining = training();
@@ -2428,7 +2431,7 @@ async function pollRun() {
   $("btnResume").style.display = !live && r.resume && !moveBusy ? "" : "none";
   renderWebQueue(r.web_queue || {items: []});
   queueSummary(r.web_queue || {items: []}, r);
-  runLossTick(live);
+  if (activeTab() === "training" && !document.hidden) runLossTick(live);
   // Per-image loss on the run card while a run with the loss watch trains (Runs & outputs has it after): any of its
   // ticks runs the watch - per-image LR, the look warm-up and auto-recaption track every image too
   // always there for a model with the loss watch: greyed (its hover says which ticks turn it on) until a run tracks it
@@ -16975,7 +16978,7 @@ function showTab(name) {
   if (name === "refmod") refmodOpen();
   if (name === "metadata") mdWire();
   if (name === "samples") loadGallery();
-  if (name === "training") loadCheckpoints();
+  if (name === "training") { runSummary(); runLossTick(!!(S.run && (S.run.running || S.run.state === "starting"))); loadCheckpoints(); }
   if (name === "outputs") { loadRuns(); if (S.outputsOpen) loadOutputs(); }
   if (S.pods.confirmDel) { S.pods.confirmDel = null; podsDraw(); }   // a Delete pod left open: gone, not waiting
   if (name === "pods") { podsLoad(); pickLoad(); }
