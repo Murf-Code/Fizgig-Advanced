@@ -20,6 +20,9 @@ assert.match(duplicatePanel,/el\("label",\{class:"field-row"\},tick," Keep this 
 assert.match(duplicatePanel,/text:"Remove image\/s"/);
 assert.match(duplicatePanel,/captionConfirmRemoval\(/);
 assert.match(duplicatePanel,/text:"Compare images"/);
+assert.match(duplicatePanel,/const toggleCaption=\(\)=>/);
+assert.match(duplicatePanel,/caption\.addEventListener\("keydown"/);
+assert.match(css,/\.studio-duplicate-caption\.expanded/);
 assert.match(duplicatePanel,/text:"Side by side"/);
 assert.match(duplicatePanel,/text:"Overlay"/);
 assert.match(duplicatePanel,/choice\.kept\.size\+" kept/);
