@@ -158,7 +158,10 @@ DEFAULTS = {
     "LR_WARMUP_STEPS": "", "VALIDATION_LOSS": False, "VALIDATION_IMAGES": "4", "VALIDATION_GROUPS": "1", "VALIDATION_TIMESTEPS": "4",
     "VALIDATION_SEED": "42", "VALIDATION_EVERY_STEPS": "0", "VALIDATION_PICKED": [], "VALIDATION_HOLDOUT": True, "INT8_ROTATED_BACKWARD": False,
     "POLORA_MAGNITUDE": "", "POLORA_CURVATURE": "", "POLORA_COMPILE": True,
-    "VALIDATION_EARLY_STOP": False, "VALIDATION_PATIENCE": "3", "ADAPTIVE_LR": False, "ADAPTIVE_LR_ON_VAL": True, "ADAPTIVE_LR_MIN": "1e-5", "ADAPTIVE_LR_MAX": "4e-4",
+    "VALIDATION_EARLY_STOP": False, "VALIDATION_PATIENCE": "3",
+    "BEST_CHECKPOINT_MODE": "Off", "BEST_CHECKPOINT_WINDOW": "32",
+    "BEST_CHECKPOINT_COOLDOWN": "100", "BEST_CHECKPOINT_MIN_DELTA": "0.5",
+    "ADAPTIVE_LR": False, "ADAPTIVE_LR_ON_VAL": True, "ADAPTIVE_LR_MIN": "1e-5", "ADAPTIVE_LR_MAX": "4e-4",
     "CONTEXT_LORA_PATH": "", "CONTEXT_LORA_STRENGTH": "1.0", "FAMILY_DOP": False, "FAMILY_MULTI_PERSON": False, "FAMILY_DOP_TRIGGER": "",
     "FAMILY_DOP_CLASS": "", "FAMILY_DOP_TRIGGER2": "", "FAMILY_DOP_CLASS2": "",
     "FAMILY_DOP_TRIGGER3": "", "FAMILY_DOP_CLASS3": "", "FAMILY_DOP_TRIGGER4": "", "FAMILY_DOP_CLASS4": "",
@@ -1027,6 +1030,21 @@ def form(desc):
         _row("VALIDATION_EVERY_STEPS", "How often to check", "valevery", "Every epoch checks once at the end of "
              "each epoch (recommended). Every N steps checks that often instead, starting once each picked image "
              "has come up in training.", default="0", n_default=str(VALIDATION_N_DEFAULT)),
+        _row("BEST_CHECKPOINT_MODE", "Automatically keep best mid-epoch checkpoint", "choice",
+             "Optional, separate from epoch saves and Save Now. Smoothed training loss considers the average "
+             "of recent steps (individual batch lows are noisy). Fixed validation loss compares the same images "
+             "and noise. Only one rolling -best-train or -best-val LoRA is kept for the chosen mode; "
+             "normal saves, final checkpoint and training continue unchanged.",
+             ["Off", "Smoothed training loss", "Fixed validation loss"], default="Off"),
+        _row("BEST_CHECKPOINT_WINDOW", "Training loss window (steps)",
+             hint="How many recent training batches to average before selecting a low-loss checkpoint. "
+             "32 is a good starting point; not used for Fixed validation loss.", default="32"),
+        _row("BEST_CHECKPOINT_COOLDOWN", "Minimum steps between best saves",
+             hint="Prevents repeated disk writes on tiny improvements. A new best still needs a meaningful "
+             "improvement after this many steps.", default="100"),
+        _row("BEST_CHECKPOINT_MIN_DELTA", "Minimum improvement (%)",
+             hint="A new best must improve by at least this percentage over the saved best. "
+             "0.5% is the default; this prevents saving on tiny random fluctuations.", default="0.5"),
         _row("VALIDATION_EARLY_STOP", "Stop when validation stops improving", "check",
              "Finishes the run once the validation loss hasn't got better for the Patience number of checks in a "
              "row. The best check's LoRA becomes the final LoRA; the normal saves are kept. Off by default.",
@@ -1401,7 +1419,17 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
     if "int8" in desc.precisions and launch.precision_key(desc, values.get("FAMILY_PRECISION")) not in ("int8",
                                                                                                       "auto"):
         hidden.add("INT8_ROTATED_BACKWARD")              # only an INT8 base has an INT8 backward to rotate
-    if not _on("VALIDATION_LOSS"):                      # early stop goes by the validation loss
+    _best_mode = str(values.get("BEST_CHECKPOINT_MODE") or "Off").strip()
+    if _best_mode == "Off":
+        disabled |= {"BEST_CHECKPOINT_WINDOW", "BEST_CHECKPOINT_COOLDOWN", "BEST_CHECKPOINT_MIN_DELTA"}
+    elif _best_mode == "Fixed validation loss":
+        disabled.add("BEST_CHECKPOINT_WINDOW")
+        notes["BEST_CHECKPOINT_MODE"] = ("Uses fixed validation measurements. When How often to check is "
+                                          "Every epoch, Fizgig automatically checks at mid-epoch steps "
+                                          "(about half an epoch or 100 steps, whichever is smaller).")
+    if not (_on("VALIDATION_LOSS") or _best_mode == "Fixed validation loss"):
+        # Early stop and the rolling validation-best mode can both enable validation.
+
         disabled |= {"VALIDATION_EARLY_STOP", "VALIDATION_PATIENCE"}
         tips["VALIDATION_EARLY_STOP"] = "Turn on Fixed validation loss first: early stop goes by it."
     elif not _on("VALIDATION_EARLY_STOP"):
@@ -1571,8 +1599,12 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
             values = {**values, "LEARNING_RATE": restored_lr}
     hidden |= {s for s, k in (("edit", "edit"), ("slider", "slider"), ("finetune", "finetune")) if k != kind}
     if kind == "finetune":
-        disabled |= {"MAX_TRAIN_EPOCHS", "SAVE_EVERY_N_EPOCHS"}
+        disabled |= {"MAX_TRAIN_EPOCHS", "SAVE_EVERY_N_EPOCHS", "BEST_CHECKPOINT_MODE"}
+        tips["BEST_CHECKPOINT_MODE"] = "Rolling best is for LoRA training, not full-model fine-tuning."
         hidden |= {"CONTEXT_LORA_PATH", "CONTEXT_LORA_STRENGTH"}
+    if kind == "slider":
+        disabled.add("BEST_CHECKPOINT_MODE")
+        tips["BEST_CHECKPOINT_MODE"] = "Rolling best requires image training losses, not a prompt-only slider."
     if kind != "standard":
         hidden.add("FAMILY_FAST_ID")
     if not desc.subject_isolation:                    # a family without it (a music model): a normal LoRA, always
