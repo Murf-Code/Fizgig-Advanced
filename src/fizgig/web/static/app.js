@@ -12504,7 +12504,11 @@ function captionDuplicatePanel(ext){
             refreshChoice();
           });
           const thumb=el("img",{loading:"lazy",alt:pic.name,
+            title:"View full image",tabindex:"0",role:"button","aria-label":"View full image: "+pic.name,
             src:"/api/thumb?path="+encodeURIComponent(pic.path)+"&t="+encodeURIComponent(TOKEN)});
+          thumb.addEventListener("keydown",e=>{
+            if(e.key==="Enter"||e.key===" "){e.preventDefault();thumb.click();}
+          });
           const status=el("div",{class:"field-hint",text:
             (isKeep?"KEEP · ":"DROP · ")+(locked?"REVIEW LOCKED · ":"")+
             pic.width+"×"+pic.height+" · "+studioTokens(it.caption||"").length+" tags"});
@@ -17716,7 +17720,7 @@ document.addEventListener("input", (e) => { if (e.target.matches && e.target.mat
 matchMedia(LB_SIDE).addEventListener("change", () => fitText($("lightboxCapText")));
 
 // ---- the picture viewer: any preview or Captions picture, big, with the others in its list a step away --------
-const LIGHTBOX_PICS = ".gallery-item > img, .caption-card > img";      // (Repair Studio's panes are gallery items)
+const LIGHTBOX_PICS = ".gallery-item > img, .caption-card > img, .studio-duplicate-card > img";      // (Repair Studio's panes are gallery items)
 S.lb = {list: [], at: 0};
 // the caption shown under a Captions picture: an edit goes back to its card and is saved before the view moves on
 async function lightboxCapFlush() {
@@ -17792,7 +17796,7 @@ function wireLightbox() {
   document.addEventListener("click", (e) => {
     const img = e.target.closest && e.target.closest(LIGHTBOX_PICS);
     if (!img) return;
-    const host = img.closest(".gallery, .captions-grid, .st-preview") || document;   // step through the pictures beside it
+    const host = img.closest(".gallery, .captions-grid, .st-preview, .studio-duplicate-cards") || document;   // step through the pictures beside it
     const imgs = [...host.querySelectorAll(LIGHTBOX_PICS)]       // only the pictures on show (a hidden pane is not one)
       .filter((i) => i === img || (i.getClientRects().length && (i.currentSrc || i.getAttribute("src"))));
     S.lb.list = imgs.map((i) => {
