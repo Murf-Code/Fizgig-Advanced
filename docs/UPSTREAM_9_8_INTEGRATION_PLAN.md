@@ -35,10 +35,10 @@ staging PR only as historical review context.
 | Video-only folders with a remembered Mask/Element boost tick, #402, `5337483` | **Integrated on staging branch** | Adapted `families/launch.py` and `form.py`, with upstream's regression cases. Important: disabled for *clips-only*, enabled when a trained subfolder contains photos. No mask renderer changes. |
 | Non-safetensors model headers checked centrally, `9ac00cd` | **Integrated into Workbench** | Adapted the upstream shared header reader into existing model planners, quantization, MiniMax, and both loaders. No Advanced metadata writing replaced; added regression tests and CI. |
 | Offline-first Anima / ACE-Step tokenizers and SDXL config, #397, `1437792` | **Integrated into Workbench** | Ported Anima, ACE-Step, SDXL, cached helper checks and updater, keeping Advanced SDXL timestep spread. Offline/partial-cache tests added to CI. Next-epoch data-change recache remains a separate lifecycle to test live. |
-| Resume at new size with Cache disabled (#370), and stop request hung (#379 notes) | **Priority 1: verify then fix** | These hit reliability and run lifecycle. Advanced already changed resume and cache behavior; compare exact paths, do not overwrite wholesale. |
+| Resume at new size with Cache disabled (#370) | **Already integrated / source-verified** | Workbench has the exact `launch.caches()` override, cache-stage history safety and `test_cache_stages.py` / `test_resume_record_honesty.py`. No duplicate port. Stop/pause reliability remains a separate review; upstream **issue #379 actually concerns Linux ROCm imports**, not a stop fix. |
 | MiniMax H3 / low-VRAM previews and Studio fixes; Krea 2 ROCm memory/TE release | **Partially integrated** | Krea 2 encoder releases weights to meta instead of copying to RAM, with file-backed inference guard and tests. Remaining AMD/ROCm and memory planner differences require hardware validation. |
-| Radeon expandable segments / MIOpen launcher paths and override (#389) | **Priority 1 for AMD, isolate** | Preserve Windows/Linux separation and user overrides; test on Windows AMD rather than assuming path layout. |
-| Studio save setup, primary-LoRA quick swap, queue and cross-tab isolation (#394/#395) | **Priority 2: selective backend integration** | Good performance/correctness improvements, but substantial shared state and `web/static/app.js` changes. Integrate API lifecycle first, UI second, preserve current Workbench/Studio panel layout. |
+| Radeon expandable segments / MIOpen launcher paths and override (#389) | **Opt-in workaround integrated; AMD live QA pending** | Added `FIZGIG_MIOPEN=0` (ROCm-only process initialization; unset leaves defaults alone). Windows launcher prefers real share database folders with working `_rocm_sdk_devel\\bin` fallback; retains gfx1100 exception. CPU CI tests added, Windows AMD testing still required. |
+| Studio save setup, primary-LoRA quick swap, queue and cross-tab isolation (#394/#395) | **Cross-tab guard integrated; other items pending** | Workbench has a different Studio worker and no upstream queue. Added per-tab load ownership, stale-action rejection and foreign-tab preview protection with tests (#395 adapted). Queue/primary hot swap (#394), output setup metadata and cross-window hardware verification remain pending. |
 | Edit-model references retain their own shape at Reference MP, `43c88d8` | **Integrated into Workbench** | Adapted the sizing/reference-key implementation and un-greyed Studio Reference MP with upstream tests. |
 | Multi-line captions and “Add as another line” (#300) | **Defer architecture review** | Can conflict with our tag-based editor, selection, AI recaption, tag ordering and next-epoch text re-encode. First define whether a training item has one caption string or per-line variants; ensure save/reload/undo tests cover both. |
 | Per-folder numeric repeats from folder names (#300) | **Do not duplicate UI** | Advanced has explicit per-folder weights/repeats. May optionally import naming conventions into that existing model, but **never** create a competing repeat counter. |
@@ -66,12 +66,21 @@ staging PR only as historical review context.
 6. **Promote deliberately.** Each atomic commit is pushed to Workbench and checked with branch CI.
    A CI pass is not a substitute for Windows/GPU/AMD hardware smoke tests; fix regressions on Workbench.
 
-## Separate branch divergence to handle deliberately
+## Separate branch divergence — reconciled by content, not a bulk merge
 
-`wip-test` contains **five newer Text Fusion calibration commits** not in the Workbench branch (manual/automatic
-target probing), affecting `families/train.py`, `krea2/direction_edit_v2.py` and their checks. They are *our*
-branch's features, **not** upstream Fizgig changes. Reconcile them independently after the upstream safety batch;
-do not mix them into a bulk upstream merge.
+`wip-test` still has **five calibration-only commits in its ancestry** not in Workbench's commit graph, but
+the implementation is **already present in Workbench**. On the inspected heads
+(`wip-test@5f46dc61`, `test/caption-workbench@1ecd68d5`), the entire
+`krea2/direction_edit_v2.py`, `checks/test_krea2_direction_edit_v2.py` and
+`checks/test_krea2_calibration_lifecycle.py` files have **identical Git blob SHAs**.
+The calibration preparation function in `families/train.py`, including the direct 4% automatic probe
+and manual targets, is also identical; Workbench's overall trainer additionally contains later
+best-checkpoint and memory-reclaim work. These are **not missing features**, so replacing or
+cherry-picking the older files would risk regressions. Git history still diverges, but functional
+Text Fusion reconciliation needs no overwrite.
+
+If branch history is ever unified, do it as an explicit history-only merge after checking the
+current head and tests; don't conflate that with upstream code integration.
 
 ## Workbench integration progress and QA
 
@@ -83,11 +92,14 @@ do not mix them into a bulk upstream merge.
 - [x] Port offline tokenizers and partial-cache recovery with automated tests
 - [ ] Live training next-epoch caption/image re-encode after cache changes
 - [x] Change Krea 2 encoder release to avoid a CPU weight copy
-- [ ] Review stop/resume/cache behavior against upstream without disturbing Advanced's existing fixes
+- [x] Confirm #370 changed-resolution cache + delayed history persistence already integrated and tested
+- [ ] Audit unrelated Stop/Pause lifecycle and interruption semantics (issue #379 is *not* a stop PR)
 - [x] Integrate Studio and Royale edit-reference shape and MP control
 - [x] Add optional MiniMax H3 Image speed boost (off by default)
-- [ ] Evaluate Studio primary LoRA swap, output save metadata, and cross-tab isolation: upstream's latest Studio queue is not present in the Workbench baseline, so direct cherry-picks are unsafe
-- [ ] Windows/Linux GPU and live training smoke tests (unit CI alone is insufficient)
+- [x] Adapt Studio per-tab ownership for the single GPU worker (upstream #395), add backend and JS regression tests
+- [ ] Windows two-tab smoke test: ensure a second tab's model load never replaces the first tab's pictures or permits reset
+- [ ] Evaluate Studio primary LoRA hot-swap (#394) and output save metadata: the upstream queue is not present in Advanced, so direct cherry-picks are unsafe
+- [ ] Windows/Linux GPU, AMD/ROCm MIOpen and live training smoke tests (unit CI alone is insufficient)
 
 **References:** [upstream commits](https://github.com/shootthesound/Fizgig/commits/master/),
 [upstream releases](https://github.com/shootthesound/Fizgig/tree/master/docs),
