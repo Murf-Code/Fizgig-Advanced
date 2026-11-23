@@ -102,6 +102,26 @@ def report_rocm_devices() -> None:
         print(f"[AMD-ROCm] {env} - couldn't list the devices: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
 
 
+def miopen_switch() -> None:
+    """Optional AMD workaround (#389): FIZGIG_MIOPEN=0 disables MIOpen convolutions.
+
+    ROCm exposes this through torch.backends.cudnn.enabled. Leave unchanged
+    unless explicitly requested. Called only on AMD/ROCm launches from
+    fizgig.__init__, never on the standard NVIDIA CUDA path.
+    """
+    import os
+    import sys
+    if os.environ.get("FIZGIG_MIOPEN") != "0":
+        return
+    try:
+        import torch
+    except ImportError:
+        return
+    torch.backends.cudnn.enabled = False
+    print("[AMD-ROCm] FIZGIG_MIOPEN=0 - MIOpen disabled for convolutions",
+          file=sys.stderr, flush=True)
+
+
 def fix_rocm_sdpa_masks() -> None:
     """ROCm's fused attention kernel attends wrongly when the mask broadcasts over the queries - the usual key-padding
     mask, [B, 1, 1, S]: measured on an MI350X (torch 2.14 / ROCm 10.1) against the math kernel, max error 0.1-0.2 at
