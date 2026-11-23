@@ -8,20 +8,15 @@ const CaptionStudioTags = (() => {
     if (override === "tags" || override === "prose") return override;
     const line = firstLine(text);
     if (!line) return "tags";
-    // Favour prose when uncertain: accidentally treating a sentence as tags
-    // would turn a sort/deduplicate click into a destructive rewrite.
+    // Auto-detect prose only when the caption has multiple complete
+    // sentences. One trailing period is common in comma-separated tag lists
+    // and must never switch an image to Natural Language automatically.
+    // The manual Natural Language toggle still allows single-sentence prose.
     const bits = line.split(delimiter).map(x => x.trim()).filter(Boolean);
-    // A long comma-separated tag list sometimes ends with a period. That
-    // punctuation alone must not turn dozens of short tags into prose. Keep
-    // preferring prose for real sentences and ambiguous short captions.
-    const shortTags=bits.filter(x => x.split(/\s+/).length <= 3).length;
-    const trailingTagPeriod=line.endsWith(".") &&
-      !/[.!?](?:\s|$)/.test(line.slice(0,-1)) &&
-      bits.length>=3 && shortTags>=Math.ceil(bits.length*0.8);
-    if (/[.!?](?:\s|$)/.test(line) && !trailingTagPeriod) return "prose";
-    if (bits.some(x => x.split(/\s+/).length >= 8)) return "prose";
-    if (bits.length === 1 && bits[0].split(/\s+/).length >= 5) return "prose";
-    return "tags";
+    const shortTags = bits.filter(x => x.split(/\s+/).length <= 3).length;
+    if (bits.length >= 3 && shortTags >= Math.ceil(bits.length * 0.8)) return "tags";
+    const sentenceEnds = (String(text || "").match(/[.!?]+(?:["'”’)]*)(?=\s|$)/g) || []).length;
+    return sentenceEnds >= 2 ? "prose" : "tags";
   }
 
   function tags(text, mode = "auto", delimiter = ",") {
