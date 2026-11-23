@@ -235,5 +235,26 @@ def test_a_resume_with_its_cache_all_there_caches_nothing(tmp_path, monkeypatch)
     # a training picture's cache deleted by hand: that one is cached again before the run resumes
     os.remove(os.path.join(cdir, [f for f in os.listdir(cdir) if f.startswith("p4_") and "_te" not in f][0]))
     p = plan()
-    assert any("[cache] 1 picture(s) have no cache" in ln for ln in p.console)
+    assert any("[cache] Checked" in ln and "1 image cache(s)" in ln for ln in p.console)
     assert any(s.name == "Cache Preparation" for s in p.stages)
+    assert not any(s.name == "Text Encoder Caching" for s in p.stages)
+
+
+def test_resume_after_caption_edit_only_runs_text_cache(tmp_path, monkeypatch):
+    plan, _cdir = _krea_resume(tmp_path, monkeypatch)
+    (tmp_path / "imgs" / "p4.txt").write_text("a changed caption, no image edit")
+    p = plan()
+    assert any("[cache] Checked" in ln and "1 caption cache(s)" in ln for ln in p.console)
+    assert any(s.name == "Text Encoder Caching" for s in p.stages)
+    assert not any(s.name == "Cache Preparation" for s in p.stages)
+
+
+def test_resume_after_image_edit_only_runs_latent_cache(tmp_path, monkeypatch):
+    plan, _cdir = _krea_resume(tmp_path, monkeypatch)
+    image = tmp_path / "imgs" / "p4.png"
+    st = os.stat(image)
+    os.utime(image, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
+    p = plan()
+    assert any("[cache] Checked" in ln and "1 image cache(s)" in ln for ln in p.console)
+    assert any(s.name == "Cache Preparation" for s in p.stages)
+    assert not any(s.name == "Text Encoder Caching" for s in p.stages)
