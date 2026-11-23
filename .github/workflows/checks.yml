@@ -22,6 +22,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r checks/requirements.txt
+      - name: Global Replay step-count and epoch-progress regression checks
+        run: |
+          python -m pytest checks/test_replay_step_progress.py -q
+          node checks/test_replay_step_progress.cjs
       - name: Rolling best checkpoint scores and CLI
         run: python -m pytest checks/test_best_checkpoint.py -q
       - name: Cache preflight and resume cache integrity
