@@ -12508,14 +12508,11 @@ function captionDuplicatePanel(ext){
           const status=el("div",{class:"field-hint",text:
             (isKeep?"KEEP · ":"DROP · ")+(locked?"REVIEW LOCKED · ":"")+
             pic.width+"×"+pic.height+" · "+studioTokens(it.caption||"").length+" tags"});
-          const open=el("button",{class:"btn btn-sm",text:"View caption",onclick:()=>{
-            S.cap.studioPath=pic.path;renderCaptions();
-          }});
           pickers.append(el("div",{class:"studio-duplicate-card"+(isKeep?" keeper":"")},
             thumb,el("div",{class:"studio-duplicate-card-info"},
               el("strong",{text:pic.name}),status,
               el("div",{class:"studio-duplicate-caption",text:it.caption||"No caption"}),
-              el("label",{class:"field-row"},tick," Keep this image"),open)));
+              el("label",{class:"field-row"},tick," Keep")));
         }
       };
       const snapshot=()=>{
@@ -12569,7 +12566,7 @@ function captionDuplicatePanel(ext){
           preview.append(confirmBtn);
         }catch(e){detail.textContent=e.message;}
       }});
-      const removeBtn=el("button",{class:"btn btn-sm",text:"Move unkept images to removed/",onclick:async()=>{
+      const removeBtn=el("button",{class:"btn btn-sm",text:"Remove unkept",onclick:async()=>{
         const donors=selected();
         if(!donors.length){detail.textContent="All images are marked Keep; uncheck any you want to move out of training.";return;}
         if(draftExists(donors.map(d=>d.path))){
