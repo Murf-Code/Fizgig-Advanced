@@ -15048,9 +15048,9 @@ function renderCaptionStudio(host,items,ext){
   captionAiControlsMount(aiPane);
   rightDock.append(showAll,showAi);
   const tagHeader=el("div",{class:"studio-tag-header"},headerTitle,rightDock);
-  // Drag the horizontal partition to give Image Tags or the lower panel more
-  // room. Keep each list's own scroll position and preserve the share across
-  // image changes, view changes, and launches on this device.
+  // The divider lives beneath the lower panel's header (All Tags /
+  // Auto-Captioner) and above its search field. It resizes the Image Tags
+  // area while both panels keep independent scroll positions.
   const tagSplitKey="fizgig_caption_tag_vertical_split_v1";
   if(!Number.isFinite(S.cap.studioTagUpperShare)){
     let saved=null;
@@ -15073,9 +15073,13 @@ function renderCaptionStudio(host,items,ext){
   const positionTagShare=clientY=>{
     const box=right.getBoundingClientRect();
     if(!box.height)return;
-    // Reserve room for Image Tags controls and the lower panel's heading,
-    // search, sort controls and scrollable tag list.
-    const top=Math.max(180,Math.min(Math.max(180,box.height-240),clientY-box.top));
+    // The header is between the Image Tags pane and this handle, so subtract
+    // it from the pointer's Y position to avoid a jump on the first drag.
+    const headerHeight=tagHeader.getBoundingClientRect().height;
+    const gripHeight=tagHeightGrip.getBoundingClientRect().height;
+    const maxTop=Math.max(180,box.height-headerHeight-gripHeight-240);
+    const top=Math.max(180,Math.min(maxTop,
+      clientY-box.top-headerHeight-gripHeight/2));
     applyTagShare(top/box.height);
   };
   let tagPointer=null;
@@ -15105,7 +15109,7 @@ function renderCaptionStudio(host,items,ext){
     applyTagShare(.49);
     saveTagShare();
   });
-  right.append(editorPane,tagHeightGrip,tagHeader,tagIndexPane,aiPane);
+  right.append(editorPane,tagHeader,tagHeightGrip,tagIndexPane,aiPane);
   applyTagShare(S.cap.studioTagUpperShare);
   showTabs(activeDock);
   // A single expandable Edit Tags menu replaces the permanently repeated bulk toolbar.
