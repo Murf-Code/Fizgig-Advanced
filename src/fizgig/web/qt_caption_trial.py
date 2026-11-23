@@ -1,215 +1,227 @@
-"""Optional native Qt thumbnail-rail A/B trial for a running local Fizgig server.
+"""Optional native Qt desktop shell for image-heavy Fizgig views.
 
-Install: pip install PySide6 PySide6-Addons
-Run: python -m fizgig.web.qt_caption_trial
-The existing pywebview/browser UI is not replaced.
+Fizgig's training backend and existing browser/pywebview shell are unchanged.
+Launch a running local server with:
+    python -m fizgig.web.qt_caption_trial
+Optional dependencies: pip install PySide6 PySide6-Addons
+
+The shared browser supports Captions, Samples and Image Prep's Look Filter.
+Edits continue to use Fizgig's original validated web handlers.
 """
 import argparse
 import json
 import os
+from pathlib import Path
 import sys
 
 try:
-    from PySide6.QtCore import (QAbstractListModel, QModelIndex, QObject, QRunnable,
-                                QSize, Qt, QThreadPool, QTimer, QUrl, Signal, Slot)
-    from PySide6.QtGui import QIcon, QImageReader, QPixmap
-    from PySide6.QtWidgets import QApplication, QHBoxLayout, QListView, QMainWindow, QWidget
+    from PySide6.QtCore import QUrl, QTimer
+    from PySide6.QtWidgets import (
+        QApplication, QHBoxLayout, QMainWindow, QWidget
+    )
     from PySide6.QtWebEngineWidgets import QWebEngineView
+    from fizgig.web.qt_images import (
+        NativeImageModel, NativeImageRail, NativePreviewDialog
+    )
 except ImportError as exc:
-    raise SystemExit("Install optional Qt trial dependencies: pip install PySide6 PySide6-Addons") from exc
-
-STATUS = """(() => {
-  if(typeof S==='undefined'||!S.cap)return null;
-  return {folder:S.imageFolder||'', count:(S.cap.items||[]).length,
-          selected:S.cap.studioPath||'', revision:S.cap.studioRevision||0};
-})()"""
-SNAPSHOT = """(() => {
-  if(typeof S==='undefined'||!S.cap)return null;
-  return {folder:S.imageFolder||'', count:(S.cap.items||[]).length,
-          selected:S.cap.studioPath||'', revision:S.cap.studioRevision||0,
-          items:(S.cap.items||[]).map(x=>({path:x.path,name:x.name||''}))};
-})()"""
-SELECT = """((path) => {
-  if(typeof S==='undefined'||!S.cap||!(S.cap.items||[]).some(x=>x.path===path))
-    return false;
-  S.cap.studioSelection=new Set([path]);
-  S.cap.studioSelectionAnchor=path;
-  S.cap.studioPath=path;
-  if(typeof renderCaptions==='function')renderCaptions();
-  return true;
-})"""
+    raise SystemExit(
+        "Qt image shell requires optional packages: pip install PySide6 PySide6-Addons"
+    ) from exc
 
 
-class Signals(QObject):
-    loaded = Signal(str, object)
+STATIC = Path(__file__).resolve().parent / "static" / "qt_native_image_bridge.js"
 
 
-class Decode(QRunnable):
-    def __init__(self, path, signals):
-        super().__init__()
-        self.path, self.signals = path, signals
-
-    def run(self):
-        reader = QImageReader(self.path)
-        reader.setAutoTransform(True)
-        size = reader.size()
-        if size.isValid() and size.width():
-            reader.setScaledSize(QSize(144, min(432, max(1, 144 * size.height() // size.width()))))
-        img = reader.read()
-        if not img.isNull():
-            self.signals.loaded.emit(self.path, img)
-
-
-class ImageModel(QAbstractListModel):
-    def __init__(self):
-        super().__init__()
-        self.items = []
-        self.positions = {}
-        self.icons = {}
-        self.pending = set()
-        self.signals = Signals(self)
-        self.signals.loaded.connect(self.received)
-        self.pool = QThreadPool(self)
-        self.pool.setMaxThreadCount(2)
-
-    def rowCount(self, parent=QModelIndex()):
-        return 0 if parent.isValid() else len(self.items)
-
-    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
-        if not index.isValid() or index.row() >= len(self.items):
-            return None
-        entry = self.items[index.row()]
-        path = entry["path"]
-        if role == Qt.ItemDataRole.DisplayRole:
-            return entry.get("name") or os.path.basename(path)
-        if role == Qt.ItemDataRole.UserRole:
-            return path
-        if role == Qt.ItemDataRole.SizeHintRole:
-            return QSize(185, 182)
-        if role == Qt.ItemDataRole.DecorationRole:
-            if path not in self.icons and path not in self.pending and os.path.isfile(path):
-                self.pending.add(path)
-                self.pool.start(Decode(path, self.signals))
-            return self.icons.get(path)
-        return None
-
-    @Slot(str, object)
-    def received(self, path, image):
-        self.pending.discard(path)
-        row = self.positions.get(path)
-        if row is None:
-            return
-        self.icons[path] = QIcon(QPixmap.fromImage(image))
-        if len(self.icons) > 256:
-            # Evict the oldest offscreen image; it can be decoded again on demand.
-            for old in list(self.icons):
-                if old != path:
-                    self.icons.pop(old)
-                    break
-        self.dataChanged.emit(self.index(row), self.index(row),
-                              [Qt.ItemDataRole.DecorationRole])
-
-    def replace(self, items):
-        self.beginResetModel()
-        self.items = list(items)
-        self.positions = {entry["path"]: i for i, entry in enumerate(items)}
-        # Keep cached icons only for the current dataset (limited below).
-        self.icons = {p: icon for p, icon in self.icons.items() if p in self.positions}
-        if len(self.icons) > 256:
-            self.icons = dict(list(self.icons.items())[-256:])
-        self.endResetModel()
-
-
-class Trial(QMainWindow):
+class NativeShell(QMainWindow):
+    """Qt image browser and embedded existing Workbench, not a second backend."""
     def __init__(self, url):
         super().__init__()
-        self.setWindowTitle("Fizgig native QListView trial")
-        self.resize(1400, 850)
-        holder = QWidget()
-        layout = QHBoxLayout(holder)
+        self.setWindowTitle("Fizgig · Native Image Shell (experimental)")
+        self.resize(1520, 900)
+        self._generation = 0
+        self._source_key = None
+        self._selection_key = None
+        self._busy = False
+        self._preview_dialog = None
+
+        root = QWidget(self)
+        layout = QHBoxLayout(root)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.setCentralWidget(holder)
-        self.rail = QListView()
-        self.rail.setMinimumWidth(195)
-        self.rail.setMaximumWidth(320)
-        self.rail.setIconSize(QSize(144, 144))
-        self.rail.setUniformItemSizes(True)
-        self.rail.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
-        self.model = ImageModel()
-        self.rail.setModel(self.model)
-        self.web = QWebEngineView()
+        layout.setSpacing(3)
+        self.setCentralWidget(root)
+
+        self.model = NativeImageModel(self)
+        self.rail = NativeImageRail(self.model, root)
+        self.rail.setVisible(False)
+        self.rail.selection_changed.connect(self._native_selection)
+        self.rail.request_action.connect(self._action)
+        self.rail.open_preview.connect(self._preview)
+
+        self.web = QWebEngineView(root)
+        self.web.loadFinished.connect(self._loaded)
         layout.addWidget(self.rail)
         layout.addWidget(self.web, 1)
-        self.key = None
-        self.busy = False
-        self.rail.clicked.connect(self.choose)
-        self.web.loadFinished.connect(lambda ok: setattr(self, "key", None))
+        self.statusBar().showMessage(
+            "Experimental native browsing · existing browser and desktop builds unchanged")
         self.web.setUrl(url)
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.poll)
-        self.timer.start(800)
-        self.statusBar().showMessage("Open Caption Workbench in the right pane")
 
-    def choose(self, index):
-        path = self.model.data(index, Qt.ItemDataRole.UserRole)
-        if path:
-            self.web.page().runJavaScript(SELECT + "(" + json.dumps(path) + ")")
+        self.poll_timer = QTimer(self)
+        self.poll_timer.setInterval(800)
+        self.poll_timer.timeout.connect(self._poll)
+        self.poll_timer.start()
 
-    def poll(self):
-        if not self.busy:
-            self.busy = True
-            self.web.page().runJavaScript(STATUS, self.status)
-
-    def status(self, result):
-        self.busy = False
-        if not isinstance(result, dict):
+    def _loaded(self, ok):
+        self._generation += 1
+        self._busy = False
+        self._source_key = None
+        self._selection_key = None
+        self.model.replace([])
+        self.rail.setVisible(False)
+        if not ok:
+            self.statusBar().showMessage("Couldn't load the local Fizgig web server")
             return
-        key = (result.get("folder"), result.get("count"), result.get("revision"))
-        if key != self.key:
-            self.key = key
-            self.web.page().runJavaScript(SNAPSHOT, self.snapshot)
-        else:
-            self.highlight(result.get("selected"))
+        # Inject the bridge only in this QWebEngineView. Browser and pywebview
+        # sessions continue to use their existing DOM rail.
+        source = STATIC.read_text(encoding="utf-8")
+        self._busy = True
+        generation = self._generation
+        self.web.page().runJavaScript(source, lambda _:
+            self._bridge_ready(generation))
 
-    def snapshot(self, result):
-        if not isinstance(result, dict):
+    def _bridge_ready(self, generation):
+        if generation != self._generation:
             return
-        self.model.replace(result.get("items") or [])
-        self.highlight(result.get("selected"))
-        self.statusBar().showMessage(str(len(self.model.items)) + " images loaded")
+        self._busy = False
+        # Re-render the already-open caption view once, skipping its hidden
+        # thumbnail construction. All its non-image controls remain available.
+        self.web.page().runJavaScript(
+            "(typeof renderCaptions==='function' && "
+            "document.querySelector('#tab-captions.active')) ? "
+            "(renderCaptions(),true) : false")
+        self._poll()
 
-    def highlight(self, path):
-        row = self.model.positions.get(path)
-        if row is not None:
-            index = self.model.index(row)
-            if index != self.rail.currentIndex():
-                self.rail.setCurrentIndex(index)
+    def _poll(self):
+        if self._busy:
+            return
+        self._busy = True
+        generation = self._generation
+        self.web.page().runJavaScript(
+            "window.FizgigNativeImages?.status?.()||null",
+            lambda state: self._status(generation, state))
+
+    def _status(self, generation, state):
+        if generation != self._generation:
+            return
+        if not isinstance(state, dict):
+            self._busy = False
+            return
+        source_key = (state.get("tab"), state.get("key"))
+        if source_key != self._source_key:
+            self.web.page().runJavaScript(
+                "window.FizgigNativeImages.snapshot()",
+                lambda snapshot: self._snapshot(generation, snapshot))
+            return
+        if state.get("selection") != self._selection_key:
+            self.web.page().runJavaScript(
+                "window.FizgigNativeImages.selection()",
+                lambda selection: self._selection(generation, selection))
+            return
+        self._busy = False
+
+    def _snapshot(self, generation, snapshot):
+        if generation != self._generation:
+            return
+        self._busy = False
+        if not isinstance(snapshot, dict):
+            return
+        tab = snapshot.get("tab", "")
+        entries = snapshot.get("items") or []
+        self.model.replace(entries)
+        self._source_key = (tab, snapshot.get("key"))
+        self._set_selection(snapshot)
+        self.rail.setVisible(bool(entries) and tab in ("captions", "samples", "prep"))
+        self.statusBar().showMessage(
+            f"{len(entries):,} native thumbnails · {tab or 'no image source'} · "
+            "double-click for native zoom/pan preview")
+
+    def _selection(self, generation, selection):
+        if generation != self._generation:
+            return
+        self._busy = False
+        if not isinstance(selection, dict):
+            return
+        if (selection.get("tab"), selection.get("key")) != self._source_key:
+            self._source_key = None
+            return
+        self._set_selection(selection)
+
+    def _set_selection(self, selection):
+        selected = selection.get("selected") or []
+        active = selection.get("active") or ""
+        self.rail.sync_selection(selected, active)
+        # Recreate the same signature as the JS bridge, without a second
+        # poll; it will also re-sync after web-originated selection changes.
+        # None forces only one cheap selection status refresh.
+        self._selection_key = None
+
+    def _native_selection(self, selected, active):
+        payload = json.dumps([selected, active], ensure_ascii=True)
+        self.web.page().runJavaScript(
+            f"window.FizgigNativeImages?.select?.(...{payload})")
+
+    def _action(self, action, path):
+        if action == "copy_names":
+            selected = self.rail.selectionModel().selectedIndexes()
+            entries = [i.data() for i in selected]
+            if entries:
+                QApplication.clipboard().setText("\n".join(entries))
+            return
+        payload = json.dumps([action, path], ensure_ascii=True)
+        self.web.page().runJavaScript(
+            f"window.FizgigNativeImages?.action?.(...{payload})")
+
+    def _preview(self, path):
+        if not path or not os.path.isfile(path):
+            self.statusBar().showMessage(
+                "Native preview requires a local image. Use the web preview for remote media.")
+            return
+        if self._preview_dialog:
+            self._preview_dialog.close()
+        self._preview_dialog = NativePreviewDialog(path, self)
+        self._preview_dialog.show()
+
+
+def local_url():
+    """Read the same saved port as Fizgig's normal desktop launcher."""
+    from fizgig.user_data import PREFS_FILE
+    from fizgig.web.port import saved_port, is_fizgig
+    try:
+        with open(PREFS_FILE, encoding="utf-8") as stream:
+            prefs = json.load(stream)
+    except (OSError, ValueError):
+        prefs = {}
+    port = saved_port(prefs)
+    if not is_fizgig(port):
+        raise RuntimeError(
+            f"Fizgig is not running on saved port {port}. "
+            "Start Fizgig first or supply --url with the running local port.")
+    return f"http://127.0.0.1:{port}"
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", help="Optional local Fizgig URL; autodetected by default")
-    args = parser.parse_args(argv)
-    if args.url:
-        chosen = args.url
-    else:
-        from fizgig.user_data import PREFS_FILE
-        from fizgig.web.port import saved_port, is_fizgig
-        try:
-            with open(PREFS_FILE, encoding="utf-8") as file:
-                prefs = json.load(file)
-        except (OSError, ValueError):
-            prefs = {}
-        port = saved_port(prefs)
-        if not is_fizgig(port):
-            parser.error(f"Fizgig is not running on saved port {port}. Start Fizgig first, or pass --url.")
-        chosen = f"http://127.0.0.1:{port}"
+    parser.add_argument("--url", help="Optional running local Fizgig URL")
+    options = parser.parse_args(argv)
+    try:
+        chosen = options.url or local_url()
+    except RuntimeError as exc:
+        parser.error(str(exc))
     url = QUrl(chosen)
     if url.scheme() not in ("http", "https") or url.host() not in (
             "localhost", "127.0.0.1", "::1"):
-        parser.error("Only loopback URLs are permitted")
+        parser.error("Only loopback Fizgig URLs are supported in the Qt trial")
     app = QApplication(sys.argv[:1])
-    window = Trial(url)
+    window = NativeShell(url)
     window.show()
     return app.exec()
 
