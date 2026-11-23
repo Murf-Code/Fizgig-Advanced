@@ -4553,16 +4553,36 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   order:0;
   display:flex;
   flex-direction:column;
-  flex:1 1 49%;
+  flex:0 0 clamp(180px,var(--studio-tag-upper-share,49%),calc(100% - 240px));
+  box-sizing:border-box;
   min-height:0;
   overflow:hidden;
   padding:12px 12px 8px;
   gap:7px;
   border-bottom:0;
 }
+/* Drag the partition between Image Tags and the lower All Tags / Auto-Captioner
+   pane. The grip occupies only 11px; each list retains independent scrolling. */
+#tab-captions .studio-host .studio-tag-height-grip {
+  order:1;flex:none;position:relative;height:11px;min-height:11px;
+  box-sizing:border-box;border-top:1px solid var(--border);
+  border-bottom:1px solid var(--border);background:var(--bg-surface);
+  cursor:row-resize;touch-action:none;user-select:none;outline-offset:-2px;
+}
+#tab-captions .studio-host .studio-tag-height-grip::after {
+  content:"";position:absolute;top:50%;left:50%;
+  width:48px;height:3px;transform:translate(-50%,-50%);
+  border-radius:999px;background:var(--border-strong);
+}
+#tab-captions .studio-host .studio-tag-height-grip:is(:hover,:focus-visible,.is-dragging){
+  background:var(--accent-subtle);border-color:var(--accent-border);
+}
+#tab-captions .studio-host .studio-tag-height-grip:is(:hover,:focus-visible,.is-dragging)::after{
+  background:var(--accent);
+}
 #tab-captions .studio-host .studio-tag-index-pane {
   order:2;
-  flex:1 1 51%;
+  flex:1 1 0;
   min-height:0;
   overflow:hidden;
   padding:11px 12px 12px;
@@ -4570,7 +4590,7 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
 }
 #tab-captions .studio-host .studio-ai-dock {
   order:2;
-  flex:1 1 51%;
+  flex:1 1 0;
   min-height:0;
   overflow-y:auto;
   padding:11px 12px 12px;
