@@ -1501,6 +1501,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                  validation_every_steps=0, validation_picked=None, validation_holdout=False, validation_groups=1,
                  int8_rotated_backward=False,
                  validation_early_stop=False, validation_patience=3, validation_min_delta=0.001,
+                 best_checkpoint_mode="off", best_checkpoint_window=32, best_checkpoint_cooldown=100,
+                 best_checkpoint_min_delta=0.005,
                  auto_reclaim_vram=True, reclaim_slowdown=1.5, reclaim_slow_steps=20, reclaim_warmup_steps=50,
                  reclaim_min_free_gb=vram_reclaim.RECLAIM_FREE_GB, reclaim_cooldown=200, reclaim_max_tries=3,
                  send_only_swap=True, send_only_force=False, background_loading=True,
@@ -1516,6 +1518,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                  lr_boost=None, vram_margin_gb=1.5, share_worker=None, masked_training=False, mask_floor=0.1, mask_prior=0.0, face_weight=1.0, face_area="face", face_cycle="1:0", face_until="0:0",
                  caption_dropout=0.0, stage_dataset_config=None, stage_until=0.3, stage_blend=0.1,
                  batch_size_auto=False):
+    from fizgig.training.best_checkpoint import MODES as BEST_MODES
+    best_checkpoint_mode = str(best_checkpoint_mode or "off").strip().lower()
+    if best_checkpoint_mode not in BEST_MODES:
+        raise ValueError(f"Unknown best checkpoint mode {best_checkpoint_mode!r}")
+    if best_checkpoint_mode == "validation":
+        validation_loss = True  # validation-based best can work without the early-stop checkbox
     desc = get_family(family)
     if desc is None or not desc.training_ready:
         raise RuntimeError(f"unknown or untrainable family {family!r}")
@@ -3329,6 +3337,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     # resume from the restore point trains only the rest of the epoch. The epoch's batches are the same on a resume
     # (buckets shuffle by seed + epoch); only their order is drawn afresh, hence the keys.
     epoch_done = []
+    best_train_candidate = [None]  # score from _flush; only saved at an optimizer boundary
     resume_left = {}                 # the restore point's batches still to pass over: key -> [losses]
     if resume_mid:
         for _k, _l in resume_mid.get("batches") or []:
@@ -3657,6 +3666,13 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     share_now = [None]       # this epoch's training share: {frac, epoch, ...} or None (this GPU trains every image)
     _share_keys = sorted({str(it.item_key) for ds in getattr(group, "datasets", [])
                           for b in getattr(getattr(ds, "batch_manager", None), "buckets", {}).values() for it in b})
+    # The validation-best mode deliberately captures a point *inside* an epoch.
+    # If the user's normal validation is epoch-only, choose a safe mid-epoch cadence;
+    # explicitly configured every-N-steps validation remains unchanged.
+    if best_checkpoint_mode == "validation" and not validation_every_steps:
+        validation_every_steps = max(1, min(100, steps_per_epoch // 2))
+        logger.info(f"[best checkpoint] validation every {validation_every_steps} step(s) to capture "
+                    "mid-epoch points; the ordinary epoch-only setting is left unchanged in the form")
     # the fixed validation loss (the loss graph's steadiest line): picked from the run's own images
     validator = None
     if validation_loss:
@@ -3765,6 +3781,25 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     if calibration_info and calibration_info.get("_temporary_dir"):
         shutil.rmtree(calibration_info["_temporary_dir"], ignore_errors=True)
     best_path = os.path.join(output_dir, f"{output_name}-best.safetensors")
+    best_tracker = None
+    best_auto_path = best_auto_meta = ""
+    if best_checkpoint_mode != "off":
+        if ftr is not None or slider or share_worker or (best_checkpoint_mode == "validation" and validator is None):
+            logger.warning("[best checkpoint] unavailable for this run (fine-tune, slider, share worker "
+                           "or fixed validation not ready); ordinary checkpoints are unchanged")
+        else:
+            from fizgig.training.best_checkpoint import RollingBest
+            best_tracker = RollingBest(best_checkpoint_mode, window=best_checkpoint_window,
+                                       cooldown=best_checkpoint_cooldown, min_delta=best_checkpoint_min_delta)
+            suffix = "train" if best_checkpoint_mode == "train" else "val"
+            best_auto_path = os.path.join(output_dir, f"{output_name}-best-{suffix}.safetensors")
+            best_auto_meta = os.path.join(output_dir, f".{output_name}-best-{suffix}.json")
+            if resume_state_dir and best_tracker.restore(best_auto_meta,
+                                                          checkpoint_exists=os.path.isfile(best_auto_path)):
+                logger.info(f"[best checkpoint] resumed best {best_tracker.best:.5f} at step {best_tracker.step}")
+            logger.info(f"[best checkpoint] on: {best_checkpoint_mode}, min improvement "
+                        f"{best_tracker.min_delta * 100:g}%, at least {best_tracker.cooldown} steps between "
+                        f"saves -> {os.path.basename(best_auto_path)}")
     if validation_early_stop and validator is None:
         logger.info("[early stop] off: it needs Image Validation, which this run doesn't have")
     elif validation_early_stop:
@@ -3789,6 +3824,35 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if out[0] is not None:
             slow_watch.set_pass(out[0][2], len(validator.batches) * len(validator.ts))
         return out
+
+    def _save_best_auto(score, epoch_no, *, seg=None):
+        """Save at *current* optimizer weights, never an earlier step reconstructed later."""
+        if best_tracker is None or score is None or share_now[0] is not None:
+            return False
+        from fizgig.training.best_checkpoint import save_snapshot
+        tmp = best_auto_path + ".tmp.safetensors"
+        t0_best = time.time()
+        try:
+            save_lora(tmp, epoch_no)
+            os.replace(tmp, best_auto_path)
+        except (OSError, RuntimeError) as exc:
+            logger.warning(f"[best checkpoint] couldn't save best LoRA ({exc}); keeping the previous one")
+            return False
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            progress.start_t += time.time() - t0_best
+        best_tracker.saved(score, step_off + global_step, epoch_no, seg=seg)
+        try:
+            save_snapshot(best_auto_meta, best_tracker.snapshot())
+        except OSError as exc:
+            logger.warning(f"[best checkpoint] checkpoint saved, but score metadata failed ({exc})")
+        logger.info(f"[best checkpoint] new {best_checkpoint_mode} best {score:.6f} at step "
+                    f"{step_off + global_step} (epoch {epoch_no}): {os.path.basename(best_auto_path)}")
+        return True
 
     def _validate(epoch_no):
         nonlocal validator
@@ -3815,6 +3879,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         logger.info(f"[validation] step {step_off + global_step} (epoch {epoch_no}): loss {v:.5f}  "
                     f"[{', '.join(f't{t:.2f} {x:.4f}' for t, x in zip(validator.ts, per_t))}]  "
                     f"{_groups_text(validator)}{len(validator.batches)} image(s), {sec:.1f}s")
+        if best_tracker is not None and best_checkpoint_mode == "validation":
+            score = best_tracker.validation(v, step_off + global_step, seg=validator.seg)
+            if score is not None:
+                _save_best_auto(score, epoch_no, seg=validator.seg)
         if es is None:
             return
         verdict = es.observe(v, step_off + global_step, epoch_no, seg=validator.seg)
@@ -4229,8 +4297,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
 
             def _rec(lv, per=None, _e=epoch, _i=i, _g=global_step, _keys=batch.get("item_keys"), _ts=_info.get("ts"),
                      _t=_info.get("t", 0.5), _c=_cur, _kept=(_kept if not slider and _many and _wb is not None else None),
-                     _rate=_step_rate()):
+                     _rate=_step_rate(), _ready=(pending == 0)):
                 recorder.add(epoch=_e, step=_i, loss=lv)
+                if best_tracker is not None and best_checkpoint_mode == "train":
+                    candidate = best_tracker.training(lv, step_off + _g, ready=_ready)
+                    if candidate is not None:
+                        best_train_candidate[0] = candidate
                 if _c is not None:             # this epoch's restore-point record (Save & stop)
                     _c[1] = round(float(lv), 6)
                 steplog.add(step_off + _g, _e + 1 + (ftr.epochs_done if ftr is not None else 0), lv, _rate)
@@ -4241,6 +4313,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             _per = (_info.get("per_raw") or _info["per"].detach().float()) \
                 if not slider and _many and _wb is not None else None
             _later(_rec, lv=loss.detach().float(), per=_per)
+            # The current step's loss was compared only after _update() and _flush().
+            # The candidate is held until the *same* safe optimizer boundary, not
+            # scheduled for the next step (which would save different weights).
+            if pending == 0 and best_train_candidate[0] is not None:
+                _save_best_auto(best_train_candidate[0], epoch + 1)
+                best_train_candidate[0] = None
             if validator is not None:
                 validator.offer(batch)
                 if pending == 0 and validator.due(global_step):
@@ -4486,6 +4564,14 @@ def setup_parser():
                         "TOML's holdout_file, set by Start")
     p.add_argument("--validation_pick", action="append", default=None,
                    help="a training image to check (its file name; repeat for more). None: an even spread")
+    p.add_argument("--best_checkpoint_mode", choices=("off", "train", "validation"), default="off",
+                   help="Rolling best mid-epoch LoRA: smoothed training loss or fixed validation loss")
+    p.add_argument("--best_checkpoint_window", type=int, default=32,
+                   help="Number of recent training batches to average before judging a best score")
+    p.add_argument("--best_checkpoint_cooldown", type=int, default=100,
+                   help="Minimum optimizer/batch steps between best checkpoint writes")
+    p.add_argument("--best_checkpoint_min_delta", type=float, default=0.005,
+                   help="Required relative improvement over the best saved score (0.005 = 0.5 percent)")
     p.add_argument("--validation_early_stop", action="store_true",
                    help="with --validation_loss: finish the run once validation stops improving; the best check's "
                         "LoRA becomes the final one")
@@ -4729,6 +4815,8 @@ def main():
         int8_rotated_backward=a.int8_rotated_backward,
         validation_early_stop=a.validation_early_stop, validation_patience=a.validation_patience,
         validation_min_delta=a.validation_min_delta,
+        best_checkpoint_mode=a.best_checkpoint_mode, best_checkpoint_window=a.best_checkpoint_window,
+        best_checkpoint_cooldown=a.best_checkpoint_cooldown, best_checkpoint_min_delta=a.best_checkpoint_min_delta,
         auto_reclaim_vram=a.auto_reclaim_vram, reclaim_slowdown=a.reclaim_slowdown, send_only_swap=a.send_only_swap,
         background_loading=a.background_loading,
         send_only_force=a.send_only_force,
