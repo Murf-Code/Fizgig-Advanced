@@ -2672,13 +2672,40 @@ def plan(desc, inputs):
             cmd += ["--subject", f, s["fused"], w]
         p.stages.append(Stage("Multi-person composites", cmd))
     resuming = inputs.get("resuming") or bool(_s(inputs.get("RESUME_TRAINING")))
-    if resuming and not inputs.get("recache") and inputs.get("enable_cache", True):
-        # this Start's hold-out list (its file isn't written yet: on disk it is still the one the pause emptied)
+    crop_sizes = detail_crop_sizes(desc, inputs)
+    cache_checked = stage_cache_checked = None
+    # Most image LoRAs only need two independent caches: VAE latents and caption embeddings.
+    # The cache preflight checks image headers + cached tensor metadata (not decoded pixels).
+    # On a fully valid cache, neither expensive subprocess is needed. With an edited caption
+    # only the text stage runs; with an edited image only the latent stage runs.
+    # Generated crops, isolation, edit/reference pairs and extra model-specific aux stages
+    # still use the normal cache pipeline, where --skip_existing is the safety net.
+    if (inputs.get("enable_cache", True) and not crop_sizes
+            and not multi_person_on(desc, inputs) and not edit_on(desc, inputs)
+            and not slider_on(desc, inputs) and not option_tokens(desc, inputs)[1]):
+        from fizgig.families.cache_preflight import scan as scan_caches
+        source = dict(held_paths=holdout_paths, vae_model=_model(inputs, desc, "vae"),
+                      text_model=_model(inputs, desc, "text_encoder"))
+        cache_checked = scan_caches(desc, p.dataset_toml, **source)
+        if stage_cfg:
+            stage_toml = next((body for path, body in p.files if path == stage_cfg), "")
+            if stage_toml:
+                stage_cache_checked = scan_caches(desc, stage_toml, **source)
+        proven = [v for v in (cache_checked, stage_cache_checked) if v is not None]
+        if proven:
+            count = sum(v["checked"] for v in proven)
+            lat, txt = sum(v["latents"] for v in proven), sum(v["text"] for v in proven)
+            p.console.append(f"[cache] Checked {count} picture(s): {lat} image cache(s) and "
+                             f"{txt} caption cache(s) need updating; reusing everything else.\n")
+            if (lat or txt) and resuming:
+                inputs["recache"] = True
+    if cache_checked is None and resuming and not inputs.get("recache") and inputs.get("enable_cache", True):
+        # Legacy/complex cache layout: check for missing cache files before a resume.
+        # Hold-outs are taken from this Start, not the returned list on disk.
         n = uncached_pictures(p.dataset_toml, held_paths=holdout_paths)
-        if n:                           # a resume expects its cache; deleted by hand, it's made again (only what's gone)
+        if n:
             inputs["recache"] = True
             p.console.append(f"[cache] {n} picture(s) have no cache - caching them before the run resumes.\n")
-    crop_sizes = detail_crop_sizes(desc, inputs)
     if crop_sizes:                      # before caching: the crops (and their captions) the dataset blocks name
         from fizgig.krea2.caption_text import recaption_instruction
         instr = os.path.splitext(inputs["DATASET_CONFIG"])[0] + "_crops_instruction.txt"
@@ -2697,12 +2724,18 @@ def plan(desc, inputs):
             cmd += ["--trigger", trig]
         p.stages.append(Stage("Detail crops", _dash_values(cmd)))
     if caches(desc, inputs):
-        p.stages += [Stage("Cache Preparation", cache_command(desc, inputs, "latents")),
-                     Stage("Text Encoder Caching", cache_command(desc, inputs, "text"))]
+        if cache_checked is None or cache_checked["latents"]:
+            p.stages.append(Stage("Cache Preparation", cache_command(desc, inputs, "latents")))
+        if cache_checked is None or cache_checked["text"]:
+            p.stages.append(Stage("Text Encoder Caching", cache_command(desc, inputs, "text")))
     if stage_cfg:
         if caches(desc, inputs):
-            p.stages += [Stage(f"Cache Preparation ({smp:g} MP)", cache_command(desc, inputs, "latents", stage_cfg)),
-                         Stage(f"Text Encoder Caching ({smp:g} MP)", cache_command(desc, inputs, "text", stage_cfg))]
+            if stage_cache_checked is None or stage_cache_checked["latents"]:
+                p.stages.append(Stage(f"Cache Preparation ({smp:g} MP)",
+                                      cache_command(desc, inputs, "latents", stage_cfg)))
+            if stage_cache_checked is None or stage_cache_checked["text"]:
+                p.stages.append(Stage(f"Text Encoder Caching ({smp:g} MP)",
+                                      cache_command(desc, inputs, "text", stage_cfg)))
         train += ["--stage_dataset_config", stage_cfg, "--stage_until", f"{stage_until(inputs):g}",
                   "--stage_blend", f"{STAGE_BLEND:g}"]
     p.stages.append(Stage("Training", train))
