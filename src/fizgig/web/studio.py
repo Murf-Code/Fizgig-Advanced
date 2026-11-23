@@ -534,12 +534,13 @@ def frank_export(out, state):
         raise
 
 
-def reset():
+def reset(studio_session=""):
     """Unload: the worker quits, so the card and the RAM it held come back whole (the request waits for it - a
     Start pressed straight after finds no half-stopped worker)."""
     stop_worker()
     with _lock:
-        _S.update(load_id=int(_S.get("load_id") or 0) + 1, load_session="",
+        _S.update(load_id=int(_S.get("load_id") or 0) + 1,
+                  load_session=str(studio_session or ""),
                   state="idle", primary="", donor="", primary_blocks=[], donor_blocks=[], hash="", profile=None,
                   rendering=False, pending=None, progress=None, family="", status="Models unloaded.",
                   frankenstein="", frank_out="", frank_saving=None, frank_exported=None, frank_error="")
