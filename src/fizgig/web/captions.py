@@ -132,11 +132,22 @@ def captioner_problem(path) -> str:
     """Why a file can't be the captioner, from its safetensors header alone ("" = it can): a Qwen3-VL 4B or 8B in a
     build the loader reads (bf16 or fp8 scaled). ComfyUI's int8 ConvRot / w4a8 builds (int8 / uint8 weights) don't load."""
     import struct
+    # Adapted from upstream #388 (56729e1): an accidental GGUF in the captioner slot must not
+    # be opened as safetensors. Also bound header reads: renaming a GGUF cannot bypass this.
+    if not str(path).lower().endswith(".safetensors"):
+        return "it isn't a safetensors file"
     try:
         with open(path, "rb") as f:
-            n = struct.unpack("<Q", f.read(8))[0]
+            raw = f.read(8)
+            if len(raw) != 8:
+                return "the file can't be read"
+            n = struct.unpack("<Q", raw)[0]
+            if not (0 < n <= (100 << 20)) or n > os.fstat(f.fileno()).st_size - 8:
+                return "the file can't be read"
             head = json.loads(f.read(n))
     except (OSError, ValueError, struct.error):
+        return "the file can't be read"
+    if not isinstance(head, dict):
         return "the file can't be read"
     if not any(k.startswith(("visual.", "model.visual.")) for k in head):
         return "it isn't a Qwen3-VL file (no vision tower)"
