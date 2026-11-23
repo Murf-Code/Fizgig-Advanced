@@ -13515,11 +13515,22 @@ function renderCaptionStudio(host,items,ext){
     if(failures.length)alert("Review update failed for some images:\n"+failures.join("\n"));
     renderCaptions();
   };
+  const openImageInTab=it=>{
+    if(!it?.size)return;
+    const url="/api/media?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(TOKEN);
+    window.open(url,"_blank","noopener");
+  };
   const openSelectedImage=path=>{
     const chosen=imageTargets(path);
-    if(!chosen.length)return;
-    const url="/api/media?path="+encodeURIComponent(chosen[0].path)+"&t="+encodeURIComponent(TOKEN);
-    window.open(url,"_blank","noopener");
+    if(chosen.length)openImageInTab(chosen[0]);
+  };
+  const revealImageFile=async it=>{
+    if(!it?.path)return say("Select an image first.");
+    try{
+      await api("/api/captions/reveal_file",{
+        path:it.path,folder:capItemFolder(it),name:it.name
+      });
+    }catch(error){say("Open File Location: "+error.message);}
   };
   const invertImageSelection=()=>{
     for(const it of items)selection.has(it.path)?selection.delete(it.path):selection.add(it.path);
@@ -13570,13 +13581,13 @@ function renderCaptionStudio(host,items,ext){
   const closeImageMenu=()=>{
     document.querySelectorAll(".studio-image-context-menu").forEach(node=>node.remove());
   };
-  const openImageMenu=(e,it)=>{
+  const openImageMenu=(e,it,{preview=false}={})=>{
     e.preventDefault();
     closeImageMenu();
-    const targets=imageTargets(it.path);
+    const targets=preview?[it]:imageTargets(it.path);
     const count=targets.length, complete=targets.every(i=>S.cap.studioReviewed?.has(i.path));
     const menu=el("div",{class:"studio-image-context-menu",role:"menu",
-      "aria-label":"TagBench image actions",tabindex:"-1"});
+      "aria-label":preview?"Image preview actions":"TagBench image actions",tabindex:"-1"});
     const action=(label,hint,fn,disabled=false)=>{
       const button=el("button",{type:"button",role:"menuitem",disabled,
         class:"studio-context-action"});
@@ -13590,6 +13601,18 @@ function renderCaptionStudio(host,items,ext){
       menu.append(button);
     };
     const separator=()=>menu.append(el("div",{class:"studio-context-rule",role:"separator"}));
+    if(preview){
+      // Preview actions always target this image, never an implicit bulk
+      // thumbnail selection. Do not offer destructive actions here.
+      action("Open File Location","",()=>revealImageFile(it));
+      action("Open in New Tab","",()=>openImageInTab(it));
+      separator();
+      action("Copy Caption","",()=>copyImageText(ta.value,"caption"),!ta.value.trim());
+      action("Copy File Name","",()=>copyImageText(it.name,"file name"));
+      separator();
+      action("Remove Tool","",()=>selectInlineTool("remove"),!canEditPicture);
+      action("Crop Tool","",()=>selectInlineTool("crop"),!canEditPicture);
+    }else{
     action("Select All Images","Ctrl+A",()=>{S.cap.items.forEach(x=>selection.add(x.path));renderCaptions();});
     action("Invert Selection","Ctrl+I",invertImageSelection);
     separator();
@@ -13599,6 +13622,7 @@ function renderCaptionStudio(host,items,ext){
     separator();
     action("Delete "+(count===1?"Image":"Images"),"Ctrl+Del",()=>removeSelectedImages(it.path),!count);
     action("Open in New Tab","Ctrl+O",()=>openSelectedImage(it.path),!count||!targets[0]?.size);
+    action("Open File Location","",()=>revealImageFile(it));
     action(complete?"Mark Incomplete":"Mark Complete","Ctrl+K",
       ()=>toggleImageReview(it.path),!count);
     // Fizgig-specific training picks remain available as secondary actions;
@@ -13616,6 +13640,7 @@ function renderCaptionStudio(host,items,ext){
     action(inSamples?"Remove "+plural+" from Sample Images":"Add "+plural+" to Sample Images",
       "",()=>toggleSampleImages(it.path),!pictures.length);
     action("Clear Selection","",()=>{selection.clear();renderCaptions();});
+    }
     document.body.append(menu);
     const rect=menu.getBoundingClientRect();
     menu.style.left=Math.max(6,Math.min(e.clientX,window.innerWidth-rect.width-8))+"px";
@@ -15047,7 +15072,17 @@ function renderCaptionStudio(host,items,ext){
   const tagIndexPane=el("section",{class:"studio-tag-index-pane"});
   const imageStage=el("section",{class:"studio-image-stage"});
   const preview=center.querySelector(".studio-preview");
-  if(preview)imageStage.append(preview);
+  if(preview){
+    imageStage.append(preview);
+    // Normal preview has an image-focused right-click menu. When Remove or
+    // Crop takes over the stage, right-click belongs to the editor canvas
+    // (e.g. its brush erase), so never intercept it.
+    if(/\.(png|jpe?g|webp|bmp|avif|jxl|gif|tiff?)$/i.test(current.name))
+      preview.addEventListener("contextmenu",e=>{
+        if(S.cap.imageEditing?.inline||!e.target.closest("img"))return;
+        openImageMenu(e,current,{preview:true});
+      });
+  }
   const stepImage=delta=>{
     // Waterfall clicks update the live path without remounting the stage.
     const activePath=S.cap.studioPath||current.path;
