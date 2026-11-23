@@ -867,6 +867,12 @@ def _studio_post(what, b):
         if action == "cancel":
             return checkpoint_mixer.cancel()
         raise ValueError("Unknown checkpoint mixer action.")
+    # Studio has one GPU worker. A stale browser tab must not update, cancel,
+    # unload or save another tab's current model. Unscoped legacy/internal
+    # requests remain compatible; new web tabs always supply a session.
+    if what in ("keep", "map", "render", "cancel", "donor", "settings", "save",
+                "frank_export", "reset"):
+        studio.require_studio_session(b.get("studio_session"))
     if what == "download_setup":
         data = b.get("data") or {}
         if not isinstance(data, dict) or not data.get("fizgig_repair_setup"):
@@ -912,9 +918,10 @@ def _studio_post(what, b):
         if problems:
             raise ValueError(" ".join(problems))
         captions.unload()                       # the caption model leaves the GPU too
-        studio.load(desc, str(b.get("primary") or "").strip(), str(b.get("donor") or "").strip(), kw, settings,
-                    status, b.get("turbo", True), canvas=b.get("canvas") if desc.video_workbench else None)
-        return {"ok": True}
+        load_id = studio.load(desc, str(b.get("primary") or "").strip(), str(b.get("donor") or "").strip(), kw, settings,
+                              status, b.get("turbo", True), canvas=b.get("canvas") if desc.video_workbench else None,
+                              studio_session=b.get("studio_session") or "")
+        return {"ok": True, "load_id": load_id}
     if what == "keep":
         return {"path": studio.keep_tweaked()}
     if what == "map":                        # maps over the Tweaked render (where the LoRA acts, the tweaks, the trigger)
