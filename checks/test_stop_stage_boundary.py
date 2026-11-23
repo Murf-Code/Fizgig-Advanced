@@ -53,3 +53,27 @@ def test_stop_between_stage_check_and_spawn_does_not_launch(monkeypatch, tmp_pat
     assert started == []
     assert ended == ["stopped", "queue:stopped"]
     assert run["proc"] is None
+
+
+def test_stop_at_final_pause_transition_does_not_leave_restart_marker(monkeypatch, tmp_path):
+    run = dict(server._run, state="idle", proc=None, stage="", pause=True,
+               values={"MAX_TRAIN_EPOCHS": "1"}, family="krea2", lora="test",
+               history_id="test", resume="", resume_mode="")
+    monkeypatch.setattr(server, "_run", run)
+    ended = []
+    monkeypatch.setattr(server, "append_log", lambda message: None)
+    monkeypatch.setattr(server.history, "end",
+                        lambda _id, result, progress: ended.append(result))
+    monkeypatch.setattr(server.webqueue, "on_run_ended",
+                        lambda result, lora, starter: ended.append("queue:" + result))
+
+    def record_pause(out):
+        (tmp_path / server.PAUSED_FILE).write_text("{}")
+        run.update(state="stopped", resume="obsolete-state", resume_mode="state")
+        return True
+
+    monkeypatch.setattr(server, "_record_pause", record_pause)
+    server._run_stages([], str(tmp_path))
+    assert ended == ["stopped", "queue:stopped"]
+    assert not (tmp_path / server.PAUSED_FILE).exists()
+    assert run["resume"] == "" and run["resume_mode"] == ""
