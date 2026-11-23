@@ -41,6 +41,41 @@ def _auto_swap():
     return 0
 
 
+FRANK_ROOM_GB = 4.5  # room for the H3 Image render + blender; 12GB small-canvas path has a tighter budget
+
+
+def _frank_swap(desc, dit_path):
+    """Select streamed int8 blocks from available VRAM, never normal Studio's broad Auto bands.
+
+    Upstream 9.8.3 fits H3 on 16GB+ using a two-slot pinned-memory int8 ring.
+    On 12GB cards reserve less render headroom (1024px experimental only),
+    and blend in smaller row groups. Physical GPU testing is still required.
+    """
+    from fizgig.families.quant import free_vram_gb, swap_blocks_for
+    try:
+        import torch
+        drv = desc.load_driver()
+        model_gb = drv.dit_gb(dit_path)
+        cap = drv.max_blocks_to_swap()
+        free = free_vram_gb()
+        if not os.environ.get("FIZGIG_SIM_VRAM_GB", "").strip() and torch.cuda.is_available():
+            free += torch.cuda.memory_reserved() / (1024 ** 3)
+        total = torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / (1024 ** 3) \
+            if torch.cuda.is_available() else free
+        room = 2.25 if total <= 13.5 else FRANK_ROOM_GB
+        per = ((getattr(desc, "train_memory", None) or {}).get("int8") or ((), 0))[1] \
+              or model_gb / max(1, cap + 2)
+        needed = swap_blocks_for(desc, per, model_gb + room - free)
+        if needed > cap:
+            raise ValueError("Not enough VRAM for int8 Frankenstein even with maximum block streaming. "
+                             "Close other GPU applications or try a larger card.")
+        return max(0, needed)
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"Can't size Frankenstein's int8 block stream for this GPU: {e}") from e
+
+
 def _blocks(eng):
     eq = {}
     try:                                         # a Model EQ row: its gain (the sliders' 0 / 2 = -g / +g)
@@ -60,12 +95,16 @@ def cmd_load(c):
         raise ValueError(f"Unknown model: {c['family']}")
     plan = dict(c["plan"])
     ro = plan.pop("render_options", None) or {}
+    frank = plan.pop("frankenstein", None)  # H3 Image base-model blocks from H3 Video; no primary LoRA
+    if frank and desc.key != "minimax_h3_image" and not getattr(desc, "frankenstein_with", ()):
+        raise ValueError("Frankenstein live blending isn't supported for this model.")
     if plan.pop("use_checkpoint_sampling", False):
         ck = desc.preview_checkpoint()
         plan["preview_sampling"] = ck[1] if ck else None
     else:
         plan["preview_sampling"] = None
-    if str(plan.get("blocks_to_swap", "")).lower().startswith("auto"):
+    auto_swap = str(plan.get("blocks_to_swap", "")).lower().startswith("auto")
+    if auto_swap and not frank:
         plan["blocks_to_swap"] = _auto_swap()
     with _engine_lock:
         eng = S["engine"]
@@ -92,12 +131,33 @@ def cmd_load(c):
         eng.on_step = lambda done, total: emit(ev="step", done=done, total=total)
         emit(ev="status", text=c.get("status") or f"Loading {desc.display_name}…")
         eng.plan_canvas = tuple(c["canvas"]) if c.get("canvas") else None   # H3 Auto: room for this clip
+        if frank:
+            # The H3 blend is in int8 codes; 4-bit Auto would silently corrupt one side.
+            plan["precision"] = "int8"
+            if auto_swap:
+                plan["blocks_to_swap"] = _frank_swap(desc, plan.get("dit_path", ""))
         eng.ensure_pipeline(**plan)
-        emit(ev="status", text="Loading the LoRA…")
-        eng.load_primary(c["primary"])
-        if c.get("donor"):
+        emit(ev="status", text="Preparing base model…" if frank else "Loading the LoRA…")
+        eng.load_primary("" if frank else c["primary"])
+        if frank:
+            emit(ev="status", text="Frankenstein: indexing compatible H3 Video blocks…")
+            eng.frankenstein(frank["path"], (frank["lora"], frank["strength"]) if frank.get("lora") else None)
+            # Lower scratch peak on a 12GB GPU. Normal cards keep upstream 2048-row chunks.
+            try:
+                import torch
+                if torch.cuda.is_available() and torch.cuda.get_device_properties(
+                        torch.cuda.current_device()).total_memory / (1024**3) <= 13.5:
+                    eng.frank.ROWS = 512
+                    emit(ev="status", text="Experimental 12GB mode: int8 block streaming; use 1024px previews.")
+            except Exception:
+                pass
+        elif c.get("donor"):
             eng.load_donor(c["donor"])
-        emit(ev="loaded", family=desc.key, primary=c["primary"], donor=c.get("donor") or "", **_blocks(eng))
+        emit(ev="loaded", family=desc.key, primary="" if frank else c["primary"],
+             donor="" if frank else (c.get("donor") or ""),
+             frankenstein=(frank or {}).get("name") or "",
+             frank_out=(os.path.splitext(getattr(eng, "dit_path", "") or "")[0] + "_frankenstein.safetensors")
+             if frank else "", **_blocks(eng))
 
 
 def cmd_donor(c):
@@ -922,6 +982,32 @@ def cmd_save(c):
     emit(ev="saved", out=c["out"], summary=summary)
 
 
+def cmd_frank_export(c):
+    """The active H3 Frankenstein block map as a new standalone H3 Image checkpoint."""
+    with _engine_lock:
+        eng = S["engine"]
+        if eng is None or getattr(eng, "frank", None) is None:
+            raise ValueError("Load Frankenstein mode and select blend weights before saving.")
+        output = os.path.abspath(c["out"])
+        sources = [eng.dit_path, eng.frank.other_path]
+        if any(os.path.realpath(output) == os.path.realpath(p) for p in sources):
+            raise ValueError("Never export over either original base model.")
+        import shutil
+        if shutil.disk_usage(os.path.dirname(output)).free < os.path.getsize(eng.dit_path) + (64 << 20):
+            raise ValueError("Not enough disk space for the new full-size H3 Image checkpoint.")
+        emit(ev="status", text="Exporting the blended H3 Image base checkpoint…")
+        last = [0.]
+        def progress(done, total):
+            import time
+            now = time.monotonic()
+            if done >= total or now - last[0] >= 0.4:
+                last[0] = now
+                emit(ev="frank_progress", done=done, total=total)
+        result = eng.frank_export(output, _state(c["state"]) if c.get("state") else None,
+                                 progress=progress)
+    emit(ev="frank_exported", out=result, gb=round(os.path.getsize(result) / 1e9, 2))
+
+
 def cmd_reset(_c):
     with _engine_lock:
         if S["engine"] is not None:
@@ -962,7 +1048,8 @@ def cmd_map(c):
 
 
 HANDLERS = {"load": cmd_load, "donor": cmd_donor, "settings": cmd_settings, "render": cmd_render, "map": cmd_map,
-            "cancel": cmd_cancel, "save": cmd_save, "reset": cmd_reset, "royale": cmd_royale,
+            "cancel": cmd_cancel, "save": cmd_save, "frank_export": cmd_frank_export,
+            "reset": cmd_reset, "royale": cmd_royale,
             "royale_travel": cmd_royale_travel, "refmod": cmd_refmod}
 
 
