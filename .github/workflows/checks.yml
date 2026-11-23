@@ -40,6 +40,8 @@ jobs:
           python -m pytest checks/test_minimax_masks.py -k "reference_distillation_respects_still_mask" -q
       - name: Upstream captioner header and video-only mask integration regressions
         run: python -m pytest checks/test_captioner_header_guard.py checks/test_clips_only_masks.py -q
+      - name: Shared safetensors header safeguards (upstream 9ac00cd)
+        run: python -m pytest checks/test_safetensors_header_guard.py -q
       - name: Global Replay step-count and epoch-progress regression checks
         run: |
           python -m pytest checks/test_replay_step_progress.py -q
