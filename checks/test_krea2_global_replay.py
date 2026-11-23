@@ -7,7 +7,7 @@ from fizgig.krea2.driver import Krea2Driver
 from fizgig.krea2.model import SingleMMDiTConfig, SingleStreamDiT
 
 
-def _tiny_dit(layers=2):
+def _tiny_dit(layers=2, patch=1):
     config = SingleMMDiTConfig(
         features=16,
         tdim=16,
@@ -15,7 +15,7 @@ def _tiny_dit(layers=2):
         heads=1,
         multiplier=2,
         layers=layers,
-        patch=1,
+        patch=patch,
         channels=2,
         bias=True,
         txtlayers=1,
@@ -504,3 +504,59 @@ def test_polora_with_the_selective_block_check_leaves_paused_blocks_alone():
     for _ in range(6):
         update()
     assert all(torch.isfinite(A).all() and torch.isfinite(B).all() for A, B in pairs)
+
+
+@pytest.mark.parametrize("method", ["global_replay", "selective_global_replay_h2d"])
+def test_training_maps_capture_with_global_replay(method):
+    """Training maps run independent inference forwards; they never use the replay backward graph."""
+    from fizgig.training.train_maps import TrainingMaps
+
+    torch.manual_seed(83)
+    dit = _tiny_dit(layers=2, patch=2)
+    driver = Krea2Driver()
+    driver.set_options({"training_method": method})
+
+    # The map-capture path loads the same cache keys as the dataset and calls driver.predict().
+    maps = TrainingMaps.__new__(TrainingMaps)
+    maps.ts = (0.5,)
+    maps.keys = ["photo"]
+    maps.seed = 1234
+    maps.trig = {}
+    maps.batches = {
+        "photo": {
+            "latents": torch.randn(1, 2, 4, 4),
+            "cond__hidden_states": torch.randn(1, 3, 1, 16),
+            "cond__attention_mask": torch.tensor([[True, True, True]]),
+        }
+    }
+
+    class Adapter:
+        multipliers = []
+
+        def set_trainable_multiplier(self, value):
+            self.multipliers.append(value)
+
+    adapter = Adapter()
+    output = maps._run(driver, dit, adapter, torch.device("cpu"), swapped=False, ema=None, epoch=1)
+    image = output["photo"]["0.5"]
+    assert set(image) == {"loss", "effect"}
+    for kind in ("loss", "effect"):
+        grid = image[kind]
+        assert grid["w"] == 2 and grid["h"] == 2
+        assert len(grid["v"]) == 4
+        assert all(float("-inf") < v < float("inf") for v in grid["v"])
+    assert adapter.multipliers == [0.0, 1.0]
+    assert getattr(driver, "_pending_block_local", None) is None
+    assert all(p.grad is None for p in dit.parameters())
+
+
+def test_global_replay_training_maps_are_not_rejected_by_start():
+    """The model's declared Training Maps capability applies to Global Replay too."""
+    from fizgig.families.registry import get as get_family
+    from fizgig.families import launch
+
+    desc = get_family("krea2")
+    assert desc.training_maps
+    assert not hasattr(launch, "krea2_method_problems")
+    # The shared Start check does not need a special Global Replay exception:
+    # map collection is a separate no-grad activity, not part of training backward.
