@@ -20,6 +20,8 @@
 
 **Experimental model blending now supports more model families.** Alongside live MiniMax H3 Image + H3 Video Frankenstein blending, Studio has a separate block-based **Base checkpoint mixer** for compatible **MOSS-Image, Anima, Krea 2 and SDXL / Illustrious** checkpoints. Choose how much of each block comes from the donor and export a new standalone model without loading either input on the GPU. Same-family checkpoints only; this is experimental, and the CPU mixer does not provide live renders.
 
+**Saved LoRAs now record a useful training recipe.** Rank, optimizer, learning-rate schedule, resolution, dataset counts, validation, training options and Fizgig version are stored as technical metadata, while private paths, captions, tags and prompts are left out.
+
 **New training and Studio tools.** Krea 2 adds **Text-fusion calibration** and **Text fusion only** training, alongside improvements to Global replay. Optional **mid-epoch best-loss checkpoints**, clearer step counts and faster compatible Studio LoRA switching round out the release.
 
 Read on for a closer look at the tools, screenshots, fixes, and upstream contributions.
@@ -115,6 +117,12 @@ Optionally **preview a tag merge** from unkept images into every chosen keeper; 
 Use Fizgig's existing local AI captioners on your **selected pictures**, rather than always captioning a whole folder. Choose to **caption missing images only**, **replace selected captions**, or **append an AI caption as another line**; reviewed items are protected and destructive choices require confirmation. Batch Find & Replace includes a preview and undoable commit. Tag queries support **AND / OR / NOT, exact quoted tags and exclusions**; live search and sorting make large tag lists approachable. Export a **caption wildcard** containing the complete caption for each image, instead of a de-duplicated vocabulary list.
 
 Use **Mark Complete / Incomplete** and persistent review locks to protect pictures whose tags are finished. Delete image/tag actions require confirmation, and removed image groups can be restored without blindly overwriting existing files. The workbench avoids unwanted re-captioning of the entire dataset when an explicitly selected target is invalid or empty.
+
+### More useful, privacy-conscious LoRA metadata
+
+**Every saved LoRA carries a detailed record of how it was trained.** Alongside familiar Kohya-compatible `ss_*` fields, Fizgig saves a `fizgig_training_config` recipe covering the model family, LoRA or LoKR configuration, rank and alpha, optimizer and learning-rate settings, scheduler, batch and accumulation, precision and memory settings, resolution and buckets, dataset counts and repeats, validation, training methods and other enabled features. The record also includes useful run details such as the epoch, best validation result, training duration, peak reserved VRAM, and Fizgig version/commit.
+
+**Useful for understanding or recreating a training setup without exposing the dataset.** Dataset entries are identified anonymously (for example, `dataset_01`), and the training recipe leaves out private file paths, folder names, captions, tag lists, user-written prompts, and usernames. Existing compatible metadata keys are preserved, and a metadata problem never prevents the LoRA from saving. See the [implementation commit](https://github.com/Murf-Code/Fizgig-Advanced/commit/ba4ed99775ba8d740ceaab5ce478ba8bcbbe858e).
 
 ### Training and Studio
 
