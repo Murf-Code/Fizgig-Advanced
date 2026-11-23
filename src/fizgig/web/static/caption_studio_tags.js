@@ -11,7 +11,14 @@ const CaptionStudioTags = (() => {
     // Favour prose when uncertain: accidentally treating a sentence as tags
     // would turn a sort/deduplicate click into a destructive rewrite.
     const bits = line.split(delimiter).map(x => x.trim()).filter(Boolean);
-    if (/[.!?](?:\s|$)/.test(line)) return "prose";
+    // A long comma-separated tag list sometimes ends with a period. That
+    // punctuation alone must not turn dozens of short tags into prose. Keep
+    // preferring prose for real sentences and ambiguous short captions.
+    const shortTags=bits.filter(x => x.split(/\s+/).length <= 3).length;
+    const trailingTagPeriod=line.endsWith(".") &&
+      !/[.!?](?:\s|$)/.test(line.slice(0,-1)) &&
+      bits.length>=3 && shortTags>=Math.ceil(bits.length*0.8);
+    if (/[.!?](?:\s|$)/.test(line) && !trailingTagPeriod) return "prose";
     if (bits.some(x => x.split(/\s+/).length >= 8)) return "prose";
     if (bits.length === 1 && bits[0].split(/\s+/).length >= 5) return "prose";
     return "tags";
