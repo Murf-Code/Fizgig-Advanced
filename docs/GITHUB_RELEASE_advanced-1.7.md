@@ -1,6 +1,6 @@
 # Fizgig Advanced 1.7
 
-Fizgig Advanced 1.7 is the **Caption Workbench** release. The Captions tab is now an image-first workspace for editing pictures, writing tags or natural-language captions, finding duplicates, exploring relationships between tags, and seeing which training images are **Stuck**, **Learning** or **Easy**. Right-click a picture to use it for **Image Validation** or **Sample Previews**. Edit a picture or caption during training and, for supported datasets, Fizgig re-encodes what changed at the next epoch rather than rebuilding the whole cache. There is also a new **Krea 2 Text-fusion calibration** workflow, optional mid-epoch best-loss saves, improved Studio LoRA switching, and experimental block-by-block base-model mixing for **H3 Image + Video, MOSS-Image, Anima, Krea 2 and SDXL / Illustrious**.
+Fizgig Advanced 1.7 is the **Caption Workbench** release. The Captions tab is now an image-first workspace for editing pictures, writing tags or natural-language captions, finding duplicates, exploring relationships between tags, and seeing which training images are **Stuck**, **Learning** or **Easy**. Right-click a picture to use it for **Image Validation** or **Sample Previews**. Edit a picture or caption during training and, for supported datasets, Fizgig re-encodes what changed at the next epoch rather than rebuilding the whole cache. There is also a new **Krea 2 Text-fusion calibration** workflow, optional mid-epoch best-loss saves, improved Studio LoRA switching, and experimental block-by-block base-model mixing for **H3 Image + Video, MOSS-Image, Anima, Krea 2 and SDXL / Illustrious**. Saved LoRAs also carry a more complete, privacy-conscious record of the training settings.
 
 ## Heads up
 
@@ -74,6 +74,12 @@ Optionally **preview a tag merge** from unkept images into every chosen keeper; 
 Use Fizgig's existing local AI captioners on your **selected pictures**, rather than always captioning a whole folder. Choose to **caption missing images only**, **replace selected captions**, or **append an AI caption as another line**; reviewed items are protected and destructive choices require confirmation. Batch Find & Replace includes a preview and undoable commit. Tag queries support **AND / OR / NOT, exact quoted tags and exclusions**; live search and sorting make large tag lists approachable. Export a **caption wildcard** containing the complete caption for each image, instead of a de-duplicated vocabulary list.
 
 Use **Mark Complete / Incomplete** and persistent review locks to protect pictures whose tags are finished. Delete image/tag actions require confirmation, and removed image groups can be restored without blindly overwriting existing files. The workbench avoids unwanted re-captioning of the entire dataset when an explicitly selected target is invalid or empty.
+
+### More useful, privacy-conscious LoRA metadata
+
+**Every saved LoRA carries a detailed record of how it was trained.** Alongside familiar Kohya-compatible `ss_*` fields, Fizgig saves a `fizgig_training_config` recipe covering the model family, LoRA or LoKR configuration, rank and alpha, optimizer and learning-rate settings, scheduler, batch and accumulation, precision and memory settings, resolution and buckets, dataset counts and repeats, validation, training methods and other enabled features. The record also includes useful run details such as the epoch, best validation result, training duration, peak reserved VRAM, and Fizgig version/commit.
+
+**Useful for understanding or recreating a training setup without exposing the dataset.** Dataset entries are identified anonymously (for example, `dataset_01`), and the training recipe leaves out private file paths, folder names, captions, tag lists, user-written prompts, and usernames. Existing compatible metadata keys are preserved, and a metadata problem never prevents the LoRA from saving. See the [implementation commit](https://github.com/Murf-Code/Fizgig-Advanced/commit/ba4ed99775ba8d740ceaab5ce478ba8bcbbe858e).
 
 ### Training and Studio
 
