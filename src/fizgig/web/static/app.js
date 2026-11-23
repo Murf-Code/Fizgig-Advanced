@@ -10818,11 +10818,61 @@ async function studioRender() {
     if (!S.st.seedUsed) studioRollSeed();
     state.seed = S.st.seedUsed;
   }
-  try { await api("/api/studio/render", {studio_session: studioSession(), state, ...studioExtra(), ...studioMixExtra()}); studioPoll(); }
+  try { await api("/api/studio/render", {studio_session: studioSession(), state, setup: studioSetupData(), ...studioExtra(), ...studioMixExtra()}); studioPoll(); }
   catch (e) { $("stStatus").textContent = e.message; }
 }
 
 function studioRollSeed() { S.st.seedUsed = 1 + Math.floor(Math.random() * (2 ** 31 - 2)); }
+
+// Adapt upstream Studio #394, retaining Advanced's one-tab-per-session ownership.
+async function studioSwapPrimary(key, seq) {
+  const p = $("stPrimary").value.trim(), L = S.st.layout;
+  $("stStatus").textContent = "Switching primary LoRA…";
+  try {
+    await api("/api/studio/primary", {studio_session: studioSession(), path: p});
+    for (let i = 0; i < 600; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      const s = await api("/api/studio/status");
+      if (s.load_session !== studioSession()) {
+        $("stStatus").textContent = "Another Studio tab changed the model during the switch.";
+        S.st.loadedKey = "";
+        studioPoll();
+        return;
+      }
+      if ((s.primary_seq || 0) > seq) {
+        if (s.primary !== p || s.error) {
+          $("stStatus").textContent = s.status || "Couldn't switch the primary LoRA.";
+          studioPoll();
+          return; // The worker restored the old LoRA, not a reason to reload the model.
+        }
+        S.st.mix = {mode: "off", epochs: [], rows: []};
+        const off = document.querySelector('input[name="stMixMode"][value="off"]');
+        if (off) off.checked = true;
+        $("stMixInfo").textContent = "";
+        studioMixLayout();
+        S.st.primaryBlocks = new Set(s.primary_blocks || []);
+        S.st.donorBlocks = new Set(s.donor_blocks || []);
+        S.st.actKey = "";
+        studioActivity();
+        S.st.loadedKey = key;
+        S.st.foreign = false;
+        if ($("stDonor").value.trim() !== (s.donor || ""))
+          await api("/api/studio/donor", {studio_session: studioSession(), path: $("stDonor").value.trim()});
+        if (L.follows_samples)
+          await api("/api/studio/settings", {studio_session: studioSession(), family: L.key, negative: $("stNeg").value.trim()});
+        studioPoll();
+        studioRender();
+        return;
+      }
+      if (s.state !== "ready") break;
+    }
+    S.st.loadedKey = "";
+    $("stStatus").textContent = "Primary switch didn't finish; press Start to reload safely.";
+  } catch (e) {
+    $("stStatus").textContent = e.message;
+  }
+  studioPoll();
+}
 
 async function studioStart() {
   studioSession();
@@ -10840,12 +10890,27 @@ async function studioStart() {
     const key = [L.key, frank ? "" : $("stPrimary").value.trim(), fast, L.kind === "video" ? $("stH3Model").value + $("stH3Base").value : "",
       (L.render_choice || {}).value || "", L.follow_ck || "", L.follow_look || "", L.follow_turbo || "",
       frank ? "frankenstein" : "lora"].join("|");
+    if (st.primary_busy) {
+      $("stStatus").textContent = "Wait for the primary LoRA switch to finish.";
+      return;
+    }
     if (st.state === "ready" && st.load_session === studioSession() && S.st.loadedKey === key && !!st.frankenstein === frank) {     // the same LoRA: the donor may change, then a render
       if (!frank && $("stDonor").value.trim() !== (st.donor || ""))
         await api("/api/studio/donor", {studio_session: studioSession(), path: $("stDonor").value.trim()});
       // the Samples tab's steps and CFG (a model that follows it) apply without a reload: sent before each render
       if (L.follows_samples) await api("/api/studio/settings", {studio_session: studioSession(), family: L.key, negative: $("stNeg").value.trim()});
       studioRender();
+      return;
+    }
+    const previousPrimaryKey = [L.key, st.primary || "", fast,
+      L.kind === "video" ? $("stH3Model").value + $("stH3Base").value : "",
+      (L.render_choice || {}).value || "", L.follow_ck || "", L.follow_look || "", L.follow_turbo || "",
+      "lora"].join("|");
+    if (st.state === "ready" && !st.rendering && !S.st.foreign &&
+        st.load_session === studioSession() && L.kind !== "video" &&
+        !frank && !st.frankenstein && S.st.loadedKey === previousPrimaryKey &&
+        st.primary !== $("stPrimary").value.trim()) {
+      await studioSwapPrimary(key, st.primary_seq || 0);
       return;
     }
     S.st.ready = false;
