@@ -200,14 +200,28 @@ class Krea2Driver(FamilyDriver):
             h, m = h[None], m[None]
         return gather_valid_text(h.to(device=device, dtype=DTYPE), m.to(device).bool())
 
+    def _text_enhancement_settings(self):
+        """Resolve the opt-in Krea 2 enhancer settings for training and its matching previews."""
+        options = getattr(self, "options", {})
+        enabled = str(options.get("krea2_text_enhance", "")).strip().lower() in ("1", "true", "yes", "on")
+        if not enabled:
+            return 0.0, 1.0
+        from fizgig.krea2.text_boost import clamped_strength, clamped_text_scale
+        strength = options.get("krea2_text_boost", 1.0)
+        if strength is None or not str(strength).strip():
+            strength = 1.0
+        return clamped_strength(strength), clamped_text_scale(options.get("krea2_text_scale", 1.0))
+
     def _forward(self, dit, noised, t, cond):
-        """The DiT's velocity for a noised latent (B, 16, h, w) at t (B,), image tokens only."""
+        """The DiT's velocity for a noised latent (B, 16, h, w), including opt-in Krea 2 text enhancement."""
         from fizgig.krea2.sampling import prepare
         device = noised.device
         txt, txtmask = self._text(cond, device)
         img, pos, mask = prepare(noised, txt.shape[1], dit.config.patch, txtmask)
+        text_boost, text_scale = self._text_enhancement_settings()
         with torch.autocast(device_type=device.type, dtype=DTYPE):
-            return dit(img=img, context=txt, t=t.to(DTYPE), pos=pos, mask=mask)
+            return dit(img=img, context=txt, t=t.to(DTYPE), pos=pos, mask=mask,
+                       text_boost=text_boost, text_scale=text_scale)
 
     @property
     def global_replay(self):
@@ -443,12 +457,8 @@ class Krea2Driver(FamilyDriver):
             tvec = dit.tproj(t_emb)
             imglen = img.shape[1]
             txtmask = mask[:, imglen:]
-            txt_attn_params_nomask = AttentionParams.create_attention_params_from_mask(
-                dit.attn_mode, dit.split_attn, 0, None)
-            txt_attn_params = AttentionParams.create_attention_params_from_mask(
-                dit.attn_mode, dit.split_attn, 0, txtmask)
-            context = dit.txtfusion(txt, txt_attn_params_nomask, txt_attn_params)
-            context = dit.txtmlp(context)
+            text_boost, text_scale = self._text_enhancement_settings()
+            context = dit.fuse_text_context(txt, txtmask, text_boost=text_boost, text_scale=text_scale)
             combined = torch.cat((img, context), dim=1)
             fulllen = combined.shape[1]
             padlen = (-fulllen) % 256
@@ -666,14 +676,18 @@ class Krea2Driver(FamilyDriver):
         x1, x2 = (256 // 16) ** 2, (1280 // 16) ** 2
         ts = list(sigmas) + [0.0] if sigmas is not None and len(sigmas) == steps else \
             timesteps(img.shape[1], steps, x1, x2, mu=opts.get("mu"))
+        # Keep in-app training previews on the same conditioning path as the active training run.
+        text_boost, text_scale = self._text_enhancement_settings()
         with torch.autocast(device_type=device.type, dtype=DTYPE):
             for i, (tc, tp) in enumerate(zip(ts[:-1], ts[1:])):
                 if on_step is not None:
                     on_step(i, len(ts) - 1)
                 t = torch.full((1,), tc, dtype=img.dtype, device=device)
-                v = dit(img=img, context=txt, t=t, pos=pos, mask=mask)
+                v = dit(img=img, context=txt, t=t, pos=pos, mask=mask,
+                        text_boost=text_boost, text_scale=text_scale)
                 if guided:
-                    u = dit(img=img, context=untxt, t=t, pos=unpos, mask=unmask)
+                    u = dit(img=img, context=untxt, t=t, pos=unpos, mask=unmask,
+                            text_boost=text_boost, text_scale=text_scale)
                     v = u + cfg * (v - u)
                 img = img + (tp - tc) * v
         from einops import rearrange
