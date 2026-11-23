@@ -6,9 +6,9 @@ This is an opt-in prototype: a native PySide6 `QListView` and `QAbstractListMode
 
 ## Run (Windows)
 
-1. Start Fizgig normally in **browser mode** and find its local URL, typically `http://127.0.0.1:<port>`. If the server requires sign-in, sign in inside the trial web pane.
+1. Start Fizgig normally in **browser mode**. The trial automatically discovers Fizgig's saved local port. If the server requires sign-in, sign in inside the trial web pane.
 2. From Fizgig's activated Python environment, install the optional Qt dependencies: `python -m pip install PySide6 PySide6-Addons`.
-3. Start the experiment: `python -m fizgig.web.qt_caption_trial --url http://127.0.0.1:<port>`.
+3. Start the experiment: `python -m fizgig.web.qt_caption_trial`. An explicit `--url` remains available as an override.
 4. Open the Captions tab in the right-hand pane and load an image dataset.
 
 The native thumbnail list should populate. Clicking a native thumbnail selects the corresponding image in the embedded Workbench; selecting an image in the web UI updates the native highlight. The trial currently handles single-image selection only; multi-select, arrow-key navigation handoff, context menus, review colors, and filtering parity are **not** yet implemented.
