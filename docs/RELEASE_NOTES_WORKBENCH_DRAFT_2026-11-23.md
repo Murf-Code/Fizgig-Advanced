@@ -139,6 +139,10 @@ See [experimental model mixing guide](EXPERIMENTAL_MODEL_MIXING.md), [four-famil
 
 Under the hood, Caption Workbench uses **recycled native-scrolling thumbnail rows**, deferred image decoding, bounded preview caches, progressively loaded Waterfall pictures and All Tags rows, **Constellation calculation only when needed**, compiled tag-search predicates, and reduced work from inactive tabs. The Remove brush uses a lightweight overlay, bounded/tiled history and an offscreen painting worker with a safe fallback. These choices aim to keep image navigation and editing responsive without wasting RAM and CPU.
 
+### Two-click Run deletion
+
+In **Runs & Outputs**, **Delete run** now requires two clicks. The first click changes the button to **Confirm** in the same place; click it again within **30 seconds** to delete the run's saved checkpoints, resume states, previews and history entry. If you leave it alone, it resets to **Delete run**. The button keeps the same width, so it does not jump when its label changes. **Your training pictures and captions are never deleted.**
+
 ## Fixed
 - Prevent incorrect selected-only AI caption operations from silently expanding to caption the whole dataset.
 - Roll back failed image/caption/mask file moves and preserve mask subfolder paths; fail closed on corrupted removal journals.
