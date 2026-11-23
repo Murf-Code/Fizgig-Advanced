@@ -65,6 +65,49 @@ def test_calibration_exception_is_visible(tmp_path, monkeypatch, caplog):
     assert "calibration sentinel" in caplog.text
 
 
+def test_fresh_calibration_reads_family_options_and_starts_scan(tmp_path, monkeypatch):
+    """A fresh enabled scan must reach the candidate runner, not fail in setup."""
+    from fizgig.krea2 import direction_edit_v2
+
+    monkeypatch.setattr(direction_edit_v2, "captions_from_group",
+                        lambda _: {str(i): "furry, paws, fur" for i in range(8)})
+    monkeypatch.setattr(direction_edit_v2, "captions_from_held",
+                        lambda _: {"held": "furry, paws, fur"})
+    seen = {}
+
+    def fake_config(opts, **kwargs):
+        seen["options"] = dict(opts)
+        return {}
+
+    def fake_run(cfg, **kwargs):
+        seen["config"] = dict(cfg)
+        path = os.path.join(kwargs["output_dir"], "candidate.safetensors")
+        with open(path, "wb") as f:
+            f.write(b"test candidate")
+        return {"lora": path, "verify": {"held_out": True, "beats_random": True}}
+
+    monkeypatch.setattr(direction_edit_v2, "make_config", fake_config)
+    monkeypatch.setattr(direction_edit_v2, "run_direction_edit", fake_run)
+    result = train._prepare_krea2_direction_edit(
+        SimpleNamespace(key="krea2"),
+        {"direction_edit": "1", "direction_edit_target_tags": "furry, paws"},
+        "lora", False, False, None, object(), {"held": object()},
+        "dit.safetensors", "te.safetensors", str(tmp_path), "demo", 42, "cpu")
+    assert result is not None
+    try:
+        assert os.path.isfile(result["lora"])
+        assert seen["options"] == {"direction_edit_scan": "1",
+                                   "direction_edit_target_tags": "furry, paws"}
+        assert seen["config"]["scan"] is True
+        assert seen["config"]["caption_mode"] is True
+        assert seen["config"]["verification_records"] == {"held": "furry, paws, fur"}
+    finally:
+        import shutil
+        shutil.rmtree(result["_temporary_dir"], ignore_errors=True)
+
+
+
+
 class DummyNet:
     def save(self, path, **kwargs):
         with open(path, "wb") as f:

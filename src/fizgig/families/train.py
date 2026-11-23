@@ -116,7 +116,7 @@ def _prepare_krea2_direction_edit(desc, family_options, network_type, slider, fi
                            "(got %d training, %d held out)", len(training_records), len(verification_records))
             return None
 
-        manual = str(options.get("direction_edit_target_tags") or "").strip()
+        manual = str((family_options or {}).get("direction_edit_target_tags") or "").strip()
         de_options = {"direction_edit_scan": "1"}
         if manual:
             de_options["direction_edit_target_tags"] = manual
