@@ -17,9 +17,13 @@ existing browser image components solely on the basis of that comparison.
 - Stop forcing `--disable-accelerated-video-decode` in every app window.
   Hardware-accelerated decode is again Chromium's default. This specific flag
   affects video, so its removal is **not proof** of a thumbnail fix.
-- Honor the already-existing **Preferences → App window → Disable GPU**
-  compatibility toggle. When it is enabled, log a clear warning that image
-  rendering may become slow; the normal browser does not use this toggle.
+- Default **Preferences → App window → Disable GPU** to **ON on Windows**
+  after a real Windows test showed that enabling it completely resolved
+  sluggish desktop image scrolling. Explicit saved OFF/ON choices always win;
+  Linux remains GPU accelerated by default. Neither choice affects Chrome or
+  Edge, which use their own browser acceleration settings.
+- The desktop app log reports the selected rendering path. Software rendering
+  may be slower on some machines, so this stays a user-configurable toggle.
 - Preserve explicit user-provided
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` switches, including intentional
   GPU-disable overrides.
@@ -42,8 +46,9 @@ Do **not** make this the default for everyone.
 
 ## Windows A/B acceptance test
 
-1. Open Preferences → App window in either interface. Confirm that
-   **Disable GPU for the app window** is unchecked. Restart the desktop app.
+1. Open Preferences → App window in either interface. On Windows,
+   **Disable GPU for the app window** defaults to **checked** unless previously
+   set explicitly. Restart the desktop app to apply changes.
 2. Open exactly the same dataset in the desktop window and in
    **Launch Fizgig in browser.bat**. Avoid simultaneously loading AI models.
 3. Compare idle CPU, normal scrolling, fast scrolling, image selection, tag
@@ -52,7 +57,9 @@ Do **not** make this the default for everyone.
 4. If the desktop still lags, inspect `user_data/app_window.log` for
    `[app] WebView2 rendering:`,
    `[app] WebView2 event hook removal:`, pywebview version and Runtime version.
-   Logs indicating a failed response hook or GPU-disabled flag are actionable.
+   A failed response hook is actionable; if software rendering remains slow,
+   temporarily uncheck Disable GPU, restart and compare. A GPU-disabled flag
+   is expected when the Windows default is active.
 5. For advanced profiling compare the renderer/GPU processes and CPU usage
    in Windows Task Manager. Use WebView2 ETW traces if both configs look
    identical but lag remains.
