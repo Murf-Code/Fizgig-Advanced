@@ -51,11 +51,15 @@ def block_of(family: str, key: str) -> str | None:
     modules in the LDM and Diffusers checkpoint layouts; never mix the two
     layouts unless the exact keys and shapes match.
     """
+    # Only top-level diffusion-transformer blocks. In Anima, for example,
+    # llm_adapter.blocks.N is a separate architecture and must not be grafted.
+    # Official Anima checkpoints also use net.blocks.N or model.diffusion_model.blocks.N.
+    root = r"^(?:(?:model\.diffusion_model|diffusion_model|model|net|transformer)\.)?"
     if family == "moss_image":
-        match = re.search(r"(?:^|\.)layers\.(\d+)\.", key)
+        match = re.match(root + r"layers\.(\d+)\.", key)
         return "layer_" + match.group(1) if match else None
     if family in {"anima", "krea2"}:
-        match = re.search(r"(?:^|\.)blocks\.(\d+)\.", key)
+        match = re.match(root + r"blocks\.(\d+)\.", key)
         return "block_" + match.group(1) if match else None
     if family == "sdxl":
         # LDM format used by Illustrious and most SDXL single-file checkpoints.
