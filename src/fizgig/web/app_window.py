@@ -563,6 +563,25 @@ def _unhook_requests():
                     _log(f"[app] WebView2 resource filter could not be removed: {type(exc).__name__}: {exc}")
             _log("[app] WebView2 event hook removal: " +
                  (", ".join(detached) if detached else "not installed by this pywebview version"))
+            # Capture actual GPU/renderer process failures when comparing
+            # GPU-on and GPU-off runs. Normal frame rendering does not cross
+            # into Python; only WebView2 failure events do.
+            def on_process_failed(_source, event):
+                try:
+                    kind = str(getattr(event, "ProcessFailedKind", "unknown"))
+                    reason = str(getattr(event, "Reason", "unknown"))
+                    code = getattr(event, "ExitCode", None)
+                    _log(f"[app] WebView2 ProcessFailed: kind={kind} reason={reason} exit={code}")
+                except Exception:
+                    pass
+            try:
+                # Keep a Python delegate reference for the lifetime of the
+                # WebView2 host; do not collect it while .NET still calls it.
+                self._fizgig_process_failed_handler = on_process_failed
+                core.ProcessFailed += on_process_failed
+                _log("[app] WebView2 ProcessFailed diagnostics installed")
+            except Exception as exc:
+                _log(f"[app] WebView2 ProcessFailed diagnostics unavailable: {type(exc).__name__}: {exc}")
         except Exception as exc:
             _log(f"[app] WebView2 request hook setup failed: {type(exc).__name__}: {exc}")
         _text_menu(sender)
