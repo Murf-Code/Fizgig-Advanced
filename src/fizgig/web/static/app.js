@@ -13351,9 +13351,10 @@ function renderCaptionStudio(host,items,ext){
   const note=el("div",{class:"field-hint"});
   const say=s=>{note.textContent=s;};
   const btn=(s,fn)=>el("button",{class:"btn btn-sm",text:s,onclick:fn});
+  // The footer's current/total position already carries the image count.
+  // Avoid showing the total a second time in this narrow heading.
   left.append(el("div",{class:"studio-browser-heading"},
-    el("strong",{text:"Images"}),
-    el("span",{class:"field-hint",text:String(items.length)})));
+    el("strong",{text:"Images"})));
   left.append(createTagFilterBar());
   const thumbs=el("div",{class:"studio-thumb-rail",role:"list","aria-label":"Dataset thumbnails",tabindex:"0"});
   const thumbViewKey=JSON.stringify([String(S.imageFolder||""),ext,
@@ -13376,8 +13377,15 @@ function renderCaptionStudio(host,items,ext){
   missingBtn.classList.add("studio-missing-filter");
   missingBtn.classList.toggle("is-on",$("capFilter").value==="missing");
   missingBtn.title="Show only images without a caption";
-  const position=el("span",{class:"studio-position",text:String(Math.max(0,items.findIndex(i=>i.path===current.path)+1))+" / "+items.length});
-  const selectionCount=el("span",{class:"studio-selection-count",text:selection.size+" selected"});
+  // Keep a shorter label ready for the narrowest 96px thumbnail rail.
+  missingBtn.dataset.compact=$("capFilter").value==="missing"?"Missing ✓":
+    "Missing ("+missingTotal+")";
+  const position=el("span",{class:"studio-position",
+    text:String(Math.max(0,items.findIndex(i=>i.path===current.path)+1))+" / "+items.length});
+  // The active image already has a selection ring. Show a selection total
+  // only for a real multi-selection, where it conveys new information.
+  const selectionCount=el("span",{class:"studio-selection-count",
+    text:selection.size>1?selection.size+" selected":"",hidden:selection.size<=1});
   const missingNotice=el("span",{class:"studio-missing-notice",role:"status",
     text:S.cap.studioMissingNotice||"",hidden:!S.cap.studioMissingNotice});
   const nav=el("div",{class:"studio-thumb-footer"},
@@ -13672,7 +13680,8 @@ function renderCaptionStudio(host,items,ext){
         (it.caption===null?", missing caption":"")+
         (chosen?", selected":""));
     }
-    selectionCount.textContent=selection.size+" selected";
+    selectionCount.hidden=selection.size<=1;
+    selectionCount.textContent=selection.size>1?selection.size+" selected":"";
     const at=items.findIndex(it=>it.path===S.cap.studioPath);
     position.textContent=(at<0?0:at+1)+" / "+items.length;
   };
@@ -14965,6 +14974,9 @@ function renderCaptionStudio(host,items,ext){
     }
     liveStatus.dataset.state=state;
     liveLabel.textContent=label;
+    // Saved occupies only a green indicator. Keep the full label available
+    // to screen readers; saving, queued and problem states retain clear text.
+    liveSummary.setAttribute("aria-label","Dataset status: "+label+". View details");
     const details=studioLiveSummary(status);
     liveDetail.textContent=failedTask?
       "Caption save failed for "+failedTask.name+
