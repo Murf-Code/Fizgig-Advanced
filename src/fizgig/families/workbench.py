@@ -169,6 +169,40 @@ class WorkbenchEngine:
         self._source_cache = {}
         self.reference_path = None
         self._reference_cache = {}
+        self.frank = None  # Experimental Studio base-model blending, never used by training
+
+    # ---- Frankenstein mode ------------------------------------------------------------------------------------------
+    def frankenstein(self, other_path, other_lora=None):
+        """Blend another base DiT into the loaded one, block by block (a fresh session: call after load_primary(""))."""
+        from fizgig.families.frankenstein import DiTBlend
+        if self.pipeline is None or self.dit is None:
+            raise RuntimeError("Pipeline not loaded; call ensure_pipeline() first.")
+        ring = getattr(self.dit, "_h2d_offloader", None)
+        if getattr(self, "swapped", 0) and getattr(ring, "kind", "") != "int8":
+            # block swap is fine when it's H3's int8 streaming ring: a swapped block blends in its RAM master
+            # (DiTBlend._swap_home); any other swap moves the weights in ways the blend doesn't follow
+            raise ValueError("Frankenstein mode can't blend this model's swapped blocks (it needs int8 block "
+                             "streaming, or no block swap). Set Preferences' inference block swap to Auto or 0.")
+        self.frank = DiTBlend(self.dit, self.block_groups(), other_path, other_lora=other_lora, log=logger.info,
+                              own_path=getattr(self, "dit_path", None))   # read back, not held: ~42 GB less RAM
+        self.primary_block_ids = sorted(self.frank.items)
+        self._invalidate_baseline_cache()
+        self._invalidate_activation_cache()
+
+    def frank_export(self, out_path, state=None, progress=None):
+        """The blend (at the state's sliders, or as it is now) as a new base file in the loaded model's format."""
+        if self.frank is None:
+            raise ValueError("Frankenstein mode isn't on.")
+        if state is not None:
+            self.frank.set(self.frank_weights(state))
+        if not any(w > 0 for w in self.frank.weights().values()):
+            raise ValueError("Nothing is blended: move a block slider above 0 first.")
+        return self.frank.export(self.dit_path, out_path, log=logger.info, progress=progress)
+
+    def frank_weights(self, state):
+        """The blend weights a slider state asks for: each block's primary slider, 0..1 (off = 0)."""
+        return {b: (min(1.0, max(0.0, float(bs.primary_strength))) if bs.primary_enabled else 0.0)
+                for b, bs in state.blocks.items()}
 
     # ---- the block map ------------------------------------------------------------------------------
     def block_groups(self):
@@ -206,6 +240,7 @@ class WorkbenchEngine:
         from fizgig.families.train import _small_card_previews
         self.device = device
         self.te_path = text_encoder_path
+        self.dit_path = dit_path  # Keep original checkpoint path for low-RAM restore/export
         self.lowmem = _small_card_previews() if lowmem is None else bool(lowmem)
         from fizgig.families import quant
         if precision == "auto":
@@ -271,12 +306,17 @@ class WorkbenchEngine:
             raise RuntimeError("Pipeline not loaded; call ensure_pipeline() first.")
         if self.primary_network is not None:
             raise RuntimeError("Primary already loaded — call reset() to swap.")
-        n = self._attach(path, PRIMARY)
+        if not path:
+            n = self.net.add_zero(PRIMARY)  # Base-only rendering required by Frankenstein
+            self.net.move_adapter(PRIMARY, self.device)
+            self.__dict__.setdefault("_eq", {}).pop(PRIMARY, None)
+        else:
+            n = self._attach(path, PRIMARY)
         self.primary_network = self.net
         self._clear_blend_state()
-        self.primary_path = path
-        self.primary_block_ids = self.net.adapter_blocks(PRIMARY)
-        self.primary_hash = self._hash(path)
+        self.primary_path = path or ""
+        self.primary_block_ids = self.net.adapter_blocks(PRIMARY) if path else []
+        self.primary_hash = self._hash(path) if path else ""
         self._invalidate_baseline_cache()
         self._invalidate_activation_cache()
         logger.info("%s primary: %s (%d Linears, %d blocks)", self.desc.display_name, path, n,
@@ -478,6 +518,9 @@ class WorkbenchEngine:
         """Per-block strength / on-off and each LoRA's load strength, live (no reload)."""
         if self.primary_network is None:
             return
+        if self.frank is not None:
+            self.frank.set(self.frank_weights(state))
+            return
         targets = []
         for role, who in ((PRIMARY, "primary"), (DONOR, "donor")):
             scale = float(getattr(state, f"{who}_scale", 1.0))
@@ -499,7 +542,8 @@ class WorkbenchEngine:
     # ---- Reuse unchanged blocks ------------------------------------------------------------------------------
     @property
     def turbo_preview(self):
-        return bool(self._turbo_enabled and getattr(self.desc, "activation_cache", False))
+        return bool(self._turbo_enabled and getattr(self.desc, "activation_cache", False)
+                    and self.frank is None)  # Mixed base weights invalidate activation replay assumptions
 
     @turbo_preview.setter
     def turbo_preview(self, on):
@@ -998,6 +1042,8 @@ class WorkbenchEngine:
         base.donor_scale = 0.0              # the primary alone: a loaded donor stays out of the left pane
         for bs in base.blocks.values():
             bs.donor_enabled = False
+            if self.frank is not None:
+                bs.primary_strength = 0.0   # Unmixed H3 Image is the Baseline
         self._act_bypass = True             # the baseline would overwrite the tweaked render's cache
         try:
             img = self.generate_preview(base)
@@ -1009,6 +1055,8 @@ class WorkbenchEngine:
     def same_as_baseline(self, state):
         """True when the tweaked render would be the baseline: every primary block on at 1.0 and no donor block
         contributing (no donor, its load strength 0, or each of its blocks off or at 0)."""
+        if self.frank is not None:
+            return not any(w > 0.0 for w in self.frank_weights(state).values())
         if any(not bs.primary_enabled or float(bs.primary_strength) != 1.0 for bs in state.blocks.values()):
             return False
         if self.donor_network is None or float(getattr(state, "donor_scale", 1.0)) == 0.0:
@@ -1272,6 +1320,7 @@ class WorkbenchEngine:
                 except Exception:
                     pass
         self.dit = self.vae = self.net = None
+        self.frank = None
         self.pipeline = None
         self.speed = None
         self._speed_follow = None
