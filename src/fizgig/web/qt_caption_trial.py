@@ -54,7 +54,7 @@ class Decode(QRunnable):
         reader.setAutoTransform(True)
         size = reader.size()
         if size.isValid() and size.width():
-            reader.setScaledSize(QSize(144, max(1, 144 * size.height() // size.width())))
+            reader.setScaledSize(QSize(144, min(432, max(1, 144 * size.height() // size.width()))))
         img = reader.read()
         if not img.isNull():
             self.signals.loaded.emit(self.path, img)
@@ -100,6 +100,12 @@ class ImageModel(QAbstractListModel):
         if row is None:
             return
         self.icons[path] = QIcon(QPixmap.fromImage(image))
+        if len(self.icons) > 256:
+            # Evict the oldest offscreen image; it can be decoded again on demand.
+            for old in list(self.icons):
+                if old != path:
+                    self.icons.pop(old)
+                    break
         self.dataChanged.emit(self.index(row), self.index(row),
                               [Qt.ItemDataRole.DecorationRole])
 
