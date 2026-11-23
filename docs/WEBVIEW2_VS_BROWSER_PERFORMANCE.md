@@ -2,166 +2,59 @@
 
 **Branch:** `test/caption-workbench`
 
-## Why this investigation changed
+## Corrected A/B result (November 23, 2026)
 
-The same Caption Workbench was reported **very smooth in a normal browser** but
-slow in the Windows *Fizgig* pywebview desktop window. This is evidence to
-investigate the **WebView2 host, GPU setup and Python/.NET event bridge** first.
-It is **not** evidence that the underlying tag editor needs a Qt rewrite.
+The user compared two actual WebView2 process launches of Fizgig's desktop
+window. **Unchecking** “Disable GPU for the app window” made it smooth.
+Earlier discussion accidentally reversed this result.
 
-The opt-in `qt_caption_trial.py` stays available, but do not replace the
-existing browser image components solely on the basis of that comparison.
+| Setting | Browser / renderer flags | Actual performance |
+| --- | --- | --- |
+| **Unchecked**: GPU acceleration enabled | No tracked GPU-disabling switches | **FAST — preferred** |
+| **Checked**: GPU acceleration disabled | `--disable-gpu`; renderer `--disable-gpu-compositing`; ANGLE WARP on helper | **SLOW** |
 
-## Desktop wrapper adjustments
+Therefore the checkbox must default to **OFF/unchecked** on both Windows and
+Linux, preserving any explicit saved user setting. Normal Chrome and Edge
+use their own acceleration settings, unaffected by this checkbox.
 
-- Stop forcing `--disable-accelerated-video-decode` in every app window.
-  Hardware-accelerated decode is again Chromium's default. This specific flag
-  affects video, so its removal is **not proof** of a thumbnail fix.
-- Default **Preferences → App window → Disable GPU** to **ON on Windows**
-  after a real Windows test showed that enabling it completely resolved
-  sluggish desktop image scrolling. Explicit saved OFF/ON choices always win;
-  Linux remains GPU accelerated by default. Neither choice affects Chrome or
-  Edge, which use their own browser acceleration settings.
-- The desktop app log reports the selected rendering path. Software rendering
-  may be slower on some machines, so this stays a user-configurable toggle.
-- Preserve explicit user-provided
-  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` switches, including intentional
-  GPU-disable overrides.
-- On pywebview 6.x, independently remove request, response and resource
-  filter handlers and **log failures**. On pywebview 5.x, those hooks were not
-  installed; skip the removal instead of reporting a false failure.
-- Record the pywebview and WebView2 Runtime versions at startup in
-  `user_data/app_window.log`. These are diagnostic data, not performance
-  measurements.
+The GPU enabled process is the known-good path on this computer. Nothing in
+these measurements proves a fault in GPU acceleration, Meta Virtual Monitor,
+or the NVIDIA driver.
 
-If a specific machine still hangs when a video starts, re-enable the original
-software-video workaround **for that session only**:
+### Display-adapter result
 
-```bat
-set FIZGIG_WEBVIEW2_SOFTWARE_VIDEO=1
-venv\Scripts\python.exe fizgig.py
-```
+- RTX 4070 Ti: Windows status OK, `ConfigManagerErrorCode=0`
+- Meta Virtual Monitor: Windows status Error, `ConfigManagerErrorCode=22`
 
-Do **not** make this the default for everyone.
+Code 22 means the virtual device is **disabled**, not proof of a faulty
+driver. No device changes are recommended based on this result alone.
 
-## Windows A/B acceptance test
+### Remaining diagnostics
 
-1. Open Preferences → App window in either interface. On Windows,
-   **Disable GPU for the app window** defaults to **checked** unless previously
-   set explicitly. Restart the desktop app to apply changes.
-2. Open exactly the same dataset in the desktop window and in
-   **Launch Fizgig in browser.bat**. Avoid simultaneously loading AI models.
-3. Compare idle CPU, normal scrolling, fast scrolling, image selection, tag
-   typing, image preview/mask brushing and view switching. Note whether a
-   training run was active.
-4. If the desktop still lags, inspect `user_data/app_window.log` for
-   `[app] WebView2 rendering:`,
-   `[app] WebView2 event hook removal:`, pywebview version and Runtime version.
-   A failed response hook is actionable; if software rendering remains slow,
-   temporarily uncheck Disable GPU, restart and compare. A GPU-disabled flag
-   is expected when the Windows default is active.
-5. For advanced profiling compare the renderer/GPU processes and CPU usage
-   in Windows Task Manager. Use WebView2 ETW traces if both configs look
-   identical but lag remains.
+The optional `scripts/diagnose_webview2.ps1` prints sanitized WebView2
+GPU-related process flags and adapter error codes. The wrapper logs
+pywebview/WebView2 versions and optional WebView2 process-failure events.
 
-If the browser is fast and the desktop still stutters after the change, keep
-using the existing browser launcher. Do not redirect more engineering effort
-to Qt rendering until WebView2 host overhead and GPU mode have been measured.
+An optional temporary `FIZGIG_WEBVIEW2_NO_BLUR=1` test remains available
+for users with **GPU enabled but still slow**. It is unnecessary to run when
+the GPU-enabled desktop is already smooth.
 
-## What Unsloth Studio taught us
+This is a corrected interpretation of the user's observed runs, not
+a measured FPS comparison or an explanation of why the software-rendered
+path was unusually slow.
 
-Unsloth Studio's Windows desktop uses **Tauri/Wry with WebView2**, rather
-than Fizgig's **pywebview/WinForms with WebView2**. Its GPU rendering
-**Auto / On / Off** setting defaults to Auto; Off supplies the Chromium
-`--disable-gpu` switch to WebView2, while Auto preserves normal browser
-arguments. That is the same workaround as Fizgig's checkbox, not a
-different browser renderer or a fix for the underlying graphics driver.
+## Wrapper improvements retained
 
-Unsloth additionally validates the **actual WebView2 browser process
-command line on Windows** in its CI, and has investigated expensive
-glass/blur effects on software-composited interfaces. Fizgig's optional
-diagnostics follow those principles independently (no Unsloth source
-copied).
+- Default Chromium GPU and accelerated video rendering settings, unless the
+  user has explicitly enabled the GPU-disable compatibility toggle or supplied
+  custom arguments.
+- Do not silently swallow failed request-hook removals in pywebview 6.x.
+- Record runtime version and actual graphics preferences for troubleshooting.
+- Keep normal browser/remote workflows and all training services unchanged.
+- Keep optional native Qt prototype separate: the fast browser and GPU-enabled
+  WebView2 prove a Qt migration is not required to fix the reported slowdown.
 
-Sources:
-- [Unsloth GPU rendering implementation](https://github.com/unslothai/unsloth/blob/main/studio/src-tauri/src/gpu_rendering.rs)
-- [Unsloth Windows smoke tests](https://github.com/unslothai/unsloth/blob/main/.github/workflows/studio-tauri-smoke.yml)
-- [Microsoft WebView2 performance guidance](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/performance)
+## Sources
 
-## Find the cause: GPU path versus glass compositing
-
-The Windows default remains **Disable GPU = ON** for responsive operation,
-but that is a workaround. Run these **optional** A/B probes with the
-same data and same window size, without a concurrent training run:
-
-1. **Browser**, normal Chrome/Edge: the known-fast reference.
-2. **Desktop, GPU OFF, normal glass:** the confirmed workaround.
-3. **Desktop, GPU ON, normal glass:** uncheck the app-window setting and
-   restart; note the lag.
-4. **Desktop, GPU ON, blur temporarily OFF:** keep GPU enabled, close
-   the desktop app, then run from PowerShell in the Fizgig folder:
-
-   ```powershell
-   $env:FIZGIG_WEBVIEW2_NO_BLUR = "1"
-   .\venv\Scripts\python.exe .\fizgig.py
-   ```
-
-   This last test disables only CSS `backdrop-filter` effects **inside
-   Fizgig's embedded desktop window**. It does not persist a preference,
-   change image processing, or affect the browser. Close that process to
-   end the test. Afterwards, unset the variable or open a fresh terminal.
-
-**Interpretation:** If GPU ON with blur OFF is fast, investigate
-backdrop-blur composition and repainting before changing Qt or training
-code. If both GPU ON runs lag but GPU OFF is smooth, investigate WebView2
-GPU-process, graphics-driver, user-data profile and host-window integration.
-Neither observation alone proves a specific driver defect.
-
-### Read-only Windows probe
-
-While the **desktop** is open, run:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\diagnose_webview2.ps1
-```
-
-The script reports display adapter driver versions and the actual
-running WebView2 `--disable-gpu` and related graphics switches.
-It prints **no full process command line** (which can contain private
-paths or tokens), reads no cookies and changes no settings. If multiple
-apps use WebView2, `-ShowAllWebViews` shows their sanitized process flags.
-
-Compare the output from GPU ON and GPU OFF launches, alongside
-`user_data/app_window.log`. If neither identifies the problem, Microsoft's
-Windows Performance Recorder WebView2 profile can capture a deeper
-GPU/compositor trace.
-
-## Observed Windows GPU-off versus GPU-on process flags (23 Nov 2026)
-
-The same Windows host and RTX 4070 Ti produced two WebView2 snapshots:
-
-| State | Browser process | Renderer process | GPU process |
-| --- | --- | --- | --- |
-| GPU disabled (fast) | `--disable-gpu` | `--disable-gpu-compositing` | `--use-angle=d3d11-warp-webgl --use-gl=angle` |
-| GPU enabled | No tracked graphics switches | No tracked graphics switches | No tracked graphics switches |
-
-The driver list showed **NVIDIA GeForce RTX 4070 Ti — OK** and
-**Meta Virtual Monitor — Error** in both runs, with no WebView2 GPU
-policy found in the two checked registry paths. No direct proof yet
-links the virtual monitor to WebView2 lag; the adapter's
-`ConfigManagerErrorCode` should be checked before deciding whether
-it is an unused display device or a malfunctioning driver.
-
-The snapshots **confirm the GPU toggle is applied correctly**, not that
-the root cause is identified. Next isolate WebView2's composition path
-versus the driver/display stack. A recent diagnostic enhancement adds
-the actual PnP error code, and WebView2 `ProcessFailed` logging adds
-GPU/renderer crash details to `user_data/app_window.log`.
-
-## Scope / caveats
-
-No Windows GUI, GPU utilization, ETW or real scrolling FPS measurement has
-been run for this patch. A fast browser is the known-good baseline, but we
-have not proved which WebView2 setting causes the difference on the user's
-computer. The existing app close/training safety workflow, backend HTTP
-services, file handling and pywebview fallback remain unchanged.
+- [Unsloth Studio WebView2 GPU modes](https://github.com/unslothai/unsloth/blob/main/studio/src-tauri/src/gpu_rendering.rs)
+- [Microsoft WebView2 performance](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/performance)
