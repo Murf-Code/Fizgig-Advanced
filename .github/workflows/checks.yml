@@ -22,6 +22,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r checks/requirements.txt
+      - name: Caption Studio CPU optimization, lazy explorer and thumbnail cache
+        run: |
+          node checks/test_caption_cpu_perf.cjs
+          python -m pytest checks/test_caption_thumbnail_cache.py -q
       - name: Caption Studio removal confirmation regression
         run: node checks/test_caption_remove_confirmation.cjs
       - name: Krea 2 direct auto discovery and manual concept probe regressions

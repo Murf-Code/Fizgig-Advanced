@@ -2719,48 +2719,129 @@ def restore_to_dataset(folder, moved):
         logger.exception("Could not update removal journal")
     return back
 
-_thumbs: dict = {}            # (path, mtime) -> a small JPEG; the oldest go past 600
-
-
+# Thumbnail/preview decoding is CPU-intensive. Keep a bounded RAM hot cache,
+# and a larger persistent on-disk cache so returning to a dataset, revisiting
+# old rail items, and restarting Fizgig do not decode large originals again.
+# The key includes size and nanosecond mtime: the 320px rail image must never
+# be mistaken for a 1600px preview, and edits invalidate both automatically.
+_thumbs: dict = {}  # (path, mtime_ns, file_size, max_edge) -> encoded bytes
 _thumbs_lock = threading.Lock()
-_thumb_slots = threading.BoundedSemaphore(4)   # a page of tiles decodes a few big photos at a time, not dozens at once
+_thumb_slots = threading.BoundedSemaphore(3)
+_THUMB_RAM_LIMIT = 96 * 1024 * 1024
+_THUMB_DISK_LIMIT = 512 * 1024 * 1024
+_thumb_cache_written = 0
+_thumb_prune_lock = threading.Lock()
+
+
+def _thumb_disk_path(key):
+    # Hashed names avoid leaking external image paths into the cache directory.
+    digest = hashlib.sha256(("thumb-v3|" + repr(key)).encode("utf-8")).hexdigest()
+    return os.path.join(user_file("thumb_cache"), digest + ".bin")
+
+
+def _prune_thumb_disk_cache():
+    """Amortized disk eviction runs outside the HTTP request thread."""
+    if not _thumb_prune_lock.acquire(blocking=False):
+        return
+    try:
+        try:
+            files = [(e.stat().st_mtime_ns, e.stat().st_size, e.path)
+                     for e in os.scandir(user_file("thumb_cache")) if e.is_file() and e.name.endswith(".bin")]
+        except OSError:
+            return
+        size = sum(x[1] for x in files)
+        if size <= _THUMB_DISK_LIMIT:
+            return
+        target = int(_THUMB_DISK_LIMIT * .75)
+        for _mtime, n, path in sorted(files):
+            if size <= target:
+                break
+            try:
+                os.remove(path)
+                size -= n
+            except OSError:
+                pass
+    finally:
+        _thumb_prune_lock.release()
 
 
 def _thumb(path, size=320):
-    """A small JPEG of a picture for a tile (a phone shouldn't fetch four full photos per folder), kept in memory.
-    The cache is shared by the request threads, so it is locked (an unlocked trim crashed requests once it was full,
-    and those tiles showed broken)."""
+    """Serve a cached, display-sized image, without repeated full-res PIL decodes."""
+    global _thumb_cache_written
     try:
-        key = (path, os.path.getmtime(path))
+        st = os.stat(path)
+        key = (path, st.st_mtime_ns, st.st_size, int(size))
     except OSError:
         return None
     with _thumbs_lock:
-        hit = _thumbs.get(key)
-    if hit is not None:
-        return hit
+        cached = _thumbs.pop(key, None)
+        if cached is not None:
+            _thumbs[key] = cached  # LRU, a visible tile wins over old lookahead
+            return cached
+
+    disk_path = _thumb_disk_path(key)
     try:
-        import io
-        from PIL import Image
-        with _thumb_slots:
-            with Image.open(path) as im:
-                im.draft("RGB", (size * 2, size * 2))      # a JPEG decodes at a reduced size: much faster
-                from fizgig.utils.upright import upright
-                im = upright(im)
-                im.thumbnail((size, size))
-                buf = io.BytesIO()
-                if im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info:
-                    im = im.convert("RGBA")
-                    if im.getextrema()[3][0] < 255:
-                        im.save(buf, "PNG")     # see-through: a PNG keeps it (the page puts it on a checkerboard)
-                if not buf.tell():
-                    im.convert("RGB").save(buf, "JPEG", quality=82)
-        data = buf.getvalue()
-    except Exception:
-        return None
+        with open(disk_path, "rb") as stream:
+            data = stream.read()
+        if not data.startswith((b"\x89PNG", b"\xff\xd8")):
+            data = None
+    except OSError:
+        data = None
+    if data is None:
+        try:
+            import io
+            from PIL import Image
+            with _thumb_slots:
+                # Another thread may have filled the file while we waited for
+                # a decoder. Avoid duplicating the expensive original read.
+                try:
+                    with open(disk_path, "rb") as stream:
+                        data = stream.read()
+                    if not data.startswith((b"\x89PNG", b"\xff\xd8")):
+                        data = None
+                except OSError:
+                    pass
+                if data is None:
+                    with Image.open(path) as im:
+                        im.draft("RGB", (size * 2, size * 2))
+                        from fizgig.utils.upright import upright
+                        im = upright(im)
+                        im.thumbnail((size, size))
+                        buf = io.BytesIO()
+                        if im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info:
+                            im = im.convert("RGBA")
+                            if im.getextrema()[3][0] < 255:
+                                im.save(buf, "PNG")
+                        if not buf.tell():
+                            im.convert("RGB").save(buf, "JPEG", quality=84)
+                        data = buf.getvalue()
+                    try:
+                        os.makedirs(os.path.dirname(disk_path), exist_ok=True)
+                        temp_path = disk_path + "." + secrets.token_hex(6) + ".tmp"
+                        try:
+                            with open(temp_path, "wb") as stream:
+                                stream.write(data)
+                            os.replace(temp_path, disk_path)
+                        finally:
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
+                        with _thumbs_lock:
+                            _thumb_cache_written += 1
+                            prune = _thumb_cache_written % 64 == 0
+                        if prune:
+                            threading.Thread(target=_prune_thumb_disk_cache, daemon=True).start()
+                    except OSError:
+                        pass  # disk cache is optional; never break an image load
+        except Exception:
+            return None
     with _thumbs_lock:
         _thumbs[key] = data
-        while len(_thumbs) > 600:
-            _thumbs.pop(next(iter(_thumbs)))
+        # Bounded across both tiny thumbnails and larger center previews.
+        memory = sum(len(payload) for payload in _thumbs.values())
+        while len(_thumbs) > 400 or memory > _THUMB_RAM_LIMIT:
+            _old_key, old_data = next(iter(_thumbs.items()))
+            del _thumbs[_old_key]
+            memory -= len(old_data)
     return data
 
 
@@ -3524,6 +3605,7 @@ class Handler(BaseHTTPRequestHandler):
                     "/caption_studio_learning.js",
                     "/caption_studio_selection.js", "/caption_studio_training_picks.js",
                     "/caption_theme.js", "/caption_image_perf.js", "/caption_thumb_rail.js", "/caption_remove_bridge.js", "/mask_stroke_worker.js",
+                    "/caption_studio_graph_worker.js",
                     "/style.css", "/qrcode.js"):
             return self._file(os.path.join(STATIC_DIR, path[1:]),
                               "application/javascript; charset=utf-8" if path.endswith(".js") else "text/css")
@@ -4065,7 +4147,24 @@ class Handler(BaseHTTPRequestHandler):
             p = (qs.get("path") or [""])[0]
             if os.path.splitext(p)[1].lower() not in _PIC or not os.path.isfile(p):
                 return self.json({"error": "not a picture"}, 404)
-            data = _thumb(p)
+            try:
+                requested = int((qs.get("size") or ["320"])[0])
+            except (ValueError, TypeError):
+                requested = 320
+            # Rail sizes are 160/224/320. Waterfall remains 320. Bound
+            # arbitrary requests to avoid huge image caches or decode spikes.
+            data = _thumb(p, size=max(96, min(384, requested)))
+            if data is None:
+                return self._stream(p, attachment=False)
+            return self._send(200, data, "image/png" if data[:4] == b"\x89PNG" else "image/jpeg",
+                              extra=[("Cache-Control", "private, max-age=3600")])
+        if path == "/api/preview":
+            # Ordinary Caption Workbench display only; the editor continues to
+            # open the original full-resolution file from /api/media.
+            p = (qs.get("path") or [""])[0]
+            if os.path.splitext(p)[1].lower() not in _PIC or not os.path.isfile(p):
+                return self.json({"error": "not a picture"}, 404)
+            data = _thumb(p, size=1600)
             if data is None:
                 return self._stream(p, attachment=False)
             return self._send(200, data, "image/png" if data[:4] == b"\x89PNG" else "image/jpeg",

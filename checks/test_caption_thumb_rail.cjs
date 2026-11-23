@@ -94,6 +94,9 @@ async function main(){
   assert.match(app,/\&v="\+\s*\(S\.cap\.studioThumbRevisions\?\.get\(path\)\|\|0\)/);
   assert.match(html,/src="\/caption_thumb_rail\.js"/);
   assert.match(server,/"\/caption_thumb_rail\.js"/);
+
+assert.match(app,/imageSizeForRow\(railWidthForThumb,it\.size/);
+assert.match(app,/geometry=studioThumbGeometry\(items,width,14,previewHeight\)/);
   console.log("Native thumbnail scrolling, retained DOM rows, lookahead cache and image invalidation checks passed");
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

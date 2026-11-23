@@ -725,4 +725,8 @@ const CaptionStudioViz = (() => {
 
   return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation});
 })();
+// A classic WebWorker can import this existing pure graph implementation
+// without maintaining a second constellation algorithm.
+if(typeof self!=="undefined"&&typeof document==="undefined")
+  self.CaptionStudioViz=CaptionStudioViz;
 if (typeof module !== "undefined" && module.exports) module.exports = CaptionStudioViz;

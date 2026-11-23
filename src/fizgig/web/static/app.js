@@ -6572,6 +6572,20 @@ function mediaFor(it, eager) {
   }
   return el("img", {loading: "lazy", src: q(it.path), alt: it.name});
 }
+// Editing always uses the original /api/media. The ordinary Workbench stage
+// does not need a 30MP JPEG decoded onto the UI thread just to fit 1000px.
+function captionStageMediaFor(it) {
+  const size=it.size||[];
+  const ext=String(it.name||"").split(".").pop().toLowerCase();
+  const supported=["png","jpg","jpeg","webp","bmp","tif","tiff","avif"].includes(ext);
+  if(!supported||Math.max(Number(size[0])||0,Number(size[1])||0)<=1600)
+    return mediaFor(it,true);
+  const revision=S.cap.studioThumbRevisions?.get(it.path)||it.time||0;
+  const url="/api/preview?path="+encodeURIComponent(it.path)+
+    "&t="+encodeURIComponent(TOKEN)+"&v="+encodeURIComponent(revision);
+  return el("img",{loading:"eager",decoding:"async",src:url,alt:it.name});
+}
+
 const mediaLabel = (it) => it.name;
 
 // ---- Image Prep tab: resize / PNG / face close-ups, and the Look Filter (fizgig/web/prep_jobs.py) -------------
@@ -11654,6 +11668,8 @@ function renderCaptions() {
   // Preserve the one real set of bound AI model/task controls across renders.
   // The workbench re-creates this host frequently (selection, filters, saves).
   captionAiControlsRestore();
+  // The previous view owns all graph workers and Resize/IntersectionObservers.
+  S.cap.studioStageDispose?.();
   host.innerHTML = "";
   const ext = $("captionExt").value.trim() || ".txt";
   const q = $("capSearch").value.trim().toLowerCase();
@@ -12452,9 +12468,13 @@ function captionWorkbenchSettingsOpen(advanced=false,initializeOnly=false){
     preview.value=String(setPx("--caption-settings-preview-height",prefs.previewHeight||360,160,720));
     preview.addEventListener("change",()=>{
       const n=setPx("--caption-settings-preview-height",preview.value,160,720);
-      if(n!==null){preview.value=String(n);savePref("previewHeight",n);}
+      if(n!==null){
+        preview.value=String(n);savePref("previewHeight",n);
+        if(S.cap.items?.length&&$("capView")?.value==="studio")renderCaptions();
+      }
     });
-    row("Image preview max height (px)",preview,"Controls the large thumbnail stack");
+    row("Image preview max height (px)",preview,
+      "Limits display height; cached thumbnail resolution adapts automatically.");
     const sep=el("select",{"aria-label":"Tag separator"});
     [[",","Commas"],[";","Semicolons"],["|","Pipes"]]
       .forEach(([value,text])=>sep.append(el("option",{value,text})));
@@ -12625,14 +12645,15 @@ function captionAiControlsMount(target){
 // mounting the thousands of images between the current row and the target.
 // Thumbnail aspect ratios determine row heights, so mixed datasets do not jump
 // when offscreen images load. No global page size or Load-more button.
-function studioThumbGeometry(items,railWidth,gap=14){
+function studioThumbGeometry(items,railWidth,gap=14,previewHeight=360){
   const width=Math.max(36,(railWidth-20)*.85-14);
+  const maxImageHeight=Math.max(160,Math.min(720,Number(previewHeight)||360))*.85;
   const heights=new Float64Array(items.length);
   const offsets=new Float64Array(items.length+1);
   for(let i=0;i<items.length;i++){
     const size=items[i].size;
     const ratio=size&&size[0]>0&&size[1]>0?size[1]/size[0]:1;
-    const imageHeight=size?Math.min(306,width*ratio):132;
+    const imageHeight=size?Math.min(maxImageHeight,width*ratio):132;
     heights[i]=Math.max(64,Math.ceil(imageHeight)+14);
     offsets[i+1]=offsets[i]+heights[i]+gap;
   }
@@ -12696,6 +12717,44 @@ function captionConfirmRemoval({title,detail,items=[],confirmLabel="Remove"}) {
     // Cancel, never the destructive action, receives initial keyboard focus.
     cancel.focus({preventScroll:true});
   });
+}
+
+// Constellation layout is O(nodes²) over many iterations. Keep those
+// computations off the browser UI thread so typing, scrolling and navigation
+// remain responsive while the exact same TagBench graph is calculated.
+function captionGraphModelAsync(items,categories) {
+  // Off-main-thread TagBench layout; cancellation ends the worker when the
+  // user switches away. In older browsers, retain a safe synchronous fallback.
+  if(typeof Worker==="undefined"){
+    let canceled=false;
+    const task=Promise.resolve().then(()=>
+      canceled?null:CaptionStudioViz.tagbenchModel(items,categories));
+    task.cancel=()=>{canceled=true;};
+    return task;
+  }
+  let cancel=null;
+  const task=new Promise((resolve,reject)=>{
+    let worker;
+    try{worker=new Worker("/caption_studio_graph_worker.js");}
+    catch(error){reject(error);return;}
+    let settled=false;
+    const finish=(result,error)=>{
+      if(settled)return;
+      settled=true;
+      worker.terminate();
+      if(error)reject(error);else resolve(result);
+    };
+    cancel=()=>finish(null);
+    worker.onmessage=event=>{
+      if(event.data?.error)finish(null,new Error(event.data.error));
+      else finish(event.data?.model);
+    };
+    worker.onerror=event=>finish(null,new Error(event.message||"Constellation worker failed"));
+    try{worker.postMessage({items,categories});}
+    catch(error){finish(null,error);}
+  });
+  task.cancel=()=>cancel?.();
+  return task;
 }
 
 function renderCaptionStudio(host,items,ext){
@@ -12840,22 +12899,16 @@ function renderCaptionStudio(host,items,ext){
   let captionMode=studioCaptionMode(current);
   const locked=!!S.cap.studioReviewed?.has(current.path);
   const categoryState=studioCategories();
-  // Build one Constellation palette per dataset revision and share it with
-  // Image Tags and All Tags, even if Constellation has never been opened.
-  // Reuse the exact graph in Constellation to avoid a second expensive layout.
-  const graphKey=String(S.imageFolder||"")+"|"+ext;
-  const revision=S.cap.studioRevision||0;
-  let themeGraph=S.cap.studioTagbenchGraph;
-  if(themeGraph?.key!==graphKey||themeGraph.items!==S.cap.items||
-      themeGraph.revision!==revision){
-    const graphTags=S.cap.items.filter(it=>studioCaptionMode(it)==="tags")
-      .map(it=>({tags:studioTokens(it.caption,"tags")}));
-    const model=CaptionStudioViz.tagbenchModel(graphTags,categoryState);
-    themeGraph={key:graphKey,items:S.cap.items,revision,model};
-    S.cap.studioTagbenchGraph=themeGraph;
-  }
-  categoryState.generatedColors=themeGraph.model.colors;
-  CaptionStudioViz.setTagbenchPalette(themeGraph.model.colors);
+  // Never build Constellation while showing Tags or Waterfall.
+  // Its clustering and 220 physics passes are expensive CPU work and were
+  // previously executed on every normal image/tag selection!
+  // Keep only its tiny color palette, if a user visited the graph before.
+  const colorScope=String(S.imageFolder||"")+"|"+ext;
+  const palette=S.cap.studioTagbenchPalette?.key===colorScope&&
+    S.cap.studioTagbenchPalette?.revision===(S.cap.studioRevision||0)
+    ? S.cap.studioTagbenchPalette.colors : null;
+  categoryState.generatedColors=palette||new Map();
+  CaptionStudioViz.setTagbenchPalette(palette);
   const editorCompose=tags=>studioCompose(ta.value,tags,captionMode);
   const left=el("aside",{class:"caption-studio-panel studio-browser"});
   const center=el("div",{class:"caption-studio-panel studio-editor"});
@@ -13154,11 +13207,21 @@ function renderCaptionStudio(host,items,ext){
   const sameThumbView=S.cap.studioThumbViewKey===thumbViewKey;
   thumbs.classList.add("is-windowed");
   const thumbPreloader=S.cap.studioThumbPreloader||
-    (S.cap.studioThumbPreloader=new CaptionThumbRail.ThumbPreloader(40));
+    (S.cap.studioThumbPreloader=new CaptionThumbRail.ThumbPreloader(16));
   thumbPreloader.reset(String(S.imageFolder||""));
-  const thumbUrl=path=>"/api/thumb?path="+encodeURIComponent(path)+
-    "&t="+encodeURIComponent(TOKEN)+"&v="+
-    (S.cap.studioThumbRevisions?.get(path)||0);
+  // Existing Workbench setting (default 360 CSS px) determines display
+  // height and which encoded thumbnail resolution to request for each image.
+  const configuredPreviewHeight=()=>{
+    const raw=getComputedStyle($("tab-captions")).getPropertyValue("--caption-settings-preview-height");
+    const n=parseFloat(raw);return Number.isFinite(n)?n:360;
+  };
+  const dpr=window.devicePixelRatio||1;
+  const previewHeight=configuredPreviewHeight(); // one computed-style read per render
+  let railWidthForThumb=S.cap.studioThumbWidth||180;
+  const thumbUrl=it=>"/api/thumb?path="+encodeURIComponent(it.path)+
+    "&size="+CaptionThumbRail.imageSizeForRow(railWidthForThumb,it.size,
+      dpr,previewHeight)+"&t="+encodeURIComponent(TOKEN)+"&v="+
+    (S.cap.studioThumbRevisions?.get(it.path)||0);
   const mountedThumbs=new Map();
   const syncMountedSelection=()=>{
     for(const [index,row] of mountedThumbs){
@@ -13179,7 +13242,7 @@ function renderCaptionStudio(host,items,ext){
   const createThumbRow=(it,index,height)=>{
     const isActive=it.path===current.path;
     const isPicked=selection.has(it.path);
-    const thumb=it.size?el("img",{src:thumbUrl(it.path),
+    const thumb=it.size?el("img",{src:thumbUrl(it),
       loading:"lazy",alt:"",decoding:"async"}):
       el("span",{class:"studio-thumb-placeholder",text:"♪"});
     const tile=el("button",{type:"button",
@@ -13215,8 +13278,16 @@ function renderCaptionStudio(host,items,ext){
     const anchor=old?studioThumbIndex(old.offsets,scroll):0;
     const fraction=old?Math.max(0,Math.min(1,
       (scroll-old.offsets[anchor])/Math.max(1,old.heights[anchor]))):0;
-    railWidth=width;S.cap.studioThumbWidth=width;
-    geometry=studioThumbGeometry(items,width);
+    railWidth=width;railWidthForThumb=width;S.cap.studioThumbWidth=width;
+    thumbPreloader.clear();
+    for(const [index,row] of mountedThumbs){
+      const image=row.querySelector("img");
+      if(image){
+        const next=thumbUrl(items[index]);
+        if(image.getAttribute("src")!==next)image.src=next;
+      }
+    }
+    geometry=studioThumbGeometry(items,width,14,previewHeight);
     // Row identities survive resizing; only their fixed heights change.
     for(const [index,row] of mountedThumbs)
       row.style.height=geometry.heights[index]+"px";
@@ -13228,12 +13299,12 @@ function renderCaptionStudio(host,items,ext){
     prefetchTimer=setTimeout(()=>{
       if(!thumbs.isConnected)return;
       const [first,last]=CaptionThumbRail.prefetchRange(
-        start,end,items.length,direction,8);
+        start,end,items.length,direction,3);
       for(let i=first;i<last;i++){
         const it=items[i];
-        if(it.size)thumbPreloader.prefetch(it.path,thumbUrl(it.path));
+        if(it.size)thumbPreloader.prefetch(it.path,thumbUrl(it));
       }
-    },90); // Do background decoding only after the user pauses scrolling.
+    },180); // Skip costly lookahead until the user has really paused scrolling.
   };
   const paintWindow=()=>{
     if(!thumbs.isConnected)return;
@@ -13627,12 +13698,24 @@ function renderCaptionStudio(host,items,ext){
       e.preventDefault();e.stopPropagation();removePickedTags();
     }
   });
+  let previousTagKeys=null;
   const redraw=()=>{
-    word.textContent=String(ta.value.trim()?ta.value.trim().split(/\s+/).length:0)+" words · "+String(studioTokens(ta.value,captionMode).length)+" tags"+(captionMode==="prose"?" · prose protected from tag actions":"");
-    tags.replaceChildren();
-    imageTagButtons.clear();
     const parts=captionMode==="prose"?[]:studioTokens(ta.value,"tags");
     const distinct=studioUnique(parts);
+    const keys=distinct; // retain case changes such as Cat -> cat
+    // Reuse all tag buttons and event handlers if the displayed tag list did
+    // not change. Prevents flicker/DOM reallocation on caption drafts.
+    if(previousTagKeys&&keys.length===previousTagKeys.length&&
+       keys.every((key,i)=>key===previousTagKeys[i])){
+      word.textContent=String(distinct.length)+" tags · "+
+        String(ta.value.trim()?ta.value.trim().split(/\s+/).length:0)+" words";
+      if(captionMode==="prose"||naturalMode)captionText.value=existingText();
+      return;
+    }
+    const previousScroll=tags.scrollTop;
+    previousTagKeys=keys;
+    tags.replaceChildren();
+    imageTagButtons.clear();
     for(const t of distinct){
       const row=el("li",{class:"studio-image-tag-row",role:"listitem"});
       const picked=imageTagPicked.has(t.toLowerCase());
@@ -13701,6 +13784,7 @@ function renderCaptionStudio(host,items,ext){
       });
       row.append(button);tags.append(row);
     }
+    tags.scrollTop=previousScroll;
     word.textContent=String(distinct.length)+" tags · "+String(ta.value.trim()?ta.value.trim().split(/\\s+/).length:0)+" words";
     if(captionMode==="prose"||naturalMode)captionText.value=existingText();
   };
@@ -13850,7 +13934,7 @@ function renderCaptionStudio(host,items,ext){
   center.append(
     el("div",{class:"field-row studio-caption-head"},
       el("strong",{text:"Caption"})),
-    el("div",{class:"studio-preview"},mediaFor(current,true)),
+    el("div",{class:"studio-preview"},captionStageMediaFor(current)),
     ta,word,
     pictureActions,note);
   const newTag=el("input",{placeholder:"Add tag · Enter to save",type:"text",
@@ -13888,6 +13972,11 @@ function renderCaptionStudio(host,items,ext){
     tagIndex={items:S.cap.items,rev,sorted:[...counts].sort((a,b)=>b[1]-a[1])};
     S.cap.studioTagCache=tagIndex;
   }
+  // Normalize tag names once per dataset revision. Both autocomplete and
+  // All Tags search reuse these entries instead of lowercasing the entire
+  // vocabulary at every keystroke.
+  if(!tagIndex.searchRows)tagIndex.searchRows=
+    tagIndex.sorted.map(([tag,count])=>[tag,count,tag.toLocaleLowerCase()]);
   const getTokenCounts=async()=>{
     const cache=S.cap.studioTokenCounts;
     if(cache?.family===S.family&&cache?.items===S.cap.items&&cache?.rev===rev)return cache.counts;
@@ -13901,39 +13990,94 @@ function renderCaptionStudio(host,items,ext){
   // distinguish selecting an option from typing across browsers.
   let autoPrefs={};
   try{autoPrefs=JSON.parse(localStorage.getItem("fizgig.caption-workbench.settings.v1")||"{}")||{};}catch(_){}
-  const updateSuggestions=()=>{
-    const needle=newTag.value.trim().toLocaleLowerCase();
+  let suggestionFrame=0,lastSuggestionKey=null,suggestionChoices=[],activeSuggestion=-1;
+  const highlightSuggestion=()=>{
+    const buttons=tagSuggestionList.querySelectorAll(".studio-add-tag-suggestion");
+    buttons.forEach((option,i)=>option.classList.toggle("is-active",i===activeSuggestion));
+    if(activeSuggestion>=0&&buttons[activeSuggestion])
+      newTag.setAttribute("aria-activedescendant",buttons[activeSuggestion].id);
+    else newTag.removeAttribute("aria-activedescendant");
+  };
+  const chooseSuggestion=tag=>{
+    if(!tag)return;
+    addTag(tag);
+    lastSuggestionKey=null;
+    suggestionChoices=[];activeSuggestion=-1;
+    tagSuggestionList.hidden=true;
     tagSuggestionList.replaceChildren();
+    newTag.removeAttribute("aria-activedescendant");
+    newTag.focus({preventScroll:true});
+  };
+  const updateSuggestions=()=>{
+    if(!newTag.isConnected)return;
+    const needle=newTag.value.trim().toLocaleLowerCase();
+    const caption=ta.value;
+    const key=needle+"\0"+caption;
     if(!needle||autoPrefs.autocomplete===false||newTag.disabled){
-      tagSuggestionList.hidden=true;return;
+      lastSuggestionKey=null;
+      suggestionChoices=[];activeSuggestion=-1;
+      if(tagSuggestionList.childElementCount)tagSuggestionList.replaceChildren();
+      tagSuggestionList.hidden=true;
+      newTag.removeAttribute("aria-activedescendant");
+      return;
     }
-    const existing=new Set(studioTokens(ta.value,"tags").map(t=>t.toLocaleLowerCase()));
-    const matches=tagIndex.sorted.filter(([tag])=>tag.toLocaleLowerCase().includes(needle)
-      &&!existing.has(tag.toLocaleLowerCase())).slice(0,8);
-    for(const [tag,count] of matches){
+    // Focus and input events can fire together; identical queries don't
+    // recreate dropdown buttons or force a layout.
+    if(key===lastSuggestionKey&&!tagSuggestionList.hidden)return;
+    lastSuggestionKey=key;
+    const existing=new Set(studioTokens(caption,"tags").map(t=>t.toLocaleLowerCase()));
+    suggestionChoices=CaptionStudioTags.findTagMatches(
+      tagIndex.searchRows,needle,existing,8);
+    activeSuggestion=-1;
+    const fragment=document.createDocumentFragment();
+    suggestionChoices.forEach(([tag,count],i)=>{
       const option=el("button",{type:"button",role:"option",
+        id:"studio-add-tag-option-"+i,
         class:"studio-add-tag-suggestion",text:tag+" ("+count+")",
         "aria-label":"Add tag "+tag});
-      option.addEventListener("click",()=>{
-        addTag(tag);
-        tagSuggestionList.hidden=true;
-        newTag.focus({preventScroll:true});
-      });
-      tagSuggestionList.append(option);
-    }
-    tagSuggestionList.hidden=!matches.length;
+      option.addEventListener("click",()=>chooseSuggestion(tag));
+      fragment.append(option);
+    });
+    tagSuggestionList.replaceChildren(fragment);
+    tagSuggestionList.hidden=!suggestionChoices.length;
+    newTag.removeAttribute("aria-activedescendant");
   };
-  newTag.addEventListener("input",updateSuggestions);
-  newTag.addEventListener("focus",updateSuggestions);
+  // Coalesce fast typing into a single search and DOM update per animation
+  // frame; the input remains instantly responsive.
+  const scheduleSuggestions=()=>{
+    if(suggestionFrame)cancelAnimationFrame(suggestionFrame);
+    suggestionFrame=requestAnimationFrame(()=>{
+      suggestionFrame=0;
+      updateSuggestions();
+    });
+  };
+  newTag.addEventListener("input",scheduleSuggestions);
+  newTag.addEventListener("focus",scheduleSuggestions);
   newTag.addEventListener("blur",()=>{
-    // Let a suggestion's pointerdown select it before dismissing.
+    // Let pointer-based suggestion selection finish before dismissing.
     setTimeout(()=>{if(!tagInputArea.contains(document.activeElement))
       tagSuggestionList.hidden=true;},120);
   });
   newTag.addEventListener("keydown",e=>{
-    if(e.key==="Escape"){tagSuggestionList.hidden=true;return;}
+    if(e.key==="Escape"){
+      tagSuggestionList.hidden=true;
+      newTag.removeAttribute("aria-activedescendant");
+      return;
+    }
+    if((e.key==="ArrowDown"||e.key==="ArrowUp")&&
+       !tagSuggestionList.hidden&&suggestionChoices.length){
+      e.preventDefault();
+      const count=suggestionChoices.length;
+      activeSuggestion=(activeSuggestion+(e.key==="ArrowDown"?1:-1)+count)%count;
+      highlightSuggestion();
+      return;
+    }
     if(e.key==="Enter"&&!e.isComposing){
-      e.preventDefault();addTag(newTag.value);
+      e.preventDefault();
+      const chosen=activeSuggestion>=0&&!tagSuggestionList.hidden
+        ? suggestionChoices[activeSuggestion]?.[0]:null;
+      if(chosen)chooseSuggestion(chosen);
+      else chooseSuggestion(newTag.value.trim());
       tagSuggestionList.hidden=true;
     }
   });
@@ -13956,6 +14100,7 @@ function renderCaptionStudio(host,items,ext){
     (sortDirection.value==="asc"?"token-asc":"token-desc");
   const updateTagSort=async()=>{
     const next=currentSort();
+    if(next===S.cap.studioTagSort)return;
     if(next.startsWith("token-")){
       try{await getTokenCounts();}catch(e){say("Tokenizer unavailable: "+e.message);return;}
     }
@@ -13976,6 +14121,7 @@ function renderCaptionStudio(host,items,ext){
     sorting==="token-desc"?(Number.isFinite(tokenNumber(b[0]))?tokenNumber(b[0]):-1)-
       (Number.isFinite(tokenNumber(a[0]))?tokenNumber(a[0]):-1)||a[0].localeCompare(b[0]):
     b[1]-a[1]||a[0].localeCompare(b[0]));
+  const searchableSorted=sorted.map(([tag,count])=>[tag,count,tag.toLocaleLowerCase()]);
   // TagBench All Tags is a compact, searchable vertical list; categories do not
   // occupy an extra select control on every row. Keep category assignment via
   // context menus and the existing category manager.
@@ -14124,15 +14270,27 @@ function renderCaptionStudio(host,items,ext){
     index.append(fragment);
     renderedTagRows=end;
   };
+  let displayedTagQuery=null,tagQueryFrame=0;
   const tagRows=()=>{
-    const search=indexSearch.value.trim().toLowerCase();
+    if(!index.isConnected&&displayedTagQuery!==null)return;
+    const search=indexSearch.value.trim().toLocaleLowerCase();
+    if(search===displayedTagQuery)return;
+    displayedTagQuery=search;
     S.cap.studioIndexSearch=indexSearch.value;
-    matchedTagRows=search?sorted.filter(([tag])=>tag.includes(search)):sorted;
+    matchedTagRows=CaptionStudioTags.findTagMatches(searchableSorted,search);
     renderedTagRows=0;
     index.replaceChildren();
     index.scrollTop=0;
     appendTagRows();
     tagCount.textContent=matchedTagRows.length+" / "+sorted.length+" Tags";
+  };
+  const scheduleTagRows=()=>{
+    S.cap.studioIndexSearch=indexSearch.value;
+    if(tagQueryFrame)return;
+    tagQueryFrame=requestAnimationFrame(()=>{
+      tagQueryFrame=0;
+      tagRows();
+    });
   };
   stabilizeTagScroll(index);
   let tagScrollLoadPending=false;
@@ -14146,7 +14304,7 @@ function renderCaptionStudio(host,items,ext){
         appendTagRows();
     });
   },{passive:true});
-  indexSearch.addEventListener("input",tagRows);
+  indexSearch.addEventListener("input",scheduleTagRows);
   tagRows();
   const indexMode=el("select",{class:"w-combo",title:"Explore tag frequencies and co-occurrences"});
   [["list","Tag list"],["waterfall","Frequency waterfall"],["constellation","Tag constellation"]]
@@ -14731,6 +14889,24 @@ function renderCaptionStudio(host,items,ext){
   // stage. The normal Tags button restores the caption editor and lists.
   const fullStage=el("section",{class:"studio-tb-explore",hidden:true,
     "aria-label":"Caption Workbench visual explorer"});
+  let mountedExploreView=null;
+  let exploreGeneration=0;
+  const clearExploreStage=()=>{
+    ++exploreGeneration; // prevents stale worker results from mounting
+    S.cap.studioGraphPending?.cancel?.();
+    S.cap.studioGraphPending=null;
+    for(const child of fullStage.children)child.dispose?.();
+    fullStage.replaceChildren();
+    // Keep no invisible Waterfall or Constellation graph alive.
+    S.cap.studioTagbenchGraph=null;
+    mountedExploreView=null;
+  };
+  S.cap.studioStageDispose=()=>{
+    clearExploreStage();
+    clearTimeout(prefetchTimer);
+    S.cap.studioThumbObserver?.disconnect();
+    S.cap.studioStageDispose=null;
+  };
   const openView=(mode)=>{
     const view=["list","waterfall","constellation"].includes(mode)?mode:"list";
     if(view!=="list"&&S.cap.imageEditing?.inline){
@@ -14741,6 +14917,10 @@ function renderCaptionStudio(host,items,ext){
       }).catch(e=>say("Image tools: "+e.message));
       return;
     }
+    // Reopening the already-mounted view must be a no-op. A dataset refresh
+    // rebuilds the stage through renderCaptions, not through this button.
+    if(mountedExploreView===view)return;
+    clearExploreStage();
     S.cap.studioExploreMode=view;
     indexMode.value="list";
     if(view==="list"){
@@ -14749,10 +14929,9 @@ function renderCaptionStudio(host,items,ext){
         renderCaptions();
         return;
       }
-      for(const child of fullStage.children)child.dispose?.();
       fullStage.hidden=true;
       layout.hidden=false;
-      fullStage.replaceChildren();
+      mountedExploreView=view;
       applySizes();
       // Match TagBench's active-image reveal when returning from Waterfall.
       requestAnimationFrame(()=>{
@@ -14760,10 +14939,9 @@ function renderCaptionStudio(host,items,ext){
           thumbs.revealPath?.(S.cap.studioPath);
       });
     }else{
-      for(const child of fullStage.children)child.dispose?.();
       layout.hidden=true;
       fullStage.hidden=false;
-      fullStage.replaceChildren();
+      mountedExploreView=view;
       if(view==="waterfall"){
         const chooseImage=(it,event)=>{
           if(!pickImage(it,event))return;
@@ -14796,20 +14974,19 @@ function renderCaptionStudio(host,items,ext){
         const revision=S.cap.studioRevision||0;
         const cache=S.cap.studioTagbenchGraph;
         const datasetKey=String(S.imageFolder||"")+"|"+ext;
-        let model;
-        if(cache?.key===datasetKey&&cache.items===S.cap.items&&cache.revision===revision)
-          model=cache.model;
-        else{
-          const allTags=S.cap.items.filter(it=>studioCaptionMode(it)==="tags")
-            .map(it=>({tags:studioTokens(it.caption,"tags")}));
-          model=CaptionStudioViz.tagbenchModel(allTags,categoryState);
-          S.cap.studioTagbenchGraph={key:datasetKey,items:S.cap.items,revision,model};
-        }
-        CaptionStudioViz.setTagbenchPalette(model.colors);
-        // Returning to Tags must apply the constellation palette even if no
-        // node was clicked (the Image Tags list was built before this graph).
-        S.cap.studioExploreNeedRedraw=true;
-        const network=CaptionStudioViz.tagbenchConstellation(model,tag=>{
+        const datasetItems=S.cap.items;
+        const generation=exploreGeneration;
+        const showGraph=model=>{
+          if(generation!==exploreGeneration||!model||
+             S.cap.studioExploreMode!=="constellation"||
+             S.cap.items!==datasetItems||(S.cap.studioRevision||0)!==revision)return;
+          CaptionStudioViz.setTagbenchPalette(model.colors);
+          S.cap.studioTagbenchPalette={key:datasetKey,revision,colors:model.colors};
+          categoryState.generatedColors=model.colors;
+          // The Image Tags palette is derived from this same model on return.
+          S.cap.studioExploreNeedRedraw=true;
+          const network=CaptionStudioViz.tagbenchConstellation(model,tag=>{
+
           S.cap.studioExplorePickedTag=tag;
           const exact=tag?JSON.stringify(tag):"";
           S.cap.studioQuery=exact;
@@ -14831,8 +15008,39 @@ function renderCaptionStudio(host,items,ext){
               S.cap.studioJumpToPath=first.path;
             }
           }
-        },S.cap.studioExplorePickedTag||null);
-        fullStage.append(network);
+          },S.cap.studioExplorePickedTag||null);
+          fullStage.replaceChildren(network);
+        };
+        if(cache?.key===datasetKey&&cache.items===datasetItems&&cache.revision===revision){
+          showGraph(cache.model);
+        }else{
+          fullStage.append(el("div",{class:"studio-graph-loading",role:"status",
+            text:"Building Constellation without blocking the editor…"}));
+          const pending=S.cap.studioGraphPending;
+          let work;
+          if(pending?.key===datasetKey&&pending.items===datasetItems&&pending.revision===revision)
+            work=pending.promise;
+          else{
+            const allTags=datasetItems.filter(it=>studioCaptionMode(it)==="tags")
+              .map(it=>({tags:studioTokens(it.caption,"tags")}));
+            work=captionGraphModelAsync(allTags,categoryState);
+            S.cap.studioGraphPending={key:datasetKey,items:datasetItems,revision,promise:work,
+              cancel:()=>work.cancel?.()};
+          }
+          work.then(model=>{
+            if(S.cap.studioGraphPending?.promise===work)S.cap.studioGraphPending=null;
+            if(generation===exploreGeneration&&S.cap.items===datasetItems&&
+               (S.cap.studioRevision||0)===revision)
+              S.cap.studioTagbenchGraph={key:datasetKey,items:datasetItems,revision,model};
+            showGraph(model);
+          }).catch(error=>{
+            if(S.cap.studioGraphPending?.promise===work)S.cap.studioGraphPending=null;
+            if(generation===exploreGeneration&&fullStage.isConnected&&
+               S.cap.studioExploreMode==="constellation")
+              fullStage.replaceChildren(el("div",{class:"studio-graph-loading",
+                role:"alert",text:"Constellation unavailable: "+error.message}));
+          });
+        }
       }
     }
     learningToggle.hidden=view==="constellation";

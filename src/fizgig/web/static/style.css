@@ -5060,6 +5060,7 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
 #tab-captions .studio-host .studio-add-tag-suggestion:hover,
+#tab-captions .studio-host .studio-add-tag-suggestion.is-active,
 #tab-captions .studio-host .studio-add-tag-suggestion:focus-visible{
   background:var(--accent-subtle);color:var(--text-primary);
 }

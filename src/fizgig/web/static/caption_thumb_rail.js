@@ -19,6 +19,17 @@ const CaptionThumbRail=(()=>{
       next=row;
     }
   }
+  // Pixel budget is derived from the actual displayed row dimensions.
+  // Portraits can reach the saved max-height setting even in a narrow rail;
+  // landscapes usually only need 160 or 224px. Keep four stable cache tiers.
+  function imageSizeForRow(railWidth,imageSize,pixelRatio=1,previewHeight=360){
+    const width=Math.max(36,(Math.max(36,railWidth)-20)*.85-14);
+    const ratio=imageSize?.[0]>0&&imageSize?.[1]>0?imageSize[1]/imageSize[0]:1;
+    const cap=Math.max(160,Math.min(720,Number(previewHeight)||360))*.85;
+    const height=Math.min(cap,width*ratio);
+    const pixels=Math.max(width,height)*Math.max(1,Math.min(1.5,pixelRatio||1));
+    return pixels<=160?160:pixels<=224?224:pixels<=320?320:384;
+  }
   function prefetchRange(start,end,total,direction,count=8){
     if(direction<0)return [Math.max(0,start-count),start];
     return [end,Math.min(total,end+count)];
@@ -34,8 +45,12 @@ const CaptionThumbRail=(()=>{
     prefetch(key,url){
       if(this.images.has(key)){
         const image=this.images.get(key);
-        this.images.delete(key);this.images.set(key,image);
-        return;
+        if(image.src===url){
+          this.images.delete(key);this.images.set(key,image);
+          return;
+        }
+        // Same picture may be resized to a different rail resolution.
+        this.images.delete(key);
       }
       // Keep decoded thumbnails bounded. The actual on-screen <img> remains
       // owned by the rail, not by this cache.
@@ -51,6 +66,6 @@ const CaptionThumbRail=(()=>{
         this.images.delete(this.images.keys().next().value);
     }
   }
-  return {reconcile,prefetchRange,ThumbPreloader};
+  return {reconcile,prefetchRange,imageSizeForRow,ThumbPreloader};
 })();
 if(typeof module!=="undefined"&&module.exports)module.exports=CaptionThumbRail;

@@ -42,6 +42,22 @@ assert.equal(T.captionWildcards(["lion, blue mane\nAt sunset", "lion, blue mane"
   "lion, blue mane At sunset\nlion, blue mane\n");
 assert.equal(T.captionWildcards([]), "");
 
+
+// Search index rows normalize once, then stop after the first eight ranked
+// suggestions; this must preserve frequency ordering and exclusion of tags
+// already assigned to the active image.
+const rows=[
+  ["Lion",42,"lion"],["fur",38,"fur"],["Blue fur",31,"blue fur"],
+  ["feline",25,"feline"],["lioness",13,"lioness"],["lion cub",9,"lion cub"]
+];
+assert.deepEqual(T.findTagMatches(rows,"Li"),[
+  rows[0],rows[3],rows[4],rows[5]]);
+assert.deepEqual(T.findTagMatches(rows,"",null),rows);
+assert.deepEqual(T.findTagMatches(rows,"fur",new Set(["fur"])),[rows[2]]);
+assert.deepEqual(T.findTagMatches(rows,"lion",new Set(["lion"]),1),[rows[4]]);
+const large=Array.from({length:10000},(_,i)=>["tag"+i,i,"tag"+i]);
+assert.equal(T.findTagMatches(large,"tag",null,8).length,8);
+assert.equal(T.findTagMatches(large,"tag9999",null,8)[0][0],"tag9999");
 console.log("Caption Studio tag parsing and Boolean filter checks passed");
 
 assert.equal(T.addFilter("", "red hair", "and"), '"red hair"');

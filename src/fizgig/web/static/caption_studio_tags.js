@@ -149,6 +149,25 @@ const CaptionStudioTags = (() => {
   const wildcards = (values, delimiter = ",") => unique(values).sort((a, b) => a.localeCompare(b))
     .join("\n") + (values.length ? "\n" : "");
 
+  // Searches are called on every keystroke, including when very large
+  // datasets have thousands of distinct tags. The caller prepares the third
+  // tuple field (lowercase tag) once per dataset revision, instead of doing
+  // locale normalization for every tag on every keypress.
+  // Stop as soon as the short autocomplete dropdown has enough suggestions.
+  function findTagMatches(rows, query, excluded=null, limit=Infinity) {
+    const needle=String(query||"").trim().toLocaleLowerCase();
+    if(!needle&&!excluded)return rows;
+    const found=[];
+    for(const row of rows){
+      const lower=row[2]??String(row[0]).toLocaleLowerCase();
+      if(needle&&!lower.includes(needle))continue;
+      if(excluded?.has(lower))continue;
+      found.push(row);
+      if(found.length>=limit)break;
+    }
+    return found;
+  }
+
   // A click in a menu should retain the selection until its action runs.
   // Only a tag button (or its inline rename input) owns list selection.
   function tagSelectionScope(target) {
@@ -168,6 +187,6 @@ const CaptionStudioTags = (() => {
   }
 
   return Object.freeze({kind, tags, compose, unique, search, compileSearch, addFilter,
-    order, captionWildcards, wildcards, tagSelectionScope, scopeTagSelections});
+    order, captionWildcards, wildcards, findTagMatches, tagSelectionScope, scopeTagSelections});
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = CaptionStudioTags;

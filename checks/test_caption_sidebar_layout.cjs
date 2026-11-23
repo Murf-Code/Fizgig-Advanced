@@ -39,7 +39,7 @@ assert.match(app,/const viewButtons=el\("div",\{class:"studio-view-rail"/);
 assert.match(app,/\[\["list","Tags"\],\["waterfall","Waterfall"\],\["constellation","Constellation"\]\]/);
 assert.match(app,/const openView=\(mode\)=>/);
 assert.match(app,/fullStage\.append\(flow\)/);
-assert.match(app,/fullStage\.append\(network\)/);
+assert.match(app,/fullStage\.replaceChildren\(network\)/);
 assert.match(app,/const flow=CaptionStudioViz\.tagbenchWaterfall\(/);
 assert.match(css,/#tab-captions \.studio-tb-explore\s*\{/);
 
@@ -69,12 +69,12 @@ assert.doesNotMatch(css,/#tab-captions \.studio-host \.studio-thumb-rail,[\s\S]*
 
 // Tags has a full-range virtualized scrollbar; only images in the visible
 // window are mounted. Cards/Table alone retain CAP_PAGE.
-assert.match(app,/function studioThumbGeometry\(items,railWidth,gap=14\)/);
+assert.match(app,/function studioThumbGeometry\(items,railWidth,gap=14,previewHeight=360\)/);
 assert.match(app,/function studioThumbIndex\(offsets,position\)/);
 assert.match(app,/const paintWindow=\(\)=>/);
 assert.doesNotMatch(app,/windowRows\.replaceChildren\(fragment\)/);
 assert.match(app,/const mountedThumbs=new Map\(\)/);
-assert.match(app,/thumbPreloader\.prefetch\(it\.path,thumbUrl\(it\.path\)\)/);
+assert.match(app,/thumbPreloader\.prefetch\(it\.path,thumbUrl\(it\)\)/);
 assert.match(app,/thumbs\.revealPath=path=>revealIndex\(/);
 assert.match(app,/new ResizeObserver\(/);
 assert.match(app,/thumbs\.addEventListener\("scroll",queueWindow,\{passive:true\}\)/);
@@ -99,11 +99,11 @@ assert.match(css,/Image Tags uses the same compact tag-list treatment as All Tag
 assert.match(css,/#tab-captions \.studio-host \.studio-image-tag,[\s\S]*?#tab-captions \.studio-host \.studio-tag-list-item \.studio-index-tag\{/);
 assert.match(css,/#tab-captions\.caption-theme-glass \.studio-host \.studio-image-tag::before/);
 
-// Tag entry uses one field with Enter or a real clickable suggestion.
+// Tag entry uses one field with Enter, click, or keyboard-navigable suggestions.
 assert.match(app,/const addTag=value=>/);
 assert.match(app,/newTag\.addEventListener\("keydown"/);
 assert.match(app,/if\(e\.key==="Enter"&&!e\.isComposing\)/);
-assert.match(app,/tagSuggestionList\.append\(option\)/);
+assert.match(app,/fragment\.append\(option\)/);
 assert.match(app,/option\.addEventListener\("click"/);
 assert.doesNotMatch(app,/newTag,btn\("Add"/);
 assert.doesNotMatch(app,/newTag\.parentElement\?\.querySelector\("button"\)/);
@@ -114,9 +114,10 @@ assert.doesNotMatch(app,/const catPanel=el\("details"/);
 assert.doesNotMatch(app,/const advancedTags=el\("details"/);
 assert.match(app,/studioTagColorMenu\(menu,tag,categoryState,renderCaptions\)/);
 assert.match(app,/tagColors:raw\.tagColors/);
-assert.match(app,/categoryState\.generatedColors=themeGraph\.model\.colors/);
-assert.match(app,/CaptionStudioViz\.setTagbenchPalette\(themeGraph\.model\.colors\)/);
-assert.match(app,/const model=CaptionStudioViz\.tagbenchModel\(graphTags,categoryState\)/);
+assert.match(app,/categoryState\.generatedColors=palette\|\|new Map\(\)/);
+assert.match(app,/CaptionStudioViz\.setTagbenchPalette\(palette\)/);
+assert.doesNotMatch(app,/const model=CaptionStudioViz\.tagbenchModel\(graphTags,categoryState\)/);
+assert.match(app,/work=captionGraphModelAsync\(allTags,categoryState\)/);
 assert.match(css,/studio-tag-color-swatches/);
 
 // Natural language replaces the lower All Tags list using the one autosaved
@@ -134,7 +135,7 @@ assert.match(app,/const imageTagButtons=new Map\(\)/);
 assert.match(app,/const syncImageTagSelection=before=>/);
 assert.doesNotMatch(app,/for\(const el of tags\.querySelectorAll\("button"\)\)/);
 assert.match(app,/const tagBatchSize=80/);
-assert.match(app,/indexSearch\.addEventListener\("input",tagRows\)/);
+assert.match(app,/indexSearch\.addEventListener\("input",scheduleTagRows\)/);
 assert.match(app,/if\(index\.parentElement!==explore\)explore\.replaceChildren\(index\)/);
 assert.match(app,/const tagHeader=el\("div",\{class:"studio-tag-header"\},headerTitle,rightDock\)/);
 assert.match(app,/Freeform caption\. Saved under the tags, after the first line break\./);
@@ -276,3 +277,12 @@ const html=fs.readFileSync("src/fizgig/web/static/index.html","utf8");
 assert.match(html,/<pre id="capLog" hidden aria-hidden="true" style="display:none"><\/pre>/);
 assert.doesNotMatch(html,/<div class="card-title">Log<\/div>/);
 assert.match(app,/const log = \$\("capLog"\)/);
+
+// CPU regression: neither searchable tags nor Constellation should be
+// repeatedly rebuilt on every keystroke or ordinary image selection.
+assert.match(app,/tagIndex\.searchRows\.map|tagIndex\.sorted\.map\(\(\[tag,count\]\)=>\[tag,count,tag\.toLocaleLowerCase\(\)\]\)/);
+assert.match(app,/CaptionStudioTags\.findTagMatches\(/);
+assert.match(app,/newTag\.addEventListener\("input",scheduleSuggestions\)/);
+assert.match(app,/requestAnimationFrame\(\(\)=>\{\s*tagQueryFrame=0;/);
+assert.match(app,/S\.cap\.studioGraphPending\?\.cancel\?\.\(\);/);
+assert.match(app,/const palette=S\.cap\.studioTagbenchPalette\?\.key===colorScope/);
