@@ -171,6 +171,16 @@ class NativeImageRail(QListView):
         self.setIconSize(QSize(THUMB_WIDTH, THUMB_WIDTH))
         self.setMinimumWidth(186)
         self.setMaximumWidth(340)
+        # Shared dark palette matches Fizgig's glass UI without adding widgets
+        # or per-row CSS/HTML work to the Qt paint loop.
+        self.setStyleSheet("""
+            QListView {background:#141b27; color:#e9effb; border:0;
+                       padding:5px; font:13px 'Segoe UI';}
+            QListView::item {border:1px solid transparent; border-radius:8px;
+                             padding:4px; margin:2px;}
+            QListView::item:selected {background:#263a55; border-color:#6690bb;}
+            QListView::item:hover:!selected {background:#202c3f;}
+        """)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._menu)
         self.doubleClicked.connect(
