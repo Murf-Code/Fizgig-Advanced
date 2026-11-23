@@ -10318,8 +10318,11 @@ function studioFrankUi() {
   $("stFrankNote").textContent = on ? "H3 Image + " + L.frankenstein[0] +
     ": 0 is the original base, 1 is H3 Video. 12 GB operation is experimental." :
     "Optional experimental block blending; regular LoRA Studio is unchanged.";
-  for (const id of ["stPrimaryRow", "stDonorRow", "stMixRows", "stDmixRows"])
+  // Never unhide standard epoch/LoRA mixing rows on a family that does not offer them.
+  for (const id of ["stPrimaryRow", "stDonorRow"])
     $(id).style.display = on ? "none" : "";
+  for (const id of ["stMixRows", "stDmixRows"])
+    $(id).style.display = on || L.kind === "video" ? "none" : "";
   $("stSaveCard").style.display = on ? "none" : "";
   $("stFrankCard").style.display = on ? "" : "none";
   for (const row of document.querySelectorAll("#stBlocks .st-block .st-row:not(.donor)")) {
