@@ -15431,21 +15431,50 @@ function renderCaptionStudio(host,items,ext){
   document.addEventListener("keydown",S.cap.studioEditMenuDismiss);
   editMenu.querySelector("summary").setAttribute("aria-label","Edit Tags options");
   const toolsRow=el("div",{class:"studio-main-actions"});
+  // Keep routine actions icon-only without losing their accessible labels.
+  const toolbarIcon=paths=>{
+    const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+    for(const [name,value] of Object.entries({viewBox:"0 0 24 24",
+      width:"18",height:"18",fill:"none",stroke:"currentColor",
+      "stroke-width":"1.8","stroke-linecap":"round",
+      "stroke-linejoin":"round","aria-hidden":"true"}))svg.setAttribute(name,value);
+    for(const d of paths){
+      const path=document.createElementNS("http://www.w3.org/2000/svg","path");
+      path.setAttribute("d",d);svg.append(path);
+    }
+    return svg;
+  };
   const settingsBtn=btn("Settings",()=>captionWorkbenchSettingsOpen());
+  settingsBtn.classList.add("studio-icon-action");
+  settingsBtn.setAttribute("aria-label","Settings");
+  settingsBtn.title="Settings";
+  settingsBtn.replaceChildren(toolbarIcon(["M4 7h16","M4 17h16","M8 4v6","M16 14v6"]));
   const refreshBtn=btn("Refresh",async()=>{
     if(refreshBtn.disabled)return;
     refreshBtn.disabled=true;
-    refreshBtn.textContent="Refreshing…";
+    refreshBtn.classList.add("is-refreshing");
+    refreshBtn.setAttribute("aria-busy","true");
     try{
       // Re-list from disk, including images manually restored from removed/.
       // This must not move or restore files automatically.
       await loadCaptions();
     }catch(error){
       alert("Dataset refresh failed: "+error.message);
-      if(refreshBtn.isConnected){refreshBtn.disabled=false;refreshBtn.textContent="Refresh";}
+    }finally{
+      if(refreshBtn.isConnected){
+        refreshBtn.disabled=false;
+        refreshBtn.classList.remove("is-refreshing");
+        refreshBtn.removeAttribute("aria-busy");
+      }
     }
   });
+  refreshBtn.classList.add("studio-icon-action");
   refreshBtn.title="Reload images and captions from the dataset folder";
+  refreshBtn.setAttribute("aria-label","Refresh dataset images and captions");
+  refreshBtn.replaceChildren(toolbarIcon([
+    "M20 11a8 8 0 0 0-14-5L4 8","M4 4v4h4",
+    "M4 13a8 8 0 0 0 14 5l2-2","M20 20v-4h-4"
+  ]));
   const existingWildcard=exportWildcard;
   const dupBtn=btn("Find Duplicate Images",()=>{
     document.querySelector(".caption-duplicates-backdrop")?.remove();
@@ -15489,9 +15518,40 @@ function renderCaptionStudio(host,items,ext){
     });
     dialog.focus({preventScroll:true});
   });
+  // Secondary tasks share one anchored menu, preserving their original callbacks.
+  const toolsMenu=el("details",{class:"studio-tools-menu"});
+  const toolsOptions=el("div",{class:"studio-tools-options"});
+  dupBtn.classList.add("studio-tools-action");
+  toolsOptions.append(dupBtn);
+  if(existingWildcard){
+    existingWildcard.classList.add("studio-tools-action");
+    toolsOptions.append(existingWildcard);
+  }
+  toolsMenu.append(el("summary",{text:"Tools",
+    title:"Find Duplicate Images or export caption wildcard"}),toolsOptions);
+  toolsOptions.addEventListener("click",event=>{
+    if(event.target.closest("button"))toolsMenu.open=false;
+  });
+  if(S.cap.studioToolsMenuDismiss){
+    document.removeEventListener("pointerdown",S.cap.studioToolsMenuDismiss);
+    document.removeEventListener("keydown",S.cap.studioToolsMenuDismiss);
+  }
+  S.cap.studioToolsMenuDismiss=event=>{
+    if(!toolsMenu.open)return;
+    if(event.type==="pointerdown"&&!toolsMenu.contains(event.target)){
+      toolsMenu.open=false;
+    }else if(event.type==="keydown"&&event.key==="Escape"){
+      toolsMenu.open=false;
+      toolsMenu.querySelector("summary")?.focus({preventScroll:true});
+      event.preventDefault();
+    }
+  };
+  document.addEventListener("pointerdown",S.cap.studioToolsMenuDismiss);
+  document.addEventListener("keydown",S.cap.studioToolsMenuDismiss);
+  toolsMenu.addEventListener("toggle",()=>{if(toolsMenu.open)editMenu.open=false;});
+  editMenu.addEventListener("toggle",()=>{if(editMenu.open)toolsMenu.open=false;});
   const actionBar=el("nav",{class:"studio-top-actions","aria-label":"Caption Workbench tools"},
-    settingsBtn,refreshBtn,editMenu,dupBtn);
-  if(existingWildcard)actionBar.append(existingWildcard);
+    settingsBtn,refreshBtn,editMenu,toolsMenu);
   // TagBench's Waterfall and Constellation replace the ENTIRE three-panel
   // stage. The normal Tags button restores the caption editor and lists.
   const fullStage=el("section",{class:"studio-tb-explore",hidden:true,
@@ -15692,10 +15752,10 @@ function renderCaptionStudio(host,items,ext){
   });
   const learningToggle=el("label",{class:"studio-learning-toggle",
     title:"Show Loss Watch status rings and enable filtering images by their training verdict. Selected-image rings remain unchanged."},
-    learningCheck,el("span",{text:"Loss Status"}));
+    learningCheck,el("span",{text:"Loss"}));
   const learningFilter=el("label",{class:"studio-learning-filter-label",
-    hidden:!learningCheck.checked},
-    el("span",{text:"Image status"}),createLearningFilterSelect());
+    hidden:!learningCheck.checked,title:"Filter images by loss status"},
+    createLearningFilterSelect());
   actionBar.append(learningToggle,learningFilter,viewButtons,liveStatus);
   // TagBench shortcut parity. Only active inside Caption Workbench, and never
   // steals native typing shortcuts or Image Prep's own canvas bindings.
