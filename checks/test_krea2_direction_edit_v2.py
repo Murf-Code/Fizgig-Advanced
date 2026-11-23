@@ -455,6 +455,66 @@ def test_auto_selection_prefers_frequent_confirmed_targets():
     assert combined["targets"] == ["tag15", "tag01", "tag02"], combined
     assert len(combined["targets"]) == 3
 
+def test_direct_auto_candidate_pool_uses_frequency_only():
+    """Common tags reach direct testing even without caption-ablation suppression."""
+    d = make_folder(n=100)
+    cfg = de.make_config({"direction_edit_caption_folder": d,
+                          "direction_edit_target_tags": "tag00",
+                          "direction_edit_scan": "1"})
+    cfg.update(scan_direct_auto=True, scan_min_count=8, scan_auto_top_fraction=0.25,
+               scan_max_tags=500, scan_targets=4)
+    cfg = de._normalise(cfg)
+    prompts, pairs, meta = de.plan_scan(cfg)
+    assert prompts and pairs
+    dit = os.path.join(tempfile.mkdtemp(prefix="de_direct_auto_"), "fake_dit.safetensors")
+    open(dit, "wb").write(b"x")
+    # The direct-auto path must never require Qwen or run scan_measure.
+    de._run_scan(cfg, None, dit_path=dit, te_path="unused", device=torch.device("cpu"),
+                 encoder=None, path_config=None, output_dir=d, output_name="check")
+    candidates = cfg["_calibration_auto_candidates"]
+    assert candidates
+    assert "tag00" not in candidates
+    expected = [meta["names"][key] for key in
+                sorted(meta["auto_keys"], key=lambda key: (-meta["counts"][key], key))
+                if key != "tag00"]
+    assert candidates == expected
+    assert cfg["target_tags"] == ["tag00"]
+    assert cfg["_calibration_manual_candidates"] == ["tag00"]
+    assert cfg["_calibration_preprobe"] is True
+    assert not set(de._norm(x) for x in candidates) & set(de._norm(x) for x in cfg["control_tags"])
+
+
+def test_direct_auto_final_order_ignores_caption_frequency():
+    """Frequency selects what to measure; only response determines final suppression ranking."""
+    candidates = ["most frequent", "less frequent", "strong concept", "middle frequent"]
+    outcomes = {
+        "most frequent": {"accepted": True, "relative_response": 0.80},
+        "less frequent": {"accepted": True, "relative_response": 0.20},
+        "strong concept": {"accepted": False, "relative_response": 1.15},
+        "middle frequent": {"accepted": True, "relative_response": 0.45},
+    }
+    assert de.select_direct_automatic(candidates, outcomes, 2) == [
+        "less frequent", "middle frequent"
+    ]
+    assert de.select_direct_automatic(candidates, outcomes, 5) == [
+        "less frequent", "middle frequent", "most frequent"
+    ]
+    assert de.select_direct_automatic(candidates, outcomes, 0) == []
+
+
+def test_direct_auto_only_preliminary_caption_sampling():
+    """No manually entered tags is valid when common automatic candidates await testing."""
+    d = make_folder(n=100)
+    cfg = de.make_config({"direction_edit_caption_folder": d, "direction_edit_scan": "1"})
+    cfg.update(scan_direct_auto=True, _calibration_auto_candidates=["tag04", "tag05"],
+               _calibration_preprobe=True, control_tags=["tag01", "tag02", "tag03"])
+    cfg = de._normalise(cfg)
+    de.apply_captions(cfg)
+    assert cfg["target_tags"] == []
+    assert len(cfg["base_prompts"]) >= 2
+    de.check_config(cfg)
+
+
 def test_manual_probe_keeps_weak_concept_not_strong_or_inconsistent():
     """Cat is strong, crying weak, and an inconsistent concept fails a split-half check."""
     controls = ["portrait", "dog", "lamp"]

@@ -103,6 +103,7 @@ DEFAULTS = {
     "activation_prompts": 8,            # prompts the input sizes are read from
     "ram_budget_gb": 6.0,               # encoded prompts beyond this go to a temp folder (0: keep all in RAM)
     "scan": False,                      # pick targets and controls by scanning the whole caption folder
+    "scan_direct_auto": False,          # calibration: frequency picks what to probe, controls test suppression
     "scan_min_count": 8,
     "scan_per_tag": 6,
     "scan_max_tags": 500,
@@ -276,6 +277,8 @@ def _normalise(cfg):
         cfg["auto_control_tags"] = _truthy(cfg["auto_control_tags"])
     cfg["render"] = bool(cfg["render"]) if isinstance(cfg["render"], bool) else _truthy(cfg["render"])
     cfg["scan"] = bool(cfg["scan"]) if isinstance(cfg["scan"], bool) else _truthy(cfg["scan"])
+    cfg["scan_direct_auto"] = (bool(cfg["scan_direct_auto"]) if isinstance(cfg["scan_direct_auto"], bool)
+                               else _truthy(cfg["scan_direct_auto"]))
     cfg["column_select"] = str(cfg["column_select"]).strip().lower()
     if cfg["column_select"] not in ("activation", "weight"):
         raise ValueError("column_select must be activation or weight.")
@@ -307,7 +310,7 @@ def _needed(bases, targets, controls):
 def check_config(cfg):
     """What the measurement needs: at least 1 target, 3 controls and 2 base prompts (in every round), and no tag on
     both lists."""
-    if len(cfg["target_tags"]) < 1:
+    if len(cfg["target_tags"]) < 1 and not cfg.get("_calibration_preprobe"):
         raise ValueError("list at least 1 target tag.")
     plan = _plan(cfg)
     if int(cfg.get("rounds", 1)) > 1 and len(plan) < 2:
@@ -530,7 +533,7 @@ def apply_captions(cfg):
     files = sorted(caps)
     tag_lists = [split_tags(caps[f]) for f in files]
     targets, listed = cfg["target_tags"], list(cfg["control_tags"])
-    if not targets:
+    if not targets and not cfg.get("_calibration_auto_candidates"):
         raise ValueError("caption mode needs at least 1 target tag (Target tags).")
     auto = cfg.get("auto_control_tags")
     n_rounds = max(1, int(cfg.get("rounds", 1)))
@@ -1190,6 +1193,37 @@ def scan_select(cfg, pairs, rows, meta, requested_targets=None):
 
 
 
+def select_direct_automatic(candidates, outcomes, limit):
+    """Choose successfully probed automatic candidates by direct response only.
+
+    Their caption frequency got them into the candidate pool; it is not a
+    suppression score and never influences selection after the probe.
+    """
+    passed = [tag for tag in candidates if outcomes[tag]["accepted"]]
+    passed.sort(key=lambda tag: (outcomes[tag]["relative_response"], _norm(tag)))
+    return passed[:max(0, int(limit))]
+
+
+def calibration_probe_bases(bases, targets, controls, limit=16):
+    """Neutral contexts for direct text/control probes, with probed concepts absent from each base.
+
+    Every candidate must be tested with its actual appended contribution rather than simply
+    repeating a tag already present in a dataset caption. A few generic contexts provide
+    coverage when stripping frequent tags leaves sparse dataset captions.
+    """
+    excluded = targets + controls
+    out = []
+    for prompt in list(bases) + list(SAMPLE_CONFIG["base_prompts"]):
+        kept = strip_tags(split_tags(prompt), excluded)
+        if kept:
+            value = ", ".join(kept)
+            if value not in out:
+                out.append(value)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def manual_control_probe(rel, targets, controls, stage="txtmlp"):
     """Check each manual concept directly against the same controls over paired base prompts.
 
@@ -1214,10 +1248,31 @@ def manual_control_probe(rel, targets, controls, stage="txtmlp"):
 
 
 def _run_scan(cfg, store, *, dit_path, te_path, device, encoder, path_config, output_dir, output_name):
-    """Measure tags found in training captions and select suppressed targets and suitable controls."""
+    """Discover frequent candidate tags; direct-auto mode probes them against controls later."""
     if not dit_path or not os.path.isfile(dit_path):
         raise ValueError(f"the Krea 2 DiT {dit_path!r} doesn't exist.")
     prompts, pairs, meta = plan_scan(cfg)
+    if cfg.get("scan_direct_auto"):
+        # Frequency determines ONLY the candidate pool, never suppression.
+        # Common candidates will face the exact same text/control probe as
+        # manually entered targets, not the caption-ablation z cutoff.
+        manual = list(dict.fromkeys(cfg.get("target_tags") or []))
+        manual_norm = {_norm(t) for t in manual}
+        ordered_keys = sorted(meta["auto_keys"], key=lambda key: (-meta["counts"][key], key))
+        auto_pool = [meta["names"][key] for key in ordered_keys if key not in manual_norm]
+        controls = builtin_controls(manual + auto_pool, seed=cfg["caption_seed"])
+        cfg["target_tags"] = manual
+        cfg["control_tags"] = controls
+        cfg["auto_control_tags"] = False
+        cfg["_calibration_manual_candidates"] = manual
+        cfg["_calibration_auto_candidates"] = auto_pool
+        cfg["_calibration_preprobe"] = True
+        logger.info("[calibration] frequent-tag discovery: testing %d common tags from %d eligible; "
+                    "frequency selects candidates only (auto allowance %d)",
+                    len(auto_pool), meta["frequent_count"], cfg["scan_targets"])
+        logger.info("[calibration] direct target/control candidates: %d manual + %d automatic; %d controls",
+                    len(manual), len(auto_pool), len(controls))
+        return
     if pairs:
         encode_prompts(prompts, te_path, device, encoder=encoder, store=store)
         path = load_fusion_path(dit_path, path_config, device=device, dtype=DTYPES[cfg["compute_dtype"]])
@@ -1415,7 +1470,7 @@ def run_direction_edit(cfg, *, dit_path, te_path, vae_path=None, output_dir, out
         if cfg.get("scan"):
             _run_scan(cfg, store, dit_path=dit_path, te_path=te_path, device=device, encoder=encoder,
                       path_config=path_config, output_dir=output_dir, output_name=output_name)
-            if not cfg.get("target_tags"):
+            if not cfg.get("target_tags") and not cfg.get("_calibration_auto_candidates"):
                 return {"status": "skipped", "verify": None}
         apply_captions(cfg)
         held = cfg.get("verification_records") or {}
@@ -1429,7 +1484,21 @@ def run_direction_edit(cfg, *, dit_path, te_path, vae_path=None, output_dir, out
         check_config(cfg)
         if not dit_path or not os.path.isfile(dit_path):
             raise ValueError(f"the Krea 2 DiT {dit_path!r} doesn't exist.")
-        prompts = prompt_list(cfg)
+        manual_candidates = list(cfg.get("_calibration_manual_candidates") or [])
+        auto_candidates = list(cfg.get("_calibration_auto_candidates") or [])
+        all_probe_targets = manual_candidates + auto_candidates
+        direct_auto = bool(cfg.get("scan_direct_auto") and auto_candidates)
+        if direct_auto:
+            # Keep final-prompt encoding complete before the text encoder is
+            # unloaded, even though the final target subset is not known yet.
+            provisional = {**cfg, "target_tags": all_probe_targets}
+            probe_bases = calibration_probe_bases(cfg["base_prompts"], all_probe_targets,
+                                                 cfg["control_tags"])
+            probe_prompts = _needed(probe_bases, all_probe_targets, cfg["control_tags"])
+            prompts = list(dict.fromkeys(prompt_list(provisional) + probe_prompts))
+        else:
+            probe_bases = cfg["base_prompts"]
+            prompts = prompt_list(cfg)
         render_conds = None
         if cfg["render"]:
             from fizgig.families.description import GENERAL_NEGATIVE
@@ -1446,12 +1515,12 @@ def run_direction_edit(cfg, *, dit_path, te_path, vae_path=None, output_dir, out
         else:
             encode_prompts(prompts, te_path, device, encoder=encoder, store=store)
         path = load_fusion_path(dit_path, path_config, device=device, dtype=DTYPES[cfg["compute_dtype"]])
-        manual_candidates = list(cfg.get("_calibration_manual_candidates") or [])
-        if manual_candidates:
-            probe_cfg = {**cfg, "target_tags": manual_candidates}
-            probe_prompts = _needed(cfg["base_prompts"], manual_candidates, cfg["control_tags"])
-            probe_rel = contributions(measure(path, store, probe_prompts), probe_cfg)[1]
-            outcomes = manual_control_probe(probe_rel, manual_candidates, cfg["control_tags"],
+        if manual_candidates or direct_auto:
+            probe_targets = all_probe_targets if direct_auto else manual_candidates
+            probe_cfg = {**cfg, "target_tags": probe_targets, "base_prompts": probe_bases}
+            measured = _needed(probe_bases, probe_targets, cfg["control_tags"])
+            probe_rel = contributions(measure(path, store, measured), probe_cfg)[1]
+            outcomes = manual_control_probe(probe_rel, probe_targets, cfg["control_tags"],
                                             stage=cfg.get("score_stage") or "txtmlp")
             kept_manual = []
             for tag in manual_candidates:
@@ -1463,9 +1532,26 @@ def run_direction_edit(cfg, *, dit_path, te_path, vae_path=None, output_dir, out
                             outcome["relative_response"], halves[0], halves[1])
                 if outcome["accepted"]:
                     kept_manual.append(tag)
-            cfg["target_tags"] = kept_manual + list(cfg.get("_calibration_auto_candidates") or [])
+            if direct_auto:
+                # The direct response ranks qualified auto candidates; caption
+                # frequency has no influence once a candidate has been tested.
+                kept_auto = select_direct_automatic(auto_candidates, outcomes, cfg["scan_targets"])
+                chosen_auto = {_norm(t) for t in kept_auto}
+                for tag in auto_candidates:
+                    result = outcomes[tag]
+                    reason = ("selected" if _norm(tag) in chosen_auto else
+                              "below auto selection cutoff" if result["accepted"] else
+                              "not consistently weaker than controls")
+                    logger.info("[calibration] automatic direct probe: %s %s "
+                                "(response %.2fx controls; %s)",
+                                tag, "qualified" if result["accepted"] else "rejected",
+                                result["relative_response"], reason)
+            else:
+                kept_auto = list(cfg.get("_calibration_auto_candidates") or [])
+            cfg["target_tags"] = kept_manual + kept_auto
+            cfg.pop("_calibration_preprobe", None)
             logger.info("[calibration] targets after direct control probe: %d manual + %d automatic",
-                        len(kept_manual), len(cfg.get("_calibration_auto_candidates") or []))
+                        len(kept_manual), len(kept_auto))
             if not cfg["target_tags"]:
                 logger.info("[calibration] no measurable suppressed targets remain; skipping edit")
                 return {"status": "skipped", "verify": None}

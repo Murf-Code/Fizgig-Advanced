@@ -136,6 +136,9 @@ def _prepare_krea2_direction_edit(desc, family_options, network_type, slider, fi
         # Automatic discovery considers the highest-frequency quarter of tags,
         # while uncommon concepts can still be manually requested.
         cfg["scan_auto_top_fraction"] = 0.25
+        # Frequency selects candidates only. The direct text/control probe
+        # determines suppression and fills the additional 4% auto allowance.
+        cfg["scan_direct_auto"] = True
         cfg["scan_controls"] = 12
         cfg["scan_z"] = 1.0
         cfg["scan_stage"] = "rf_1"
