@@ -2699,13 +2699,15 @@ def plan(desc, inputs):
                              f"{txt} caption cache(s) need updating; reusing everything else.\n")
             if (lat or txt) and resuming:
                 inputs["recache"] = True
-    if (resuming and inputs.get("enable_cache", True)
-            and (cache_checked is None or (stage_cfg and stage_cache_checked is None))):
-        # A partially known cache cannot be proven current. Run the existing incremental
-        # stages rather than silently training against changed captions or pictures.
+    if (resuming and inputs.get("enable_cache", True) and cache_checked is not None
+            and stage_cfg and stage_cache_checked is None):
+        # The first-stage cache has an unknown layout: don't omit its incremental
+        # verification just because the main-resolution cache is complete.
         inputs["recache"] = True
-    if cache_checked is None and resuming and inputs.get("enable_cache", True):
-        # Legacy/complex cache layout: report any missing cache files on resume.
+    if cache_checked is None and resuming and not inputs.get("recache") and inputs.get("enable_cache", True):
+        # Legacy/complex layouts keep their established resume behavior: only
+        # recheck when something is missing, instead of scanning every video/paired
+        # image again on every resume. The strict fast path above covers plain photos.
         # Hold-outs are taken from this Start, not the returned list on disk.
         n = uncached_pictures(p.dataset_toml, held_paths=holdout_paths)
         if n:
