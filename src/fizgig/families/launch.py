@@ -1463,7 +1463,24 @@ def train_command(desc, inputs, plan):
         cmd += ["--dop", "--dop_weight", f"{weight * every:g}", "--dop_every", str(every)]
         if trig:
             cmd += ["--dop_trigger", ", ".join(trig), "--dop_class", ", ".join(cls)]
-    _val = bool(st.get("VALIDATION_LOSS")) and str(st.get("VALIDATION_LOSS")).lower() not in ("false", "0", "off")
+    best_mode = {"Smoothed training loss": "train", "Fixed validation loss": "validation",
+                 "train": "train", "validation": "validation"}.get(str(st.get("BEST_CHECKPOINT_MODE") or "Off"), "off")
+    if best_mode != "off" and not ft_on(desc, st) and not slider_on(desc, st, "prompts"):
+        from fizgig.training.best_checkpoint import DEFAULT_WINDOW, DEFAULT_COOLDOWN, DEFAULT_MIN_DELTA
+        def _best_number(key, default, lo, hi, cast):
+            try:
+                return cast(max(lo, min(hi, float(st.get(key) or default))))
+            except (TypeError, ValueError, OverflowError):
+                return cast(default)
+        cmd += ["--best_checkpoint_mode", best_mode,
+                "--best_checkpoint_window", str(_best_number("BEST_CHECKPOINT_WINDOW", DEFAULT_WINDOW, 2, 8192, int)),
+                "--best_checkpoint_cooldown", str(_best_number("BEST_CHECKPOINT_COOLDOWN", DEFAULT_COOLDOWN, 1, 1000000, int)),
+                "--best_checkpoint_min_delta",
+                str(_best_number("BEST_CHECKPOINT_MIN_DELTA", DEFAULT_MIN_DELTA * 100, 0, 100, float) / 100)]
+    else:
+        best_mode = "off"
+    _val = ((bool(st.get("VALIDATION_LOSS")) and str(st.get("VALIDATION_LOSS")).lower()
+             not in ("false", "0", "off")) or best_mode == "validation")
     if _val or st.get("_holdout_file"):     # the validation hold-out (on by default) checks its pictures every epoch
         from fizgig.training.val_pick import picked_list, validation_every_steps
         def _vi(key, dflt):
