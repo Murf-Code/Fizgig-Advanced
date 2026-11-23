@@ -1181,6 +1181,54 @@
                 <span class="field-hint" id="stSetupMsg"></span></div>
             </div>
           </div>
+          <details class="section-card" id="stBaseMixPanel">
+            <summary class="card-title" style="cursor:pointer">
+              Experimental · Base checkpoint mixer
+              <span class="field-hint">MOSS / Anima / Krea 2 / SDXL · CPU streamed</span>
+            </summary>
+            <div class="card-content">
+              <p class="field-hint">Mix two checkpoints of the <strong>same architecture</strong>, block by block,
+                and export a new standalone model. This uses CPU and disk streaming, not GPU rendering.
+                Training, regular Studio LoRA repair, and the original files are unaffected.
+                Quantized weights and incompatible layouts are refused.</p>
+              <div class="field-row"><label class="field-label" for="stBaseMixFamily">Architecture:</label>
+                <select class="w-combo" id="stBaseMixFamily">
+                  <option value="moss_image">MOSS-Image</option>
+                  <option value="anima">Anima</option>
+                  <option value="krea2">Krea 2</option>
+                  <option value="sdxl">SDXL / Illustrious</option>
+                </select></div>
+              <div class="field-row"><label class="field-label" for="stBaseMixA">Base:</label>
+                <input class="w-path" type="text" id="stBaseMixA" placeholder="Original model checkpoint (.safetensors)">
+                <button class="btn" id="stBaseMixAPick">Choose…</button></div>
+              <div class="field-row"><label class="field-label" for="stBaseMixB">Blend in:</label>
+                <input class="w-path" type="text" id="stBaseMixB" placeholder="Another compatible checkpoint (.safetensors)">
+                <button class="btn" id="stBaseMixBPick">Choose…</button></div>
+              <div class="field-row">
+                <button class="btn" id="stBaseMixInspect">Check compatibility</button>
+                <span class="field-hint" id="stBaseMixInfo"></span>
+              </div>
+              <div id="stBaseMixControls" style="display:none">
+                <div class="field-row">
+                  <span class="field-label">Block weights:</span>
+                  <button class="btn btn-sm" data-base-mix-all="0">Reset</button>
+                  <button class="btn btn-sm" data-base-mix-all="0.25">All 0.25</button>
+                  <button class="btn btn-sm" data-base-mix-all="0.5">All 0.50</button>
+                  <span class="field-hint">0 = original · 1 = donor. Large global blends may damage quality.</span>
+                </div>
+                <div id="stBaseMixBlocks" style="max-height:320px;overflow-y:auto;padding:8px 0"></div>
+                <div class="field-row"><label class="field-label" for="stBaseMixOut">Export as:</label>
+                  <input class="w-path" type="text" id="stBaseMixOut" placeholder="New standalone .safetensors checkpoint">
+                  <button class="btn" id="stBaseMixOutPick">Folder…</button></div>
+                <div class="field-row">
+                  <button class="btn btn-primary" id="stBaseMixExport">Save merged checkpoint</button>
+                  <button class="btn" id="stBaseMixCancel" disabled>Cancel export</button>
+                </div>
+                <progress id="stBaseMixProgress" max="100" value="0" style="width:100%;display:none"></progress>
+              </div>
+              <div class="field-hint" id="stBaseMixStatus" role="status" aria-live="polite"></div>
+            </div>
+          </details>
           <div class="section-card" id="stFrames" style="display:none">
             <div class="card-title" id="stFramesTitle">First / Last Frame</div>
             <div class="card-desc" id="stFramesDesc">Optional: photos the clip starts and ends on. Each is cropped to the
