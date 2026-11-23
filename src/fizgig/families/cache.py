@@ -49,7 +49,7 @@ def _latent_key(latent):
     return "latent_" + "x".join(str(d) for d in latent.shape[1:])
 
 
-def save_latents(desc, item, latent, controls=(), extra=None):
+def save_latents(desc, item, latent, controls=(), extra=None, vae_encoder=""):
     """extra: further tensors the driver stores beside the latent (e.g. a clip's audio rows), keyed as given."""
     os.makedirs(os.path.dirname(item.latent_cache_path), exist_ok=True)
     sd = {_latent_key(latent): _clean(latent, "latent", item.item_key)}
@@ -60,7 +60,8 @@ def save_latents(desc, item, latent, controls=(), extra=None):
     save_file(sd, item.latent_cache_path, metadata={
         "architecture": desc.arch_id, "width": str(item.original_size[0]), "height": str(item.original_size[1]),
         "dtype": dtype_to_str(latent.dtype), "format_version": FORMAT_VERSION, "source": source_stamp(item.item_key),
-        **({"alpha": item.alpha} if getattr(item, "alpha", "") else {})})
+        **({"alpha": item.alpha} if getattr(item, "alpha", "") else {}),
+        **({"vae_encoder": vae_encoder} if vae_encoder else {})})
 
 
 def _ref_sizes(item):
@@ -117,6 +118,30 @@ def encoder_stamp(model):
         return f"{os.path.basename(str(model))}:{os.path.getsize(model)}"
     except (OSError, TypeError):
         return os.path.basename(str(model or ""))
+
+
+def vae_stamp(model):
+    """Provenance for *new* latent caches: a replaced VAE invalidates its old latents.
+
+    Old latent caches predate this field and remain usable (their image-stamp and bucket
+    validation are unchanged). This avoids forcibly recaching a whole legacy dataset.
+    """
+    try:
+        st = os.stat(model)
+        return f"{os.path.basename(str(model))}:{st.st_size}:{st.st_mtime_ns}"
+    except (OSError, TypeError):
+        return ""
+
+
+def _vae_changed(path, stamp):
+    """Only an explicitly stamped latent cache can prove it came from a different VAE."""
+    try:
+        from safetensors import safe_open
+        with safe_open(path, framework="pt") as f:
+            was = (f.metadata() or {}).get("vae_encoder")
+        return bool(was and stamp and was != stamp)
+    except Exception:
+        return True
 
 
 def _has_controls(path):
@@ -240,7 +265,8 @@ def _stage(args, desc, driver, datasets, device, aux, pairs, variants=True):
         from fizgig.scripts.cache_latents import encode_datasets
         vae = _Lazy(lambda: driver.load_vae(args.model, device))
         # a cache from before the pairs were added (or after they were removed) no longer fits: re-encode it
-        args.needs_reencode = lambda path: _has_controls(path) != pairs
+        enc = vae_stamp(args.model)
+        args.needs_reencode = lambda path: _has_controls(path) != pairs or _vae_changed(path, enc)
         args.keep_alpha = desc.rgba
 
         def encode(batch):
@@ -251,7 +277,7 @@ def _stage(args, desc, driver, datasets, device, aux, pairs, variants=True):
                 ctrl = [driver.encode_images(vae(), [c])[0] for c in (it.control_content or [])]
                 logger.info(f"latent cache: {it.item_key} -> {tuple(z.shape)}"
                             + (f" + {len(ctrl)} before-image(s)" if ctrl else ""))
-                save_latents(desc, it, z, ctrl)
+                save_latents(desc, it, z, ctrl, vae_encoder=enc)
         encode_datasets(datasets, encode, args)
     else:
         from fizgig.scripts.cache_text import post_process, prepare_cache_files_and_paths, process_batches
