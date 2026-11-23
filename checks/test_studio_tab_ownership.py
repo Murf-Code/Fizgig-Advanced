@@ -43,6 +43,26 @@ def test_fresh_idle_studio_does_not_reject_unload():
             studio._S.update(prior)
 
 
+def test_unload_does_not_mark_its_own_tab_as_foreign(monkeypatch):
+    monkeypatch.setattr(studio, "stop_worker", lambda: None)
+    with studio._lock:
+        prior = studio._S.copy()
+        studio._S.update(load_session="my-tab", load_id=7, state="ready")
+    try:
+        studio.reset(studio_session="my-tab")
+        st = studio.status()
+        assert st["load_session"] == "my-tab"
+        assert st["load_id"] == 8
+        assert st["state"] == "idle"
+        studio.require_studio_session("my-tab")
+        with pytest.raises(ValueError, match="Another Studio tab"):
+            studio.require_studio_session("other-tab")
+    finally:
+        with studio._lock:
+            studio._S.clear()
+            studio._S.update(prior)
+
+
 def test_server_scopes_studio_mutations():
     from pathlib import Path
     server = (Path(__file__).resolve().parents[1] / "src/fizgig/web/server.py").read_text()
