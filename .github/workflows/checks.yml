@@ -22,6 +22,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r checks/requirements.txt
+      - name: Optional native Qt image shell source/bridge checks (headless)
+        run: |
+          python -m py_compile src/fizgig/web/qt_images.py src/fizgig/web/qt_caption_trial.py
+          node checks/test_qt_native_image_bridge.cjs
       - name: Caption Studio CPU optimization, lazy explorer and thumbnail cache
         run: |
           node checks/test_caption_cpu_perf.cjs
