@@ -25,9 +25,11 @@ from fizgig.utils.upright import orientation
 # to the regular stage when the generated dataset requests one.
 _SPECIAL = (
     "control_directory", "extra_reference_directory", "caption_replace",
-    "tag_shuffle", "tag_dropout", "caption_dropout", "keep_words",
+    "tag_shuffle", "tag_dropout", "caption_dropout",
     "caption_variants", "caption_variant_cap", "clip_megapixels",
 )
+# keep_words can be present even when tag shuffle/dropout is off: it is the
+# trigger word that would be kept first if those features were later enabled.
 
 
 def _header(path):
