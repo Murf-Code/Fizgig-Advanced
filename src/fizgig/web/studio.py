@@ -71,7 +71,7 @@ def _reader(proc):
             _event(ev)
     with _lock:
         if _S["proc"] is proc:
-            _S.update(proc=None, state="idle", rendering=False, status="The Studio worker stopped.", progress=None)
+            _S.update(proc=None, state="idle", rendering=False, primary_busy=False, status="The Studio worker stopped.", progress=None)
             if _R["state"] == "rendering":
                 _R.update(state="failed", error="The GPU worker stopped.", status="The GPU worker stopped.")
             for t in _T.values():
@@ -600,6 +600,7 @@ def reset(studio_session=""):
                   load_session=str(studio_session or ""),
                   state="idle", primary="", donor="", primary_blocks=[], donor_blocks=[], hash="", profile=None,
                   rendering=False, pending=None, progress=None, family="", status="Models unloaded.",
+                  primary_busy=False, render_setups={},
                   frankenstein="", frank_out="", frank_saving=None, frank_exported=None, frank_error="")
 
 
@@ -616,7 +617,7 @@ def stop_worker():
         pass
     with _lock:                                  # ours to stop: its reader says nothing when it ends
         if _S["proc"] is p:
-            _S.update(proc=None, sock=None, port=0)
+            _S.update(proc=None, sock=None, port=0, primary_busy=False)
             if _R["state"] == "rendering":
                 _R.update(state="failed", error="Stopped (the GPU was wanted elsewhere).", status="Stopped.")
             for t in _T.values():
