@@ -836,6 +836,8 @@ def main():
         else:
             os.environ.pop("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", None)
         _log("[app] WebView2 rendering: " + acceleration_warning(webview_args))
+        if os.environ.get("FIZGIG_WEBVIEW2_NO_BLUR") == "1":
+            _log("[app] DIAGNOSTIC: backdrop blur disabled in desktop WebView2 only")
         if gpu_disabled(_prefs()):
             _log("[app] App window GPU rendering DISABLED (Windows default or explicit preference). "
                  "Normal browsers maintain their own GPU settings. Enable GPU in Preferences if needed.")
@@ -970,6 +972,15 @@ def main():
             try:
                 if not zoom_keys_done[0]:
                     _install_zoom_keys()
+                # Optional one-session diagnostic, inspired by benchmarking
+                # Unsloth Studio's glass/blur composition costs. No persistent
+                # preference, CSS changes or normal-browser changes.
+                if os.name == "nt" and os.environ.get("FIZGIG_WEBVIEW2_NO_BLUR") == "1":
+                    window.evaluate_js(
+                        "(()=>{if(document.getElementById('fizgig-no-backdrop-blur'))return;"
+                        "const e=document.createElement('style');e.id='fizgig-no-backdrop-blur';"
+                        "e.textContent='*,*::before,*::after{backdrop-filter:none!important;"
+                        "-webkit-backdrop-filter:none!important}';document.head.append(e)})()")
                 cur = window.get_current_url() or ""
                 if _is_local(cur, port):
                     window.set_title("Fizgig")
