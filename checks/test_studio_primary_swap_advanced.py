@@ -106,7 +106,7 @@ def test_png_metadata_is_embedded(tmp_path):
     src = tmp_path / "preview.png"
     src.write_bytes(pixel)
     result = studio.png_with_setup(src, {"fizgig_repair_setup": 1, "values": {"seed": 42}})
-    assert result.startswith(b"\\x89PNG")
+    assert result.startswith(bytes([137, 80, 78, 71]))
     assert b"fizgig_studio_setup" in result
     assert b"seed" in result
 
