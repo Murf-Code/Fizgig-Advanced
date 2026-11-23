@@ -12566,7 +12566,7 @@ function captionDuplicatePanel(ext){
           preview.append(confirmBtn);
         }catch(e){detail.textContent=e.message;}
       }});
-      const removeBtn=el("button",{class:"btn btn-sm",text:"Remove unkept",onclick:async()=>{
+      const removeBtn=el("button",{class:"btn btn-sm",text:"Remove image/s",onclick:async()=>{
         const donors=selected();
         if(!donors.length){detail.textContent="All images are marked Keep; uncheck any you want to move out of training.";return;}
         if(draftExists(donors.map(d=>d.path))){
