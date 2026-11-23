@@ -72,6 +72,10 @@ jobs:
           python -m py_compile src/fizgig/web/server.py src/fizgig/web/image_loss.py src/fizgig/web/image_edit.py src/fizgig/web/caption_review.py src/fizgig/web/caption_batch_edit.py src/fizgig/web/captions.py src/fizgig/web/removed_images.py src/fizgig/web/caption_duplicates.py src/fizgig/families/trigger_check.py src/fizgig/scripts/batch_caption.py src/fizgig/scripts/translate_captions.py
       - name: Web UI scripts parse
         run: for f in src/fizgig/web/static/*.js; do node --check "$f"; done
+      - name: Studio cross-tab ownership and preview isolation regressions (#395)
+        run: |
+          python -m pytest checks/test_studio_tab_ownership.py -q
+          node checks/test_studio_tab_ownership.cjs
       - name: All browser scripts are served by HTTP routes
         run: node checks/test_web_static_routes.cjs
       - name: Caption Studio tag-query unit checks
