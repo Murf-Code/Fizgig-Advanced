@@ -1,9 +1,10 @@
 """WebView2 renderer defaults for Fizgig's Windows desktop shell.
 
-Keep WebView2's Chromium rendering configuration as close as possible to the
-normal Edge/Chrome browser. GPU disabling must be an explicit user choice;
-software video decoding remains available as a diagnostic/workaround for
-machines affected by a separate video decoder freeze.
+Keep WebView2's Chromium rendering settings independently configurable
+from Edge/Chrome. On Windows, prefer software GPU rendering by default after
+observed extreme WebView2 lag with GPU acceleration, while respecting explicit
+user choices. Linux keeps the earlier accelerated default. Software video
+decoding remains a separate opt-in compatibility workaround.
 
 This module intentionally imports no pywebview/Windows dependencies so it can
 be regression-tested without a desktop runtime.
