@@ -104,7 +104,8 @@ Under the hood, Caption Workbench uses **recycled native-scrolling thumbnail row
 
 - **Caption Workbench replaces the old captioning layout.** The selected picture gets the main stage; the thumbnail browser and tags panels resize to fit the window. Common actions use compact menus, shortcuts, or right-click instead of duplicate buttons.
 - **Safer, more informative editing.** Edit states, auto-save completion, pending writes, reviews and epoch re-cache status are easier to see. Image Prep's floating glass editor remains a separate tool for watermark/mask work.
-- **Training run controls and progress.** Pause/Stop/Save Now and run deletion use clearer state and confirmation behavior; step counters follow real in-epoch progress, including Global replay and resumed runs.
+- **Two-click Delete run.** In **Runs & Outputs**, click **Delete run** once and the same button changes to **Confirm** without moving. Click again within **30 seconds** to delete the run's saved checkpoints, resume states, previews and history entry; otherwise it returns to **Delete run**. Your training pictures and captions are never touched.
+- **Training controls and progress.** Pause, Stop and Save Now have clearer saved-state feedback; step counters follow the real in-epoch progress, including Global replay and resumed runs.
 - **GPU-accelerated desktop view by default.** After browser/WebView2 testing, the superseded native Qt image renderer was removed rather than maintaining two paths.
 - **Built for large datasets.** Thumbnail scrolling, preview caching, Waterfall and Constellation are designed to handle large image collections without keeping every image and graph calculation active at once.
 
