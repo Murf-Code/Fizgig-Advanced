@@ -1853,6 +1853,15 @@ input[type="radio"] { accent-color: var(--accent); width: 16px; height: 16px; ma
 .run-row-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .run-row-head b { font-size: 14px; color: var(--text-primary); overflow-wrap: anywhere; }
 .run-row .field-row { margin: 4px 0 0; }
+/* Keep the destructive action in exactly the same place as its label changes to Confirm. */
+.run-row .field-row > .btn.run-delete-btn {
+  box-sizing: border-box;
+  width: 116px;
+  min-width: 116px;
+  flex: 0 0 116px;
+  justify-content: center;
+  white-space: nowrap;
+}
 .run-files { margin-top: 6px; display: flex; flex-direction: column; gap: 10px; }
 .run-gallery { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 
