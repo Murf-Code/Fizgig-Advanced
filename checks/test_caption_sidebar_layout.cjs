@@ -316,3 +316,20 @@ assert.match(app,/newTag\.addEventListener\("input",scheduleSuggestions\)/);
 assert.match(app,/requestAnimationFrame\(\(\)=>\{\s*tagQueryFrame=0;/);
 assert.match(app,/S\.cap\.studioGraphPending\?\.cancel\?\.\(\);/);
 assert.match(app,/const palette=S\.cap\.studioTagbenchPalette\?\.key===colorScope/);
+
+
+// Thumbnail and center-image context menus reuse one keyboard-accessible
+// menu. The center preview targets exactly one image, never a bulk selection.
+assert.match(app,/oncontextmenu:e=>openImageMenu\(e,it\)/);
+assert.match(app,/const openImageMenu=\(e,it,\{preview=false\}=\{\}\)=>/);
+assert.match(app,/const targets=preview\?\[it\]:imageTargets\(it.path\)/);
+assert.match(app,/openImageMenu\(e,current,\{preview:true\}\)/);
+assert.match(app,/if\(S\.cap\.imageEditing\?\.inline\|\|!e\.target\.closest\("img"\)\)return/);
+assert.match(app,/action\("Open File Location","",\(\)=>revealImageFile\(it\)\)/);
+assert.match(app,/action\("Copy Caption","",\(\)=>copyImageText\(ta\.value,"caption"\)/);
+assert.match(app,/action\("Remove Tool","",\(\)=>selectInlineTool\("remove"\),!canEditPicture\)/);
+assert.match(app,/action\("Crop Tool","",\(\)=>selectInlineTool\("crop"\),!canEditPicture\)/);
+const server=fs.readFileSync("src/fizgig/web/server.py","utf8");
+assert.match(server,/if path == "\/api\/captions\/reveal_file":/);
+assert.match(server,/if on_pod\(\) or not self\._local_viewer\(\):/);
+assert.match(server,/from fizgig\.web\.file_location import reveal_file/);
