@@ -2,10 +2,27 @@ const assert = require("node:assert/strict");
 const T = require("../src/fizgig/web/static/caption_studio_tags.js");
 
 assert.equal(T.kind("ohwx, portrait, long hair"), "tags");
-assert.equal(T.kind("A curious lion poses for a photograph at sunset."), "prose");
-assert.equal(T.kind("A very long sentence without punctuation that describes a complex scene"), "prose");
-assert.deepEqual(T.tags("A person smiles, while sitting in a café."), []);
-assert.equal(T.compose("First sentence, second sentence.", ["wrong"]), "First sentence, second sentence.");
+// Only multiple sentences auto-select natural language. A lone period in a
+// caption must not turn a list of tags into prose.
+assert.equal(T.kind("A curious lion poses for a photograph at sunset."), "tags");
+assert.equal(T.kind("A very long sentence without punctuation that describes a complex scene"), "tags");
+assert.deepEqual(T.tags("A person smiles, while sitting in a café."),
+  ["A person smiles", "while sitting in a café."]);
+assert.equal(T.kind("A curious lion poses for a photograph at sunset.","prose"), "prose");
+assert.equal(T.kind("The bird rests in a tree. Then it flies into the garden."), "prose");
+assert.equal(T.kind("The bird rests in a tree.\nThen it flies into the garden."), "prose");
+assert.deepEqual(T.tags("The bird rests in a tree. Then it flies into the garden."),[]);
+assert.equal(T.compose("First sentence, second sentence.", ["wrong"]), "wrong");
+assert.equal(T.compose("First sentence, second sentence.", ["wrong"],"prose"), "First sentence, second sentence.");
+const blueJayTags="digital art, bird, blue jay, standing, grass, flowers, green leaves, sunlight, forest, detailed, "+
+  "realistic style, blue feathers, white feathers, black feathers, purple feathers, blue wings, white tail, "+
+  "pink flowers, yellow flowers, white flowers, green grass, leaves in foreground, light from top right, "+
+  'artist signature "MURF" in bottom right, colorful, nature, outdoors, daytime, bird looking to the right, '+
+  "small bird, detailed feathers, blue and white pattern, blue and purple pattern, realistic texture, "+
+  "soft light, floral background, forest floor, small flowers, green leaves, bird standing on grass.";
+assert.equal(T.kind(blueJayTags),"tags");
+assert.equal(T.tags(blueJayTags).length,40);
+assert.equal(T.kind("bird, blue wings, grass., flowers, sunshine."),"tags");
 assert.deepEqual(T.tags("lion; cosmic mane; blue", "tags", ";"), ["lion", "cosmic mane", "blue"]);
 assert.equal(T.compose("lion; blue\nBright sunset", ["blue", "lion"], "tags", ";"), "blue; lion\nBright sunset");
 assert.equal(T.search(["red hair", "blue eyes"], '"red hair" AND NOT "green eyes"'), true);
