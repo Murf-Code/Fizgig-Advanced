@@ -257,3 +257,70 @@ def test_a_flat_mask_changes_no_slider_step_either():
     masked = drv.training_loss(dit, lat.to(DTYPE), {"hidden_states": _TXT[0]},
                                torch.Generator().manual_seed(14), loss_mask=torch.ones(1, 1, 16, 16), **kw)[0].float()
     assert torch.allclose(plain, masked, atol=1e-5)
+
+
+def test_reference_distillation_respects_still_mask_and_prior():
+    """The H3 distillation method must not silently use unmasked teacher and photo losses."""
+    from fizgig.minimax.common import compute_distill_loss
+
+    class TinyDistiller:
+        patch_size = (1, 2, 2)
+        pack_audio_rows = False
+
+        def __init__(self):
+            self.scale = torch.nn.Parameter(torch.tensor(0.7))
+
+        def __call__(self, noised, timestep, text, audio_noise=None, *, ref_latents=None, **kwargs):
+            # Reference-conditioned teacher and plain student deliberately give different
+            # predictions; the student has a trainable factor to test masked gradients.
+            return noised.float() * self.scale + (0.15 if ref_latents is not None else 0.0)
+
+    model = TinyDistiller()
+    network = type("NoAdapters", (), {"unet_loras": []})()
+    latent = torch.randn(1, 24, 1, 5, 5, generator=torch.Generator().manual_seed(71)).to(DTYPE)
+    noise = torch.randn(latent.shape, generator=torch.Generator().manual_seed(72))
+    white = torch.ones(1, 1, 5, 5)
+    mask = white.clone()
+    mask[..., :2, :] = 0.1
+
+    def train_loss(mw, prior=None):
+        return compute_distill_loss(
+            model, network, latent, _TXT, text_ref=_TXT, ref_latents=[latent],
+            distill_weight=0.4, noise=noise, generator=torch.Generator().manual_seed(73),
+            loss_mask=mw, prior=prior)[0]
+
+    plain = train_loss(None)
+    all_white = train_loss(white)
+    assert torch.allclose(plain, all_white, atol=1e-5)
+    masked = train_loss(mask)
+    assert not torch.allclose(plain, masked, atol=1e-5)
+
+    # The mask must affect gradients, not just the reported loss.
+    plain.backward()
+    full_grad = model.scale.grad.detach().clone()
+    model.scale.grad = None
+    masked.backward()
+    masked_grad = model.scale.grad.detach().clone()
+    model.scale.grad = None
+    assert not torch.allclose(full_grad, masked_grad, atol=1e-5)
+
+    # A mask must be cropped exactly with the latent's patch-grid crop.
+    outside_only = mask.clone()
+    outside_only[..., 4, :] = 0.0
+    assert torch.allclose(train_loss(outside_only), train_loss(mask), atol=1e-5)
+
+    class Prior:
+        weight = 0.5
+
+        def __init__(self):
+            self.calls = 0
+
+        def base(self, forward):
+            self.calls += 1
+            with torch.no_grad():
+                return forward().detach().float() + 0.1
+
+    p = Prior()
+    with_prior = train_loss(mask, p)
+    assert p.calls == 1
+    assert with_prior > train_loss(mask)

@@ -1343,7 +1343,7 @@ def lora_disabled(network):
 
 def compute_distill_loss(model, network, latent, text_plain, *, text_ref, ref_latents,
                          text_token_tags=None, distill_weight=0.8, shift=None, generator=None,
-                         noise=None, seed=0, parts_out=None):
+                         noise=None, seed=0, parts_out=None, loss_mask=None, prior=None):
     """Reference distillation: teach the LoRA to behave, from text alone, as if it had been
     shown the reference photo.
 
@@ -1371,6 +1371,9 @@ def compute_distill_loss(model, network, latent, text_plain, *, text_ref, ref_la
     _Hc, _Wc = (_H // _ph) * _ph, (_W // _pw) * _pw
     if (_Hc, _Wc) != (_H, _W):
         x0 = x0[..., :_Hc, :_Wc].contiguous()
+    # The reference teacher and the plain-text student predict the SAME noised picture,
+    # so its subject mask has the same spatial correspondence as on ordinary photo steps.
+    mw = None if loss_mask is None else loss_mask.float().to(device)[..., :_Hc, :_Wc]
     if noise is None:
         noise = torch.randn(x0.shape, device=device, generator=generator, dtype=torch.float32)
     else:
@@ -1393,15 +1396,24 @@ def compute_distill_loss(model, network, latent, text_plain, *, text_ref, ref_la
     with torch.no_grad(), lora_disabled(network):
         teacher = model(noised, t, text_ref, audio_noise, ref_latents=ref_latents,
                         text_token_tags=text_token_tags, seed=seed).float()
+    from fizgig.families.driver import prior_base, weighted_loss, with_prior
+    # For masked prior preservation, outside the subject keep the plain-text BASE response,
+    # not the reference-conditioned teacher response (which includes the photographed identity).
+    base = prior_base(prior, loss_mask, lambda: model(noised, t, text_plain, audio_noise))
     student = model(noised, t, text_plain, audio_noise).float()
 
     w = float(distill_weight)
-    teacher_mse = F.mse_loss(student, teacher.detach())
+    teacher_mse = (F.mse_loss(student, teacher.detach()) if mw is None else
+                   weighted_loss((student - teacher.detach()).pow(2).mean(dim=1), mw))
     loss = w * teacher_mse
     photo_mse = None
     if w < 1.0:
-        photo_mse = F.mse_loss(student, (x0 - noise).float())
+        photo_target = (x0 - noise).float()
+        photo_mse = (F.mse_loss(student, photo_target) if mw is None else
+                     weighted_loss((student - photo_target).pow(2).mean(dim=1), mw))
         loss = loss + (1.0 - w) * photo_mse
+    if base is not None:
+        loss = with_prior(loss, prior, base, (student - base).pow(2).mean(dim=1), mw)
     if parts_out is not None:
         # The RAW errors, before the 0.8/0.2 weights. The weights are already known; what is not
         # is how BIG each error is — and "how much of the learning comes from real pixels" is a

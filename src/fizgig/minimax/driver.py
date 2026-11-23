@@ -470,9 +470,8 @@ class MiniMaxDriver(FamilyDriver):
             return self._slider_loss(dit, latents, cond, generator, min_t, max_t, diff_ref, diff_weight,
                                      loss_mask=loss_mask, prior=prior)
         teacher = self._teacher_phase()
-        # A distill step trains on the model's own picture, not on the photograph, so masked training does not apply
-        # to it (compute_distill_loss takes no loss_mask): a run that distills also masks takes the mask on its
-        # ordinary steps only.
+        # Reference distillation predicts the same noised picture in both passes, so a still's
+        # subject mask also weights its teacher/photo objectives (and any masked prior).
         if (getattr(self, "_distill", False) and (teacher or not self._p1) and "ref_hidden_states" in cond
                 and not cond.get("audio_only")):
             # the old distillation step: teacher = base + frozen adapters WITH the reference, trainable LoRA off;
@@ -482,10 +481,12 @@ class MiniMaxDriver(FamilyDriver):
             # a picture's latent is (1, 24, H, W): without its frame axis the 5-D sigma broadcast read the 24
             # channels as frames (mat1 and mat2 shapes cannot be multiplied (22200x4 and 96x5376), #264)
             lat = latents if latents.dim() == 5 else latents.unsqueeze(2)
+            self._mask_step_note(loss_mask, prior)
             loss, s = compute_distill_loss(dit, _TrainableOff(self._net), lat, cond["hidden_states"].to(DTYPE),
                                            text_ref=cond["ref_hidden_states"].to(DTYPE), ref_latents=[rz],
                                            text_token_tags=cond["ref_token_tags"],
-                                           distill_weight=1.0 if teacher else self._dw, shift=self._shift())
+                                           distill_weight=1.0 if teacher else self._dw, shift=self._shift(),
+                                           loss_mask=loss_mask, prior=prior)
             return loss, {"t": float(s)}
         lat = latents if latents.dim() == 5 else latents.unsqueeze(2)          # (1, 24, T, H, W)
         _pt, ph, pw = getattr(dit, "patch_size", (1, 2, 2))
