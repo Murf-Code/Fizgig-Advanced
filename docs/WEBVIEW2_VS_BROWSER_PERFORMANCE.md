@@ -43,9 +43,11 @@ qualitative user test, not benchmarked FPS/CPU data and not a universal claim
 about WebView2 on all hosts.
 
 **Decision:** Keep the GPU-disable checkbox **unchecked by default** and
-retain GPU-off only as an explicit troubleshooting option. Do **not** make
-the optional native Qt image-browser prototype a prerequisite for responsive
-Caption Workbench or migrate the whole image UI for performance reasons alone.
+retain GPU-off only as an explicit troubleshooting option. The native Qt
+image-browser experiment has been **removed** from the active branch because
+the accelerated Chromium interface meets performance and feature requirements
+without maintaining two rendering systems. Git history preserves the experiment
+if future measured needs justify revisiting it.
 
 ### Display-adapter result
 
@@ -77,8 +79,13 @@ path was unusually slow.
 - Do not silently swallow failed request-hook removals in pywebview 6.x.
 - Record runtime version and actual graphics preferences for troubleshooting.
 - Keep normal browser/remote workflows and all training services unchanged.
-- Keep optional native Qt prototype separate: the fast browser and GPU-enabled
-  WebView2 prove a Qt migration is not required to fix the reported slowdown.
+- Remove the duplicate native Qt thumbnail rail, preview viewer, polling
+  bridge, optional launcher and Qt-specific testing/dependencies. Keep the
+  existing Chromium virtualized thumbnail rail and optimized browser image
+  editing, Waterfall and Constellation implementations.
+- Treat the 6/6 successful Windows desktop test as the known-good performance
+  baseline; validate changes under GPU-enabled WebView2 instead of assuming
+  Qt is faster.
 
 ## Sources
 
