@@ -12487,9 +12487,53 @@ function captionDuplicatePanel(ext){
       const detail=el("div",{class:"studio-duplicate-merge-note field-hint"});
       const preview=el("div",{class:"studio-duplicate-merge-preview"});
       const actions=el("div",{class:"field-row studio-duplicate-actions"});
+      const count=el("span",{class:"studio-duplicate-count",role:"status","aria-live":"polite"});
+      const comparePanel=el("div",{class:"studio-duplicate-compare",hidden:true});
+      const compareBtn=el("button",{type:"button",class:"btn btn-sm",text:"Compare images"});
+      const mode=el("select",{"aria-label":"Comparison mode"},
+        el("option",{value:"side",text:"Side by side"}),
+        el("option",{value:"overlay",text:"Overlay"}));
+      const left=el("select",{"aria-label":"First image"});
+      const right=el("select",{"aria-label":"Second image"});
+      for(const pic of pictures){
+        left.append(el("option",{value:pic.path,text:pic.name}));
+        right.append(el("option",{value:pic.path,text:pic.name}));
+      }
+      right.selectedIndex=1;
+      const opacity=el("input",{type:"range",min:"0",max:"100",value:"50",
+        "aria-label":"Overlay opacity"});
+      const picturesView=el("div",{class:"studio-duplicate-compare-images"});
+      const showComparison=()=>{
+        if(comparePanel.hidden)return;
+        const a=pictures.find(p=>p.path===left.value),b=pictures.find(p=>p.path===right.value);
+        if(!a||!b)return;
+        const url=p=>"/api/media?path="+encodeURIComponent(p.path)+"&t="+encodeURIComponent(TOKEN);
+        const first=el("img",{src:url(a),alt:a.name});
+        const second=el("img",{src:url(b),alt:b.name});
+        picturesView.classList.toggle("is-overlay",mode.value==="overlay");
+        if(mode.value==="overlay"){
+          second.style.opacity=String(Number(opacity.value)/100);
+          picturesView.replaceChildren(first,second);
+        }else picturesView.replaceChildren(el("div",{},first),el("div",{},second));
+        opacity.hidden=mode.value!=="overlay";
+      };
+      compareBtn.addEventListener("click",()=>{
+        comparePanel.hidden=!comparePanel.hidden;
+        compareBtn.setAttribute("aria-expanded",String(!comparePanel.hidden));
+        showComparison();
+      });
+      compareBtn.setAttribute("aria-expanded","false");
+      for(const element of [left,right,mode])element.addEventListener("change",showComparison);
+      opacity.addEventListener("input",()=>{
+        const upper=picturesView.querySelector(".is-overlay > img:last-child, :scope > img:last-child");
+        if(mode.value==="overlay"&&upper)upper.style.opacity=String(Number(opacity.value)/100);
+      });
+      comparePanel.append(el("div",{class:"studio-duplicate-compare-controls"},
+        left,right,mode,el("label",{},el("span",{text:"Blend"}),opacity)),picturesView);
       const selected=()=>pictures.filter(p=>!choice.kept.has(p.path));
       const refreshChoice=()=>{
         pickers.replaceChildren();preview.replaceChildren();detail.textContent="";
+        count.textContent=choice.kept.size+" kept · "+selected().length+" to remove";
         for(const pic of pictures){
           const it=items.get(pic.path);
           const isKeep=choice.kept.has(pic.path);
@@ -12510,7 +12554,7 @@ function captionDuplicatePanel(ext){
             if(e.key==="Enter"||e.key===" "){e.preventDefault();thumb.click();}
           });
           const status=el("div",{class:"field-hint",text:
-            (isKeep?"KEEP · ":"DROP · ")+(locked?"REVIEW LOCKED · ":"")+
+            (locked?"REVIEW LOCKED · ":"")+
             pic.width+"×"+pic.height+" · "+studioTokens(it.caption||"").length+" tags"});
           pickers.append(el("div",{class:"studio-duplicate-card"+(isKeep?" keeper":"")},
             thumb,el("div",{class:"studio-duplicate-card-info"},
@@ -12603,8 +12647,8 @@ function captionDuplicatePanel(ext){
           await api("/api/captions/duplicates/scan",{folder:S.imageFolder,paths:rest});
         }catch(e){console.warn("Duplicate refresh:",e);}
       }});
-      actions.append(mergeBtn,removeBtn);
-      card.append(header,pickers,actions,detail,preview);
+      actions.append(count,mergeBtn,removeBtn);
+      card.append(header,compareBtn,comparePanel,pickers,actions,detail,preview);
       results.append(card);
       refreshChoice();
     }
@@ -12626,7 +12670,7 @@ function captionDuplicatePanel(ext){
   nextBtn.addEventListener("click",()=>{state.offset+=32;read();});
   panel.append(heading,guide,el("div",{class:"field-row studio-duplicate-controls"},
     el("span",{class:"field-label",text:"Match tolerance:"}),threshold,percentage,scanBtn),
-    el("label",{class:"field-row"},copyBox," Copy tags from images you drop onto every image you keep"),
+    el("label",{class:"field-row"},copyBox," Merge tags into kept images"),
     progress,page,results);
   panel.addEventListener("toggle",()=>{
     state.open=panel.open;
