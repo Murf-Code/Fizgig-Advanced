@@ -119,9 +119,9 @@ Use **Mark Complete / Incomplete** and persistent review locks to protect pictur
 ### Training and Studio
 
 - **Krea 2 Text-fusion calibration.** Choose concepts to test or let Fizgig find candidates in your dataset. Manually selected concepts are tested even when they are uncommon in the captions. Fizgig compares them with controls, checks the results on held-out examples, and keeps successful edits. Automatic candidates have their own budget of up to 4% of the training-image count.
-- **Krea 2 training choices.** Use **Standard**, **Global replay** or **Text fusion only**, which trains just the four text-fusion blocks. Global replay supports PoLoRA and an optional Selective block check. Incompatible options, such as Training Maps with Global replay, are flagged when starting a run.
+- **Krea 2 Global replay — broader training-tool support.** Global replay trains all **28 main transformer blocks** one at a time, using the full model's loss to calculate each block's update. It now works with **masked training, masked prior preservation, Training Maps and PoLoRA**, as well as the optional Selective block check. It still requires a **batch-one standard Krea 2 LoRA**; other model families, LoKR, full fine-tunes and slider training are not part of this method. **Standard** remains available, while **Text fusion only** separately trains Krea 2's four text-fusion blocks.
 - **Optional rolling best LoRA checkpoint** can capture a promising low-loss point **mid-epoch**, not just at the ordinary save interval. It supports training-loss or fixed validation-loss selection, smoothing/cooldown safeguards, and resume bookkeeping. The manual **Save Now** action and epoch saves still exist.
-- **Clearer training feedback:** real epoch steps remaining for Global replay/resume, separate validation groups on the loss graph, and more useful pause/stop, Save Now and run-output states.
+- **Clearer training feedback:** real epoch steps remaining for Global replay and resumed runs, plus more useful Pause, Stop, Save Now and run-output states.
 - **Smarter resume and caching:** skip demonstrably clean text/VAE cache stages; re-encode only changed images or captions; retain compatible caches and respect explicit cache policy where necessary. Cache validity includes fine-grained file timestamps, encoder provenance and safe fallbacks for complex datasets.
 - **Studio improvements.** Switch compatible primary LoRAs without reloading the model, save render settings in PNG metadata, use Studio in multiple tabs more safely, and set separate image-reference size and aspect options.
 
@@ -134,6 +134,12 @@ Use **Mark Complete / Incomplete** and persistent review locks to protect pictur
 This second path is a **CPU-based offline checkpoint export**, not live Frankenstein rendering or LoRA mixing. Tensor interpolation streams bounded chunks (about 8 MiB); it doesn't require GPU VRAM, but does need enough disk space for a full output. Models with incompatible block shapes/layouts or unsupported quantized weights are refused. Mixing across families is not supported. A successful compatibility check does not guarantee a useful blend. Try a few renders before relying on it.
 
 See [experimental model mixing guide](EXPERIMENTAL_MODEL_MIXING.md), [four-family mixer implementation](https://github.com/Murf-Code/Fizgig-Advanced/commit/6b6d4b61cb) and [upstream H3 Frankenstein work](https://github.com/shootthesound/Fizgig/releases/tag/v9.8.3).
+
+### Sidebar navigation and validation graph
+
+**Collapsible TRAIN and AFTER sidebar sections.** Click either heading to fold away that group of tabs and make room for the other one. Each section remembers whether you left it open or closed, and its chevron rotates to show the state. This also works from the keyboard.
+
+**Validation groups are easier to compare.** With two or three Image Validation groups, each group has its own thin line, color, dash pattern and marker. The lines are now **shifted onto the thick dashed average** so differences in their shape stand out without flattening the graph's scale. Hover over a point to see that group's **real, unshifted loss**. The old **Group range** shaded band has been removed; early stopping and Adaptive LR still use the actual average.
 
 ### Built for large datasets
 
