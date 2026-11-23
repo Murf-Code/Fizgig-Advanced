@@ -14068,7 +14068,8 @@ function renderCaptionStudio(host,items,ext){
        !tagSuggestionList.hidden&&suggestionChoices.length){
       e.preventDefault();
       const count=suggestionChoices.length;
-      activeSuggestion=(activeSuggestion+(e.key==="ArrowDown"?1:-1)+count)%count;
+      activeSuggestion=e.key==="ArrowDown"?(activeSuggestion+1)%count:
+        activeSuggestion<0?count-1:(activeSuggestion-1+count)%count;
       highlightSuggestion();
       return;
     }
