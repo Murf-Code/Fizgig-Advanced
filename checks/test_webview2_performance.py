@@ -20,14 +20,14 @@ class WebView2PerformanceTests(unittest.TestCase):
         self.assertEqual(perf.browser_arguments({"qt_disable_gpu": "0"}, ""), "")
         self.assertIn("No known", perf.acceleration_warning(""))
 
-    def test_windows_default_disabled_but_browser_and_linux_unaffected(self):
-        self.assertTrue(perf.gpu_disabled({}, "win32"))
-        self.assertTrue(perf.gpu_disabled({"qt_disable_gpu": ""}, "win32"))
+    def test_gpu_enabled_by_default_on_windows_and_linux(self):
+        self.assertFalse(perf.gpu_disabled({}, "win32"))
+        self.assertFalse(perf.gpu_disabled({"qt_disable_gpu": ""}, "win32"))
         self.assertFalse(perf.gpu_disabled({}, "linux"))
         self.assertTrue(perf.gpu_disabled({"qt_disable_gpu": "1"}, "linux"))
+        self.assertTrue(perf.gpu_disabled({"qt_disable_gpu": "1"}, "win32"))
         self.assertFalse(perf.gpu_disabled({"qt_disable_gpu": "0"}, "win32"))
-        self.assertEqual(perf.browser_arguments({}, "", platform="win32"),
-                         "--disable-gpu")
+        self.assertEqual(perf.browser_arguments({}, "", platform="win32"), "")
         self.assertEqual(perf.browser_arguments({"qt_disable_gpu": "0"}, "",
                                                  platform="win32"), "")
         self.assertEqual(perf.browser_arguments({}, "", platform="linux"), "")
