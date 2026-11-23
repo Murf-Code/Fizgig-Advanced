@@ -1566,8 +1566,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             unsupported.append("masked training / mask prior")
         if int8_rotated_backward:
             unsupported.append("rotated INT8 backward")
-        if training_maps:
-            unsupported.append("training attention maps")
+        # Training Maps run separate no-grad inference forwards at epoch boundaries, not through the
+        # block-local training backward. Their loss/effect/trigger-attention maps work with Global Replay.
         if share_worker is not None:
             unsupported.append("shared/helper training")
         if unsupported:
