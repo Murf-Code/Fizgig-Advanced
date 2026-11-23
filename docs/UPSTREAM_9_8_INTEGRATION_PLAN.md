@@ -7,9 +7,11 @@ GitHub compare at review time: **223 commits upstream-only**, **814 commits on o
 shared ancestor `aa199708e6be3dc4703288c6901ed1f56bb91d65`. Counts are a snapshot, not the proposed merge size.
 
 Our older `fizgig-advanced` branch was synced through upstream **9.7.6**. The current upstream includes
-9.7.7–9.8.5 and additional work after the 9.8.5 notes. Do **not** run a blanket merge of upstream master
-into `test/caption-workbench`. Use `integration/upstream-9.8-review` as the isolated staging branch,
-a draft PR, small changes with upstream attribution, tests, and explicit review before merging.
+9.7.7–9.8.5 and additional work after the 9.8.5 notes. Do **not** run a blanket merge of upstream master into `test/caption-workbench`. The user selected
+**direct, small, tested pushes to `test/caption-workbench`**, the current development source of truth.
+The initial staging batch passed CI and was fast-forwarded into Workbench without a history rewrite.
+Use small atomic commits with upstream attribution, check the live head before every push, and retain the
+staging PR only as historical review context.
 
 ## Invariants we must preserve
 
@@ -29,20 +31,20 @@ a draft PR, small changes with upstream attribution, tests, and explicit review 
 
 | Upstream area | Decision | Integration and conflict notes |
 | --- | --- | --- |
-| Captioner refuses non-.safetensors files, #388, `56729e1` | **Integrated on staging branch** | Adapted in `web/captions.py` with stricter bounded header read; tests in `checks/test_captioner_header_guard.py`. Leaves Workbench caption APIs alone. |
+| Captioner refuses non-.safetensors files, #388, `56729e1` | **Integrated into Workbench** | Adapted in `web/captions.py` with stricter bounded header read; tests in `checks/test_captioner_header_guard.py`. Leaves Workbench caption APIs alone. |
 | Video-only folders with a remembered Mask/Element boost tick, #402, `5337483` | **Integrated on staging branch** | Adapted `families/launch.py` and `form.py`, with upstream's regression cases. Important: disabled for *clips-only*, enabled when a trained subfolder contains photos. No mask renderer changes. |
-| Non-safetensors model headers checked centrally, `9ac00cd` | **Priority 1: audit then adapt** | Our `utils/st_meta.py` already caps header bytes, but several other readers may not. Check all call sites before importing their shared helper; preserve Advanced metadata writing/restore. |
-| Offline-first Anima / ACE-Step tokenizers and SDXL config, #397, `1437792` | **Priority 1: adapt** | Important for resume and cache reliability. Multiple drivers, `utils/hf_cache.py` and helper updater change together; test both cached/offline and partial-cache recovery. Do not disrupt next-epoch recache. |
+| Non-safetensors model headers checked centrally, `9ac00cd` | **Integrated into Workbench** | Adapted the upstream shared header reader into existing model planners, quantization, MiniMax, and both loaders. No Advanced metadata writing replaced; added regression tests and CI. |
+| Offline-first Anima / ACE-Step tokenizers and SDXL config, #397, `1437792` | **Integrated into Workbench** | Ported Anima, ACE-Step, SDXL, cached helper checks and updater, keeping Advanced SDXL timestep spread. Offline/partial-cache tests added to CI. Next-epoch data-change recache remains a separate lifecycle to test live. |
 | Resume at new size with Cache disabled (#370), and stop request hung (#379 notes) | **Priority 1: verify then fix** | These hit reliability and run lifecycle. Advanced already changed resume and cache behavior; compare exact paths, do not overwrite wholesale. |
-| MiniMax H3 / low-VRAM previews and Studio fixes; Krea 2 ROCm memory/TE release | **Priority 1–2: adapt by hardware** | Keep Advanced VRAM planner; check for doubled overhead, stream/unload order, GPU vendor defaults, and simulations. In particular examine `krea2/driver.py::unload_text_encoder` which still moves the encoder to CPU before dropping it. |
+| MiniMax H3 / low-VRAM previews and Studio fixes; Krea 2 ROCm memory/TE release | **Partially integrated** | Krea 2 encoder releases weights to meta instead of copying to RAM, with file-backed inference guard and tests. Remaining AMD/ROCm and memory planner differences require hardware validation. |
 | Radeon expandable segments / MIOpen launcher paths and override (#389) | **Priority 1 for AMD, isolate** | Preserve Windows/Linux separation and user overrides; test on Windows AMD rather than assuming path layout. |
 | Studio save setup, primary-LoRA quick swap, queue and cross-tab isolation (#394/#395) | **Priority 2: selective backend integration** | Good performance/correctness improvements, but substantial shared state and `web/static/app.js` changes. Integrate API lifecycle first, UI second, preserve current Workbench/Studio panel layout. |
-| Edit-model references retain their own shape at Reference MP, `43c88d8` | **Priority 2: adapt** | Likely improves Studio/Royale correctness without adding UI complexity. Check reference sizing/cache keys and any Advanced editor assumptions. |
+| Edit-model references retain their own shape at Reference MP, `43c88d8` | **Integrated into Workbench** | Adapted the sizing/reference-key implementation and un-greyed Studio Reference MP with upstream tests. |
 | Multi-line captions and “Add as another line” (#300) | **Defer architecture review** | Can conflict with our tag-based editor, selection, AI recaption, tag ordering and next-epoch text re-encode. First define whether a training item has one caption string or per-line variants; ensure save/reload/undo tests cover both. |
 | Per-folder numeric repeats from folder names (#300) | **Do not duplicate UI** | Advanced has explicit per-folder weights/repeats. May optionally import naming conventions into that existing model, but **never** create a competing repeat counter. |
 | Caption jobs in run queue, pod dataset download | **Defer** | Useful but involves job scheduling, path security and selected-image behavior; design around our Workbench, not upstream's older Captions tab. |
 | Studio without primary LoRA, automated save, early/last preview frames, responsive output panes | **Evaluate individually** | Keep if it solves a concrete gap and integrates cleanly; not an excuse to import a competing UI. |
-| MiniMax H3 Image fine-tuning and Speed boost | **Evaluate after training stability** | Opt-in specialized features with model-specific tests. Speed boost is experimental upstream and off by default. |
+| MiniMax H3 Image fine-tuning and Speed boost | **Speed boost integrated** | Added upstream H3 Image speed boost (Off by default; 1–4 half-size early steps) to Samples and Studio, with tests. Fine-tuning remains separately gated. |
 | Frankenstein model-blending experiment | **Do not import now** | Upstream explicitly calls it experimental and may remove it; large maintenance/memory surface, not essential to Caption Workbench. |
 | New native file picker | **Already represented** | Upstream itself credits Fizgig Advanced; avoid porting our old implementation back over our own. |
 | Any native Qt image rendering alternative | **Reject** | Previous controlled Windows test found GPU-enabled WebView2 as smooth as the browser; one shared rendering architecture is the accepted decision. |
@@ -52,7 +54,7 @@ a draft PR, small changes with upstream attribution, tests, and explicit review 
 
 1. **Inventory against exact SHAs.** For each candidate commit read upstream patch + our current implementation, not
    just its release headline. Tag as already present / missing / conflict / deliberate non-adoption.
-2. **Backend first.** Port the minimum code, with upstream commit and contributor attribution, on staging.
+2. **Backend first.** Port the minimum code, with upstream commit and contributor attribution, directly on Workbench.
    Where our behavior differs deliberately, preserve it and add a regression test explaining why.
 3. **Keep control surfaces coherent.** Use existing settings and shared app state; introduce no unnecessary mode
    toggles, duplicate tab, dialog, cache, new renderer, or second queue for the same job.
@@ -61,8 +63,8 @@ a draft PR, small changes with upstream attribution, tests, and explicit review 
    global replay, validation and optimizer continuity.
 5. **Hardware smoke test.** Windows GPU-enabled WebView2, browser, NVIDIA training; AMD on compatible hardware;
    confirm resource use when the relevant tab is inactive. CI alone does not prove these.
-6. **Promote deliberately.** Keep the draft PR unmerged while CI and hardware checks are unresolved.
-   Only merge into `test/caption-workbench` once the Workbench UX and trainer contracts are unchanged.
+6. **Promote deliberately.** Each atomic commit is pushed to Workbench and checked with branch CI.
+   A CI pass is not a substitute for Windows/GPU/AMD hardware smoke tests; fix regressions on Workbench.
 
 ## Separate branch divergence to handle deliberately
 
@@ -71,17 +73,21 @@ target probing), affecting `families/train.py`, `krea2/direction_edit_v2.py` and
 branch's features, **not** upstream Fizgig changes. Reconcile them independently after the upstream safety batch;
 do not mix them into a bulk upstream merge.
 
-## Immediate staged changes and QA
+## Workbench integration progress and QA
 
-- [x] Create isolated staging branch from current Workbench head
+- [x] Review initial fixes on staging, then fast-forward them into Workbench
 - [x] Harden `captioner_problem` for GGUF / oversized headers and add tests (upstream #388)
 - [x] Bring video-only Mask/Element boost launch behavior into line with the UI and add tests (upstream #402)
-- [ ] Confirm GitHub Actions and Python tests on the draft PR
-- [ ] Audit *all* remaining safetensors header readers
-- [ ] Port offline tokenizers/partial-cache recovery with training re-encode tests
-- [ ] Check stop/resume/cache and Krea 2 text-encoder release paths
-- [ ] Review Studio changes in a separate scoped PR/commit series
-- [ ] Windows/Linux GPU and training smoke tests before merging
+- [x] First batch passed GitHub Actions; subsequent integration commits have per-commit CI
+- [x] Port upstream's identified model-header readers into the bounded shared reader; audit any new readers separately
+- [x] Port offline tokenizers and partial-cache recovery with automated tests
+- [ ] Live training next-epoch caption/image re-encode after cache changes
+- [x] Change Krea 2 encoder release to avoid a CPU weight copy
+- [ ] Review stop/resume/cache behavior against upstream without disturbing Advanced's existing fixes
+- [x] Integrate Studio and Royale edit-reference shape and MP control
+- [x] Add optional MiniMax H3 Image speed boost (off by default)
+- [ ] Evaluate Studio primary LoRA swap, output save metadata, and cross-tab isolation: upstream's latest Studio queue is not present in the Workbench baseline, so direct cherry-picks are unsafe
+- [ ] Windows/Linux GPU and live training smoke tests (unit CI alone is insufficient)
 
 **References:** [upstream commits](https://github.com/shootthesound/Fizgig/commits/master/),
 [upstream releases](https://github.com/shootthesound/Fizgig/tree/master/docs),
