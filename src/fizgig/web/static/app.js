@@ -4393,31 +4393,42 @@ async function loadRuns() {
       }}) : null;
     const contHint = cp ? el("span", {class: "field-hint",
       text: `Saved at ${cp.unit} ${cp.done}${cp.of ? " of " + cp.of : ""}`}) : null;
-    // Delete run: says what goes first (checkpoints, saved states, previews - never the training folder), then deletes
-    const delBox = el("div", {class: "run-delete", style: "display:none"});
-    const del = el("button", {class: "btn btn-sm btn-danger", text: "Delete run…", onclick: async () => {
-      if (delBox.style.display !== "none") { delBox.style.display = "none"; return; }
-      delBox.style.display = "";
-      delBox.textContent = "Checking…";
+    // Delete run follows Stop's two-click confirmation, in one fixed-width button.
+    // Only saved run outputs/history are deleted; the training dataset is never touched.
+    const delIdleTitle = "Delete this run, its saved checkpoints, resume states, previews and history entry. Training images and captions are kept.";
+    let delTimer = null;
+    let delBusy = false;
+    const del = el("button", {class: "btn btn-sm btn-danger run-delete-btn", text: "Delete run",
+      type: "button", title: delIdleTitle});
+    const resetDelete = () => {
+      if (delTimer) clearTimeout(delTimer);
+      delTimer = null;
+      del.textContent = "Delete run";
+      del.title = delIdleTitle;
+    };
+    del.addEventListener("click", async () => {
+      if (delBusy) return;
+      if (!delTimer) {
+        del.textContent = "Confirm";
+        del.title = "Click again within 30 seconds to permanently delete this run's saved files and history entry. The training dataset stays.";
+        delTimer = setTimeout(resetDelete, 30000);
+        return;
+      }
+      resetDelete();
+      delBusy = true;
+      del.disabled = true;
+      del.textContent = "Deleting…";
       try {
-        const w = await api("/api/runs/delete", {id: run.id});
-        const gb = (b) => b >= 2 ** 30 ? (b / 2 ** 30).toFixed(1) + " GB" : (b / 2 ** 20).toFixed(0) + " MB";
-        const parts = [w.checkpoints && `${w.checkpoints} checkpoint${w.checkpoints > 1 ? "s" : ""}`,
-          w.states && `${w.states} saved state${w.states > 1 ? "s" : ""} (for resuming)`,
-          w.previews && `${w.previews} preview${w.previews > 1 ? "s" : ""}`].filter(Boolean);
-        delBox.replaceChildren(
-          el("div", {class: "field-hint", text: (parts.length ?
-            `Deletes ${parts.join(", ")} - ${gb(w.bytes)} from ${w.folder} - for good, and takes the run off this ` +
-            "list." : "Nothing of this run is left on disk: this takes it off the list.") +
-            " Your training folder and its captions are not touched."}),
-          el("div", {class: "field-row"},
-            el("button", {class: "btn btn-sm btn-danger", text: "Delete", onclick: async () => {
-              try { await api("/api/runs/delete", {id: run.id, confirm: true}); loadRuns(); loadOutputs(); }
-              catch (e) { delBox.replaceChildren(el("div", {class: "problems", text: e.message})); }
-            }}),
-            el("button", {class: "btn btn-sm", text: "Cancel", onclick: () => { delBox.style.display = "none"; }})));
-      } catch (e) { delBox.replaceChildren(el("div", {class: "problems", text: e.message})); }
-    }});
+        await api("/api/runs/delete", {id: run.id, confirm: true});
+        loadRuns();
+        loadOutputs();
+      } catch (e) {
+        alertRow.textContent = e.message;
+        delBusy = false;
+        del.disabled = false;
+        resetDelete();
+      }
+    });
     const alertRow = el("div", {class: "field-hint"});
     // notes: what you tried and what you made of it, saved as you type
     const notesBox = el("div", {class: "run-notes", style: "display:none"});
@@ -4476,7 +4487,7 @@ async function loadRuns() {
         `${new Date(run.started_at * 1000).toLocaleString()} · ${dur(run.started_at, run.ended_at)}`, figs]
         .filter(Boolean).join("  ·  ")}),
       lossChart(run.curve),
-      el("div", {class: "field-row"}, cont, contHint, showFiles, lgBtn, ilBtn, tmBtn, notesBtn, again, del), contBox, delBox,
+      el("div", {class: "field-row"}, cont, contHint, showFiles, lgBtn, ilBtn, tmBtn, notesBtn, again, del), contBox,
       alertRow, notesBox, files,
       lgBox, ilBox, tmBox));
   }
