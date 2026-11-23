@@ -16,7 +16,9 @@
 
 **Find near-duplicates before they waste training effort.** Compare likely copies, choose one or several to keep, preview copying useful tags from the others, and remove only the pictures you explicitly choose. Removed images can be restored, and reviewed pictures are protected.
 
-**The training and Studio tools have grown too.** Krea 2 keeps its new **Text-fusion calibration** and **Text fusion only** training, with Global replay improvements. Optional **mid-epoch best-loss checkpoints**, clearer step counts, faster compatible Studio LoRA switching and experimental model-blending tools round out the release. The separate experimental *Training Text Enhancer* is **not included**.
+**Experimental model blending now supports more model families.** Alongside live MiniMax H3 Image + H3 Video Frankenstein blending, Studio has a separate block-based **Base checkpoint mixer** for compatible **MOSS-Image, Anima, Krea 2 and SDXL / Illustrious** checkpoints. Choose how much of each block comes from the donor and export a new standalone model without loading either input on the GPU. Same-family checkpoints only; this is experimental, and the CPU mixer does not provide live renders.
+
+**The training and Studio tools have grown too.** Krea 2 keeps **Text-fusion calibration** and **Text fusion only** training, with Global replay improvements. Optional **mid-epoch best-loss checkpoints**, clearer step counts and faster compatible Studio LoRA switching round out the release. The separate experimental *Training Text Enhancer* is **not included**.
 
 The full feature explanations, screenshots, bug fixes, optimization notes and upstream credits follow.
 
@@ -127,7 +129,18 @@ Use **Mark Complete / Incomplete** and persistent review locks to protect pictur
 - **Optional rolling best LoRA checkpoint** can capture a promising low-loss point **mid-epoch**, not just at the ordinary save interval. It supports training-loss or fixed validation-loss selection, smoothing/cooldown safeguards, and resume bookkeeping. The manual **Save Now** action and epoch saves still exist.
 - **Clearer training feedback:** real epoch steps remaining for Global replay/resume, separate validation groups on the loss graph, and more useful pause/stop, Save Now and run-output states.
 - **Smarter resume and caching:** skip demonstrably clean text/VAE cache stages; re-encode only changed images or captions; retain compatible caches and respect explicit cache policy where necessary. Cache validity includes fine-grained file timestamps, encoder provenance and safe fallbacks for complex datasets.
-- **Studio upgrades:** upstream-adapted primary-LoRA quick switching with rollback; render-specific PNG setup metadata; per-browser-tab ownership protections; edit-reference aspect/Reference MP control; optional MiniMax H3 Image speed boost; and clearly flagged experimental Frankenstein/block-based model blending.
+- **Studio upgrades:** upstream-adapted primary-LoRA quick switching with rollback; render-specific PNG setup metadata; per-browser-tab ownership protections; edit-reference aspect/Reference MP control; and optional MiniMax H3 Image speed boost.
+
+### Experimental Frankenstein and block-based base-model mixing
+
+**MiniMax H3 Image + H3 Video Frankenstein** blends the two compatible H3 variants live in Studio: change block-level blend sliders, compare Baseline and Tweaked renders, try motion presets and save the blend as a **new H3 Image base checkpoint**. It uses H3-specific mixing and block-streaming logic. The experimental 12 GB GPU plan is **not hardware-validated**; upstream's documented tested path starts at 16 GB.
+
+**Base checkpoint mixer adds four other model families:** **MOSS-Image**, **Anima**, **Krea 2** and **SDXL / Illustrious**. In **Studio → Experimental · Base checkpoint mixer**, select two structurally compatible checkpoints **of the same family**, run Check compatibility, adjust individual block sliders (0 = Base, 1 = Donor), and **Save merged checkpoint**. It exports a standalone `.safetensors` model with mix metadata while preserving unmatched/unselected weights from Base.
+
+This second path is a **CPU-based offline checkpoint export**, not live Frankenstein rendering or LoRA mixing. Tensor interpolation streams bounded chunks (about 8 MiB); it doesn't require GPU VRAM, but does need enough disk space for a full output. Models with incompatible block shapes/layouts or unsupported quantized weights are refused. Mixing across families is not supported. A successful compatibility check does not guarantee attractive output; real checkpoint/output testing is still outstanding.
+
+See [experimental model mixing guide](EXPERIMENTAL_MODEL_MIXING.md), [four-family mixer implementation](https://github.com/Murf-Code/Fizgig-Advanced/commit/6b6d4b61cb) and [upstream H3 Frankenstein work](https://github.com/shootthesound/Fizgig/releases/tag/v9.8.3).
+
 
 ### Built for large datasets
 
