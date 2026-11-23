@@ -65,11 +65,12 @@ def save_latents(desc, item, latent, controls=(), extra=None, vae_encoder=""):
         sd[k] = _clean(v, k, item.item_key)
     for i, c in enumerate(controls):
         sd[f"latent_control_{i}_{c.shape[-2]}x{c.shape[-1]}"] = _clean(c, "control latent", item.item_key)
+    ns = _source_mtime_ns(item.item_key)
     save_file(sd, item.latent_cache_path, metadata={
         "architecture": desc.arch_id, "width": str(item.original_size[0]), "height": str(item.original_size[1]),
         "dtype": dtype_to_str(latent.dtype), "format_version": FORMAT_VERSION, "source": source_stamp(item.item_key),
         **({"alpha": item.alpha} if getattr(item, "alpha", "") else {}),
-        **({"source_mtime_ns": _source_mtime_ns(item.item_key)} if _source_mtime_ns(item.item_key) else {}),
+        **({"source_mtime_ns": ns} if ns else {}),
         **({"vae_encoder": vae_encoder} if vae_encoder else {})})
 
 
