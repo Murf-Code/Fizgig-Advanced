@@ -12569,7 +12569,7 @@ function captionDuplicatePanel(ext){
           pickers.append(el("div",{class:"studio-duplicate-card"+(isKeep?" keeper":"")},
             thumb,el("div",{class:"studio-duplicate-card-info"},
               el("strong",{text:pic.name}),status,caption,
-              el("label",{class:"field-row"},tick," Keep this image")));
+              el("label",{class:"field-row"},tick," Keep this image"))));
         }
       };
       const snapshot=()=>{
