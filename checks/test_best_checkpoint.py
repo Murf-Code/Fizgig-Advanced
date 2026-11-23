@@ -77,6 +77,16 @@ def test_checkpoint_modes_and_ui_choices():
     assert form.DEFAULTS["BEST_CHECKPOINT_COOLDOWN"] == "100"
 
 
+def test_best_checkpoint_mode_is_in_save_cadence_only():
+    from fizgig.families import form
+    from fizgig.families.registry import get
+    rows = [r for section in form.form(get("krea2"))["sections"]
+            for r in section["rows"] if r and r.get("key") == "BEST_CHECKPOINT_MODE"]
+    assert len(rows) == 1
+    assert rows[0]["place"] == "save_cadence"
+    assert rows[0]["choices"] == ["Off", "Smoothed training loss", "Fixed validation loss"]
+
+
 def test_parser_accepts_both_modes_without_old_cli_changes():
     from fizgig.families.train import setup_parser
     p = setup_parser()

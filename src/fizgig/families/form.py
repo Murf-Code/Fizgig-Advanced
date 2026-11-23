@@ -1035,7 +1035,7 @@ def form(desc):
              "of recent steps (individual batch lows are noisy). Fixed validation loss compares the same images "
              "and noise. Only one rolling -best-train or -best-val LoRA is kept for the chosen mode; "
              "normal saves, final checkpoint and training continue unchanged.",
-             ["Off", "Smoothed training loss", "Fixed validation loss"], default="Off"),
+             ["Off", "Smoothed training loss", "Fixed validation loss"], default="Off", place="save_cadence"),
         _row("BEST_CHECKPOINT_WINDOW", "Training loss window (steps)",
              hint="How many recent training batches to average before selecting a low-loss checkpoint. "
              "32 is a good starting point; not used for Fixed validation loss.", default="32"),

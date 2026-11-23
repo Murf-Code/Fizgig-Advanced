@@ -595,7 +595,50 @@ function cadenceRow(r, wrap) {
       el("span", {class: "cad-pair"}, el("span", {text: "every"}), num(after), el("span", {text: "epochs"}))),
     el("div", {class: "field-hint row-note", id: "note_" + r.key}),
     el("div", {class: "field-hint", "data-part": later, text: r.hint}));
+  if (r.key === "SAVE_EVERY_N_EPOCHS") addBestCheckpointSaveRow(wrap);
   return wrap;
+}
+
+// Rolling-best saving already exists in the trainer. This compact switch
+// controls its existing BEST_CHECKPOINT_MODE rather than introducing another
+// saver. Restore the previous loss mode if the switch gets turned back on.
+function addBestCheckpointSaveRow(wrap) {
+  const key = "BEST_CHECKPOINT_MODE";
+  const train = "Smoothed training loss", validation = "Fixed validation loss";
+  const current = () => String(S.values[key] || "Off");
+  const enabled = () => current() !== "Off";
+  const tick = el("input", {type: "checkbox", id: "f_best_checkpoint_enabled", "data-field": key,
+    onchange: (e) => {
+      if (enabled()) S._lastBestCheckpointMode = current();
+      onValue({key}, e.target.checked ? (S._lastBestCheckpointMode || train) : "Off");
+      metric._sync();
+    }});
+  const label = el("label", {class: "cad-best-label", for: "f_best_checkpoint_enabled"}, tick,
+    el("span", {text: "Save best checkpoint automatically"}));
+  const metric = el("select", {id: "f_" + key, "data-field": key,
+    "aria-label": "Best checkpoint loss metric", onchange: (e) => {
+      S._lastBestCheckpointMode = e.target.value;
+      onValue({key}, e.target.value);
+      metric._sync();
+    }}, el("option", {value: train, text: "Smoothed training loss"}),
+        el("option", {value: validation, text: "Fixed validation loss"}));
+  const options = el("details", {class: "cad-best-options"},
+    el("summary", {text: "Options"}),
+    el("div", {class: "cad-best-metric"}, el("label", {for: "f_" + key, text: "Best loss metric"}), metric),
+    el("div", {class: "field-hint", text: "Smoothed training loss can save mid-epoch; fixed validation loss compares the same images and noise. Window, cooldown and minimum improvement remain under Validation settings."}),
+    el("div", {class: "field-hint row-note", id: "note_" + key}));
+  metric._sync = () => {
+    const active = enabled();
+    tick.checked = active;
+    options.hidden = !active;
+    if (active) S._lastBestCheckpointMode = current();
+    metric.value = current() === validation ? validation : train;
+  };
+  metric._sync();
+  // Below the second epoch-cadence row, inside the same dark save panel.
+  wrap.append(el("div", {class: "cad-best-save"}, label,
+    el("div", {class: "field-hint cad-best-help", text:
+      "Keeps one rolling best-loss checkpoint, separate from scheduled epoch saves and Save Now."}), options));
 }
 
 // An entry with a Split mode (MOSS-Image's Clean-end share): Single is one value, Split a value for the first
@@ -1187,6 +1230,11 @@ async function refreshState() {
         Object.assign(S.values, act.values); syncInputs(Object.keys(act.values)); refreshStateSoon(); saveStateSoon(); }}));
     }
   });
+  // BEST_CHECKPOINT_MODE now has one inline control in How often to save.
+  const bestNote = $("note_BEST_CHECKPOINT_MODE");
+  if (bestNote) bestNote.textContent = (S.state.notes || {}).BEST_CHECKPOINT_MODE || "";
+  const bestToggle = $("f_best_checkpoint_enabled");
+  if (bestToggle) bestToggle.title = (S.state.tips || {}).BEST_CHECKPOINT_MODE || "";
   // an Advanced toggle shows while any of its rows can (Likeness optimization ticked)
   document.querySelectorAll(".form-row.row-has-advanced").forEach((o) => {
     const any = [...o.querySelectorAll(":scope > .row-advanced > .form-row[data-key]")].some((x) => !hidden.has(x.dataset.key));

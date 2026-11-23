@@ -30,6 +30,8 @@ jobs:
         run: |
           python -m pytest checks/test_replay_step_progress.py -q
           node checks/test_replay_step_progress.cjs
+      - name: Save cadence rolling-best toggle UI wiring
+        run: node checks/test_save_best_cadence.cjs
       - name: Rolling best checkpoint scores and CLI
         run: python -m pytest checks/test_best_checkpoint.py -q
       - name: Cache preflight and resume cache integrity
