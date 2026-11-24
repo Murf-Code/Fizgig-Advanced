@@ -394,6 +394,8 @@ class SingleStreamDiT(nn.Module):
         self.blocks_to_swap = num_blocks
         num_main_blocks = len(self.blocks)
         assert num_blocks <= num_main_blocks - 2, f"Cannot swap more than {num_main_blocks - 2} blocks. Requested {num_blocks}."
+        from fizgig.krea2.stream_strategy import apply_stream_strategy
+        config = apply_stream_strategy(config, getattr(self, "_stream_strategy", "default"))
         self.offloader = create_offloader("single", self.blocks, num_main_blocks, num_blocks, config)
         print(
             f"Krea 2: Block swap enabled. Swapping {num_blocks} of {num_main_blocks} blocks "
