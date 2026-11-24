@@ -39,6 +39,8 @@ def recommend_stream_strategy(report, parity_check, *, min_gain=0.05,
         return stop("Real CUDA measurements required")
     if cfg.get("suite") != "calibration":
         return stop("Use the repeated calibration suite")
+    if type(cfg.get("swap")) is not int or not 1 <= cfg["swap"] <= 26:
+        return stop("Invalid swap count")
     steps, warmup = cfg.get("steps", 0), cfg.get("warmup", 0)
     if type(steps) is not int or type(warmup) is not int or warmup < 1 or steps - warmup < 3:
         return stop("Require at least one warmup and three measured steps per repeat")
@@ -114,6 +116,7 @@ def recommend_stream_strategy(report, parity_check, *, min_gain=0.05,
         return stop("Classic reference invalid: " + reason)
     result["baseline"] = base
     eligible = []
+    simple = None
     for key, cases in groups.items():
         if key == baseline_key or key[0] != "fast":
             continue
@@ -131,6 +134,8 @@ def recommend_stream_strategy(report, parity_check, *, min_gain=0.05,
         if any(entry[k] > base[k] + vram_slack_gib for k in ("peak_allocated_gib", "peak_reserved_gib")):
             entry["reason"] = "Peak GPU memory exceeds classic allowance"
             continue
+        if not pinned and ring == 2:
+            simple = entry  # valid comparison even when it misses the classic speedup threshold
         gain = 1 - max(entry["repeat_medians"]) / min(base["repeat_medians"])
         entry["conservative_gain"] = gain
         if gain < min_gain:
@@ -138,10 +143,12 @@ def recommend_stream_strategy(report, parity_check, *, min_gain=0.05,
             continue
         eligible.append(entry)
 
-    simple = next((e for e in eligible if not e["pinned"] and e["ring"] == 2), None)
     accepted = []
     for entry in eligible:
-        if simple is not None and entry is not simple:
+        if simple is None:
+            entry["reason"] = "No valid staged ring-2 comparison for a more aggressive strategy"
+            continue
+        if entry is not simple:
             gain = 1 - max(entry["repeat_medians"]) / min(simple["repeat_medians"])
             entry["gain_over_staged_ring2"] = gain
             if gain < min_gain:
