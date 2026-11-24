@@ -13220,15 +13220,45 @@ function renderCaptionStudio(host,items,ext){
   };
   // Search updates as you type. Restore focus and caret after Studio rebuilds,
   // and leave the bar visible when the filter produces zero results.
+  // Shared field chrome, with native inputs and one accessible clear action.
+  const decorateStudioField=(field,kind,label)=>{
+    const wrap=el("div",{class:"studio-accent-field"});
+    const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+    for(const [name,value] of Object.entries({viewBox:"0 0 24 24",fill:"none",
+      stroke:"currentColor","stroke-width":"1.8","stroke-linecap":"round",
+      "aria-hidden":"true",class:"studio-field-icon"}))svg.setAttribute(name,value);
+    const path=document.createElementNS("http://www.w3.org/2000/svg","path");
+    path.setAttribute("d",kind==="add"?"M12 5v14M5 12h14":"M16 16l4 4M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0z");
+    svg.append(path);
+    const clear=el("button",{type:"button",class:"studio-field-clear",text:"×",
+      "aria-label":label,title:label});
+    const sync=()=>{clear.hidden=!field.value||field.disabled;};
+    const reset=()=>{
+      if(field.disabled||!field.value)return;
+      field.value="";
+      field.focus({preventScroll:true});
+      field.dispatchEvent(new Event("input",{bubbles:true}));
+      sync();
+    };
+    field.addEventListener("input",sync);
+    field.addEventListener("keydown",event=>{
+      if(event.key==="Escape"&&!event.isComposing&&field.value){
+        event.preventDefault();event.stopPropagation();reset();
+      }
+    });
+    clear.addEventListener("pointerdown",event=>event.preventDefault());
+    clear.addEventListener("click",reset);
+    wrap.append(svg,field,clear);
+    sync();
+    return {wrap,sync};
+  };
   const createTagFilterBar=()=>{
     const field=el("input",{type:"text",class:"w-path studio-tag-query",
       placeholder:"Filter images by tags","aria-label":"Filter images by tags",
       title:"Filter as you type. Supports AND, OR, NOT and quoted tags."});
     field.value=S.cap.studioQuery||"";
-    const clear=el("button",{class:"btn btn-sm studio-tag-clear",type:"button",
-      text:"×","aria-label":"Clear image tag filter",title:"Clear image tag filter"});
     const bar=el("div",{class:"studio-filter-bar"});
-    const refreshClear=()=>{clear.hidden=!field.value;};
+    const decorated=decorateStudioField(field,"search","Clear image tag filter");
     const apply=()=>{
       if(field.isComposing)return;
       const next=field.value.trim();
@@ -13251,17 +13281,9 @@ function renderCaptionStudio(host,items,ext){
         if(caret!==null)replacement.setSelectionRange(caret,caret);
       }
     };
-    field.addEventListener("input",()=>{refreshClear();apply();});
+    field.addEventListener("input",apply);
     field.addEventListener("compositionend",apply);
-    clear.addEventListener("click",()=>{
-      field.value="";
-      refreshClear();
-      apply();
-      // Also return focus if the filter was already empty.
-      $("captionsGrid").querySelector(".studio-tag-query")?.focus({preventScroll:true});
-    });
-    refreshClear();
-    bar.append(field,clear);
+    bar.append(decorated.wrap);
     return bar;
   };
   const selection=S.cap.studioSelection||(S.cap.studioSelection=new Set());
@@ -14479,11 +14501,13 @@ function renderCaptionStudio(host,items,ext){
     if(!tag)return;
     ta.value=editorCompose(studioUnique([...studioTokens(ta.value,captionMode),tag]));
     newTag.value="";
+    decoratedAdd.sync();
     remember(true);redraw();
   };
   const tagSuggestionList=el("div",{class:"studio-add-tag-suggestions",
     role:"listbox","aria-label":"Suggested tags",hidden:true});
-  const tagInputArea=el("div",{class:"studio-add-tag-input"},newTag,tagSuggestionList);
+  const decoratedAdd=decorateStudioField(newTag,"add","Clear new tag");
+  const tagInputArea=el("div",{class:"studio-add-tag-input"},decoratedAdd.wrap,tagSuggestionList);
   right.append(
     el("div",{class:"studio-image-tags-heading"},
       el("strong",{text:"Image Tags"}),naturalToggle),
@@ -14858,7 +14882,8 @@ function renderCaptionStudio(host,items,ext){
     const url=URL.createObjectURL(new Blob([txt],{type:"text/plain;charset=utf-8"}));
     const a=document.createElement("a");a.href=url;a.download="fizgig_captions.txt";a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
   });
-  right.append(el("div",{class:"studio-tag-search-wrap"},indexSearch),
+  right.append(el("div",{class:"studio-tag-search-wrap"},
+    decorateStudioField(indexSearch,"search","Clear tag search").wrap),
     el("div",{class:"studio-tag-sort"},sortSelect,sortDirection),
     explore,tagCount);
   drawExplore();

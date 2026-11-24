@@ -6548,3 +6548,47 @@ body:has(.caption-removal-backdrop){overflow:hidden}
     animation:studio-toolbar-spin 1s linear infinite;
   }
 }
+
+/* Caption Workbench: visible, consistent accent-edge text fields. */
+#tab-captions .studio-accent-field{
+  position:relative;display:flex;align-items:center;flex:1 1 auto;
+  min-width:0;width:100%;box-sizing:border-box;
+}
+#tab-captions .studio-accent-field>input.w-path{
+  display:block;box-sizing:border-box;flex:1 1 auto;width:100%;min-width:0;
+  padding-left:34px;padding-right:34px;
+  border:1px solid color-mix(in srgb,var(--border-strong) 80%,var(--text-secondary));
+  border-left:3px solid var(--accent);
+  background:color-mix(in srgb,var(--bg-inset) 82%,var(--text-primary));
+  color:var(--text-primary);
+}
+#tab-captions .studio-tag-search-wrap{background:transparent;padding:0}
+#tab-captions .studio-accent-field>input::placeholder{
+  color:var(--text-secondary);opacity:1;
+}
+#tab-captions .studio-accent-field>input:focus{
+  border-color:var(--accent);outline:1px solid var(--accent);outline-offset:1px;
+}
+#tab-captions .studio-accent-field>input[aria-invalid="true"]{
+  border-color:var(--warning);outline-color:var(--warning);
+}
+#tab-captions .studio-accent-field>input::-webkit-search-cancel-button{appearance:none;display:none}
+#tab-captions .studio-field-icon{
+  position:absolute;z-index:1;left:12px;top:50%;transform:translateY(-50%);
+  width:15px;height:15px;color:var(--accent);pointer-events:none;
+}
+#tab-captions .studio-accent-field>.studio-field-clear{
+  position:absolute;z-index:1;right:3px;top:50%;transform:translateY(-50%);
+  display:grid;place-items:center;width:28px;height:28px;min-width:0;
+  padding:0;border:0;border-radius:6px;background:transparent;
+  color:var(--text-secondary);font-size:20px;line-height:1;cursor:pointer;
+}
+#tab-captions .studio-field-clear[hidden]{display:none!important}
+#tab-captions .studio-field-clear:hover,#tab-captions .studio-field-clear:focus-visible{
+  background:var(--accent-subtle);color:var(--text-primary);
+}
+@media(prefers-reduced-motion:no-preference){
+  #tab-captions .studio-accent-field>input,#tab-captions .studio-field-clear{
+    transition:background-color .18s ease,border-color .18s ease,color .18s ease;
+  }
+}
