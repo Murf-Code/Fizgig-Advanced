@@ -437,6 +437,69 @@ def cases(args):
     return result
 
 
+def select_cases(available, requested):
+    """Keep the classic reference and its repeat for every selected group."""
+    if not requested:
+        return available
+    known = {c["label"]: c for c in available}
+    unknown = set(requested) - known.keys()
+    if unknown:
+        raise ValueError("Unavailable diagnostic case(s): " + ", ".join(sorted(unknown)))
+    groups = {known[label]["reference"] for label in requested}
+    selected = set(requested)
+    for case in available:
+        if case["reference"] in groups and case["mode"] == "classic" and (
+                case["record"] or "classic_repeat" in case["label"] or "classic_math_repeat" in case["label"]):
+            selected.add(case["label"])
+    return [c for c in available if c["label"] in selected]
+
+
+def evaluate_exact_parity(report, planned):
+    """Fail closed on missing steps/cases, nonfinite results or any numerical drift.
+
+    A failed gate is not automatically evidence of an offloader race: nondeterministic
+    attention can also fail the classic repeat.
+    """
+    issues = []
+    expected_steps = report["configuration"]["steps"]
+    by_label = {}
+    for run in report["runs"]:
+        label = run["label"]
+        if label in by_label:
+            issues.append(f"{label}: duplicate result")
+        by_label[label] = run
+    for case in planned:
+        label = case["label"]
+        run = by_label.get(label)
+        if run is None or run.get("status") != "completed":
+            issues.append(f"{label}: missing, skipped or failed")
+            continue
+        rows = run.get("steps", [])
+        if [row.get("step") for row in rows] != list(range(1, expected_steps + 1)):
+            issues.append(f"{label}: incomplete or out-of-order step sequence")
+        for row in rows:
+            prefix = f"{label} step {row.get('step')}"
+            for key in ("loss", "validation"):
+                if not math.isfinite(row.get(key, float("nan"))):
+                    issues.append(f"{prefix}: nonfinite or missing {key}")
+                if not case["record"] and row.get(key + "_abs_error") != 0:
+                    issues.append(f"{prefix}: {key} does not exactly match reference")
+            for key in ("gradients", "updates"):
+                metric = row.get(key, {})
+                count = metric.get("tensors", 0)
+                if (metric.get("finite") is not True or count <= 0
+                        or metric.get("exact") != count or metric.get("relative_l2") != 0
+                        or metric.get("max_abs") != 0):
+                    issues.append(f"{prefix}: {key} not finite and bit-exact across all tensors")
+    if report["errors"]:
+        issues.append("One or more diagnostic workers failed")
+    if not planned:
+        issues.append("No diagnostic cases planned")
+    return {"passed": not issues, "mode": "exact",
+            "scope": "cpu-smoke-only" if report["configuration"]["cpu"] else "cuda",
+            "required_cases": [case["label"] for case in planned], "issues": issues}
+
+
 def worker(config_path):
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     args = argparse.Namespace(**config["args"])
@@ -478,6 +541,9 @@ def main():
     p.add_argument("--steps", type=int, default=3)
     p.add_argument("--warmup", type=int, default=1)
     p.add_argument("--suite", choices=("basic", "expanded"), default="basic")
+    p.add_argument("--case", action="append", help="Run only this case (repeatable); classic reference and repeat are included automatically")
+    p.add_argument("--require-parity", action="store_true",
+                   help="Exit nonzero unless every selected case completes with exact loss, validation, gradient and update parity")
     p.add_argument("--swap", type=int, default=22)
     p.add_argument("--rank", type=int, default=8)
     p.add_argument("--precision", choices=("int8", "bf16"), default="int8")
@@ -494,8 +560,12 @@ def main():
         p.error("Require positive steps/rank, swap 1..26 and width a multiple of 128")
     if args.warmup < 0 or args.warmup >= args.steps:
         args.warmup = min(max(0, args.warmup), args.steps - 1)
-    if args.suite == "expanded" and args.swap > 24:
-        p.error("Expanded suite requires room for a four-slot ring within the same VRAM budget (swap <= 24)")
+    try:
+        planned = select_cases(cases(args), args.case)
+    except ValueError as exc:
+        p.error(str(exc))
+    if any(c["mode"].startswith("fast") and c["ring"] > 28 - args.swap for c in planned):
+        p.error("Selected rings must fit the classic block-weight VRAM budget")
     if args.latent_size < 2 or args.latent_size % 2:
         p.error("latent-size must be positive and divisible by 2")
     if args.cache and not args.model:
@@ -524,6 +594,13 @@ def main():
     report_path = Path(args.report)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report["skipped"] = []
+    report["planned_cases"] = planned
+    try:
+        report["git_commit"] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
+            stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.SubprocessError):
+        report["git_commit"] = None
     report["measurement_notes"] = [
         "Host wait time is wall time inside wait_for_block, not actual GPU-side stall time.",
         "WDDM shared/dedicated counters are optional end-of-case samples, not peaks.",
@@ -536,7 +613,7 @@ def main():
             # Two reference groups at rank 32: FP32 initial parameters,
             # gradients and update tensors, plus serialization headroom.
             estimate = int(117_305_760 * (args.rank / 32) * 4 * (1 + 2 * args.steps)
-                           * (2 if args.suite == "expanded" else 1) * 1.15) + 2**30
+                           * (len({c["reference"] for c in planned}) * 1.15)) + 2**30
             free = shutil.disk_usage(tmp).free
             if free < estimate:
                 msg = f"Diagnostic reference storage needs about {estimate/2**30:.1f} GiB free; {free/2**30:.1f} GiB available."
@@ -547,7 +624,7 @@ def main():
         batch_path = tmp / "batches.pt"
         torch.save(batches, batch_path)
         ready = set()
-        for case in cases(args):
+        for case in planned:
             group = case["reference"]
             if not case["record"] and group not in ready:
                 report["skipped"].append({**case, "reason": "Reference case unavailable"})
@@ -571,6 +648,12 @@ def main():
             else:
                 report["errors"].append(result)
             report_path.write_text(json.dumps(report, indent=2, allow_nan=True), encoding="utf-8")
+    report["exact_parity"] = evaluate_exact_parity(report, planned)
+    report_path.write_text(json.dumps(report, indent=2, allow_nan=True), encoding="utf-8")
+    gate = report["exact_parity"]
+    print(f"Exact parity ({gate['scope']}): {'PASS' if gate['passed'] else 'NOT PASSED'}", flush=True)
+    for issue in gate["issues"]:
+        print("  " + issue, flush=True)
     print("\n=== Summary (excluding warmup) ===", flush=True)
     for run in report["runs"]:
         print(f"{run['label']}: {run['summary']['mean_step_seconds']:.3f}s/step "
@@ -582,7 +665,7 @@ def main():
     print("Compare both classic repeats, fast repeats and serialized fast. "
           "Exact matches are strongest; compare numerical drift to the classic repeat, not just training loss.",
           flush=True)
-    return int(bool(report["errors"]) or any(
+    return int((args.require_parity and not gate["passed"]) or bool(report["errors"]) or any(
         not math.isfinite(row["loss"]) or not math.isfinite(row["validation"])
         or any(not row[key]["finite"] for key in ("gradients", "updates"))
         for run in report["runs"] for row in run["steps"]))
