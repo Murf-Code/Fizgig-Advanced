@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path
 import random
+import shutil
 import subprocess
 import sys
 import threading
@@ -48,10 +49,17 @@ def inputs(args, config):
                 pairs.append((path, te))
         if not pairs:
             raise ValueError("No matching Krea 2 latent/text cache pairs in " + str(folder))
+    # Repeat the same caption/latent shapes after warmup, while drawing
+    # independent fixed noise per step. Keep a separate validation example
+    # whenever the cache contains enough pictures.
+    train_count = min(len(pairs), max(1, args.warmup or args.steps))
+    if len(pairs) > 1:
+        train_count = min(train_count, len(pairs) - 1)
     out = []
     for i in range(args.steps + 1):
         if pairs:
-            path, te = pairs[i % len(pairs)]
+            index = (train_count % len(pairs)) if i == args.steps else (i % train_count)
+            path, te = pairs[index]
             data = load_file(str(path))
             keys = [k for k in data if k.startswith("latent_") and data[k].ndim == 3]
             if len(keys) != 1:
@@ -524,6 +532,18 @@ def main():
         "Each case runs in its own process; reference tensors and cached batches are shared on disk."]
     with tempfile.TemporaryDirectory(prefix="fizgig-stream-sync-", dir=args.scratch) as tmp:
         tmp = Path(tmp)
+        if args.model:
+            # Two reference groups at rank 32: FP32 initial parameters,
+            # gradients and update tensors, plus serialization headroom.
+            estimate = int(117_305_760 * (args.rank / 32) * 4 * (1 + 2 * args.steps)
+                           * (2 if args.suite == "expanded" else 1) * 1.15) + 2**30
+            free = shutil.disk_usage(tmp).free
+            if free < estimate:
+                msg = f"Diagnostic reference storage needs about {estimate/2**30:.1f} GiB free; {free/2**30:.1f} GiB available."
+                report["errors"].append({"label": "preflight", "error": msg})
+                report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+                print(msg, flush=True)
+                return 1
         batch_path = tmp / "batches.pt"
         torch.save(batches, batch_path)
         ready = set()

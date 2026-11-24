@@ -1,4 +1,5 @@
 pytest>=8
+psutil
 numpy
 pillow==13.0.0
 safetensors
