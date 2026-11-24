@@ -2313,9 +2313,12 @@ def _run_stages(stages, out_dir):
         log_path = _run_log["path"]
         history_id = _run.get("history_id")
     began = time.monotonic()
+    endings = []
+    def defer_end(result, lora, starter):
+        endings.append((result, lora, starter))
     replay_report.update(out_dir, case, "running")
     try:
-        _run_stages_impl(stages, out_dir)
+        _run_stages_impl(stages, out_dir, defer_end if case else webqueue.on_run_ended)
     finally:
         with _lock:
             state = _run["state"] if _run.get("history_id") == history_id else "unknown"
@@ -2323,6 +2326,8 @@ def _run_stages(stages, out_dir):
                   "paused": "paused"}.get(state, "failed")
         replay_report.update(out_dir, case, status, log_path=log_path,
                              wall_seconds=time.monotonic() - began)
+        for ending in endings:
+            webqueue.on_run_ended(*ending)
     if state == "completed":
         from fizgig.web import helpers as _h
         if not (_run.get("values") or {}).get("__stream_sync") and not webqueue.status()["items"] and not _h.moved_in_waiting(out_dir):
@@ -2330,7 +2335,7 @@ def _run_stages(stages, out_dir):
             pod_stop.maybe_start(load_prefs(), append_log)
 
 
-def _run_stages_impl(stages, out_dir):
+def _run_stages_impl(stages, out_dir, ended):
     from fizgig.training.progress import TrainingProgressTracker
     append_log(f"\n=== Fizgig run, {datetime.datetime.now():%Y-%m-%d %H:%M:%S} ===\n")
     with _lock:
@@ -2344,7 +2349,7 @@ def _run_stages_impl(stages, out_dir):
         with _lock:
             if _run["state"] == "stopped":
                 history.end(_run.get("history_id"), "stopped", _run.get("progress"))
-                webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+                ended("stopped", _run.get("lora"), _queue_starter)
                 return
             _run["stage"] = stage.name
             if stage.name == "Training" and not _run.get("training_at"):
@@ -2368,14 +2373,14 @@ def _run_stages_impl(stages, out_dir):
             with _lock:
                 _run.update(state="failed", proc=None, ended_at=time.time())
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
-            webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
+            ended("failed", _run.get("lora"), _queue_starter)
             return
         if skipped:
             append_log(f"\n■ Stopped before starting {stage.name}.\n")
             with _lock:
                 _run["proc"] = None
             history.end(_run.get("history_id"), "stopped", _run.get("progress"))
-            webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+            ended("stopped", _run.get("lora"), _queue_starter)
             return
         mem = oom.Watch()                       # GPU / system-RAM messages, and the Auto plan the trainer chose
         for line in proc.stdout:
@@ -2422,7 +2427,7 @@ def _run_stages_impl(stages, out_dir):
                 _run["proc"] = None              # gone: a stop-and-wait sees it at once
             append_log(f"\n■ Stopped during {stage.name}.\n")
             history.end(_run.get("history_id"), "stopped", _run.get("progress"))
-            webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+            ended("stopped", _run.get("lora"), _queue_starter)
             return
         if ret != 0:
             kind = oom.classify(ret, mem)
@@ -2433,7 +2438,7 @@ def _run_stages_impl(stages, out_dir):
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
             if kind and not any((_run.get("values") or {}).get(k) for k in ("__stream_sync", "__replay_compare")) and _oom_recover(kind, stage.name, mem.plan):
                 return                           # it carries on by itself: the queue waits for that run
-            webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
+            ended("failed", _run.get("lora"), _queue_starter)
             return
     paused = ((os.path.exists(os.path.join(out_dir, ".pause_requested")) or _run["pause"])
               and _run.get("family") != refmod.KEY                   # a RefMod finishes in one go
@@ -2461,11 +2466,11 @@ def _run_stages_impl(stages, out_dir):
         except OSError:
             pass
         history.end(_run.get("history_id"), "stopped", _run.get("progress"))
-        webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+        ended("stopped", _run.get("lora"), _queue_starter)
         append_log("\n■ Stopped at the end of the final stage.\n")
         return
     history.end(_run.get("history_id"), "paused" if paused else "finished", _run.get("progress"))
-    webqueue.on_run_ended("paused" if paused else "finished", _run.get("lora"), _queue_starter)
+    ended("paused" if paused else "finished", _run.get("lora"), _queue_starter)
     append_log(("\n⏸ Restore point saved and training stopped. Resume continues from it.\n" if _run.get("save_stop")
                 else "\n⏸ Paused. Resume continues from the saved state.\n") if paused else
                f"\n✔ Run complete. {_run['early_stop']}\n" if _run.get("early_stop") else "\n✔ Run complete.\n")

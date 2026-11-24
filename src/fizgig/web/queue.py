@@ -201,7 +201,13 @@ def start_next(starter):
             _q["waiting"] = ""
             return
         item = _q["items"][0]
+    def record_blocked(reason):
+        from fizgig.web import replay_report
+        replay_report.update(item.get("output_dir"), (item.get("values") or {}).get("__replay_compare"),
+                             "blocked", reason=reason)
+
     if not os.path.isdir(item.get("image_folder") or ""):
+        record_blocked("Training folder is missing.")
         hold(f"The next run's training folder isn't there any more: {item.get('image_folder')}. Restore it or "
              "remove the run, then press Start queue.")
         return
@@ -217,4 +223,5 @@ def start_next(starter):
             _q["waiting"] = why[5:].strip()
         schedule(WAIT_S, starter)
         return
+    record_blocked(why)
     hold(f"The next run ({item.get('lora')}) couldn't start: {why}")
