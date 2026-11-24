@@ -11873,11 +11873,29 @@ function captionModelsChanged() {
   if (document.querySelector("#tab-captions.active")) loadCaptions();
 }
 
+// Keep the modern workspace hidden until its first complete mount. Loading
+// another dataset cannot expose a previous dataset's interactive controls.
+function captionInitialState(state,detail=""){
+  const tab=$("tab-captions");
+  tab.dataset.captionLoad=state;
+  const loading=state==="initial"||state==="loading";
+  $("captionInitialTitle").textContent=state==="error"?"Couldn't load Caption Workbench":
+    state==="empty"?"Choose a dataset":"Loading Caption Workbench";
+  $("captionInitialDetail").textContent=state==="error"?(detail||"Please retry."):
+    state==="empty"?"Choose the training folder on the Start tab.":"Preparing dataset and captions…";
+  $("captionInitialRetry").hidden=state!=="error";
+  $("captionInitialState").setAttribute("aria-busy",String(loading));
+}
 async function loadCaptions() {
   // Discard stale requests when datasets or caption extensions change while
   // a slower media/review/status request is still in flight.
   const serial=S.cap.loadSerial=(S.cap.loadSerial||0)+1;
   const current=()=>serial===S.cap.loadSerial;
+  const tab=$("tab-captions");
+  const datasetKey=JSON.stringify([String(S.imageFolder||""),capExt(),S.family||""]);
+  const sameWorkspace=tab.dataset.captionLoad==="ready"&&S.cap.studioMountedDataset===datasetKey;
+  if(!sameWorkspace)captionInitialState("loading");
+  try {
   // A dataset switch must not leave Image Prep mounted on the former folder.
   if(S.cap?.imageEditing&&!S.cap.imageClosing){
     const normalized=p=>String(p||"").replace(/\\/g,"/").replace(/\/+$/,"").toLowerCase();
@@ -11916,8 +11934,11 @@ async function loadCaptions() {
     "Choose the training folder on the Start tab first.") + subfoldersHint();
   if (!S.imageFolder) {
     S.cap.items=[];
+    S.cap.studioStageDispose?.();
+    captionAiControlsRestore();
     $("captionsGrid").replaceChildren();
     $("captionsSummary").textContent="Choose the training folder on the Start tab.";
+    captionInitialState("empty");
     return;
   }
   const ext = $("captionExt").value.trim() || ".txt",folderAtRequest=String(S.imageFolder);
@@ -11927,6 +11948,7 @@ async function loadCaptions() {
   const items=r.items;                      // pictures and largest detail crops
   const folders=[...new Set(items.map(capItemFolder))];
   const reviewLookup=new Map();
+  const liveRequest=api("/api/captions/live_status?folder="+encodeURIComponent(folderAtRequest)).catch(()=>null);
   await Promise.all(folders.map(async folder=>{
     try{
       const data=await api("/api/captions/reviews?folder="+encodeURIComponent(folder));
@@ -11935,9 +11957,7 @@ async function loadCaptions() {
   }));
   if(!current())return;
   const reviewed=new Set(items.filter(it=>reviewLookup.get(capItemFolder(it))?.has(it.name)).map(it=>it.path));
-  let liveStatus=null;
-  try{liveStatus=await api("/api/captions/live_status?folder="+encodeURIComponent(folderAtRequest));}
-  catch(e){liveStatus=null;}
+  const liveStatus=await liveRequest;
   if(!current()||String(S.imageFolder)!==folderAtRequest||capExt()!==ext)return;
   // Refresh must not keep removed paths in a bulk selection or as the active image.
   const kept=CaptionStudioSelection.prune(items,S.cap.studioSelection||[],
@@ -11951,7 +11971,18 @@ async function loadCaptions() {
   S.cap.items=items;
   S.cap.studioReviewed=reviewed;
   S.cap.liveStatus=liveStatus;
-  renderCaptions();
+  S.cap.studioMounting=true;
+  try{renderCaptions();}
+  finally{S.cap.studioMounting=false;}
+  S.cap.studioMountedDataset=datasetKey;
+  captionInitialState("ready");
+  }catch(error){
+    if(current()&&!sameWorkspace)captionInitialState("error",error.message);
+    if(current()&&sameWorkspace){
+      console.warn("Caption Workbench refresh:",error);
+      throw error;
+    }
+  }
 }
 
 const CAP_LEARNING_REFRESH_MS = 30000;
@@ -12024,6 +12055,7 @@ function captionLearningRefresh() {
 }
 
 function renderCaptions() {
+  if(!S.cap.studioMounting&&$("tab-captions").dataset.captionLoad!=="ready")return;
   if(typeof S.cap.studioLearningColors!=="boolean") {
     try { S.cap.studioLearningColors=localStorage.getItem("fizgig.caption.learning_colors")==="1"; }
     catch(e) { S.cap.studioLearningColors=false; }
@@ -16211,6 +16243,7 @@ async function findReplace(apply) {
 }
 
 function wireCaptions() {
+  $("captionInitialRetry").addEventListener("click",()=>void loadCaptions().catch(console.warn));
   $("captionsReload").addEventListener("click", loadCaptions);
   // the box is the Training tab's Caption Extension (one setting, as in the desktop app): a change here is that
   $("captionExt").addEventListener("change", () => {

@@ -6659,3 +6659,43 @@ body:has(.caption-removal-backdrop){overflow:hidden}
 #tab-captions .studio-host .studio-add-tag-suggestion:is(:hover,.is-active){
   color:var(--studio-tag-color,var(--text-primary));
 }
+
+/* First mount: never expose the old form or a stale dataset while loading. */
+#tab-captions:not([data-caption-load="ready"])>.caption-bench-header,
+#tab-captions:not([data-caption-load="ready"])>.caption-tools-drawer,
+#tab-captions:not([data-caption-load="ready"])>#captionsGrid{
+  display:none!important;
+}
+#tab-captions[data-caption-load="ready"]>.caption-initial-state{display:none}
+#tab-captions>.caption-initial-state{
+  order:4;display:flex;flex-direction:column;gap:12px;min-width:0;
+  flex:1 1 auto;padding:12px 0;
+}
+#tab-captions .caption-initial-heading{
+  display:flex;align-items:center;gap:12px;padding:16px;
+  border:1px solid var(--border);border-radius:12px;background:var(--bg-surface);
+}
+#tab-captions .caption-initial-heading>.btn{margin-left:auto}
+#tab-captions .caption-initial-heading>.btn[hidden]{display:none!important}
+#tab-captions .caption-initial-spinner{
+  width:24px;height:24px;flex:none;border:2px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;
+  animation:studio-toolbar-spin 1s linear infinite;
+}
+#tab-captions .caption-initial-skeleton{
+  display:grid;grid-template-columns:minmax(55px,12%) minmax(0,1fr) minmax(75px,32%);
+  gap:10px;min-height: min(480px,60vh);flex:1 1 auto;
+}
+#tab-captions .caption-initial-skeleton>div{
+  border:1px solid var(--border);border-radius:12px;
+  background:var(--bg-surface);padding:10px;min-width:0;
+}
+#tab-captions .caption-initial-skeleton i{
+  display:block;border-radius:8px;background:var(--bg-raised);margin-bottom:8px;
+}
+#tab-captions .caption-initial-rail i{height:76px}
+#tab-captions .caption-initial-tags i{height:20px}
+#tab-captions:is([data-caption-load="error"],[data-caption-load="empty"]) :is(.caption-initial-spinner,.caption-initial-skeleton){display:none}
+@media(prefers-reduced-motion:reduce){
+  #tab-captions .caption-initial-spinner{animation:none}
+}

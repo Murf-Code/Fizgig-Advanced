@@ -705,7 +705,7 @@
           </div>
         </section>
 
-        <section id="tab-captions" class="tab-panel">
+        <section id="tab-captions" class="tab-panel" data-caption-load="initial">
           <header class="tab-banner caption-bench-header">
             <div class="caption-bench-heading">
               <span class="caption-bench-monogram" aria-hidden="true">✦</span>
@@ -910,6 +910,19 @@
               <button class="btn btn-sm" id="captionImageClose" type="button">Close image editor</button>
             </div>
             <div id="captionImageEditorSlot"></div>
+          </section>
+          <section id="captionInitialState" class="caption-initial-state" aria-label="Caption Workbench status">
+            <div class="caption-initial-heading" role="status">
+              <span class="caption-initial-spinner" aria-hidden="true"></span>
+              <div><strong id="captionInitialTitle">Loading Caption Workbench</strong>
+                <div class="field-hint" id="captionInitialDetail">Preparing dataset and captions…</div></div>
+              <button type="button" class="btn btn-sm" id="captionInitialRetry" hidden>Retry</button>
+            </div>
+            <div class="caption-initial-skeleton" aria-hidden="true">
+              <div class="caption-initial-rail"><i></i><i></i><i></i><i></i></div>
+              <div class="caption-initial-preview"></div>
+              <div class="caption-initial-tags"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            </div>
           </section>
           <div class="captions-grid" id="captionsGrid"></div>
           <!-- No standalone Log card: caption progress/errors stay in the
