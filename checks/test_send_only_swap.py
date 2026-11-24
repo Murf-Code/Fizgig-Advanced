@@ -653,3 +653,58 @@ def test_host_exhaustion_stops_before_placement(monkeypatch, available, fail_slo
         off.prepare_block_devices_before_forward(blocks)
     assert not off.cpu_master and off.ring_flat is None
     assert all(b[0].weight is p and p.device.type == "cpu" for b, p in zip(blocks, original))
+
+
+@pytest.mark.parametrize("strategy,ring,pinned", [
+    ("default", 2, False), ("staged3", 3, False), ("staged4", 4, False),
+    ("direct2", 2, True), ("direct3", 3, True), ("direct4", 4, True),
+])
+def test_training_stream_strategy_preferences_and_config(strategy, ring, pinned):
+    from fizgig.families import launch
+    from fizgig.families.train import setup_parser
+    from fizgig.krea2.stream_strategy import apply_stream_strategy
+    prefs = launch.clean_reclaim_prefs({"send_only_strategy": strategy})
+    flags = launch.send_only_flags(prefs)
+    req = ["--family", "krea2", "--dit", "x", "--output_dir", "o", "--output_name", "n"]
+    parsed = setup_parser().parse_known_args(req + flags)[0]
+    assert parsed.send_only_strategy == strategy
+    cfg = offloading.BlockSwapConfig(torch.device("cuda"), supports_backward=True, h2d_only=True)
+    effective = apply_stream_strategy(cfg, parsed.send_only_strategy)
+    assert (effective.ring_size, effective.use_pinned_memory) == (ring, pinned)
+    assert (cfg.ring_size, cfg.use_pinned_memory) == (2, False)
+    assert launch.send_only_flags({**prefs, "send_only_block_swap": "0"}) == ["--no-send_only_swap"]
+
+
+def test_stream_strategy_isolation_and_invalid_values():
+    from fizgig.families import launch
+    from fizgig.krea2.stream_strategy import apply_stream_strategy
+    for cfg in (offloading.BlockSwapConfig(CPU, supports_backward=True, h2d_only=True),
+                offloading.BlockSwapConfig(torch.device("cuda"), supports_backward=False, h2d_only=True),
+                offloading.BlockSwapConfig(torch.device("cuda"), supports_backward=True, h2d_only=False)):
+        assert apply_stream_strategy(cfg, "direct4") is cfg
+    with pytest.raises(ValueError, match="Unknown faster block swap"):
+        launch.clean_reclaim_prefs({"send_only_strategy": "direct99"})
+    assert launch.send_only_flags({"send_only_strategy": "direct99"}) == []
+    assert launch.RECLAIM_PREF_DEFAULTS["send_only_strategy"] == "default"
+
+
+@pytest.mark.parametrize("family", ["krea", "moss"])
+def test_experimental_strategy_reaches_model_factory(monkeypatch, family):
+    # Intercept the factory before CUDA allocations; exercise model-level wiring.
+    captured = []
+    sentinel = types.SimpleNamespace(copier=object(), remove_hooks=lambda: None)
+    def fake_factory(block_type, blocks, num_blocks, blocks_to_swap, config):
+        captured.append(config)
+        return sentinel
+    monkeypatch.setattr(offloading, "create_offloader", fake_factory)
+    if family == "krea":
+        model = SingleStreamDiT(KCFG, attn_mode="torch")
+        model._stream_strategy = "direct4"
+        model.enable_block_swap(2, offloading.BlockSwapConfig(torch.device("cuda"), True, h2d_only=True))
+        model.enable_block_swap(2, offloading.BlockSwapConfig(torch.device("cuda"), False, h2d_only=True))
+    else:
+        model = MOSSImageDiT(**MTINY)
+        model._stream_strategy = "direct4"
+        model.enable_block_swap(2, torch.device("cuda"), True, send_only=True)
+        model.enable_block_swap(2, torch.device("cuda"), False, send_only=True)
+    assert [(c.ring_size, c.use_pinned_memory) for c in captured] == [(4, True), (2, False)]
