@@ -5643,13 +5643,12 @@ class Handler(BaseHTTPRequestHandler):
                         "/api/masks/edit/remove_watermark", "/api/masks/edit/restore_original"):
                 # the picture editor's Crop and Remove change the picture file (web/image_edit.py); each request runs
                 # in its own server thread, so a slow Remove doesn't hold up the page. Undo/redo: an image step's id
-                from fizgig.web import image_edit
+                from fizgig.web import image_edit, caption_review
                 folder, name = str(b.get("folder") or ""), str(b.get("name") or "")
                 if path != "/api/masks/edit/image_step" and (not folder or not os.path.isdir(folder)):
                     return self.json({"error": "Choose the training folder on the Start tab first."}, 400)
                 try:
                     if path != "/api/masks/edit/image_step":
-                        from fizgig.web import caption_review
                         if caption_review.is_locked(folder, name):
                             raise ValueError("This picture is reviewed and locked. Unlock it in Caption Studio first.")
                     if path == "/api/masks/edit/crop":
