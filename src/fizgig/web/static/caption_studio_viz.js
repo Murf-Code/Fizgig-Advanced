@@ -1714,10 +1714,14 @@ const CaptionStudioViz = (() => {
     }
     function collectionState(tag,peer,image=null,imageIndex=0,offset=0){
       return {tag,peer,path:image?.path,imageIndex,offset,zoom,pan:{...pan},overviewCamera,
-        query:input.value,picked,branchTrail:[...branchTrail],positions:nodes.map(n=>[n.tag,n.x,n.y])};
+        query:input.value,picked,branchTrail:[...branchTrail],related:tag===picked?[...shared.keys()].slice(0,8):[],
+        positions:nodes.map(n=>[n.tag,n.x,n.y]),qualityEnabled};
     }
     function openCollection(tag,peer=null,resume=null,animate=true){
       if(!options.collectionItems||!tag||collection)return;
+      if(options.directWaterfall&&options.openWaterfall){
+        options.openWaterfall(tag,peer,{...collectionState(tag,peer),transition:collectionKeyframes(tag,true)});return;
+      }
       cancelMotion();stopCoverTimer();
       const pictures=options.collectionItems(tag,peer,branchTrail);
       const previousFocus=document.activeElement;
@@ -2009,9 +2013,14 @@ const CaptionStudioViz = (() => {
       if(!e.deltaY)return;
       const overPicked=picked&&e.target.closest(".studio-tb-orb")===visual.get(picked)?.g;
       if(overPicked&&e.deltaY<0&&zoom>=maxZoom-.001&&options.collectionItems){
-        openCollection(picked);
-        // Ignore the rest of the wheel gesture that zoomed into the circle.
-        collection.wheel={direction:-1,canExit:false,distance:0,at:e.timeStamp};
+        if(options.directWaterfall&&options.openWaterfall){
+          options.openWaterfall(picked,null,{...collectionState(picked,null),wheelAt:e.timeStamp,
+            transition:collectionKeyframes(picked,true)});
+        }else{
+          openCollection(picked);
+          // Ignore the rest of the wheel gesture that zoomed into the circle.
+          if(collection)collection.wheel={direction:-1,canExit:false,distance:0,at:e.timeStamp};
+        }
         return;
       }
       cancelMotion();zoomBy(e.deltaY<0?1.12:1/1.12,e);
@@ -2087,7 +2096,7 @@ const CaptionStudioViz = (() => {
       if(branchTrail[branchTrail.length-1]!==pickedTag)branchTrail=[pickedTag];
       selectNeighborhood(pickedTag);
     }
-    stage.resumeCollection=state=>{
+    stage.resumeMap=state=>{
       for(const [tag,x,y] of state.positions||[]){
         const node=at.get(tag);
         if(node){node.x=x;node.y=y;}
@@ -2099,7 +2108,13 @@ const CaptionStudioViz = (() => {
       }else if(picked)layoutNeighborhood();
       overviewCamera=state.overviewCamera;
       input.value=state.query;
+      if(state.qualityEnabled!==undefined)qualityEnabled=!!state.qualityEnabled;
+      closingWheel=state.closingWheel||null;
       cameraTo(state.zoom,state.pan,false);
+      paintDiagnostics();renderPanel();
+    };
+    stage.resumeCollection=state=>{
+      stage.resumeMap(state);
       openCollection(state.tag,state.peer,state);
     };
     return stage;

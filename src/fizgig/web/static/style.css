@@ -4769,12 +4769,12 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   flex:1 1 0;min-height:0;height:auto;
 }
 #tab-captions .studio-waterfall-filter{
-  flex:0 0 auto;display:flex;align-items:center;gap:12px;
-  padding:7px 12px;border-bottom:1px solid var(--border);
+  flex:0 0 auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:8px 10px;border-bottom:1px solid var(--border);
   background:var(--bg-inset);min-width:0;
 }
-#tab-captions .studio-waterfall-filter .studio-filter-bar{
-  flex:1 1 auto;max-width:520px;margin:0;min-width:0;
+#tab-captions .studio-waterfall-tag-heading{
+  margin:0;font-size:16px;font-weight:750;overflow-wrap:anywhere;min-width:0;
 }
 #tab-captions .studio-waterfall-filter-count{
   color:var(--text-secondary);font-size:12px;white-space:nowrap;

@@ -13844,15 +13844,10 @@ function renderCaptionStudio(host,items,ext){
       S.cap.studioQuery=next;
       S.cap.page=0;
       renderCaptions();
-      const grid=$("captionsGrid");
-      const replacement=grid.querySelector(S.cap.studioExploreMode==="waterfall"?
-        ".studio-waterfall-filter .studio-tag-query":".studio-tag-query")||
-        grid.querySelector(".studio-empty-captions .studio-tag-query");
+      const replacement=$("captionsGrid").querySelector(".studio-tag-query");
       if(replacement){
         replacement.focus({preventScroll:true});
         replacement.setSelectionRange(a,b);
-      }else if(S.cap.studioExploreMode==="waterfall"){
-        grid.querySelector('.studio-view-rail [data-view="waterfall"]')?.focus({preventScroll:true});
       }
     };
     field.addEventListener("input",apply);
@@ -16234,7 +16229,19 @@ function renderCaptionStudio(host,items,ext){
     "aria-label":"Caption Workbench visual explorer"});
   let mountedExploreView=null;
   let exploreGeneration=0;
-  const returnToCollection=btn("← Back to tag images",()=>openView("constellation"));
+  const waterfallQuery=(state,peer=state.peer)=>{
+    const tags=[...new Set([...(state.branchTrail||[]),state.tag,...(peer?[peer]:[])])];
+    return tags.slice(1).reduce((query,t)=>CaptionStudioTags.addFilter(query,t),JSON.stringify(tags[0]));
+  };
+  const mapReturn=()=>{
+    const state=S.cap.studioConstellationReturn;
+    if(state){
+      S.cap.studioQuery=waterfallQuery(state,null);
+      S.cap.studioExploreNeedRedraw=true;
+    }
+    openView("constellation");
+  };
+  const returnToCollection=btn("← Back to map",mapReturn);
   returnToCollection.classList.add("studio-tb-collection-return");
   returnToCollection.hidden=true;
   actionBar.prepend(returnToCollection);
@@ -16333,14 +16340,93 @@ function renderCaptionStudio(host,items,ext){
         };
         const flow=CaptionStudioViz.tagbenchWaterfall(items,chooseImage,openImageMenu,
           S.cap.studioPath,S.cap.studioSelection,TOKEN,captionLearningDecorate,openTagsImage,S.cap.studioWaterfallScale);
+        const state=S.cap.studioConstellationReturn;
+        const mapState=state?.key===String(S.imageFolder||"")+"|"+ext&&
+          state.mapOnly&&S.cap.studioQuery===waterfallQuery(state)?state:null;
         if(S.cap.studioQuery){
-          const header=el("header",{class:"studio-waterfall-filter","aria-label":"Waterfall tag filter"},
-            createTagFilterBar(),el("span",{class:"studio-waterfall-filter-count",
-              text:items.length+" "+(items.length===1?"image":"images")}));
+          const header=el("header",{class:"studio-waterfall-filter studio-tb-collection-header",
+            "aria-label":"Waterfall tag collection"});
+          if(mapState){
+            const back=btn("← Back to map",mapReturn);
+            back.classList.add("studio-tb-pair-action");
+            header.append(back);
+          }
+          const heading=el("h3",{class:"studio-waterfall-tag-heading"});
+          for(const part of CaptionStudioTags.searchParts(S.cap.studioQuery,vocabulary)){
+            const span=el("span",{text:part.tag||part.text});
+            if(part.tag)span.style.color=CaptionStudioViz.colorForTag(part.tag,categoryState);
+            heading.append(span);
+          }
+          if(mapState){
+            heading.replaceChildren();
+            for(const [i,tag] of [...new Set([...(mapState.branchTrail||[]),mapState.tag])].entries()){
+              if(i)heading.append(document.createTextNode(" + "));
+              const span=el("span",{text:tag});
+              span.style.color=CaptionStudioViz.colorForTag(tag,categoryState);heading.append(span);
+            }
+          }
+          const count=items.reduce((n,it)=>n+(it.size?1:0),0);
+          header.append(heading,el("span",{class:"studio-waterfall-filter-count",
+            text:count+" "+(count===1?"image":"images")}));
+          if(mapState){
+            const related=[...new Set([...(mapState.related||[]),...(mapState.peer?[mapState.peer]:[])])];
+            if(related.length){
+              const filter=el("select",{class:"studio-tb-collection-filter","aria-label":"Filter by related tag"});
+              filter.append(el("option",{value:"",text:(mapState.branchTrail||[]).length>1?
+                "All branch images":"All "+mapState.tag+" images"}));
+              for(const tag of related)filter.append(el("option",{value:tag,text:tag}));
+              filter.value=mapState.peer||"";
+              filter.addEventListener("change",()=>{
+                mapState.peer=filter.value||null;
+                S.cap.studioQuery=waterfallQuery(mapState);S.cap.page=0;
+                S.cap.studioThumbScrollTop=0;renderCaptions();
+              });
+              header.append(filter);
+            }
+            // Preserve the old zoom-out gesture: a fresh upward scroll at
+            // the top (or downward scroll over the header) returns to the map.
+            // Momentum from the original zoom-in must never exit immediately.
+            let gesture=Number.isFinite(mapState.wheelAt)?
+              {direction:-1,at:mapState.wheelAt,canExit:false,distance:0}:null;
+            delete mapState.wheelAt;
+            const wheel=event=>{
+              const {deltaX,deltaY,deltaMode,timeStamp,target}=event;
+              if(event.ctrlKey||event.shiftKey||!deltaY||Math.abs(deltaX)>Math.abs(deltaY)||
+                 target.closest?.("select"))return;
+              const direction=Math.sign(deltaY);
+              const atBoundary=direction<0?flow.scrollTop<=0:header.contains(target);
+              if(!gesture||gesture.direction!==direction||timeStamp-gesture.at>=180)
+                gesture={direction,at:timeStamp,canExit:atBoundary,distance:0};
+              gesture.at=timeStamp;
+              if(!atBoundary){gesture.canExit=false;return;}
+              event.preventDefault();
+              if(!gesture.canExit)return;
+              gesture.distance+=Math.abs(deltaY)*(deltaMode===1?16:deltaMode===2?Math.max(40,flow.clientHeight):1);
+              if(gesture.distance>=40){
+                event.stopPropagation();
+                mapState.closingWheel={direction,at:timeStamp};mapReturn();
+              }
+            };
+            fullStage.addEventListener("wheel",wheel,{capture:true,passive:false});
+            const dispose=flow.dispose;
+            flow.dispose=()=>{fullStage.removeEventListener("wheel",wheel,true);dispose?.();};
+          }else{
+            const clear=btn("×",()=>{
+              S.cap.studioQuery="";S.cap.studioSearchDraft=null;S.cap.studioConstellationReturn=null;
+              S.cap.page=0;S.cap.studioThumbScrollTop=0;renderCaptions();
+            });
+            clear.classList.add("studio-tb-pair-action");
+            clear.setAttribute("aria-label","Clear image tag filter");header.append(clear);
+          }
           fullStage.append(header);
         }
         fullStage.append(flow);
         flow.setScale(S.cap.studioWaterfallScale);
+        if(mapState?.transition){
+          const frames=mapState.transition;delete mapState.transition;
+          if(!window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+            fullStage.animate?.(frames,{duration:240,easing:"cubic-bezier(.2,.75,.25,1)"});
+        }
       }else{
         const revision=S.cap.studioRevision||0;
         const cache=S.cap.studioTagbenchGraph;
@@ -16417,18 +16503,18 @@ function renderCaptionStudio(host,items,ext){
             },
             collectionItems,
             branching:true,
+            directWaterfall:true,
             waterfallScale:()=>S.cap.studioWaterfallScale,
             onCollectionChange:visible=>{
               waterfallScaleControl.hidden=!visible;
               actionBar.classList.toggle("has-waterfall-scale",visible);
             },
             openWaterfall:(tag,peer,state)=>{
-              S.cap.studioConstellationReturn={...state,key:datasetKey,revision};
+              S.cap.studioConstellationReturn={...state,tag,peer,key:datasetKey,revision,mapOnly:true};
               $("capSearch").value="";
               $("capFilter").value="all";
               S.cap.studioLearningFilter="all";
-              const tags=[...new Set([...(state.branchTrail||[]),tag,...(peer?[peer]:[])])];
-              S.cap.studioQuery=tags.slice(1).reduce((query,t)=>CaptionStudioTags.addFilter(query,t),JSON.stringify(tags[0]));
+              S.cap.studioQuery=waterfallQuery(S.cap.studioConstellationReturn);
               S.cap.studioExploreMode="waterfall";
               S.cap.studioExploreNeedRedraw=true;
               S.cap.studioThumbScrollTop=0;S.cap.page=0;
@@ -16467,6 +16553,7 @@ function renderCaptionStudio(host,items,ext){
               renderCaptions();
             },
             onNavigate:(mode,tag)=>{
+              S.cap.studioConstellationReturn=null;
               S.cap.studioQuery=JSON.stringify(tag);
               S.cap.studioExploreMode=mode;
               S.cap.studioExploreNeedRedraw=true;
@@ -16518,9 +16605,10 @@ function renderCaptionStudio(host,items,ext){
           };
           fullStage.replaceChildren(network);
           network.refreshLearning();
-          if(resume&&network.resumeCollection){
+          if(resume&&network.resumeMap){
             S.cap.studioConstellationReturn=null;
-            network.resumeCollection({...resume,positions:resume.revision===revision?resume.positions:[]});
+            returnToCollection.hidden=true;
+            network.resumeMap({...resume,positions:resume.revision===revision?resume.positions:[]});
           }
         };
         if(cache?.key===datasetKey&&cache.items===datasetItems&&cache.revision===revision){
@@ -16555,7 +16643,7 @@ function renderCaptionStudio(host,items,ext){
         }
       }
     }
-    returnToCollection.hidden=view==="constellation"||!S.cap.studioConstellationReturn;
+    returnToCollection.hidden=view!=="list"||!S.cap.studioConstellationReturn;
     const showWaterfallScale=view==="waterfall"||
       (view==="constellation"&&!!fullStage.querySelector(".studio-tb-collection"));
     waterfallScaleControl.hidden=!showWaterfallScale;

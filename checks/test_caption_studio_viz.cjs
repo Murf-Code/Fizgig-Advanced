@@ -208,6 +208,28 @@ try {
   assert.deepEqual(scroll(wheelAtlas,wheelAtlas.children[1],-16,420),{prevented:true,stopped:true});
   assert.deepEqual(scroll(wheelAtlas,wheelAtlas.children[1],-16,650),{prevented:false,stopped:false});
 
+  // Production routes directly into the real Waterfall workspace rather
+  // than creating an embedded second gallery in Constellation.
+  let directState=null;
+  const direct=Viz.tagbenchConstellation(graph,()=>{},"paws",{
+    ...options,directWaterfall:true,openWaterfall:(tag,peer,state)=>{directState=state;}
+  });
+  const directTarget=allIn(direct).find(n=>n.attrs["data-tag"]==="paws");
+  const directSvg=direct.children[1];
+  for(let i=0;i<45;i++)directSvg.handlers.wheel({
+    deltaY:-1,timeStamp:100,clientX:0,clientY:0,target:{closest:()=>null},preventDefault(){}
+  });
+  directSvg.handlers.wheel({deltaY:-1,timeStamp:120,clientX:0,clientY:0,
+    target:{closest:()=>directTarget},preventDefault(){}});
+  assert.equal(directState.tag,"paws");assert.equal(directState.wheelAt,120);
+  assert.equal(gallery(direct),undefined);
+  const directView=directSvg.attrs.viewBox;
+  const directReturn=Viz.tagbenchConstellation(graph,()=>{},"paws",options);
+  directReturn.resumeMap(directState);
+  assert.equal(directReturn.children[1].attrs.viewBox,directView);
+  assert.equal(gallery(directReturn),undefined);
+  direct.dispose();directReturn.dispose();
+
   const largeAtlas=Viz.tagbenchConstellation(graph,()=>{},"paws",{
     ...options,relationsForTag:()=>new Map([["white fur",6]]),
     collectionItems:()=>Array.from({length:400},(_,index)=>
