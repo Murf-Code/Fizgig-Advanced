@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import gc
 import logging
+import os
 import time
 from typing import Optional
 import torch
@@ -165,7 +166,25 @@ def create_offloader(block_type: str, blocks: list[nn.Module], num_blocks: int, 
     line instead of failing the run.
     """
     if config.h2d_only:
-        n = min(num_blocks, blocks_to_swap + config.ring_size) if config.match_classic_vram else blocks_to_swap
+        ring_size = config.ring_size
+        # Experimental training-only sweep; no new persistent preference.
+        # Keep the existing block-weight VRAM budget: a larger ring replaces
+        # resident blocks, rather than adding unplanned device allocations.
+        override = os.environ.get("FIZGIG_EXPERIMENTAL_STREAM_RING")
+        if override is not None and config.supports_backward:
+            try:
+                requested = int(override)
+                if not 2 <= requested <= 4:
+                    raise ValueError
+                ring_size = requested
+            except ValueError:
+                logger.warning("[block swap] ignoring FIZGIG_EXPERIMENTAL_STREAM_RING=%r; use 2, 3 or 4", override)
+        if config.match_classic_vram:
+            ring_size = min(ring_size, max(1, num_blocks - blocks_to_swap))
+        if override is not None and config.supports_backward:
+            logger.info("[block swap] experimental ring: requested %s, effective %d slots (VRAM budget preserved)",
+                        override, ring_size)
+        n = min(num_blocks, blocks_to_swap + ring_size) if config.match_classic_vram else blocks_to_swap
         why = send_only_unfit(blocks, num_blocks, n)
         if why is None:
             # H2D-only streaming for frozen-base (LoRA) training: keep a CPU master, copy Host->Device only.
@@ -176,7 +195,7 @@ def create_offloader(block_type: str, blocks: list[nn.Module], num_blocks: int, 
                 n,
                 config.supports_backward,
                 config.device,
-                ring_size=config.ring_size,
+                ring_size=ring_size,
                 use_pinned_memory=config.use_pinned_memory,
                 debug=config.debug,
             )

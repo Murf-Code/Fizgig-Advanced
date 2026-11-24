@@ -539,3 +539,15 @@ def test_cuda_stream_sync_parity(monkeypatch, family, swap, slots, pinned):
             torch.testing.assert_close(actual[2][name], expected[2][name], rtol=1e-3, atol=1e-5, msg=name)
         model.offloader.remove_hooks()
         del model
+
+
+def test_experimental_ring_override_respects_budget(monkeypatch):
+    monkeypatch.setenv("FIZGIG_EXPERIMENTAL_STREAM_RING", "4")
+    roomy = _krea("send", swap=2)
+    tight = _krea("send", swap=6)
+    assert roomy.offloader.B == 4 and roomy.offloader.S == 6
+    assert tight.offloader.B == 2 and tight.offloader.S == 8
+    assert roomy.offloader.num_blocks - roomy.offloader.S + roomy.offloader.B == 6
+    assert tight.offloader.num_blocks - tight.offloader.S + tight.offloader.B == 2
+    monkeypatch.setenv("FIZGIG_EXPERIMENTAL_STREAM_RING", "invalid")
+    assert _krea("send", swap=2).offloader.B == 2
