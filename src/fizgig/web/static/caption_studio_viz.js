@@ -300,10 +300,10 @@ const CaptionStudioViz = (() => {
     const groups=new Map();
     nodes.forEach((node,i)=>{if(!groups.has(node.group))groups.set(node.group,[]);groups.get(node.group).push(i);});
     const clusters=[...groups].sort((a,b)=>b[1].length-a[1].length||a[0]-b[0]);
-    // Golden-angle seed avoids a rigid ring; cross-community springs pull
-    // connected communities closer and keep genuine bridges visible.
+    // Seed the largest community at the center, then pack the others around
+    // it on a compact spiral instead of leaving a hollow middle.
     clusters.forEach(([id,members],rank)=>{
-      const a=rank*2.39996323,r=clusters.length===1?0:55+36*Math.sqrt(rank);
+      const a=rank*2.39996323,r=rank===0?0:31*Math.sqrt(rank);
       const center={x:Math.cos(a)*r,y:Math.sin(a)*r};centers.set(id,center);
       members.forEach((i,k)=>{
         const a=k*2.39996323,r=k?16*Math.sqrt(k):0;
@@ -327,19 +327,20 @@ const CaptionStudioViz = (() => {
       for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
         const a=nodes[i],b=nodes[j],dx=a.x-b.x,dy=a.y-b.y;
         const d=Math.max(.5,Math.hypot(dx,dy)),min=networkRadius(a.count,maxCount)+networkRadius(b.count,maxCount)+7;
-        const repulse=100/(d*d)+Math.max(0,min-d)*.13/d;
+        const repulse=55/(d*d)+Math.max(0,min-d)*.13/d;
         fx[i]+=dx*repulse;fy[i]+=dy*repulse;fx[j]-=dx*repulse;fy[j]-=dy*repulse;
       }
       for(const e of springs){
         const a=nodes[e.i],b=nodes[e.j],dx=b.x-a.x,dy=b.y-a.y,d=Math.max(.5,Math.hypot(dx,dy));
-        const same=a.group===b.group,target=same?22:90;
+        const same=a.group===b.group,target=same?22:52;
         const force=(d-target)*(.012+Math.min(1,e.weight)*.055)*(same?1:.45)/d;
         fx[e.i]+=dx*force;fy[e.i]+=dy*force;fx[e.j]-=dx*force;fy[e.j]-=dy*force;
       }
       const cooling=.8*(1-step/180)+.12;
       nodes.forEach((n,i)=>{
         const c=centers.get(n.group);
-        fx[i]+=(c.x-n.x)*.018;fy[i]+=(c.y-n.y)*.018;
+        // Gentle gravity closes the middle without changing community identity.
+        fx[i]+=(c.x-n.x)*.018-n.x*.012;fy[i]+=(c.y-n.y)*.018-n.y*.012;
         const norm=Math.max(1,Math.hypot(fx[i],fy[i])/7);
         n.x+=fx[i]*cooling/norm;n.y+=fy[i]*cooling/norm;
       });
