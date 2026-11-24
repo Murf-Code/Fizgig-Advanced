@@ -1,0 +1,18 @@
+"use strict";
+const assert=require("node:assert/strict"),fs=require("node:fs");
+const root="src/fizgig/web/static/";
+const css=fs.readFileSync(root+"style.css","utf8");
+const legacy=fs.readFileSync(root+"caption_tagbench_theme.css","utf8");
+const Viz=require("../"+root+"caption_studio_viz.js");
+assert.match(legacy,/@layer caption-legacy/);
+assert.doesNotMatch(legacy, /#[\da-f]{3,8}\b|rgba?\(\s*\d+\s*,/i);
+const dialog=css.slice(css.indexOf("#tab-prep .me-dialog-window{"),css.indexOf("#tab-prep .me-dialog-heading{"));
+assert.doesNotMatch(dialog,/--(?:bg-|text-|accent-|border)[\w-]*\s*:/);
+assert.doesNotMatch(dialog,/color-scheme:\s*dark/);
+assert.ok(css.includes('data-caption-load="ready"]>.caption-initial-state'));
+assert.ok(css.includes("linear-gradient(135deg,#fff5c9,#f5d888 45%,#d3ac58)"));
+assert.ok(css.includes('data-learning-status="stuck"]{--caption-learning-ring:var(--danger)}'));
+const model=Viz.tagbenchModel([{tags:["lion","blue"]},{tags:["lion","cat"]}]);
+assert.ok(model.nodes.every(n=>n.color.includes("var(--text-primary)")));
+assert.equal(Viz.tagbenchModel([{tags:["lion","blue"]}],{tagColors:{lion:"#1357ab"}}).colors.get("lion"),"#1357ab");
+console.log("Caption and Image Prep global theme contracts passed");

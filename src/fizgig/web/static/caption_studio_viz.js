@@ -214,8 +214,13 @@ const CaptionStudioViz = (() => {
     else if(w.endsWith("s")&&w.length>3)w=w.slice(0,-1);
     return w;
   };
-  const tbHue=id=>id<TB_HUES.length?TB_HUES[id]:
-    "hsl("+Math.round(id*137.508%360)+" 72% 62%)";
+  // Stable semantic cluster identity, blended toward the active theme's
+  // foreground for readability on both light and dark surfaces.
+  const tbHue=id=>{
+    const hue=id<TB_HUES.length?TB_HUES[id]:
+      "hsl("+Math.round(id*137.508%360)+" 72% 62%)";
+    return "color-mix(in srgb, "+hue+" 72%, var(--text-primary))";
+  };
   function tagbenchGraph(items) {
     // First count tags, then collect co-occurrences only for the top 120
     // that Constellation displays. The old one-pass implementation built
@@ -667,9 +672,9 @@ const CaptionStudioViz = (() => {
       const ripple=make("circle",{fill:"none",stroke:"url(#tb-sunlight)","vector-effect":"non-scaling-stroke","stroke-width":"1.2",opacity:0,"pointer-events":"none"},g);
       const ring=make("circle",{fill:"none",stroke:"url(#tb-sunlight)","vector-effect":"non-scaling-stroke","stroke-width":"2",opacity:0,"pointer-events":"none"},g);
       const core=make("circle",{fill:n.color,class:"studio-tb-orb-core"},g);
-      const number=make("text",{"text-anchor":"middle","dominant-baseline":"central",fill:"#141416","font-weight":700,"pointer-events":"none"},g);
+      const number=make("text",{"text-anchor":"middle","dominant-baseline":"central",fill:"var(--text-on-light)","font-weight":700,"pointer-events":"none"},g);
       const star=make("path",{d:"M0 -7Q1 -1 7 0Q1 1 0 7Q-1 1 -7 0Q-1 -1 0 -7Z",fill:"url(#tb-sunlight)",stroke:"#141416","stroke-width":"1",opacity:0,"pointer-events":"none"},g);
-      const label=make("text",{fill:n.color,"font-weight":650,stroke:"#101018","paint-order":"stroke","pointer-events":"none"},labelLayer);label.textContent=n.tag;
+      const label=make("text",{fill:n.color,"font-weight":650,stroke:"var(--bg-deep)","paint-order":"stroke","pointer-events":"none"},labelLayer);label.textContent=n.tag;
       visual.set(n.tag,{g,core,halo,ripple,ring,number,star,label,grad,id});
       g.addEventListener("pointerenter",()=>{if(drag)return;hover=n.tag;hoverConnections();updateAppearance();});
       g.addEventListener("pointerleave",()=>{if(hover===n.tag){hover=null;hoverConnections();updateAppearance();}});
@@ -701,7 +706,7 @@ const CaptionStudioViz = (() => {
       let x=500+pan.x,y=350+pan.y;
       const nearest=[...links].sort((a,b)=>b[1]-a[1])[0];
       if(nearest){const n=at.get(nearest[0]);x=n.x+45;y=n.y+35;}
-      rare={...entry,links:links.size,x,y,ox:0,oy:0,color:model.colors.get(tag)||"#c7b5ed"};
+      rare={...entry,links:links.size,x,y,ox:0,oy:0,color:model.colors.get(tag)||"var(--accent-text)"};
       at.set(tag,rare);adjacency.set(tag,links);createNode(rare);return rare;
     }
     function focusConnections(){
@@ -729,7 +734,7 @@ const CaptionStudioViz = (() => {
       const rankLimit=zoom<.7?15:zoom<1.1?45:zoom<1.6?85:120;
       for(const e of baseEdges){
         const touches=focused&&(e.a===focused||e.b===focused);
-        e.el.setAttribute("stroke",e.el.classList.contains("is-alike")?"#d8d6e8":at.get(e.a)?.color||"#888");
+        e.el.setAttribute("stroke",e.el.classList.contains("is-alike")?"var(--text-secondary)":at.get(e.a)?.color||"var(--text-muted)");
         e.el.setAttribute("stroke-opacity",focused?(touches?.42:.045):e.el.classList.contains("is-alike")?.65:.23);
         e.el.setAttribute("stroke-width",touches?1.3:.7);
         if(e.el.classList.contains("is-alike"))e.el.setAttribute("stroke-dasharray","4 4");
