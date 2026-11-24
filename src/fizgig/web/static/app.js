@@ -11852,7 +11852,8 @@ async function pollCaptions() {
     log.textContent = st.log.join("\n");
     if (atEnd) log.scrollTop = log.scrollHeight;
   }
-  if (S.cap.lastState && ["loading", "running", "translating"].includes(S.cap.lastState) && !busy) loadCaptions();   // done: the new captions
+  if (S.cap.lastState && ["loading", "running", "translating"].includes(S.cap.lastState) && !busy &&
+      document.querySelector("#tab-captions.active")) loadCaptions(); // don't index a hidden tab
   else if (busy && Date.now() - (S.cap.liveAt || 0) > 5000) { S.cap.liveAt = Date.now(); captionsLive(); }
   S.cap.lastState = st.state;
   if(S.imageFolder && $("capView")?.value==="studio" && document.querySelector("#tab-captions.active")) {
@@ -11992,6 +11993,7 @@ async function captionProgressiveScan(url,scan,onEvent){
     if(!response.ok){
       const data=await response.json().catch(()=>({}));
       if(response.status===401&&data.login)showLogin();
+      if(response.status===404)throw new Error("Restart Fizgig after updating to enable progressive caption indexing.");
       throw new Error(data.error||response.statusText||"Dataset scan failed");
     }
     if(!response.body||!response.headers.get("Content-Type")?.includes("application/x-ndjson"))

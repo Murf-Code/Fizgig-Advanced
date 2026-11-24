@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 _BATCH = 256
@@ -24,6 +25,9 @@ class FolderIndex:
         self.conn = None
         self.rows = {}
         self.pending = []
+        self._pool = None
+        self._pool_width = 0
+        self._read_tuning = {}
         try:
             self.conn = sqlite3.connect(db_path, timeout=0.25)
             self.conn.execute(
@@ -112,17 +116,49 @@ class FolderIndex:
                     pass
 
         jobs = list(misses.values())
-        # Small/warm batches avoid thread startup; cap cold reads to four
-        # workers so a dataset scan does not saturate a training machine.
-        workers = min(4, max(1, (len(jobs) + 15) // 16))
+        # Sample cold-read latency by metadata kind. Tiny local files are
+        # usually faster serially; try two and then four workers only if the
+        # measured throughput improves. Cache hits are never timed here.
+        kinds = tuple(sorted({job[3][1] for job in jobs}))
+        policy = self._read_tuning.setdefault(kinds, {"width": 1, "best_width": 1, "best": None, "settled": False})
+        sample = len(jobs) >= 16
+        workers = policy["width"] if sample else 1
+        began = time.perf_counter()
         if workers == 1:
             for job in jobs:
                 record(job, read_file(job))
         else:
-            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="caption-index") as pool:
-                for job, value in zip(jobs, pool.map(read_file, jobs)):
-                    record(job, value)
+            if self._pool_width != workers:
+                self._close_pool()
+                self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="caption-index")
+                self._pool_width = workers
+            for job, value in zip(jobs, self._pool.map(read_file, jobs)):
+                record(job, value)
+        if sample and not policy["settled"]:
+            rate = (time.perf_counter() - began) / len(jobs)
+            if policy["best"] is None:
+                policy["best"] = rate
+                # Avoid creating threads for sub-millisecond metadata reads.
+                if rate >= 0.00025:
+                    policy["width"] = 2
+                else:
+                    policy["settled"] = True
+            elif rate < policy["best"] * 0.90:
+                policy["best"], policy["best_width"] = rate, workers
+                if workers < 4:
+                    policy["width"] = 4
+                else:
+                    policy["settled"] = True
+            else:
+                policy["width"] = policy["best_width"]
+                policy["settled"] = True
         return results
+
+    def _close_pool(self):
+        if self._pool is not None:
+            self._pool.shutdown(wait=True, cancel_futures=True)
+        self._pool = None
+        self._pool_width = 0
 
     def flush(self):
         if self.conn is None or not self.pending:
@@ -141,6 +177,7 @@ class FolderIndex:
         return self
 
     def __exit__(self, *exc):
+        self._close_pool()
         if self.conn is not None:
             self.flush()
         self._disable()

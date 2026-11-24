@@ -31,7 +31,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from fizgig.dataset.masks import is_mask_file, mask_for_stem
+from fizgig.dataset.masks import is_mask_file, mask_for_stem, indexed_sub_masks
 from fizgig.families import form, launch
 from fizgig.families.registry import get as get_family, training_families
 from fizgig.web import captions, history, oom
@@ -4544,16 +4544,19 @@ class Handler(BaseHTTPRequestHandler):
             items += [{**it, "crop": os.path.basename(big)} for it in crops]
         return self.json({"items": items})
 
-    def _caption_entry_plan(self, folder, names, family, rel=""):
+    def _caption_entry_plan(self, folder, names, family, rel="", cancel=None):
         """Metadata-free listing shared with the complete and streaming paths."""
         keep = _caption_media_filter(names, family)
         lower = {n.lower(): n for n in names}
+        sub_masks = indexed_sub_masks(folder)
         for n in names:
+            if cancel is not None and cancel.is_set():
+                raise InterruptedError("Caption indexing canceled")
             stem, e = os.path.splitext(n)
             if e.lower() not in MEDIA or not keep(n) or is_mask_file(n):
                 continue
             p = os.path.join(folder, n)
-            mask = mask_for_stem(folder, stem, lower)
+            mask = mask_for_stem(folder, stem, lower, sub_names=sub_masks)
             yield (f"{rel}/{n}" if rel else n, p,
                    {**({"sub": rel} if rel else {}), **({"mask": os.path.basename(mask)} if mask else {})})
 
@@ -4592,9 +4595,14 @@ class Handler(BaseHTTPRequestHandler):
             for rel, d, crop in folders:
                 check()
                 gone = superseded_stems(d) if crop is None else set()
+                names = []
                 with os.scandir(d) as entries:
-                    names = sorted(e.name for e in entries if os.path.splitext(e.name)[0] not in gone)
-                rows = pair_songs(list(self._caption_entry_plan(d, names, family, rel)), include_duration=False)
+                    for entry in entries:
+                        check()
+                        if os.path.splitext(entry.name)[0] not in gone:
+                            names.append(entry.name)
+                names.sort()
+                rows = pair_songs(list(self._caption_entry_plan(d, names, family, rel, cancel)), include_duration=False)
                 if crop is not None:
                     for row in rows:
                         row["crop"] = crop

@@ -38,12 +38,27 @@ def mask_for(image_path, names=None):
     return mask_for_stem(folder, os.path.splitext(base)[0], names)
 
 
-def mask_for_stem(folder, stem, names=None):
+def indexed_sub_masks(folder):
+    """Snapshot the mask directory once for large dataset listings."""
+    try:
+        with os.scandir(os.path.join(str(folder), MASKS_DIR)) as entries:
+            return {os.path.normcase(e.name) for e in entries if e.is_file()}
+    except (FileNotFoundError, NotADirectoryError):
+        return set()
+    except OSError:
+        return None  # preserve the ordinary per-file fallback
+
+
+def mask_for_stem(folder, stem, names=None, sub_names=None):
     """The mask of the image called `stem` (no extension) in `folder`, or None. One in the folder's masks/ sub-folder
     (Image Prep's watermark masks, already merged with the mask beside the picture) comes first."""
     stem = stem + MASK_SUFFIX
     sub = os.path.join(str(folder), MASKS_DIR)
-    if os.path.isdir(sub):
+    if sub_names is not None:
+        for ext in _EXTS:
+            if os.path.normcase(stem + ext) in sub_names:
+                return os.path.join(sub, stem + ext)
+    elif os.path.isdir(sub):
         for ext in _EXTS:
             if os.path.isfile(os.path.join(sub, stem + ext)):
                 return os.path.join(sub, stem + ext)
