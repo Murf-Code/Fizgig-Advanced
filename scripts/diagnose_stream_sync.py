@@ -9,6 +9,7 @@ for the full checkpoint. CPU-only mode is for harness smoke tests, not GPU proof
 import argparse
 from dataclasses import asdict
 import gc
+import hashlib
 import json
 import math
 import os
@@ -33,6 +34,7 @@ from fizgig.families.krea2 import KREA2
 from fizgig.krea2.model import SingleMMDiTConfig, SingleStreamDiT
 from fizgig.krea2.offloading import LoRAStreamOffloader, BlockSwapConfig
 from fizgig.krea2.stream_calibration import recommend_stream_strategy
+from fizgig.krea2.stream_profiles import file_fingerprint, make_identity, lookup_profile, save_profile
 from fizgig.training.optimizers import create_optimizer
 
 
@@ -80,6 +82,45 @@ def inputs(args, config):
         timestep = torch.tensor([0.25 + 0.5 * (i % 5) / 4], dtype=torch.float32)
         out.append((name, latent, noise, timestep, cond))
     return out
+
+
+def batch_fingerprint(batches):
+    """Hash the actual frozen latents, noise, timesteps and conditioning."""
+    h = hashlib.sha256()
+    for name, latent, noise, timestep, cond in batches:
+        h.update(json.dumps(name).encode("utf-8"))
+        for key, tensor in [("latent", latent), ("noise", noise), ("timestep", timestep)] + sorted(cond.items()):
+            t = tensor.detach().cpu().contiguous()
+            h.update(json.dumps([key, str(t.dtype), list(t.shape)]).encode("utf-8"))
+            h.update(t.reshape(-1).view(torch.uint8).numpy().tobytes())
+    return h.hexdigest()
+
+
+def checkpoint_stamp(path):
+    stat = Path(path).stat()
+    return stat.st_size, stat.st_mtime_ns, stat.st_ino
+
+
+def clean_revision():
+    try:
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT,
+                                           text=True, stderr=subprocess.DEVNULL).strip()
+        clean = not subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"],
+                                            cwd=ROOT, text=True, stderr=subprocess.DEVNULL).strip()
+        return revision, clean
+    except (OSError, subprocess.SubprocessError):
+        return None, False
+
+
+def diagnostic_identity(args, hardware, batches, revision, clean):
+    if args.cpu or not args.model or not args.cache:
+        raise ValueError("Profiles require a real CUDA checkpoint and cached inputs")
+    work = {k: getattr(args, k) for k in ("swap", "rank", "precision", "optimizer", "lr",
+                                          "seed", "steps", "warmup")}
+    work.update(family="krea2", checkpoint_sha256=file_fingerprint(args.model),
+                batches_sha256=batch_fingerprint(batches), batch_size=1,
+                network_type="lora", checkpointing=True, attention="auto")
+    return make_identity(hardware, work, revision, clean=clean)
 
 
 class UnsafePinning(RuntimeError):
@@ -587,8 +628,19 @@ def main():
     p.add_argument("--latent-size", type=int, default=32)
     p.add_argument("--report", default="stream-sync-report.json")
     p.add_argument("--scratch", help="Directory for temporary CPU reference tensors")
+    p.add_argument("--profile-dir", help="Opt-in local profile storage for real-cache calibration")
+    p.add_argument("--reuse-profile", action="store_true",
+                   help="If an exact safe profile exists, rerun only its strategy and required references")
+    p.add_argument("--lookup-profile", action="store_true",
+                   help="Check a matching profile and current memory without training")
     p.add_argument("--cpu", action="store_true", help="Harness smoke test only; not asynchronous GPU validation")
     args = p.parse_args()
+    if (args.reuse_profile or args.lookup_profile) and not args.profile_dir:
+        p.error("Profile lookup/reuse requires --profile-dir")
+    if args.profile_dir and (args.suite != "calibration" or args.cpu or not args.model or not args.cache):
+        p.error("Profiles require --suite calibration and a real CUDA --model and --cache")
+    if args.reuse_profile and (args.case or args.lookup_profile):
+        p.error("Profile reuse cannot be combined with explicit cases or lookup-only")
     if args.steps < 1 or not 1 <= args.swap <= 26 or args.rank < 1 or args.width < 128 or args.width % 128:
         p.error("Require positive steps/rank, swap 1..26 and width a multiple of 128")
     if args.warmup < 0 or args.warmup >= args.steps:
@@ -628,17 +680,27 @@ def main():
     import psutil
     vm = psutil.virtual_memory()
     hardware = {"os": platform.system(), "os_release": platform.release(),
+                "machine": platform.machine(), "cpu_model": platform.processor() or platform.uname().processor,
                 "ram_total_gib": vm.total / 2**30, "cpu_logical": psutil.cpu_count(),
                 "gpu": report["device"], "torch": torch.__version__, "cuda": torch.version.cuda,
                 "hip": torch.version.hip}
     if not args.cpu:
         props = torch.cuda.get_device_properties(device)
         hardware.update(vram_total_gib=props.total_memory / 2**30,
-                        compute_capability=[props.major, props.minor])
+                        compute_capability=[props.major, props.minor],
+                        gpu_uuid=str(getattr(props, "uuid", "") or ""))
+        if not hardware["cpu_model"] and platform.system() == "Linux":
+            try:
+                hardware["cpu_model"] = next(line.split(":", 1)[1].strip()
+                    for line in Path("/proc/cpuinfo").read_text().splitlines()
+                    if line.startswith("model name"))
+            except (OSError, StopIteration):
+                pass
         try:
-            hardware["gpu_driver"] = subprocess.check_output(
+            versions = set(subprocess.check_output(
                 ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
-                text=True, timeout=5, stderr=subprocess.DEVNULL).strip().splitlines()
+                text=True, timeout=5, stderr=subprocess.DEVNULL).strip().splitlines())
+            hardware["gpu_driver"] = next(iter(versions)) if len(versions) == 1 else None
         except (OSError, subprocess.SubprocessError):
             hardware["gpu_driver"] = None
     report["hardware"] = hardware
@@ -646,13 +708,37 @@ def main():
     report_path = Path(args.report)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report["skipped"] = []
+    revision, clean = clean_revision()
+    report["git_commit"] = revision
+    identity, stamp = None, None
+    if args.profile_dir:
+        try:
+            stamp = checkpoint_stamp(args.model)
+            identity = diagnostic_identity(args, hardware, batches, revision, clean)
+            if checkpoint_stamp(args.model) != stamp:
+                raise ValueError("Checkpoint changed during profile identity construction")
+            report["profile_identity"] = identity
+            free_vram, _ = torch.cuda.mem_get_info(device)
+            profile, reason = lookup_profile(args.profile_dir, identity,
+                available_ram_gib=psutil.virtual_memory().available / 2**30,
+                free_vram_gib=free_vram / 2**30)
+            report["profile_lookup"] = {"matched": profile is not None, "reason": reason}
+            print("Profile: " + reason, flush=True)
+            if profile is not None:
+                report["profile_lookup"]["selected"] = profile["selected"]
+                if args.reuse_profile:
+                    strategy = profile["selected"]
+                    label = f"CAL_{'direct' if strategy['pinned'] else 'staged'}_ring{strategy['ring']}_1"
+                    planned = select_cases(cases(args), [label])
+                    report["profile_lookup"]["targeted_recheck"] = True
+        except (OSError, ValueError, RuntimeError) as exc:
+            identity = None
+            report["profile_lookup"] = {"matched": False, "reason": str(exc)}
+            print("Profile unavailable: " + str(exc), flush=True)
+        if args.lookup_profile:
+            report_path.write_text(json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")
+            return int(not report["profile_lookup"]["matched"])
     report["planned_cases"] = planned
-    try:
-        report["git_commit"] = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
-            stderr=subprocess.DEVNULL).strip()
-    except (OSError, subprocess.SubprocessError):
-        report["git_commit"] = None
     report["measurement_notes"] = [
         "Host wait time is wall time inside wait_for_block, not actual GPU-side stall time.",
         "WDDM shared/dedicated counters are optional end-of-case samples, not peaks.",
@@ -708,6 +794,16 @@ def main():
         print(f"Calibration: {recommendation['status']} - {recommendation['reason']}", flush=True)
         if recommendation["selected"]:
             print(f"Recommended for this workload only: {recommendation['selected']}", flush=True)
+            if identity is not None:
+                try:
+                    if checkpoint_stamp(args.model) != stamp or clean_revision() != (revision, True):
+                        raise ValueError("Checkpoint or source revision changed during calibration")
+                    saved = save_profile(args.profile_dir, identity, report, evaluate_exact_parity)
+                    report["profile_saved"] = str(saved)
+                    print("Saved local profile: " + str(saved), flush=True)
+                except (OSError, ValueError, RuntimeError) as exc:
+                    report["profile_save_error"] = str(exc)
+                    print("Profile not saved: " + str(exc), flush=True)
     report_path.write_text(json.dumps(report, indent=2, allow_nan=True), encoding="utf-8")
     gate = report["exact_parity"]
     print(f"Exact parity ({gate['scope']}): {'PASS' if gate['passed'] else 'NOT PASSED'}", flush=True)
