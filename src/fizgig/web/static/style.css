@@ -6569,28 +6569,28 @@ body:has(.caption-removal-backdrop){overflow:hidden}
 }
 
 /* Caption Workbench: visible, consistent accent-edge text fields. */
+/* Shared chrome belongs to the wrapper, not the native editing control. */
 #tab-captions .studio-accent-field{
   position:relative;display:flex;align-items:center;flex:1 1 auto;
-  min-width:0;width:100%;box-sizing:border-box;
-}
-#tab-captions .studio-accent-field>input.w-path{
-  display:block;box-sizing:border-box;flex:1 1 auto;width:100%;min-width:0;
-  padding-left:34px;padding-right:34px;
+  min-width:0;width:100%;box-sizing:border-box;min-height:38px;
   border:1px solid color-mix(in srgb,var(--border-strong) 80%,var(--text-secondary));
-  border-left:3px solid var(--accent);
-  background:color-mix(in srgb,var(--bg-inset) 82%,var(--text-primary));
-  color:var(--text-primary);
+  border-left:3px solid var(--accent);border-radius:10px;
+  background:var(--bg-inset);
 }
-#tab-captions .studio-tag-search-wrap{background:transparent;padding:0}
+#tab-captions.caption-theme-glass .studio-accent-field{
+  background:rgba(8,10,16,.5);border-color:rgba(255,255,255,.25);
+  border-left-color:var(--accent);box-shadow:inset 0 1px 0 rgba(255,255,255,.1);
+}
+#tab-captions .studio-accent-field:focus-within{
+  border-color:var(--accent);outline:1px solid var(--accent);outline-offset:1px;
+}
+#tab-captions .studio-accent-field:has([aria-invalid="true"]){
+  border-color:var(--warning);outline-color:var(--warning);
+}
 #tab-captions .studio-accent-field>input::placeholder{
   color:var(--text-secondary);opacity:1;
 }
-#tab-captions .studio-accent-field>input:focus{
-  border-color:var(--accent);outline:1px solid var(--accent);outline-offset:1px;
-}
-#tab-captions .studio-accent-field>input[aria-invalid="true"]{
-  border-color:var(--warning);outline-color:var(--warning);
-}
+#tab-captions .studio-tag-search-wrap{background:transparent;padding:0}
 #tab-captions .studio-accent-field>input::-webkit-search-cancel-button{appearance:none;display:none}
 #tab-captions .studio-field-icon{
   position:absolute;z-index:1;left:12px;top:50%;transform:translateY(-50%);
@@ -6615,14 +6615,7 @@ body:has(.caption-removal-backdrop){overflow:hidden}
 /* Native multiline editor over a layout-identical color layer. */
 #tab-captions .studio-accent-field.studio-query-field{
   display:grid;grid-template-columns:minmax(0,1fr);align-items:stretch;
-  border:1px solid color-mix(in srgb,var(--border-strong) 80%,var(--text-secondary));
-  border-left:3px solid var(--accent);border-radius:8px;
-  background:color-mix(in srgb,var(--bg-inset) 82%,var(--text-primary));
 }
-#tab-captions .studio-query-field:focus-within:not(:has([aria-invalid="true"])){
-  border-color:var(--accent);outline:1px solid var(--accent);outline-offset:1px;
-}
-#tab-captions .studio-query-field:has([aria-invalid="true"]){border-color:var(--warning)}
 #tab-captions .studio-query-field>.studio-query-mirror,
 #tab-captions .studio-query-field>textarea.studio-tag-query{
   grid-area:1/1;box-sizing:border-box;width:100%;min-width:0;
@@ -6768,4 +6761,47 @@ body:has(.caption-removal-backdrop){overflow:hidden}
 }
 @media(prefers-reduced-motion:reduce){
   #tab-captions .caption-bench-monogram>span{animation:none!important;transition:none}
+}
+
+/* Keep native inputs transparent inside the common frame in both themes.
+   The textarea and its color mirror use the same font, padding and line box. */
+#tab-captions .studio-accent-field>input.w-path,
+#tab-captions.caption-theme-glass .studio-accent-field>input.w-path,
+#tab-captions .studio-accent-field>textarea.studio-tag-query,
+#tab-captions.caption-theme-glass .studio-accent-field>textarea.studio-tag-query,
+#tab-captions .studio-query-field>.studio-query-mirror{
+  box-sizing:border-box;width:100%;min-width:0;min-height:36px;
+  margin:0;padding:9px 30px 9px 31px;
+  font:inherit;font-size:12px;font-weight:450;line-height:18px;
+  letter-spacing:normal;border:0;border-radius:0;outline:0;
+  box-shadow:none;background:transparent;backdrop-filter:none;
+}
+#tab-captions .studio-accent-field>input.w-path{
+  display:block;flex:1 1 auto;color:var(--text-primary);
+}
+#tab-captions .studio-accent-field>textarea.studio-tag-query,
+#tab-captions.caption-theme-glass .studio-accent-field>textarea.studio-tag-query{
+  color:transparent;-webkit-text-fill-color:transparent;
+}
+#tab-captions .studio-query-field.is-composing>textarea.studio-tag-query,
+#tab-captions.caption-theme-glass .studio-query-field.is-composing>textarea.studio-tag-query{
+  color:var(--text-primary);-webkit-text-fill-color:var(--text-primary);
+}
+#tab-captions .studio-accent-field>:is(input.w-path,textarea.studio-tag-query):focus,
+#tab-captions.caption-theme-glass .studio-accent-field>:is(input.w-path,textarea.studio-tag-query):focus{
+  outline:0;border:0;box-shadow:none;
+}
+#tab-captions .studio-accent-field>:is(input.w-path,textarea.studio-tag-query)::placeholder,
+#tab-captions.caption-theme-glass .studio-accent-field>:is(input.w-path,textarea.studio-tag-query)::placeholder{
+  color:var(--text-secondary);opacity:1;-webkit-text-fill-color:var(--text-secondary);
+}
+#tab-captions .studio-accent-field>.studio-field-icon{
+  top:18px;left:9px;
+}
+#tab-captions .studio-accent-field>.studio-field-clear{top:18px}
+#tab-captions.caption-theme-glass .studio-accent-field:focus-within{
+  border-color:var(--accent);
+}
+#tab-captions.caption-theme-glass .studio-accent-field:has([aria-invalid="true"]){
+  border-color:var(--warning);outline-color:var(--warning);
 }
