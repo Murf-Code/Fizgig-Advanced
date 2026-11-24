@@ -13224,6 +13224,7 @@ function captionTagRemovalTitle(tags,count) {
   return "Remove "+names+" from "+count+" image"+(count===1?"":"s")+"?";
 }
 function captionTagRemovalConfirmation(tags,captions) {
+  if(tags.length>5)return {title:"Remove all selected tags?",detail:tags.length+" tags selected. This can be undone."};
   const counts=new Map();
   for(const caption of captions){
     const present=new Set(studioTokens(caption,"tags").map(tag=>tag.toLowerCase()));
@@ -14385,8 +14386,8 @@ function renderCaptionStudio(host,items,ext){
     const removing=parts.filter(tag=>picked.has(tag.toLowerCase()));
     if(!removing.length)return;
     if(!(await captionConfirmRemoval({
-      ...captionTagRemovalConfirmation(removing,[ta.value]),
-      detail:"This can be undone.",compact:true,confirmLabel:"Remove"
+      detail:"This can be undone.",...captionTagRemovalConfirmation(removing,[ta.value]),
+      compact:true,confirmLabel:"Remove"
     })))return;
     ta.value=studioCompose(ta.value,parts.filter(t=>!picked.has(t.toLowerCase())),"tags");
     for(const tag of picked)imageTagPicked.delete(tag);
@@ -16066,8 +16067,8 @@ function renderCaptionStudio(host,items,ext){
     })).filter(row=>row.after!==(row.before||""));
     if(!changes.length){say("None of the selected images contain those tags.");return true;}
     if(!(await captionConfirmRemoval({
-      ...captionTagRemovalConfirmation(picked,changes.map(row=>row.before)),
-      detail:"This can be undone.",compact:true,confirmLabel:"Remove"
+      detail:"This can be undone.",...captionTagRemovalConfirmation(picked,changes.map(row=>row.before)),
+      compact:true,confirmLabel:"Remove"
     })))return true;
     try{
       await api("/api/captions/batch_edit",{ext,edits:changes.map(row=>({
