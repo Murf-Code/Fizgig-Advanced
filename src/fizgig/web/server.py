@@ -340,7 +340,8 @@ def append_log(text: str):
         f = _run_log["file"]
         if f is None or text == LOG_CLEAR:
             return
-        if _BAR.search(text) and "100%|" not in text:
+        if _BAR.search(text) and "100%|" not in text and not re.search(
+                r"(?:INFO|DEBUG|WARNING|ERROR|CRITICAL):|\[selective-replay\]|\[validation\]|epoch \d+/\d+", text):
             if time.time() - _run_log["bar_at"] < 60:
                 return
             _run_log["bar_at"] = time.time()
@@ -5140,7 +5141,7 @@ class Handler(BaseHTTPRequestHandler):
                 group = "replay-compare-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
                 root = os.path.join(default_output_dir(), "replay_comparisons")
                 try:
-                    configs = replay_benchmark.settings(group, root, 3, replay_benchmark.preview_prompts(folder, b.get("prompt", ""), folder_trigger(folder)))
+                    configs = replay_benchmark.settings(group, root)
                 except (ValueError, TypeError) as exc:
                     return self.json({"error": str(exc)}, 400)
                 entries = []

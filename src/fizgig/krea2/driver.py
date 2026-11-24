@@ -314,7 +314,7 @@ class Krea2Driver(FamilyDriver):
         if not self.selective_probe_due:
             return None
         strategy = self._selective_strategy
-        if strategy in ("random", "rotational"):
+        if strategy in ("random", "rotational", "static_early"):
             return {"cosines": {}}
         if strategy in ("high_gradient", "low_gradient"):
             scores = {}

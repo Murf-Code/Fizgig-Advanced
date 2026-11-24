@@ -1,24 +1,18 @@
-# Global Replay comparison (test/global-replay-comparison)
+# Global Replay follow-up (test/global-replay-comparison)
 
-Select a Krea 2 dataset on Start, leave Test Mode enabled (the default on this branch), optionally enter fixed sample prompts (one per line), and click the existing Add to queue button. It queues all fourteen runs for exactly three epochs each (42 epochs total). Uncheck Test Mode to restore ordinary queue behavior. These are real fresh LoRA runs on the normal training queue, not the stream-sync microbenchmark. No run resumes another. Each case has a separate output folder under replay_comparisons.
+Select the Ferwildir dataset, leave Test Mode enabled and click Add to queue. Eight runs, five epochs each. The server fixes four sample prompts: triggered style transfer, novel wolf pose, untriggered watercolor likeness, unrelated landscape. No watermark tag.
 
-| Case | Method | Adapter targets | Selective |
-| --- | --- | --- | --- |
-| replay | Global replay | Main transformer blocks 0–27 | No |
-| downhill | Global replay | Main transformer blocks 0–27 | 14 per selective window |
-| uphill | Global replay | Main transformer blocks 0–27 | 14 per selective window |
-| high_gradient | Global replay | Main transformer blocks 0–27 | 14 per selective window |
-| low_gradient | Global replay | Main transformer blocks 0–27 | 14 per selective window |
-| random | Global replay | Main transformer blocks 0–27 | 14 per selective window |
-| rotational | Global replay | Main transformer blocks 0–27 | 14 per selective window |
-| standard | Standard | All normal Krea 2 adapters | No |
+| Case | LR | Selection |
+| --- | --- | --- |
+| replay | 0.00025 | all main blocks |
+| replay-lr450 | 0.00045 | all main blocks |
+| standard | 0.00025 | normal full targets |
+| standard-lr450 | 0.00045 | normal full targets |
+| high_gradient-lr450 | 0.00045 | top 14 RMS gradients |
+| uphill-lr450 | 0.00045 | bottom 14 cosine scores |
+| random-lr450 | 0.00045 | deterministic random 14 |
+| static_early-lr450 | 0.00045 | blocks 0–12 and 27 |
 
-All cases use INT8, 22 swaps, rank/alpha 32, Muon, LR 0.00025 for the first eight cases and 0.00045 for the six repeated selective strategies, 0.25 MP, batch/accumulation 1, seed 42, compile off, fixed hold-out validation (four images when available, four timesteps, seed 42), and save each epoch. Samples are enabled before training and after every epoch, at 512 × 512 with 20 requested sampling steps and seed 1234. If the sample field is blank, the first usable image caption (sorted by filename) and a novel landscape prompt are used, with the folder's saved trigger if available on the landscape. The default portrait is used when no caption exists. For a meaningful likeness test and a style-transfer test, enter your own subject/trigger prompt and a different subject with the style trigger, one per line. The automatic prompts are a visual smoke test, not an automatic identity/style score. The same resolved prompts are used in all fourteen cases. Automatic hold-out selection is deterministic for an unchanged dataset. Leave dataset, models, GPU settings and preferences unchanged throughout. Compatible production caches may be reused; exclude cache/model startup and preview time from steady-state step comparisons. Automatic OOM recovery is disabled for these comparison cases so a failed case cannot silently change precision or swap count. The ordinary queue may advance past a failed run; check all fourteen completed before drawing conclusions.
+All selective cases use the same eight-update warmup and full probe every eight updates. Static is fixed between probes, not permanently pruned. All settings except LR and strategy match the first test: INT8, 22 swaps, Muon, rank/alpha 32, 0.25 MP, seed 42, fixed holdout validation, sample seed 1234 plus prompt index, 512 × 512, 20 requested sampling steps, epoch 0–5. Standard has additional adapter targets. Keep dataset and model/preferences unchanged during a comparison. The artist tag is not necessarily a character identity trigger.
 
-Compare replay vs selective for selective checking, and standard vs replay for the user-facing tradeoff. Standard trains additional adapters, so the Standard comparison does not isolate the replay algorithm alone. Compare validation loss at equal updates and wall time, step time, peak VRAM and system RAM, fixed-seed previews and selective probe logs. A run with 28/28 active at every probe has not actually exercised block skipping. A short experiment is a smoke test, not proof of final image quality. Repeat with longer training and several seeds before generalizing.
-
-The UI preflights all fourteen cases before adding them; the existing queue starts them sequentially (or waits if held). Queue cases are not editable; remove and generate a new comparison instead. The old stream-sync diagnostic is no longer offered in this branch's UI; it remains available on test/stream-sync.
-
-All six strategies share an eight-update warmup and full-block probes every eight optimizer updates. Downhill/uphill rank the same smoothed displacement/gradient cosine in opposite directions; high/low gradient rank smoothed per-parameter RMS gradient in opposite directions. Unknown scores are neutral, and ties are seeded. Random uses a local deterministic RNG, rotational alternates even and odd blocks. The 14-block budget applies between full probes, not to warmup/probe steps. Normal nonbenchmark Selective Block Check retains its original unrestricted policy. Block swapping and input-gradient propagation remain unchanged. Probe logs include the chosen block indices and scores.
-
-The six selective strategies are repeated at 1.8× LR (0.00045). The original eight runs remain unchanged. Each group writes global-replay-report.json and global-replay-comparison.log immediately at enqueue time, updates status and aggregates individual logs after each case, and retains per-case copies in the case output folder. The JSON includes epoch and validation loss, probe scores/indices, sample paths, performance sidecar, peak sampled system/process RAM, and wall-time validation efficiency when available. A paused/failed/removed case is not considered completed. The report is not an automated likeness or style score; inspect the actual sample images.
+Diagnostic lines mixed with progress bars are retained and probe details carry explicit step numbers. Reports are saved at the comparison root.

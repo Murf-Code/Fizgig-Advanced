@@ -2,7 +2,7 @@
 import math
 import random
 
-STRATEGIES = ("downhill", "uphill", "high_gradient", "low_gradient", "random", "rotational")
+STRATEGIES = ("downhill", "uphill", "high_gradient", "low_gradient", "random", "rotational", "static_early")
 
 
 def select_blocks(strategy, scores, budget, probe_index, seed=42):
@@ -11,6 +11,8 @@ def select_blocks(strategy, scores, budget, probe_index, seed=42):
         raise ValueError("Invalid selective benchmark strategy, budget or probe index.")
     if strategy == "random":
         return set(random.Random(seed + probe_index).sample(range(n), budget))
+    if strategy == "static_early":
+        return set(range(budget - 1)) | {n - 1}
     if strategy == "rotational":
         order = list(range(0, n, 2)) + list(range(1, n, 2))
         return {order[(probe_index * budget + i) % n] for i in range(budget)}

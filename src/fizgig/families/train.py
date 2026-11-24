@@ -3543,9 +3543,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     logger.info(f"[selective-replay] probe {driver.selective_state_dict()['optimizer_steps']}: "
                                 f"{selective_status['active']}/{selective_status['total']} blocks active; "
                                 f"{skipped} blocks skip adapter-gradient computation until rechecked.")
-                    logger.info("[selective-replay] active_blocks=%s scores=%s strategy=%s",
+                    logger.info("[selective-replay] active_blocks=%s scores=%s strategy=%s step=%s",
                                 driver.selective_active_blocks(), selective_status["scores"],
-                                driver._selective_strategy)
+                                driver._selective_strategy, driver.selective_state_dict()["optimizer_steps"])
                 else:
                     logger.info(f"[selective-replay] periodic reactivation: all "
                                 f"{selective_status['total']} blocks are active for the next probe update.")

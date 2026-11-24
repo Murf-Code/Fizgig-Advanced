@@ -30,7 +30,7 @@ vm.runInNewContext(script, {document, fetch:async (url, opts)=>{
     preventDefault(){this.prevented=true;}, stopImmediatePropagation(){this.stopped=true;}};
   await handler(event);
   assert.ok(event.prevented && event.stopped);
-  assert.deepEqual(requests, [["/api/queue/replay-compare", {image_folder:"C:/dataset", epochs:3, prompt:"fixed"}]]);
+  assert.deepEqual(requests, [["/api/queue/replay-compare", {image_folder:"C:/dataset"}]]);
   elements.streamSyncMode.checked=false;
   event.prevented=event.stopped=false;
   await handler(event);

@@ -22,3 +22,8 @@ def test_random_does_not_consume_training_rng_and_rotation_covers_every_block():
 def test_unknown_and_tied_scores_are_budgeted():
     for strategy in STRATEGIES:
         assert len(select_blocks(strategy, [None, float("nan")] * 14, 14, 0)) == 14
+
+
+def test_static_early_is_fixed():
+    for probe in range(10):
+        assert select_blocks("static_early", [None] * 28, 14, probe) == set(range(13)) | {27}

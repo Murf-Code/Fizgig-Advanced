@@ -1,53 +1,28 @@
 """Fixed Krea 2 A/B controls for the stream-sync test branch (real training, not a microbenchmark)."""
 import os
-from pathlib import Path
 
-STYLE_PROMPT = "A small wooden boat on a quiet lake surrounded by autumn trees, distant mountains and soft morning light"
-DEFAULT_PREVIEW_PROMPTS = "A character portrait, three-quarter view, expressive face\n" + STYLE_PROMPT
-
+DEFAULT_PREVIEW_PROMPTS = "\n".join((
+    "Ferwildir, anthropomorphic red fox, female, full body, wearing a green traveling cloak, standing on a stone bridge above a forest stream, expressive eyes, detailed fur",
+    "Ferwildir, solo, anthro, male wolf, white fur, blue and purple fur accents, spiky blue hair, blue eyes, full body, running along a beach, looking over shoulder, joyful expression",
+    "solo, anthropomorphic male wolf, white fur, blue and purple fur accents, spiky blue hair, blue eyes, sitting in a cafe, realistic watercolor illustration, soft washes and natural lighting",
+    "A small wooden boat on a quiet lake surrounded by autumn trees, distant mountains and soft morning light",
+))
+EPOCHS = 5
 CASES = (
     ("replay", "Global replay", False),
-    ("downhill", "Global replay", True),
-    ("uphill", "Global replay", True),
-    ("high_gradient", "Global replay", True),
-    ("low_gradient", "Global replay", True),
-    ("random", "Global replay", True),
-    ("rotational", "Global replay", True),
+    ("replay-lr450", "Global replay", False),
     ("standard", "Standard", False),
+    ("standard-lr450", "Standard", False),
+    ("high_gradient-lr450", "Global replay", True),
+    ("uphill-lr450", "Global replay", True),
+    ("random-lr450", "Global replay", True),
+    ("static_early-lr450", "Global replay", True),
 )
-CASES = CASES + tuple((case + "-lr450", method, selective)
-                      for case, method, selective in CASES if selective)
 
-
-def preview_prompts(folder, supplied="", trigger=""):
-    """Resolve the same prompt set once, before queuing any of the fourteen cases."""
-    supplied = str(supplied or "").strip()
-    if supplied:
-        return supplied
-    from fizgig.dataset.caption_file import read_caption
-    likeness = ""
-    for image in sorted(Path(folder).iterdir(), key=lambda p: (p.name.casefold(), p.name)):
-        if not image.is_file() or image.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
-            continue
-        try:
-            caption = " ".join(read_caption(str(image.with_suffix(".txt"))).split())
-        except OSError:
-            continue
-        if caption and not caption.startswith("#"):
-            likeness = caption[:3000]
-            break
-    trigger = " ".join(str(trigger or "").strip(" ,").split())[:200]
-    prefix = trigger + ", " if trigger else ""
-    return (likeness or prefix + "A character portrait, three-quarter view, expressive face") + "\n" + prefix + STYLE_PROMPT
-
-
-def settings(group, output_root, epochs=3, prompt=""):
-    epochs = int(epochs)
-    if not 1 <= epochs <= 30:
-        raise ValueError("Replay comparison epochs must be between 1 and 30.")
-    prompt = str(prompt or "").strip() or DEFAULT_PREVIEW_PROMPTS
-    if len(prompt) > 4000:
-        raise ValueError("Preview prompts must be at most 4000 characters.")
+def settings(group, output_root, epochs=EPOCHS, prompt=""):
+    # Fixed server-side controls prevent accidental UI overrides.
+    epochs = EPOCHS
+    prompt = DEFAULT_PREVIEW_PROMPTS
     common = {
         "FAMILY_KIND": "standard", "NETWORK_TYPE": "LoRA (standard)",
         "NETWORK_DIM": "32", "NETWORK_ALPHA": "32", "LEARNING_RATE": "0.00025",
@@ -75,7 +50,9 @@ def adjust_plan(desc, values, plan):
     case = values.get("__replay_compare")
     if not case:
         return plan
-    if desc.key != "krea2" or case not in ({c[0] for c in CASES} | {"standard-matched", "selective"}):
+    from fizgig.krea2.selective_policy import STRATEGIES
+    legacy = {"standard-matched", "selective", "replay", "standard"} | set(STRATEGIES)
+    if desc.key != "krea2" or case.removesuffix("-lr450") not in legacy:
         raise ValueError("Invalid Krea 2 replay comparison case.")
     if plan.problems:
         return plan
@@ -83,7 +60,6 @@ def adjust_plan(desc, values, plan):
     if len(stages) != 1:
         plan.problems.append("Replay comparison needs exactly one normal Training stage.")
         return plan
-    from fizgig.krea2.selective_policy import STRATEGIES
     strategy = case.removesuffix("-lr450")
     if strategy in STRATEGIES:
         stages[0].cmd.extend(["--family_option", f"selective_strategy={strategy}",
