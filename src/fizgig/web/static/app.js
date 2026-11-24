@@ -1663,8 +1663,33 @@ function vramReclaimCard() {
   const sendForce = el("input", {type: "checkbox", id: "prefSendOnlyForce"});
   sendForce.checked = String(S.set.send_only_force ?? "0") === "1";
   sendForce.disabled = !sendOnly.checked;
+  const strategies = [
+    ["default", "Default (staged, 2 slots)"],
+    ["staged3", "Staged, 3 slots"],
+    ["staged4", "Staged, 4 slots"],
+    ["direct2", "Fully pinned, 2 slots"],
+    ["direct3", "Fully pinned, 3 slots"],
+    ["direct4", "Fully pinned, 4 slots"]
+  ];
+  const streamStrategy = el("select", {id: "prefSendOnlyStrategy"},
+    ...strategies.map(([value, text]) => el("option", {value, text})));
+  streamStrategy.value = strategies.some(([key]) => key === S.set.send_only_strategy) ?
+    S.set.send_only_strategy : "default";
+  streamStrategy.disabled = !sendOnly.checked;
+  const streamHint = "Experimental. Select a tested calibration recommendation manually. " +
+    "RAM guards can reduce pinned buffers or fall back to staged transfers; the GPU ring is capped by the swap budget. " +
+    "Only CUDA send-only training; Global Replay retains its normal strategy. Takes effect at next Start.";
+  const streamMessage = el("div", {class: "field-hint", text: streamHint});
+  streamStrategy.addEventListener("change", () => {
+    const requested = streamStrategy.value;
+    streamStrategy.disabled = true;
+    api("/api/prefs", {changes: {send_only_strategy: requested}})
+      .then(() => { S.set.send_only_strategy = requested; streamMessage.textContent = streamHint; })
+      .catch(e => { streamStrategy.value = S.set.send_only_strategy || "default"; streamMessage.textContent = e.message; })
+      .finally(() => { streamStrategy.disabled = !sendOnly.checked; });
+  });
   sendOnly.addEventListener("change", () => api("/api/prefs", {changes: {send_only_block_swap: sendOnly.checked}})
-    .then(() => { S.set.send_only_block_swap = sendOnly.checked ? "1" : "0"; sendForce.disabled = !sendOnly.checked; }));
+    .then(() => { S.set.send_only_block_swap = sendOnly.checked ? "1" : "0"; sendForce.disabled = !sendOnly.checked; streamStrategy.disabled = !sendOnly.checked; }));
   sendForce.addEventListener("change", () => api("/api/prefs", {changes: {send_only_force: sendForce.checked}})
     .then(() => { S.set.send_only_force = sendForce.checked ? "1" : "0"; }));
   // background loading (training/prefetch.py): the next batches read from the cache while the GPU trains
@@ -1695,6 +1720,8 @@ function vramReclaimCard() {
       el("label", {class: "checkbox-label", style: "margin-left: 24px",
         title: "Use faster block swap on every run it can, even where Fizgig expects it not to help."},
         sendForce, " Even when it won't help"),
+      el("div", {class: "pref-file"}, el("div", {class: "field-row"},
+        el("span", {class: "field-label", text: "Stream strategy (experimental):"}), streamStrategy), streamMessage),
       el("label", {class: "checkbox-label", title: "While the graphics card trains on one step, Fizgig reads the " +
         "next steps' cached pictures and captions from the drive, so the card doesn't sit waiting for a slow drive. " +
         "The same pictures train in the same order with the same results; it only uses a little more system RAM " +
