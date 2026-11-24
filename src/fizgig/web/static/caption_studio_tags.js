@@ -15,6 +15,9 @@ const CaptionStudioTags = (() => {
     const bits = line.split(delimiter).map(x => x.trim()).filter(Boolean);
     const shortTags = bits.filter(x => x.split(/\s+/).length <= 3).length;
     if (bits.length >= 3 && shortTags >= Math.ceil(bits.length * 0.8)) return "tags";
+    // Hybrid captions also support a first line with just one or two short tags.
+    if (/\r?\n/.test(String(text || "")) && bits.length && shortTags === bits.length &&
+        !/[.!?]["\u201d\u2019)]*$/.test(line)) return "tags";
     const sentenceEnds = (String(text || "").match(/[.!?]+(?:["'”’)]*)(?=\s|$)/g) || []).length;
     return sentenceEnds >= 2 ? "prose" : "tags";
   }

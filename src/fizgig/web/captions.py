@@ -550,7 +550,8 @@ def _popen(cmd, prefs, stdin=False):
 
 def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_tokens, trigger, overwrite, clips,
                 only=None, photos=True, ext=".txt", threshold=0.35, leave_out="", underscores=False,
-                tags=None, models_dir=None, append=False, output_format="", system_prompt=""):
+                tags=None, models_dir=None, append=False, output_format="", system_prompt="",
+                delimiter=",", existing_formats=None):
     """Caption the folder's pictures (and clips) with a captioner from the registry (`model` is its label or key), or
     just `only` (a re-caption). The worker loads once and stays loaded for the next batch. A registry tagger keeps the
     tags scoring `threshold` or more, minus `leave_out` (comma-separated), underscores as spaces unless `underscores`.
@@ -619,7 +620,10 @@ def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_to
     job = {"list_file": list_file, "max_new_tokens": int(max_tokens or 120), "trigger": trigger.strip(),
            "stop_file": stop_file, "caption_ext": ext, "append": bool(append),
            "output_format": actual_format if output_format or append else "",
-           "system_prompt": str(system_prompt or "") if desc is not None and desc.instruction else ""}
+           "system_prompt": str(system_prompt or "") if desc is not None and desc.instruction else "",
+           "delimiter": delimiter if delimiter in (",", ";", "|") else ",",
+           "existing_formats": {p: v for p, v in (existing_formats or {}).items()
+                                if p in images and v in ("tags", "prose")} if isinstance(existing_formats, dict) else {}}
     if tid:
         job["tags"] = tags
     elif desc.instruction:

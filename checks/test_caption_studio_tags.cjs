@@ -137,3 +137,6 @@ assert.equal(T.displaySearch('("cute") AND NOT "blue eyes"',vocab),"(cute) AND N
 assert.equal(T.search(["cute","lion"],T.naturalSearch("cute and not blue eyes",vocab)),true);
 assert.equal(T.search(["cute","blue eyes"],T.naturalSearch("cute and not blue eyes",vocab)),false);
 assert.equal(T.search(["lion"],T.naturalSearch("cute or lion",vocab)),true);
+
+assert.equal(T.kind("cat, blue eyes\nA cat sits. It looks left."),"tags");
+assert.deepEqual(T.tags("cat, blue eyes\nA cat sits. It looks left."),["cat","blue eyes"]);

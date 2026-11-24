@@ -6868,3 +6868,6 @@ body.caption-glass-ui .studio-image-context-menu .studio-danger-action:not(:disa
 #tab-captions .studio-host .studio-ai-field .studio-ai-output-value:disabled{opacity:.65}
 #tab-captions .studio-ai-caption-card #capModelHint{display:none!important}
 @media(prefers-reduced-motion:reduce){#tab-captions .studio-ai-output-value{transition:none!important}}
+
+#tab-captions .studio-ai-prompt-settings:not([open])>:not(summary){display:none!important}
+#tab-captions .studio-ai-instruction-model .studio-ai-preset-settings select{min-height:35px}

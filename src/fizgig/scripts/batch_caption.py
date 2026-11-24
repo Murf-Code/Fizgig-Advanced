@@ -92,34 +92,91 @@ def _load_image_list(list_file: str) -> list[str]:
     return out
 
 
-def merge_caption(old: str, new: str, output_format: str, trigger: str = "") -> str:
-    """Append without rewriting existing text or repeating the generated trigger prefix."""
+def _tag_key(tag: str) -> str:
+    return " ".join(tag.casefold().replace("_", " ").split())
+
+
+def _unique_tags(text: str, delimiter=",") -> str:
+    seen, result = set(), []
+    for tag in text.replace("\n", delimiter).split(delimiter):
+        tag = tag.strip()
+        key = _tag_key(tag)
+        if tag and key not in seen:
+            seen.add(key)
+            result.append(tag)
+    return (delimiter + " ").join(result)
+
+
+def _split_caption(text: str, trigger="", delimiter=",", existing_format="") -> tuple[str, str]:
+    """First line is the tag list; subsequent lines are freeform prose.
+    Imported prose-only captions have no tag line. Prefer explicit format
+    information when available, otherwise recognize sentence-like first lines.
+    """
+    import re
+    text = text.strip()
+    first, sep, rest = text.partition("\n")
+    first = first.rstrip("\r")
+    parts = [part.strip() for part in first.split(delimiter) if part.strip()]
+    if existing_format == "prose":
+        return "", text
+    if existing_format == "tags":
+        return first, rest
+    short = sum(len(part.split()) <= 3 for part in parts)
+    if len(parts) >= 3 and short >= (len(parts) * 4 + 4) // 5:
+        return first, rest
+    # One or two ordinary tags followed by prose are also a hybrid caption.
+    sentence = bool(re.search(r"[.!?][\"'”’)]*$", first))
+    long_clause = any(len(part.split()) >= 4 for part in parts)
+    if long_clause or (sentence and len(parts) <= 2 and any(len(part.split()) >= 3 for part in parts)):
+        return "", text
+    return first, rest
+
+
+def merge_caption(old: str, new: str, output_format: str, trigger: str = "",
+                  delimiter=",", existing_format="") -> str:
+    """Keep tags on line one, prose underneath; never mix prose into a tag list."""
     old, new, trigger = old.strip(), new.strip(), trigger.strip()
+    delimiter = delimiter or ","
     if not old:
         return new
-    if trigger and new.casefold().startswith((trigger + ", ").casefold()):
-        new = new[len(trigger) + 2:].strip()
     if not new:
         return old
-    if output_format == "tags":
-        def key(tag):
-            return " ".join(tag.casefold().replace("_", " ").split())
-        seen = {key(tag) for tag in old.replace("\n", ",").split(",") if tag.strip()}
-        added = []
-        for tag in new.replace("\n", ",").split(","):
-            tag = tag.strip()
-            k = key(tag)
-            if tag and k not in seen:
-                added.append(tag)
-                seen.add(k)
-        return old.rstrip(", ") + ", " + ", ".join(added) if added else old
-    if new in old.splitlines() or old == new:
+    if output_format not in ("tags", "natural"):
+        return old if new in old.splitlines() else old + "\n" + new
+    tags, prose = _split_caption(old, trigger, delimiter, existing_format)
+    prefix = trigger + ", "
+    has_prefix = bool(trigger and new.casefold().startswith(prefix.casefold()))
+    if output_format == "natural":
+        if has_prefix and (tags or prose):
+            # A trigger already belongs to the existing caption, not every paragraph.
+            new = new[len(prefix):].strip()
+        if not new or new in prose.splitlines() or new == prose:
+            return old
+        return old + "\n" + new
+    if has_prefix:
+        new = new[len(prefix):].strip()
+        if not tags and prose.casefold().startswith(prefix.casefold()):
+            # Move the existing trigger to the new tag line exactly once.
+            prose = prose[len(prefix):]
+        if not any(_tag_key(t) == _tag_key(trigger) for t in tags.split(delimiter)):
+            new = trigger + (", " + new if new else "")
+    generated = _unique_tags(new, ",").split(",")
+    seen = {_tag_key(t) for t in tags.split(delimiter) if t.strip()}
+    added = []
+    for tag in generated:
+        tag = tag.strip()
+        key = _tag_key(tag)
+        if tag and key not in seen:
+            seen.add(key)
+            added.append(tag)
+    if not added:
         return old
-    return old + "\n" + new
+    tag_line = (tags.rstrip(delimiter + " ") + delimiter + " " if tags else "") + (delimiter + " ").join(added)
+    return tag_line + ("\n" + prose if prose else "")
 
 
 def _write_caption(path: str, caption: str, ext: str = ".txt", append=False,
-                   output_format="", trigger="") -> None:
+                   output_format="", trigger="", delimiter=",", existing_format="") -> None:
     from fizgig.web import caption_review
     from fizgig.web.image_edit import write_atomic
     target = os.path.splitext(path)[0] + (ext or ".txt")
@@ -130,7 +187,7 @@ def _write_caption(path: str, caption: str, ext: str = ".txt", append=False,
         if append and os.path.isfile(target):
             from fizgig.dataset.caption_file import read_caption
             old = read_caption(target).strip()
-            caption = merge_caption(old, caption, output_format, trigger)
+            caption = merge_caption(old, caption, output_format, trigger, delimiter, existing_format)
         write_atomic(target, caption.encode("utf-8"))
 
 
@@ -232,8 +289,7 @@ def caption_file(state: CaptionState, path: str, request, job: dict) -> str:
         text = captioners.clean_e621_tags(text)
     elif job.get("output_format") == "tags":
         # Preserve tag spelling; normalize delimiters and remove repetitions.
-        text = merge_caption("", text, "tags") if not text else ", ".join(dict.fromkeys(
-            t.strip() for t in text.replace("\n", ",").split(",") if t.strip()))
+        text = _unique_tags(text)
     return captioners.with_trigger(text, job.get("trigger") or "")
 
 
@@ -268,7 +324,8 @@ def _run_job(state: CaptionState, job: dict) -> bool:
                 continue
             _write_caption(path, caption, job.get("caption_ext") or ".txt",
                            append=bool(job.get("append")), output_format=job.get("output_format") or "",
-                           trigger=job.get("trigger") or "")
+                           trigger=job.get("trigger") or "", delimiter=job.get("delimiter") or ",",
+                           existing_format=(job.get("existing_formats") or {}).get(path, ""))
             print(f"OK: {base}", flush=True)
         except Exception as exc:
             print(f"FAIL: {base} ({exc})", flush=True)

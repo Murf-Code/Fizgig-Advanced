@@ -11517,7 +11517,7 @@ const saveCapSoon = debounce(() => { S.capSaved = capSettings(); api("/api/state
 // the chosen captioner's description (fizgig/captioners/registry.py), and whether it follows an instruction
 const capDesc = () => ((S.cap.opts && S.cap.opts.captioners) || []).find((c) => c.label === $("capModel").value);
 const qwenOn = () => !!(capDesc() || {}).instruction;
-const qwenTask = () => (S.cap.opts.instruction_tasks || []).find((t) => t.label === $("capTask").value);
+const qwenTask = () => (S.cap.opts?.instruction_tasks || []).find((t) => t.label === $("capTask").value);
 // the chosen captioner's own caption type (JoyCaption's Straightforward...), when one is picked in the task menu
 const capType = () => ((capDesc() || {}).prompt_types || []).find((t) => t[0] === $("capTask").value);
 // JTP-3 Hydra (fizgig/dataset/tag_captions.py): the model picked, when it is the Advanced tagger
@@ -13152,7 +13152,7 @@ function studioAiPrompt(){
   const natural=ty?capTypeText(ty,$("capLength").value):task?.instruction||"Describe the visible contents of this image.";
   const tagDefault="Return only a comma-separated list of accurate visual tags, without duplicates or explanations. "+STUDIO_AI_FOCUS[preset.focus].tags;
   const system=state.system[format]??(format==="tags"?"You are an image tagger. Return only accurate comma-separated visual tags.":"You are a helpful image captioner. Write factual captions suitable for model training.");
-  const user=state.user[userKey]??(format==="tags"?tagDefault:natural);
+  const user=state.user[userKey]??(format==="tags"&&ty?.[0]!=="e621 tags"?tagDefault:natural);
   return {format,userKey,system,user};
 }
 function studioAiJobOptions(){
@@ -13217,6 +13217,7 @@ function captionAiControlsMount(target){
   };
   focus.addEventListener("change",()=>{
     if(focus.value.startsWith("own:")){
+      if(focus.value==="own:e621 tags")state.format="tags";
       $("capTask").value=focus.value.slice(4);$("capTask").dispatchEvent(new Event("change",{bubbles:true}));
     }else applyTask(focus.value,studioAiPreset(qwenTask()?.key).detail);
   });
@@ -13242,6 +13243,7 @@ function captionAiControlsMount(target){
   destination.addEventListener("click",()=>{
     if(!qwenOn())return;
     state.format=studioAiFormat()==="tags"?"natural":"tags";
+    if(state.format==="natural"&&capType()?.[0]==="e621 tags")applyTask("character","balanced");
     sync();saveCapSoon();
   });
   const modelContent=model.querySelector(".card-content");
@@ -15259,7 +15261,12 @@ function renderCaptionStudio(host,items,ext){
     say("AI captioning "+targets.length+" selected images…");
     try{
       const result=await capRun("/api/captions/ai",capJobBody({
-        only:targets.map(it=>it.path),...options
+        only:targets.map(it=>it.path),...options,
+        delimiter:S.cap.studioDelimiter||",",
+        existing_formats:Object.fromEntries(targets.flatMap(it=>{
+          const explicit=S.cap.studioModes?.get(it.path);
+          return explicit==="tags"||explicit==="prose"?[[it.path,explicit]]:[];
+        }))
       }));
       if(result?.files)say("AI queued "+result.files+" selected images · progress appears in Captions tools.");
       else if(result?.error)say(result.error);
