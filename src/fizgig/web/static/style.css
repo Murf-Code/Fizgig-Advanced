@@ -6805,3 +6805,22 @@ body:has(.caption-removal-backdrop){overflow:hidden}
 #tab-captions.caption-theme-glass .studio-accent-field:has([aria-invalid="true"]){
   border-color:var(--warning);outline-color:var(--warning);
 }
+
+/* Shared context-menu icon alignment, destructive actions and viewport sizing. */
+.studio-image-context-menu{
+  max-height:calc(100vh - 16px);overflow:auto;box-sizing:border-box;
+  max-width:calc(100vw - 16px);
+}
+.studio-image-context-menu .studio-context-action,
+body.caption-glass-ui .studio-image-context-menu .studio-context-action{
+  display:flex;align-items:center;justify-content:flex-start;gap:9px;
+}
+.studio-action-icon{width:16px;height:16px;flex:0 0 16px}
+.studio-image-context-menu .studio-action-icon{opacity:.82}
+.studio-image-context-menu .studio-context-action>.studio-action-label{flex:1;min-width:0}
+.studio-image-context-menu .studio-context-action>kbd{margin-left:auto}
+.studio-image-context-menu .studio-danger-action:not(:disabled),
+body.caption-glass-ui .studio-image-context-menu .studio-danger-action:not(:disabled){color:var(--danger,#ff7787)}
+#tab-captions .studio-image-toolbar .btn:has(>.studio-action-icon){
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+}

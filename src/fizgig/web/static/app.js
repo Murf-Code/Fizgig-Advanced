@@ -12395,6 +12395,64 @@ function studioSaveCategories(state){
 }
 // Tag color is now edited in the tag's right-click menu, shared by Image
 // Tags and All Tags. Existing category colors remain readable for old datasets.
+// Shared icon vocabulary for image and tag menus and the inline image tools.
+function studioActionIcon(label){
+  const name=String(label).toLowerCase();
+  const paths=name==="remove tool"||name==="remove"?["M7 21h14","m5 16-2-2a2 2 0 0 1 0-3l9-9a2 2 0 0 1 3 0l6 6a2 2 0 0 1 0 3l-10 10H9z","m7 7 10 10"]:
+    name.startsWith("crop")?["M6 2v14a2 2 0 0 0 2 2h14","M2 6h14a2 2 0 0 1 2 2v14"]:
+    name.startsWith("delete")||name.startsWith('remove "')?["M3 6h18","M8 6V3h8v3","m19 6-1 15H6L5 6","M10 10v7","M14 10v7"]:
+    name.includes("file location")?["M3 7V5h6l3 3h8a1 1 0 0 1 1 1v2","M3 7v13h16l3-10H6L3 20"]:
+    name.includes("new tab")?["M13 5h6v6","m19 5-9 9","M19 13v6H5V5h6"]:
+    name.startsWith("copy")?["M8 8h12v12H8z","M16 4H4v12"]:
+    name.startsWith("paste")?["M9 3h6v4H9z","M9 5H5v16h14V5h-4"]:
+    name.startsWith("undo")?["M3 10h11a6 6 0 0 1 0 12","m8 5-5 5 5 5"]:
+    name.startsWith("redo")?["M21 10H10a6 6 0 0 0 0 12","m16 5 5 5-5 5"]:
+    name.includes("filter")?["M3 4h18l-7 8v6l-4 2v-8z"]:
+    name.includes("validation")||name.includes("sample")?["M12 3v18","M3 12h18"]:
+    name.includes("complete")?["m5 12 4 4L19 6"]:
+    name.includes("selection")||name.includes("select all")?["M3 3h18v18H3z","m7 12 3 3 7-7"]:null;
+  if(!paths)return null;
+  const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+  for(const [key,value] of Object.entries({viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",
+    "stroke-width":"1.7","stroke-linecap":"round","stroke-linejoin":"round",
+    class:"studio-action-icon","aria-hidden":"true"}))svg.setAttribute(key,value);
+  for(const d of paths){const p=document.createElementNS(svg.namespaceURI,"path");p.setAttribute("d",d);svg.append(p);}
+  return svg;
+}
+function studioActionLabel(button,label){
+  const icon=studioActionIcon(label);
+  button.replaceChildren();
+  if(icon)button.append(icon);
+  button.append(el("span",{class:"studio-action-label",text:label}));
+  if(/^Delete/.test(label))button.classList.add("studio-danger-action");
+  return button;
+}
+function studioMountContextMenu(menu,event){
+  document.body.append(menu);
+  const position=()=>{
+    const r=menu.getBoundingClientRect();
+    menu.style.left=Math.max(6,Math.min(event.clientX,window.innerWidth-r.width-8))+"px";
+    menu.style.top=Math.max(6,Math.min(event.clientY,window.innerHeight-r.height-8))+"px";
+  };
+  position();
+  const close=()=>{menu.remove();document.removeEventListener("pointerdown",dismiss,true);};
+  const dismiss=e=>{if(!menu.isConnected||!menu.contains(e.target))close();};
+  document.addEventListener("pointerdown",dismiss,true);
+  menu.addEventListener("keydown",e=>{
+    if(e.key==="Escape"){e.preventDefault();e.stopPropagation();close();}
+    if(e.key==="ArrowDown"||e.key==="ArrowUp"){
+      if(e.target.closest("input"))return;
+      const buttons=[...menu.querySelectorAll(":scope > button:not(:disabled), :scope > details > summary")];
+      if(!buttons.length)return;
+      e.preventDefault();
+      const i=buttons.indexOf(document.activeElement);
+      buttons[(i+(e.key==="ArrowDown"?1:-1)+buttons.length)%buttons.length].focus();
+    }
+  });
+  menu.addEventListener("toggle",position,true);
+  menu.querySelector("button:not(:disabled)")?.focus({preventScroll:true});
+}
+
 function studioTagColorMenu(menu,tag,categories,done){
   const key=String(tag||"").toLocaleLowerCase();
   const current=categories.tagColors?.[key]||"";
@@ -13523,8 +13581,8 @@ function renderCaptionStudio(host,items,ext){
   // TagBench image actions: select thumbnails directly, Delete to remove, or
   // right-click for a compact menu. Actual removals use Fizgig's reversible
   // removed/ workflow, keeping captions and masks paired with each picture.
-  const removeSelectedImages=async(targetPath=null)=>{
-    const paths=targetPath&&(selection.has(targetPath)&&selection.size>1)
+  const removeSelectedImages=async(targetPath=null,single=false)=>{
+    const paths=!single&&targetPath&&(selection.has(targetPath)&&selection.size>1)
       ? [...selection] : targetPath?[targetPath]:[...selection];
     const chosen=paths.map(path=>S.cap.items.find(it=>it.path===path)).filter(Boolean);
     if(!chosen.length)return say("Select one or more dataset images first.");
@@ -13713,7 +13771,7 @@ function renderCaptionStudio(host,items,ext){
     const action=(label,hint,fn,disabled=false)=>{
       const button=el("button",{type:"button",role:"menuitem",disabled,
         class:"studio-context-action"});
-      button.append(el("span",{text:label}));
+      studioActionLabel(button,label);
       if(hint)button.append(el("kbd",{text:hint}));
       button.addEventListener("click",()=>{
         closeImageMenu();
@@ -13723,67 +13781,58 @@ function renderCaptionStudio(host,items,ext){
       menu.append(button);
     };
     const separator=()=>menu.append(el("div",{class:"studio-context-rule",role:"separator"}));
+    // Preview targets exactly the visible image; thumbnail/Waterfall actions
+    // retain intentional bulk selections. Editing always targets one image.
+    action("Open File Location","",()=>revealImageFile(it));
+    action("Open in New Tab",preview?"":"Ctrl+O",()=>preview?openImageInTab(it):openSelectedImage(it.path),!it.size);
+    separator();
+    if(!preview){
+      action("Select All Images","Ctrl+A",()=>{S.cap.items.forEach(x=>selection.add(x.path));renderCaptions();});
+      action("Invert Selection","Ctrl+I",invertImageSelection);
+    }
     if(preview){
-      // Preview actions always target this image, never an implicit bulk
-      // thumbnail selection. Do not offer destructive actions here.
-      action("Open File Location","",()=>revealImageFile(it));
-      action("Open in New Tab","",()=>openImageInTab(it));
-      separator();
       action("Copy Caption","",()=>copyImageText(ta.value,"caption"),!ta.value.trim());
       action("Copy File Name","",()=>copyImageText(it.name,"file name"));
-      separator();
-      action("Remove Tool","",()=>selectInlineTool("remove"),!canEditPicture);
-      action("Crop Tool","",()=>selectInlineTool("crop"),!canEditPicture);
     }else{
-    action("Select All Images","Ctrl+A",()=>{S.cap.items.forEach(x=>selection.add(x.path));renderCaptions();});
-    action("Invert Selection","Ctrl+I",invertImageSelection);
-    separator();
-    action("Copy Tags","Ctrl+C",()=>copyImageTags(it.path),!count);
-    action("Paste Tags","Ctrl+V",()=>pasteImageTags(it.path),!count);
-    action("Copy File "+(count===1?"Name":"Names"),"Ctrl+Alt+C",()=>copyImageNames(it.path),!count);
-    separator();
-    action("Delete "+(count===1?"Image":"Images"),"Ctrl+Del",()=>removeSelectedImages(it.path),!count);
-    action("Open in New Tab","Ctrl+O",()=>openSelectedImage(it.path),!count||!targets[0]?.size);
-    action("Open File Location","",()=>revealImageFile(it));
-    action(complete?"Mark Incomplete":"Mark Complete","Ctrl+K",
-      ()=>toggleImageReview(it.path),!count);
-    // Fizgig-specific training picks remain available as secondary actions;
-    // they should not interrupt the standard TagBench image context menu.
-    separator();
-    const pictures=validTrainingPictures(targets);
-    const plural=pictures.length===1?"Image":"Images";
-    const inValidation=pictures.length>0&&pictures.every(x=>
-      CaptionStudioTrainingPicks.present(
-        CaptionStudioTrainingPicks.names(S.values.VALIDATION_PICKED),x.name));
-    const inSamples=pictures.length>0&&pictures.every(x=>
-      CaptionStudioTrainingPicks.hasPair(samplePairs(),x.name));
-    action(inValidation?"Remove "+plural+" from Validation Images":"Add "+plural+" to Validation Images",
-      "",()=>toggleValidationImages(it.path),!pictures.length);
-    action(inSamples?"Remove "+plural+" from Sample Images":"Add "+plural+" to Sample Images",
-      "",()=>toggleSampleImages(it.path),!pictures.length);
-    action("Clear Selection","",()=>{selection.clear();renderCaptions();});
+      action("Copy Tags","Ctrl+C",()=>copyImageTags(it.path),!count);
+      action("Paste Tags","Ctrl+V",()=>pasteImageTags(it.path),!count);
+      action("Copy File "+(count===1?"Name":"Names"),"Ctrl+Alt+C",()=>copyImageNames(it.path),!count);
     }
-    document.body.append(menu);
-    const rect=menu.getBoundingClientRect();
-    menu.style.left=Math.max(6,Math.min(e.clientX,window.innerWidth-rect.width-8))+"px";
-    menu.style.top=Math.max(6,Math.min(e.clientY,window.innerHeight-rect.height-8))+"px";
-    const dismiss=event=>{
-      if(!menu.isConnected){document.removeEventListener("pointerdown",dismiss,true);return;}
-      if(menu.contains(event.target))return;
-      closeImageMenu();document.removeEventListener("pointerdown",dismiss,true);
+    separator();
+    const canEditTarget=!S.cap.studioReviewed?.has(it.path)&&!!it.size&&
+      /\.(png|jpe?g|webp|bmp|avif|jxl)$/i.test(it.name);
+    const editTarget=async tool=>{
+      if(it.path===current.path&&S.cap.studioExploreMode!=="waterfall"&&S.cap.studioExploreMode!=="constellation")
+        return selectInlineTool(tool);
+      if(S.cap.imageEditing?.inline&&!(await captionImageClose()))return;
+      if(!pickImage(it,null))return;
+      S.cap.studioExploreMode="list";
+      S.cap.studioExploreNeedRedraw=true;
+      renderCaptions();
+      await captionImageOpen(it,tool);
+      S.cap.inlineRefreshControls?.();
     };
-    document.addEventListener("pointerdown",dismiss,true);
-    menu.addEventListener("keydown",event=>{
-      if(event.key==="Escape"){closeImageMenu();event.preventDefault();}
-      if(event.key==="ArrowDown"||event.key==="ArrowUp"){
-        event.preventDefault();
-        const buttons=[...menu.querySelectorAll("button:not(:disabled)")];
-        if(!buttons.length)return;
-        const idx=buttons.indexOf(document.activeElement);
-        buttons[(idx+(event.key==="ArrowDown"?1:-1)+buttons.length)%buttons.length].focus();
-      }
-    });
-    menu.querySelector("button:not(:disabled)")?.focus({preventScroll:true});
+    action("Remove Tool","",()=>editTarget("remove"),!canEditTarget||(!preview&&count!==1));
+    action("Crop Tool","",()=>editTarget("crop"),!canEditTarget||(!preview&&count!==1));
+    separator();
+    if(!preview){
+      action(complete?"Mark Incomplete":"Mark Complete","Ctrl+K",()=>toggleImageReview(it.path),!count);
+      const pictures=validTrainingPictures(targets);
+      const plural=pictures.length===1?"Image":"Images";
+      const inValidation=pictures.length>0&&pictures.every(x=>
+        CaptionStudioTrainingPicks.present(CaptionStudioTrainingPicks.names(S.values.VALIDATION_PICKED),x.name));
+      const inSamples=pictures.length>0&&pictures.every(x=>
+        CaptionStudioTrainingPicks.hasPair(samplePairs(),x.name));
+      action(inValidation?"Remove "+plural+" from Validation Images":"Add "+plural+" to Validation Images",
+        "",()=>toggleValidationImages(it.path),!pictures.length);
+      action(inSamples?"Remove "+plural+" from Sample Images":"Add "+plural+" to Sample Images",
+        "",()=>toggleSampleImages(it.path),!pictures.length);
+      action("Clear Selection","",()=>{selection.clear();renderCaptions();});
+      separator();
+    }
+    action("Delete "+(count===1?"Image":"Images"),preview?"":"Ctrl+Del",
+      ()=>removeSelectedImages(it.path,preview),!count||targets.some(x=>x.crop||S.cap.studioReviewed?.has(x.path)));
+    studioMountContextMenu(menu,e);
   };
   // Single keyboard handler per render. Replace old handler so shortcuts never
   // close over a stale image or dataset.
@@ -14312,11 +14361,11 @@ function renderCaptionStudio(host,items,ext){
       S.cap.studioTagFocus="image";
       syncImageTagSelection(before);
     }
-    document.querySelectorAll(".studio-tag-context-menu").forEach(n=>n.remove());
+    closeImageMenu();
     const menu=el("div",{class:"studio-image-context-menu studio-tag-context-menu",role:"menu"});
-    const menuAction=(name,fn,disabled=false)=>menu.append(el("button",{
-      type:"button",role:"menuitem",text:name,disabled,
-      onclick:()=>{menu.remove();fn();}}));
+    const menuAction=(name,fn,disabled=false)=>menu.append(studioActionLabel(el("button",{
+      type:"button",role:"menuitem",disabled,class:"studio-context-action",
+      onclick:()=>{menu.remove();fn();}}),name));
     const separator=()=>menu.append(el("div",{class:"studio-context-rule",role:"separator"}));
     menuAction("Add to Filter",()=>filterByTag(tag,"and"));
     menuAction("Exclude from Filter",()=>filterByTag(tag,"not"));
@@ -14329,16 +14378,7 @@ function renderCaptionStudio(host,items,ext){
     menuAction("Delete Tag",removePickedTags,!editable);
     separator();
     studioTagColorMenu(menu,tag,categoryState,renderCaptions);
-    document.body.append(menu);
-    const bounds=menu.getBoundingClientRect();
-    menu.style.left=Math.max(6,Math.min(event.clientX,window.innerWidth-bounds.width-8))+"px";
-    menu.style.top=Math.max(6,Math.min(event.clientY,window.innerHeight-bounds.height-8))+"px";
-    const dismiss=e=>{
-      if(!menu.isConnected){document.removeEventListener("pointerdown",dismiss,true);return;}
-      if(menu.contains(e.target))return;
-      menu.remove();document.removeEventListener("pointerdown",dismiss,true);
-    };
-    document.addEventListener("pointerdown",dismiss,true);
+    studioMountContextMenu(menu,event);
   };
   tags.addEventListener("keydown",e=>{
     // Don't turn Backspace/Delete inside the inline rename input into a
@@ -14543,6 +14583,7 @@ function renderCaptionStudio(host,items,ext){
     try{await captionImageOpen(current,tool);refreshInlineButtons();}
     catch(e){say(e.message);}
   };
+  for(const [button,label] of [[removeButton,"Remove"],[cropButton,"Crop"],[goBack,"Undo"],[goForward,"Redo"]])studioActionLabel(button,label);
   pictureActions.append(removeButton,cropButton,goBack,goForward,sizeLabel,applyImage);
   S.cap.inlineRefreshControls=refreshInlineButtons;
   // When an image is re-rendered after saving, the tool strip keeps the same
@@ -14856,10 +14897,10 @@ function renderCaptionStudio(host,items,ext){
       }
     }
     S.cap.studioTagFocus="all";
-    document.querySelectorAll(".studio-tag-context-menu").forEach(n=>n.remove());
+    closeImageMenu();
     const menu=el("div",{class:"studio-image-context-menu studio-tag-context-menu",role:"menu"});
-    const addAction=(name,fn)=>menu.append(el("button",{type:"button",role:"menuitem",text:name,
-      onclick:()=>{menu.remove();fn();}}));
+    const addAction=(name,fn)=>menu.append(studioActionLabel(el("button",{type:"button",role:"menuitem",class:"studio-context-action",
+      onclick:()=>{menu.remove();fn();}}),name));
     const separator=()=>menu.append(el("div",{class:"studio-context-rule",role:"separator"}));
     addAction("Add to Filter",()=>filterByTag(tag,"and"));
     addAction("Exclude from Filter",()=>filterByTag(tag,"not"));
@@ -14869,14 +14910,7 @@ function renderCaptionStudio(host,items,ext){
     addAction("Delete Tag",()=>void deletePickedTags(tag));
     separator();
     studioTagColorMenu(menu,tag,categoryState,renderCaptions);
-    document.body.append(menu);
-    const rect=menu.getBoundingClientRect();
-    menu.style.left=Math.max(6,Math.min(e.clientX,window.innerWidth-rect.width-8))+"px";
-    menu.style.top=Math.max(6,Math.min(e.clientY,window.innerHeight-rect.height-8))+"px";
-    const dismiss=event=>{
-      if(!menu.contains(event.target)){menu.remove();document.removeEventListener("pointerdown",dismiss,true);}
-    };
-    document.addEventListener("pointerdown",dismiss,true);
+    studioMountContextMenu(menu,e);
   };
   // Keep All Tags fully browsable without mounting thousands of rows on each
   // image selection. Only rows near the scroll position cost DOM memory.
