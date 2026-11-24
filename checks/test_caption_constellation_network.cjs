@@ -35,3 +35,24 @@ for(const [i,c] of atlas.clusters.entries())for(const d of atlas.clusters.slice(
 assert.equal(model.atlas.unmapped,model.all.length-model.nodes.length);
 assert.equal(Viz.tagbenchModel([]).atlas.clusters.length,0);
 console.log("Packed community atlas, density contours and bounded rivers passed");
+
+const nested=Viz.tagbenchModel([
+  ...Array.from({length:140},(_,i)=>({tags:["lion","mane","fur","lion-detail-"+i]})),
+  ...Array.from({length:140},(_,i)=>({tags:["fox","tail","jacket","fox-detail-"+i]})),
+  ...Array.from({length:15},(_,i)=>({tags:["unconnected-"+i]}))
+]);
+const atlasGroups=nested.atlas.clusters;
+assert.equal(atlasGroups.reduce((sum,c)=>sum+c.memberCount,0),nested.all.length);
+assert.equal(new Set(atlasGroups.flatMap(c=>c.memberTags)).size,nested.all.length);
+assert.ok(atlasGroups.some(c=>!c.unmapped&&c.memberTags.some(t=>t.startsWith("lion-detail-"))));
+assert.ok(atlasGroups.some(c=>c.unmapped&&c.memberTags.some(t=>t.startsWith("unconnected-"))));
+for(const c of atlasGroups){
+  assert.ok(c.children.length<=36);
+  assert.equal(c.children.reduce((sum,n)=>sum+n.count,0),c.count);
+  for(const [i,n] of c.children.entries()){
+    assert.ok(Math.hypot(n.x,n.y)+n.r<=c.r+1e-7);
+    for(const peer of c.children.slice(i+1))
+      assert.ok(Math.hypot(n.x-peer.x,n.y-peer.y)+1e-7>=n.r+peer.r);
+  }
+}
+console.log("Nested circle pack, long-tail assignments and containment passed");

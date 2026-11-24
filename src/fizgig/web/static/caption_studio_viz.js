@@ -270,7 +270,72 @@ const CaptionStudioViz = (() => {
   }
   // Multiscale atlas built in the existing bounded graph worker. Community
   // counts are tag occurrences, not unique images across several tags.
-  function constellationAtlas(nodes,all,edges){
+  // Pack siblings by placing each disk against an existing disk. The
+  // bounded display hierarchy avoids all-pairs work on the full vocabulary.
+  function packAtlasDiscs(rows,gap=3){
+    const placed=[];
+    for(const row of rows){
+      const r=row.r;
+      let x=0,y=0,best=Infinity;
+      if(placed.length){
+        for(const anchor of placed)for(let step=0;step<24;step++){
+          const angle=step*Math.PI/12,d=anchor.r+r+gap;
+          const px=anchor.x+Math.cos(angle)*d,py=anchor.y+Math.sin(angle)*d;
+          const score=px*px+py*py;
+          if(score>=best)continue;
+          if(placed.some(other=>{
+            const min=other.r+r+gap-1e-7;
+            return (px-other.x)**2+(py-other.y)**2<min*min;
+          }))continue;
+          x=px;y=py;best=score;
+        }
+        if(!Number.isFinite(best))x=Math.max(...placed.map(n=>n.x+n.r))+r+gap;
+      }
+      placed.push({...row,x,y});
+    }
+    if(!placed.length)return {discs:[],radius:0,width:0,height:0};
+    const left=Math.min(...placed.map(n=>n.x-n.r)),right=Math.max(...placed.map(n=>n.x+n.r));
+    const top=Math.min(...placed.map(n=>n.y-n.r)),bottom=Math.max(...placed.map(n=>n.y+n.r));
+    for(const n of placed){n.x-=(left+right)/2;n.y-=(top+bottom)/2;}
+    return {discs:placed,radius:Math.max(...placed.map(n=>Math.hypot(n.x,n.y)+n.r)),width:right-left,height:bottom-top};
+  }
+  // Long-tail tags vote for a community through captions, not pairwise
+  // rare-tag comparisons. Each caption contributes at most one vote per
+  // rare tag; ambiguous captions abstain. Sparse evidence is linear in
+  // observed caption tokens, and only clear majority assignments are used.
+  function atlasAssignments(items,nodes,all){
+    const byTag=new Map(nodes.map(n=>[n.tag,n]));
+    const votes=new Map(),assignments=new Map();
+    for(const item of items){
+      const unique=new Set((item.tags||[]).map(lower).filter(Boolean));
+      const weights=new Map();
+      for(const tag of unique){
+        const n=byTag.get(tag);
+        if(n)weights.set(n.group,(weights.get(n.group)||0)+1/Math.sqrt(n.count));
+      }
+      let best=null,high=0,second=0;
+      for(const [group,weight] of weights){
+        if(weight>high){second=high;high=weight;best=group;}
+        else second=Math.max(second,weight);
+      }
+      if(best===null||high<=second*1.15)continue;
+      for(const tag of unique)if(!byTag.has(tag)){
+        let row=votes.get(tag);
+        if(!row)votes.set(tag,row=new Map());
+        row.set(best,(row.get(best)||0)+1);
+      }
+    }
+    for(const n of all){
+      if(byTag.has(n.tag))continue;
+      let best=null,high=0;
+      for(const [id,count] of votes.get(n.tag)||[]){
+        if(count>high){best=id;high=count;}
+      }
+      if(best!==null&&high>n.count/2)assignments.set(n.tag,best);
+    }
+    return assignments;
+  }
+  function constellationAtlas(nodes,all,edges,items=[]){
     if(!nodes.length)return {clusters:[],rivers:[],unmapped:0};
     const groups=new Map();
     for(const n of nodes){
@@ -321,27 +386,57 @@ const CaptionStudioViz = (() => {
     });
     const byTag=new Map(nodes.map(n=>[n.tag,n]));
     const unmapped=Math.max(0,all.length-nodes.length);
-    if(unmapped)clusters.push({id:"other",label:"Other tags",count:all.reduce((sum,n)=>sum+(byTag.has(n.tag)?0:n.count),0),
-      tags:[],color:"var(--text-muted)",unmapped});
-    clusters.sort((a,b)=>b.count-a.count||a.label.localeCompare(b.label));
-    // Deterministic nonoverlapping packing; compressed frequency scaling.
-    const largest=clusters[0].count||1,placed=[];
-    for(const c of clusters){
-      const r=25+57*Math.sqrt(c.count/largest);
-      let px=0,py=0;
-      if(placed.length){
-        for(let i=1;;i++){
-          const angle=i*.43,dist=18*Math.sqrt(i);
-          px=Math.cos(angle)*dist;py=Math.sin(angle)*dist;
-          if(placed.every(p=>Math.hypot(p.px-px,p.py-py)>=p.r+r+9))break;
+    const assigned=atlasAssignments(items,nodes,all);
+    const byGroup=new Map(clusters.map(c=>[c.id,c]));
+    const unresolved=new Map();
+    for(const c of clusters)c.members=[];
+    for(const row of all){
+      const id=byTag.get(row.tag)?.group??assigned.get(row.tag);
+      const c=byGroup.get(id);
+      if(c){c.members.push(row);continue;}
+      // Explicit frequency buckets for genuinely ambiguous/unassociated tags,
+      // never presented as learned semantic communities.
+      const tier=row.count===1?0:row.count<=4?1:row.count<=15?2:3;
+      if(!unresolved.has(tier))unresolved.set(tier,[]);
+      unresolved.get(tier).push(row);
+    }
+    for(const [tier,rows] of unresolved){
+      clusters.push({id:"unassigned-"+tier,label:["Single-use","2–4 uses","5–15 uses","16+ uses"][tier],
+        tags:[],members:rows,color:"var(--text-muted)",unmapped:rows.length});
+    }
+    for(const c of clusters)c.count=c.members.reduce((sum,n)=>sum+n.count,0);
+    clusters.sort((a,b)=>b.count-a.count||String(a.label).localeCompare(String(b.label)));
+    // Circle AREA represents occurrences with a small visual floor. Use a
+    // tight, responsive pack instead of a ring of empty outlined nodes.
+    const largest=clusters[0].count||1;
+    const outer=packAtlasDiscs(clusters.map(c=>({cluster:c,r:Math.sqrt(c.count/largest)*95+9})),3);
+    const scale=Math.min(930/outer.width,630/outer.height);
+    for(const disk of outer.discs){
+      const c=disk.cluster;
+      c.px=500+disk.x*scale;c.py=350+disk.y*scale;c.r=disk.r*scale;
+      const members=c.members;
+      c.memberCount=members.length;
+      c.memberTags=members.map(n=>n.tag);
+      // Show actual tag circles first, then a few explicitly aggregated
+      // remainder circles. This caps SVG nodes independent of dataset size.
+      const maxLeaves=Math.min(32,Math.max(5,Math.floor(c.r/3.2)));
+      const shown=members.slice(0,maxLeaves);
+      const tail=members.slice(maxLeaves);
+      const leaves=shown.map(n=>({tag:n.tag,count:n.count,label:n.tag}));
+      if(tail.length){
+        const bands=Math.min(4,Math.max(1,Math.ceil(tail.length/50)));
+        for(let i=0;i<bands;i++){
+          const part=tail.slice(Math.floor(i*tail.length/bands),Math.floor((i+1)*tail.length/bands));
+          leaves.push({label:"+"+part.length,count:part.reduce((sum,n)=>sum+n.count,0),
+            more:part.map(n=>n.tag)});
         }
       }
-      Object.assign(c,{px,py,r});placed.push(c);
+      const maxLeaf=Math.max(1,...leaves.map(n=>n.count));
+      const inner=packAtlasDiscs(leaves.map(n=>({...n,r:Math.sqrt(n.count/maxLeaf)*26+3})),1.3);
+      const fit=inner.radius?c.r*.91/inner.radius:0;
+      c.children=inner.discs.map(n=>({...n,x:n.x*fit,y:n.y*fit,r:n.r*fit}));
+      delete c.members;
     }
-    const left=Math.min(...placed.map(c=>c.px-c.r)),right=Math.max(...placed.map(c=>c.px+c.r));
-    const top=Math.min(...placed.map(c=>c.py-c.r)),bottom=Math.max(...placed.map(c=>c.py+c.r));
-    const scale=Math.min(760/(right-left),490/(bottom-top));
-    for(const c of placed){c.px=500+(c.px-(left+right)/2)*scale;c.py=350+(c.py-(top+bottom)/2)*scale;c.r*=scale;}
     const bridges=new Map();
     for(const edge of edges){
       const a=byTag.get(edge.a),b=byTag.get(edge.b);
@@ -466,7 +561,7 @@ const CaptionStudioViz = (() => {
       const manual=categories?.tagColors?.[tag.tag]||(category&&categories.colors?.[category]);
       if(manual||friendColor)colors.set(tag.tag,manual||friendColor);
     }
-    return {...graph,nodes,chosen,colors,atlas:constellationAtlas(nodes,all,edges)};
+    return {...graph,nodes,chosen,colors,atlas:constellationAtlas(nodes,all,edges,items)};
   }
   const waterfallScale=value=>{
     const n=Number(value);
@@ -692,8 +787,8 @@ const CaptionStudioViz = (() => {
     const radius=n=>countRadius(n.count,maxCount)*typeScale/zoom;
     const position=n=>({x:n.x+n.ox,y:n.y+n.oy});
     const view=()=>{
-      packed=!picked&&atlas.clusters.length>1&&zoom<overviewZoom*.82;
-      svg.setAttribute("viewBox",[500-500/zoom+pan.x,350-350/zoom+pan.y,1000/zoom,700/zoom].join(" "));
+      packed=!picked&&model.all.length>1&&zoom<overviewZoom*.82;
+      svg.setAttribute("viewBox",packed?"0 0 1000 700":[500-500/zoom+pan.x,350-350/zoom+pan.y,1000/zoom,700/zoom].join(" "));
       packLayer.style.display=packed?"":"none";
       for(const layer of [edgeLayer,nodeLayer,labelLayer])layer.style.display=packed?"none":"";
     };
@@ -705,49 +800,70 @@ const CaptionStudioViz = (() => {
     const dismissMenu=()=>{menu.hidden=true;menu.replaceChildren();};
     const point=e=>{const p=svg.createSVGPoint();p.x=e.clientX;p.y=e.clientY;return p.matrixTransform(svg.getScreenCTM().inverse());};
     const scalePixels=()=>Math.max(.001,Math.abs(svg.getScreenCTM()?.a||1));
-    const packedById=new Map(atlas.clusters.map(c=>[c.id,c]));
-    for(const river of atlas.rivers){
-      const a=packedById.get(river.a),b=packedById.get(river.b);
-      if(!a||!b)continue;
-      const dx=b.px-a.px,dy=b.py-a.py;
-      const path=make("path",{d:"M "+a.px+" "+a.py+" Q "+((a.px+b.px)/2-dy*.18)+" "+((a.py+b.py)/2+dx*.18)+" "+b.px+" "+b.py,
-        fill:"none",stroke:a.color,"stroke-opacity":.20,"stroke-width":2+14*Math.sqrt(river.weight/(atlas.rivers[0]?.weight||1)),
-        "stroke-linecap":"round","pointer-events":"none"},packLayer);
-      make("title",{},path).textContent=river.count+" cross-community tag-pair occurrences";
+    function browsePackedTags(tags){
+      input.focus();matches.replaceChildren();
+      const selected=new Set(tags);let shown=0;
+      for(const n of model.all){
+        if(!selected.has(n.tag))continue;
+        const b=button(matches,n.tag+" · "+n.count,"Focus "+n.tag,()=>{
+          input.value=n.tag;choose(n.tag,false);center(n.tag);matches.replaceChildren();
+        });
+        b.style.color=model.colors.get(n.tag)||"var(--text-primary)";
+        if(++shown>=8)break;
+      }
     }
+    function enterPacked(c){
+      if(c.unmapped){browsePackedTags(c.memberTags);return;}
+      cameraTo(Math.min(5,Math.max(overviewZoom*1.35,1.25)),{x:c.x-500,y:c.y-350});
+    }
+    function activatePacked(el,action){
+      el.addEventListener("pointerdown",e=>e.stopPropagation());
+      el.addEventListener("click",e=>{e?.stopPropagation?.();action();});
+      el.addEventListener("keydown",e=>{
+        if(e.key==="Enter"||e.key===" "){e.preventDefault();e.stopPropagation();action();}
+      });
+    }
+    const packedLabel=(parent,label,x,y,font,maxWidth,weight=650)=>{
+      if(font<6)return;
+      const maxChars=Math.max(3,Math.floor(maxWidth/(font*.56)));
+      const text=make("text",{x,y,"text-anchor":"middle",fill:"var(--text-primary)",
+        stroke:"var(--bg-deep)","stroke-opacity":.85,"stroke-width":Math.max(1,font*.16),
+        "stroke-linejoin":"round","paint-order":"stroke","font-size":font,"font-weight":weight,
+        "pointer-events":"none"},parent);
+      text.textContent=label.length>maxChars?label.slice(0,maxChars-1)+"…":label;
+      return text;
+    };
+    // This zoom level is deliberately a hierarchy, not another graph.
+    // No strands over the circles; associations return in the graph view.
     for(const c of atlas.clusters){
-      const desc=c.unmapped?c.unmapped+" other tags; browse tags outside the graph":
-        c.label+", "+c.tags.length+" tags, "+c.count+" tag occurrences";
-      const g=make("g",{transform:"translate("+c.px+" "+c.py+")",role:"button",tabindex:0,
-        class:"studio-tb-atlas-community","aria-label":desc,style:"cursor:pointer"},packLayer);
-      make("circle",{r:c.r,fill:c.color,"fill-opacity":.16,stroke:c.color,"stroke-opacity":.72,"stroke-width":1.5},g);
-      make("circle",{r:c.r*.83,fill:"none",stroke:c.color,"stroke-opacity":.22,"stroke-width":1},g);
-      const font=Math.max(5,Math.min(17,c.r*.25));
-      const title=make("text",{"text-anchor":"middle",y:-font*.1,fill:"var(--text-primary)","font-size":font,"font-weight":700,"pointer-events":"none"},g);
-      const maxChars=Math.max(5,Math.floor(c.r*1.7/(font*.56)));
-      title.textContent=c.label.length>maxChars?c.label.slice(0,maxChars-1)+"…":c.label;
-      make("text",{"text-anchor":"middle",y:font*1.1,fill:"var(--text-primary)","font-size":font*.72,"pointer-events":"none"},g)
-        .textContent=(c.unmapped||c.tags.length)+" tags";
-      make("title",{},g).textContent=desc;
-      const enter=()=>{
-        if(c.unmapped){
-          input.focus();matches.replaceChildren();
-          let shown=0;
-          for(const n of model.all){
-            if(at.has(n.tag))continue;
-            const b=button(matches,n.tag+" · "+n.count,"Focus "+n.tag,()=>{
-              input.value=n.tag;choose(n.tag,false);center(n.tag);matches.replaceChildren();
-            });
-            b.style.color=model.colors.get(n.tag)||"var(--text-primary)";
-            if(++shown>=8)break;
-          }
-          return;
-        }
-        cameraTo(Math.min(5,Math.max(overviewZoom*1.35,1.25)),{x:c.x-500,y:c.y-350});
-      };
-      g.addEventListener("pointerdown",e=>e.stopPropagation());
-      g.addEventListener("click",enter);
-      g.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();e.stopPropagation();enter();}});
+      const desc=c.label+", "+c.memberCount+" tags, "+c.count+" tag occurrences"+
+        (c.unmapped?", unassigned frequency group":"");
+      const g=make("g",{transform:"translate("+c.px+" "+c.py+")",class:"studio-tb-atlas-community"},packLayer);
+      const background=make("circle",{r:c.r,
+        fill:"color-mix(in srgb, "+c.color+" 80%, var(--bg-deep))",
+        stroke:c.color,"stroke-width":1.2,role:"button",tabindex:0,
+        "aria-label":desc,style:"cursor:pointer"},g);
+      make("title",{},background).textContent=desc;
+      activatePacked(background,()=>enterPacked(c));
+      for(const child of c.children){
+        const title=child.more?child.more.length+" additional tags, "+child.count+" occurrences":
+          child.tag+", "+child.count+" images";
+        const disk=make("circle",{cx:child.x,cy:child.y,r:child.r,
+          fill:"color-mix(in srgb, "+c.color+" "+(child.more?48:58)+"%, var(--text-primary))",
+          stroke:c.color,"stroke-width":.75,"fill-opacity":child.more?.72:.87,
+          role:"button",tabindex:0,"aria-label":title,style:"cursor:pointer"},g);
+        make("title",{},disk).textContent=title;
+        activatePacked(disk,()=>{
+          if(child.more){browsePackedTags(child.more);return;}
+          choose(child.tag,false);center(child.tag);
+        });
+        if(child.r>=15)packedLabel(g,child.label,child.x,child.y+3,
+          Math.min(11,child.r*.37),child.r*1.75,550);
+      }
+      const font=Math.min(22,Math.max(7,c.r*.20));
+      packedLabel(g,c.label,0,0,font,c.r*1.78,750);
+      if(c.r>=25)packedLabel(g,c.memberCount+" tags",0,font*.96,
+        Math.max(7,font*.62),c.r*1.6,600);
     }
     const contourPaths=new Map();
     if(typeof Path2D==="function")for(const c of atlas.clusters){
@@ -1249,7 +1365,17 @@ const CaptionStudioViz = (() => {
       let target={...pan};
       if(e){const p=point(e),ratio=zoom/next;
         target={x:p.x-(p.x-500-pan.x)*ratio-500,y:p.y-(p.y-350-pan.y)*ratio-350};}
-      if(!picked&&!packed&&next<overviewZoom*.82&&atlas.clusters.length>1)target={x:0,y:0};
+      if(packed){
+        if(factor>1){
+          if(e){
+            const p=point(e),c=atlas.clusters.find(c=>Math.hypot(p.x-c.px,p.y-c.py)<=c.r);
+            if(c&&!c.unmapped){enterPacked(c);return;}
+          }
+          fit();return;
+        }
+        return;
+      }
+      if(!picked&&next<overviewZoom*.82&&model.all.length>1)target={x:0,y:0};
       cameraTo(next,target,!e);
     }
     button(zoomCtl,"+","Zoom in",()=>zoomBy(1.2));button(zoomCtl,"−","Zoom out",()=>zoomBy(1/1.2));
@@ -1292,7 +1418,7 @@ const CaptionStudioViz = (() => {
       if(camera||settling||pulse)wake();
     }
     svg.addEventListener("pointerdown",e=>{
-      if(e.button!==0||e.target.closest(".studio-tb-orb,.studio-tb-pair-edge,.studio-tb-atlas-community"))return;
+      if(packed||e.button!==0||e.target.closest(".studio-tb-orb,.studio-tb-pair-edge,.studio-tb-atlas-community"))return;
       dismissMenu();cancelMotion();const p=point(e);
       drag={kind:"pan",x:e.clientX,y:e.clientY,world:p,px:pan.x,py:pan.y,moved:false};
       svg.setPointerCapture(e.pointerId);
