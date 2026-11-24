@@ -12,6 +12,7 @@ import gc
 import json
 import math
 import os
+import platform
 from pathlib import Path
 import random
 import shutil
@@ -31,6 +32,7 @@ from fizgig.families.lora import FamilyLoRA
 from fizgig.families.krea2 import KREA2
 from fizgig.krea2.model import SingleMMDiTConfig, SingleStreamDiT
 from fizgig.krea2.offloading import LoRAStreamOffloader, BlockSwapConfig
+from fizgig.krea2.stream_calibration import recommend_stream_strategy
 from fizgig.training.optimizers import create_optimizer
 
 
@@ -432,6 +434,19 @@ def cases(args):
     def c(label, mode, pinned=False, ring=2, attention="auto", reference="auto", record=False):
         return dict(label=label, mode=mode, pinned=pinned, ring=ring, attention=attention,
                     reference=reference, record=record)
+    if args.suite == "calibration":
+        # Bracket the candidate measurements with classic repeats and reverse
+        # the second pass to reduce consistent warm-device/order bias.
+        strategies = [(False, ring) for ring in (2, 3, 4) if ring <= 28 - args.swap]
+        if not args.cpu:
+            strategies += [(True, ring) for ring in (2, 3, 4) if ring <= 28 - args.swap]
+        def candidate(pinned, ring, repeat):
+            label = f"CAL_{'direct' if pinned else 'staged'}_ring{ring}_{repeat}"
+            return c(label, "fast", pinned=pinned, ring=ring)
+        return ([c("A_classic_pageable", "classic", record=True)]
+                + [candidate(p, r, 1) for p, r in strategies]
+                + [candidate(p, r, 2) for p, r in reversed(strategies)]
+                + [c("D_classic_repeat", "classic")])
     result = [c("A_classic_pageable", "classic", record=True), c("D_classic_repeat", "classic"),
               c("B_fast_staged_ring2", "fast"), c("C_fast_staged_repeat", "fast"),
               c("E_fast_serialized", "fast_sync")]
@@ -458,6 +473,11 @@ def select_cases(available, requested):
         raise ValueError("Unavailable diagnostic case(s): " + ", ".join(sorted(unknown)))
     groups = {known[label]["reference"] for label in requested}
     selected = set(requested)
+    # A targeted calibration must still include the paired independent repeat.
+    calibration_signatures = {(known[label]["pinned"], known[label]["ring"])
+                              for label in requested if label.startswith("CAL_")}
+    selected.update(c["label"] for c in available if c["label"].startswith("CAL_")
+                    and (c["pinned"], c["ring"]) in calibration_signatures)
     for case in available:
         if case["reference"] in groups and case["mode"] == "classic" and (
                 case["record"] or "classic_repeat" in case["label"] or "classic_math_repeat" in case["label"]):
@@ -551,7 +571,7 @@ def main():
     p.add_argument("--cache", help="Optional real Krea 2 cache directory (requires --model)")
     p.add_argument("--steps", type=int, default=3)
     p.add_argument("--warmup", type=int, default=1)
-    p.add_argument("--suite", choices=("basic", "expanded"), default="basic")
+    p.add_argument("--suite", choices=("basic", "expanded", "calibration"), default="basic")
     p.add_argument("--case", action="append", help="Run only this case (repeatable); classic reference and repeat are included automatically")
     p.add_argument("--require-parity", action="store_true",
                    help="Exit nonzero unless every selected case completes with exact loss, validation, gradient and update parity")
@@ -577,6 +597,8 @@ def main():
         p.error(str(exc))
     if any(c["mode"].startswith("fast") and c["ring"] > 28 - args.swap for c in planned):
         p.error("Selected rings must fit the classic block-weight VRAM budget")
+    if args.suite == "calibration" and not args.cpu and (args.warmup < 1 or args.steps - args.warmup < 3):
+        p.error("Calibration needs at least one warmup and three measured steps; use --steps 4 or more")
     if args.latent_size < 2 or args.latent_size % 2:
         p.error("latent-size must be positive and divisible by 2")
     if args.cache and not args.model:
@@ -601,6 +623,23 @@ def main():
     report = {"configuration": vars(args), "torch": torch.__version__, "cuda": torch.version.cuda,
               "device": torch.cuda.get_device_name(device) if not args.cpu else "CPU smoke only",
               "batches": [b[0] for b in batches], "runs": [], "errors": []}
+    import psutil
+    vm = psutil.virtual_memory()
+    hardware = {"os": platform.system(), "os_release": platform.release(),
+                "ram_total_gib": vm.total / 2**30, "cpu_logical": psutil.cpu_count(),
+                "gpu": report["device"], "torch": torch.__version__, "cuda": torch.version.cuda,
+                "hip": torch.version.hip}
+    if not args.cpu:
+        props = torch.cuda.get_device_properties(device)
+        hardware.update(vram_total_gib=props.total_memory / 2**30,
+                        compute_capability=[props.major, props.minor])
+        try:
+            hardware["gpu_driver"] = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+                text=True, timeout=5, stderr=subprocess.DEVNULL).strip().splitlines()
+        except (OSError, subprocess.SubprocessError):
+            hardware["gpu_driver"] = None
+    report["hardware"] = hardware
     print(json.dumps({k: v for k, v in report.items() if k not in ("runs", "errors")}, indent=2), flush=True)
     report_path = Path(args.report)
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -661,6 +700,12 @@ def main():
                 report["errors"].append(result)
             report_path.write_text(json.dumps(report, indent=2, allow_nan=True), encoding="utf-8")
     report["exact_parity"] = evaluate_exact_parity(report, planned)
+    if args.suite == "calibration":
+        report["calibration"] = recommend_stream_strategy(report, evaluate_exact_parity)
+        recommendation = report["calibration"]
+        print(f"Calibration: {recommendation['status']} - {recommendation['reason']}", flush=True)
+        if recommendation["selected"]:
+            print(f"Recommended for this workload only: {recommendation['selected']}", flush=True)
     report_path.write_text(json.dumps(report, indent=2, allow_nan=True), encoding="utf-8")
     gate = report["exact_parity"]
     print(f"Exact parity ({gate['scope']}): {'PASS' if gate['passed'] else 'NOT PASSED'}", flush=True)
