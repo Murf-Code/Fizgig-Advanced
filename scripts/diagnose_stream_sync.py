@@ -476,6 +476,8 @@ def select_cases(available, requested):
     # A targeted calibration must still include the paired independent repeat.
     calibration_signatures = {(known[label]["pinned"], known[label]["ring"])
                               for label in requested if label.startswith("CAL_")}
+    if calibration_signatures:
+        calibration_signatures.add((False, 2))  # compare every candidate to the normal fast default
     selected.update(c["label"] for c in available if c["label"].startswith("CAL_")
                     and (c["pinned"], c["ring"]) in calibration_signatures)
     for case in available:
