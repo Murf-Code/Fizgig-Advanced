@@ -6832,14 +6832,14 @@ body.caption-glass-ui .studio-image-context-menu .studio-danger-action:not(:disa
 #tab-captions .studio-tb-flow-tile img{border-radius:7px}
 #tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)::before{
   content:"";position:absolute;inset:3px;border-radius:inherit;
-  pointer-events:none;z-index:2;border:1px solid rgba(255,240,179,.88);
+  pointer-events:none;z-index:2;border:4px solid #f5d888;
   box-shadow:0 0 0 1px rgba(0,0,0,.72),inset 0 0 0 1px rgba(0,0,0,.55);
   opacity:0;transition:opacity 100ms ease-out;
 }
 #tab-captions.caption-theme-glass :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)::before{
   /* A one-pixel dark edge is part of the masked ring, not an image overlay. */
-  border:1px solid rgba(0,0,0,.72);padding:2px;box-shadow:none;
-  background:linear-gradient(135deg,rgba(255,245,206,.95),rgba(239,217,156,.80) 50%,rgba(201,168,105,.65)) padding-box;
+  border:1px solid rgba(0,0,0,.72);padding:4px;box-shadow:none;
+  background:linear-gradient(135deg,#fff5c9,#f5d888 45%,#d3ac58) padding-box;
   -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
   -webkit-mask-composite:xor;mask-composite:exclude;
 }
