@@ -11882,11 +11882,13 @@ function captionStarStatus(state,label,detail=""){
   star.title=label+(detail?" — "+detail:"");
   star.setAttribute("aria-label","Workspace status: "+label+". View details");
   panel.textContent=label+(detail?" — "+detail:"");
+  S.cap.studioStatusPosition?.();
 }
 function captionInitialState(state,detail=""){
   const tab=$("tab-captions");
   tab.dataset.captionLoad=state;
   if(state!=="ready"){
+    S.cap.studioStatusClose?.();
     S.cap.studioStatusRefresh=null;
     captionStarStatus(state==="error"?"attention":state==="empty"?"idle":"loading",
       state==="error"?"Load failed":state==="empty"?"No dataset":"Loading",detail);
@@ -16246,17 +16248,38 @@ async function findReplace(apply) {
 
 function wireCaptions() {
   const statusStar=$("captionStatusStar"),statusPanel=$("captionStatusDetail");
+  // Portal outside the glass header and scrolling notebook: their clipping
+  // and stacking contexts must not constrain the diagnostics popup.
+  document.body.append(statusPanel);
   const closeStar=()=>{statusPanel.hidden=true;statusStar.setAttribute("aria-expanded","false");};
+  const positionStar=()=>{
+    if(statusPanel.hidden)return;
+    const r=statusStar.getBoundingClientRect(),margin=8,gap=8;
+    if(!$("tab-captions").classList.contains("active")||!statusStar.getClientRects().length||
+      r.bottom<=0||r.top>=window.innerHeight){closeStar();return;}
+    const below=Math.max(0,window.innerHeight-r.bottom-gap-margin);
+    const above=Math.max(0,r.top-gap-margin);
+    const useAbove=below<Math.min(statusPanel.scrollHeight+2,160)&&above>below;
+    statusPanel.style.maxHeight=Math.max(0,useAbove?above:below)+"px";
+    statusPanel.style.left=Math.max(margin,Math.min(r.left,window.innerWidth-statusPanel.offsetWidth-margin))+"px";
+    statusPanel.style.top=(useAbove?Math.max(margin,r.top-gap-statusPanel.offsetHeight):r.bottom+gap)+"px";
+  };
   statusStar.addEventListener("click",()=>{
-    statusPanel.hidden=!statusPanel.hidden;
-    statusStar.setAttribute("aria-expanded",String(!statusPanel.hidden));
+    if(!statusPanel.hidden){closeStar();return;}
+    statusPanel.hidden=false;
+    statusStar.setAttribute("aria-expanded","true");
+    positionStar();
   });
+  S.cap.studioStatusPosition=positionStar;
+  window.addEventListener("resize",positionStar);
+  document.addEventListener("scroll",positionStar,true);
   document.addEventListener("pointerdown",event=>{
-    if(!statusPanel.hidden&&!event.target.closest(".caption-status-anchor"))closeStar();
+    if(!statusPanel.hidden&&!statusStar.contains(event.target)&&!statusPanel.contains(event.target))closeStar();
   });
   document.addEventListener("keydown",event=>{
     if(event.key==="Escape"&&!statusPanel.hidden){closeStar();statusStar.focus({preventScroll:true});}
   });
+  S.cap.studioStatusClose=closeStar;
   $("captionInitialRetry").addEventListener("click",()=>void loadCaptions().catch(console.warn));
   $("captionsReload").addEventListener("click", loadCaptions);
   // the box is the Training tab's Caption Extension (one setting, as in the desktop app): a change here is that
@@ -17748,6 +17771,7 @@ function tabRunScroll(name) {
   return !!spot;
 }
 function showTab(name) {
+  if(name!=="captions")S.cap?.studioStatusClose?.();
   if(name!=="prep"&&meDialogVisible()){
     if(meDialogDismissing)return;
     void meDialogDismiss().then(ok=>{if(ok)showTab(name);});

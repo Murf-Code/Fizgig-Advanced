@@ -6741,14 +6741,15 @@ body:has(.caption-removal-backdrop){overflow:hidden}
   50%{opacity:1}
   100%{transform:rotate(90deg);opacity:.65}
 }
-#tab-captions .caption-star-detail{
-  position:absolute;left:0;top:calc(100% + 8px);z-index:30;
-  width:min(350px,75vw);padding:12px;border:1px solid var(--border);
+/* Viewport-positioned popup, outside the workbench clipping hierarchy. */
+.caption-star-detail{
+  position:fixed;z-index:1000;box-sizing:border-box;
+  width:min(350px,calc(100vw - 16px));padding:12px;border:1px solid var(--border);
   border-radius:10px;background:var(--bg-surface);color:var(--text-primary);
   box-shadow:0 12px 28px #0005;font-size:12px;line-height:1.5;
-  overflow-wrap:anywhere;
+  overflow-wrap:anywhere;overflow:auto;
 }
-#tab-captions .caption-star-detail[hidden]{display:none!important}
+.caption-star-detail[hidden]{display:none!important}
 #tab-captions .caption-loading-star{flex:none}
 #tab-captions:is([data-caption-load="error"],[data-caption-load="empty"]) .caption-loading-star{display:none}
 #tab-captions .studio-top-actions>.studio-learning-toggle>span{display:inline;font-size:12px}
