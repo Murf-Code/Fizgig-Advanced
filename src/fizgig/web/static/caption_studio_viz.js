@@ -428,35 +428,37 @@ const CaptionStudioViz = (() => {
     }
     return assignments;
   }
-  function constellationAtlas(nodes,all,edges,items=[]){
-    if(!nodes.length)return {clusters:[],rivers:[],unmapped:0};
-    const groups=new Map();
-    for(const n of nodes){
-      if(!groups.has(n.group))groups.set(n.group,[]);
-      groups.get(n.group).push(n);
-    }
-    const maxCount=Math.max(1,...nodes.map(n=>n.count));
-    const clusters=[...groups].map(([id,rows])=>{
-      rows.sort((a,b)=>b.count-a.count||a.tag.localeCompare(b.tag));
-      const x=rows.reduce((sum,n)=>sum+n.x,0)/rows.length;
-      const y=rows.reduce((sum,n)=>sum+n.y,0)/rows.length;
-      const count=rows.reduce((sum,n)=>sum+n.count,0);
-      // Gaussian density on a bounded grid, sampled once in the worker.
-      const sigma=27,step=9;
-      const left=Math.min(...rows.map(n=>n.x))-sigma*3;
-      const top=Math.min(...rows.map(n=>n.y))-sigma*3;
-      const nx=Math.min(100,Math.max(2,Math.ceil((Math.max(...rows.map(n=>n.x))+sigma*3-left)/step)+1));
-      const ny=Math.min(100,Math.max(2,Math.ceil((Math.max(...rows.map(n=>n.y))+sigma*3-top)/step)+1));
-      const grid=new Float32Array(nx*ny);let peak=0;
-      for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){
-        const px=left+i*step,py=top+j*step;
-        let value=0;
-        for(const n of rows){
-          const d2=(n.x-px)**2+(n.y-py)**2;
-          if(d2<9*sigma*sigma)value+=Math.sqrt(n.count/maxCount)*Math.exp(-d2/(2*sigma*sigma));
+  // A compact Gaussian stamp per node instead of checking every node at
+  // every grid cell. The worker and live aura use the same geometry.
+  function auraDensity(rows,maxCount){
+    if(!rows.length)return {x:0,y:0,spread:0,contours:[[],[],[]]};
+    const x=rows.reduce((sum,n)=>sum+n.x,0)/rows.length;
+    const y=rows.reduce((sum,n)=>sum+n.y,0)/rows.length;
+    const sigma=27,padding=sigma*3;
+    const left=Math.min(...rows.map(n=>n.x))-padding;
+    const top=Math.min(...rows.map(n=>n.y))-padding;
+    const width=Math.max(...rows.map(n=>n.x))+padding-left;
+    const height=Math.max(...rows.map(n=>n.y))+padding-top;
+    // Bound the grid even after a user drags a node a long distance.
+    const step=Math.max(9,width/99,height/99);
+    const nx=Math.min(100,Math.max(2,Math.ceil(width/step)+1));
+    const ny=Math.min(100,Math.max(2,Math.ceil(height/step)+1));
+    const grid=new Float32Array(nx*ny);let peak=0;
+    for(const n of rows){
+      const weight=Math.sqrt(n.count/Math.max(1,maxCount));
+      const i0=Math.max(0,Math.ceil((n.x-padding-left)/step));
+      const i1=Math.min(nx-1,Math.floor((n.x+padding-left)/step));
+      const j0=Math.max(0,Math.ceil((n.y-padding-top)/step));
+      const j1=Math.min(ny-1,Math.floor((n.y+padding-top)/step));
+      for(let j=j0;j<=j1;j++)for(let i=i0;i<=i1;i++){
+        const dx=left+i*step-n.x,dy=top+j*step-n.y,d2=dx*dx+dy*dy;
+        if(d2<9*sigma*sigma){
+          const k=j*nx+i;
+          grid[k]+=weight*Math.exp(-d2/(2*sigma*sigma));
+          peak=Math.max(peak,grid[k]);
         }
-        grid[j*nx+i]=value;peak=Math.max(peak,value);
       }
+    }
       const contours=[.16,.34,.60].map(level=>{
         const segments=[],threshold=peak*level;
         for(let j=0;j<ny-1;j++)for(let i=0;i<nx-1;i++){
@@ -474,8 +476,41 @@ const CaptionStudioViz = (() => {
         }
         return segments;
       });
+    return {x,y,spread:Math.max(45,...rows.map(n=>Math.hypot(n.x-x,n.y-y)+45)),contours};
+  }
+  // Event-driven cache: at most two contour rebuilds per second per moving
+  // community. A stationary/released community gets one exact final rebuild.
+  // Pan, zoom, theme changes and preview slides never invalidate geometry.
+  function auraCache(initial,rows,maxCount,interval=500){
+    const capture=nodes=>nodes.map(n=>({tag:n.tag,count:n.count,x:n.x,y:n.y}));
+    let previous=capture(rows),field=initial,last=-Infinity;
+    return (nodes,now,moving)=>{
+      const changed=nodes.length!==previous.length||nodes.some((n,i)=>{
+        const p=previous[i];
+        return !p||n.tag!==p.tag||n.count!==p.count||Math.abs(n.x-p.x)>.0001||Math.abs(n.y-p.y)>.0001;
+      });
+      if(!changed||(moving&&now-last<interval))return field;
+      previous=capture(nodes);last=now;
+      field=auraDensity(nodes,maxCount);
+      return field;
+    };
+  }
+  function constellationAtlas(nodes,all,edges,items=[]){
+    if(!nodes.length)return {clusters:[],rivers:[],unmapped:0};
+    const groups=new Map();
+    for(const n of nodes){
+      if(!groups.has(n.group))groups.set(n.group,[]);
+      groups.get(n.group).push(n);
+    }
+    const maxCount=Math.max(1,...nodes.map(n=>n.count));
+    const clusters=[...groups].map(([id,rows])=>{
+      rows.sort((a,b)=>b.count-a.count||a.tag.localeCompare(b.tag));
+      const x=rows.reduce((sum,n)=>sum+n.x,0)/rows.length;
+      const y=rows.reduce((sum,n)=>sum+n.y,0)/rows.length;
+      const count=rows.reduce((sum,n)=>sum+n.count,0);
+      const {contours,spread}=auraDensity(rows,maxCount);
       return {id,x,y,count,label:rows[0].tag,tags:rows.map(n=>n.tag),color:rows[0].color,
-        spread:Math.max(45,...rows.map(n=>Math.hypot(n.x-x,n.y-y)+45)),contours};
+        spread,contours};
     });
     const byTag=new Map(nodes.map(n=>[n.tag,n]));
     const unmapped=Math.max(0,all.length-nodes.length);
@@ -996,14 +1031,19 @@ const CaptionStudioViz = (() => {
       if(c.r>=25)packedLabel(g,c.memberCount+" tags",0,font*.96,
         Math.max(7,font*.62),c.r*1.6,600);
     }
-    const contourPaths=new Map();
-    if(typeof Path2D==="function")for(const c of atlas.clusters){
+    const makeContourPaths=field=>typeof Path2D==="function"?field.contours.map(segments=>{
+      const path=new Path2D();
+      for(const [x1,y1,x2,y2] of segments){path.moveTo(x1,y1);path.lineTo(x2,y2);}
+      return path;
+    }):null;
+    const auraStates=new Map();
+    for(const c of atlas.clusters){
       if(c.unmapped)continue;
-      contourPaths.set(c.id,c.contours.map(segments=>{
-        const path=new Path2D();
-        for(const [x1,y1,x2,y2] of segments){path.moveTo(x1,y1);path.lineTo(x2,y2);}
-        return path;
-      }));
+      const original=c.tags.map(tag=>at.get(tag)).filter(Boolean);
+      // Seed with the worker result; only moved communities rebuild.
+      const field=original.length===c.tags.length?c:auraDensity(original,maxCount);
+      auraStates.set(c.id,{nodes:original,field,paths:makeContourPaths(field),
+        update:auraCache(field,original,maxCount)});
     }
     function drawStrands(){
       const width=svg.clientWidth,height=svg.clientHeight;
@@ -1015,22 +1055,28 @@ const CaptionStudioViz = (() => {
       const scale=Math.min(width/1000,height/700)*zoom*ratio;
       ctx.setTransform(scale,0,0,scale,w/2-(500+pan.x)*scale,h/2-(350+pan.y)*scale);
       if(packed)return;
-      // Density regions share the existing invalidation lifecycle; no
-      // additional physics or animation loop.
+      // Keep the existing rendering lifecycle; no timer or idle animation.
       if(!picked&&prefs.celestial){
+        const moving=!!((drag?.kind==="node"&&drag.moved)||settling);
+        const now=performance.now();
         for(const c of atlas.clusters){
           if(c.unmapped)continue;
-          const anchor=visual.get(c.tags[0]);
-          if(!anchor)continue;
+          const anchor=visual.get(c.tags[0]),state=auraStates.get(c.id);
+          if(!anchor||!state)continue;
+          const rows=state.nodes.map(n=>({tag:n.tag,count:n.count,...position(n)}));
+          const field=state.update(rows,now,moving);
+          if(field!==state.field){
+            state.field=field;state.paths=makeContourPaths(field);
+          }
           const color=getComputedStyle(anchor.halo).fill;
-          const gradient=ctx.createRadialGradient(c.x,c.y,0,c.x,c.y,c.spread);
+          const gradient=ctx.createRadialGradient(field.x,field.y,0,field.x,field.y,field.spread);
           gradient.addColorStop(0,color);gradient.addColorStop(1,"transparent");
           ctx.globalAlpha=.15;ctx.fillStyle=gradient;ctx.beginPath();
-          ctx.arc(c.x,c.y,c.spread,0,Math.PI*2);ctx.fill();
+          ctx.arc(field.x,field.y,field.spread,0,Math.PI*2);ctx.fill();
           ctx.strokeStyle=color;ctx.lineWidth=ratio/scale;
-          c.contours.forEach((segments,i)=>{
+          field.contours.forEach((segments,i)=>{
             ctx.globalAlpha=.16+i*.075;
-            const path=contourPaths.get(c.id)?.[i];
+            const path=state.paths?.[i];
             if(path){ctx.stroke(path);return;}
             ctx.beginPath();
             for(const [x1,y1,x2,y2] of segments){ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);}
@@ -1742,7 +1788,11 @@ const CaptionStudioViz = (() => {
       }else if(prev.kind==="pan"&&!prev.moved&&!cancel){choose(null);lastClick=null;}
       const offsets=new Map([...at.values()].filter(n=>n.ox||n.oy).map(n=>[n.tag,{x:n.ox,y:n.oy}]));
       if(offsets.size&&!reduced()&&prefs.elasticity>0){settling={start:performance.now(),offsets};wake();}
-      else clearOffsets();
+      else{
+        clearOffsets();
+        // Force the final contour geometry even if there was no elastic motion.
+        if(prev.kind==="node"&&prev.moved)drawStrands();
+      }
     }
     svg.addEventListener("pointerup",e=>release(e));svg.addEventListener("pointercancel",e=>release(e,true));
     svg.addEventListener("lostpointercapture",e=>release(e,true));
@@ -1847,7 +1897,7 @@ const CaptionStudioViz = (() => {
     return stage;
   }
 
-  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings,tagDirection,tagArrow});
+  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings,tagDirection,tagArrow,auraDensity,auraCache});
 })();
 // A classic WebWorker can import this existing pure graph implementation
 // without maintaining a second constellation algorithm.

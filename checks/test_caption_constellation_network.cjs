@@ -56,3 +56,26 @@ for(const c of atlasGroups){
   }
 }
 console.log("Nested circle pack, long-tail assignments and containment passed");
+
+const auraNodes=[{tag:"text",count:4,x:100,y:100},{tag:"watermark",count:4,x:160,y:100}];
+const baseAura=Viz.auraDensity(auraNodes,4);
+assert.equal(baseAura.x,130);
+assert.ok(baseAura.contours.every(level=>level.length>0));
+const cached=Viz.auraCache(baseAura,auraNodes,4,500);
+assert.equal(cached(auraNodes,0,false),baseAura);
+const moving=auraNodes.map(n=>({...n,x:n.x+60}));
+const firstAura=cached(moving,0,true);
+assert.equal(firstAura.x,190);
+assert.ok(firstAura!==baseAura);
+const movedAgain=moving.map(n=>({...n,y:n.y+40}));
+assert.equal(cached(movedAgain,499,true),firstAura);
+const secondAura=cached(movedAgain,500,true);
+assert.equal(secondAura.y,140);
+const finalNodes=movedAgain.map((n,i)=>({...n,x:n.x+i*80}));
+assert.equal(cached(finalNodes,501,true),secondAura);
+const finalAura=cached(finalNodes,502,false);
+assert.equal(finalAura.x,230);
+assert.ok(finalAura.spread>secondAura.spread);
+assert.ok(JSON.stringify(finalAura.contours)!==JSON.stringify(secondAura.contours));
+assert.equal(cached(finalNodes,9000,false),finalAura);
+console.log("Dynamic aura geometry, 500ms throttle, final refresh and idle cache passed");
