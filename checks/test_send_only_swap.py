@@ -692,7 +692,7 @@ def test_stream_strategy_isolation_and_invalid_values():
 def test_experimental_strategy_reaches_model_factory(monkeypatch, family):
     # Intercept the factory before CUDA allocations; exercise model-level wiring.
     captured = []
-    sentinel = types.SimpleNamespace(copier=object(), remove_hooks=lambda: None)
+    sentinel = types.SimpleNamespace(copier=object(), remove_hooks=lambda: None, retire=lambda: None)
     def fake_factory(block_type, blocks, num_blocks, blocks_to_swap, config):
         captured.append(config)
         return sentinel
@@ -708,3 +708,38 @@ def test_experimental_strategy_reaches_model_factory(monkeypatch, family):
         model.enable_block_swap(2, torch.device("cuda"), True, send_only=True)
         model.enable_block_swap(2, torch.device("cuda"), False, send_only=True)
     assert [(c.ring_size, c.use_pinned_memory) for c in captured] == [(4, True), (2, False)]
+
+
+@pytest.mark.parametrize("family,slots", [("krea", 2), ("krea", 3), ("krea", 4),
+                                         ("moss", 2), ("moss", 3), ("moss", 4)])
+def test_retire_restores_independent_frozen_weights(monkeypatch, family, slots):
+    monkeypatch.setenv("FIZGIG_EXPERIMENTAL_STREAM_RING", str(slots))
+    m = _krea("send", swap=2) if family == "krea" else _moss("send", swap=2)
+    off = m.offloader
+    expected = {i: [p.detach().clone() for p in params] for i, params in off.cpu_master.items()}
+    ring_ids = {id(p) for slot in off.ring_param for p in slot}
+    off.retire()
+    assert off.copier is None and off.ring_flat is None and off.ring_param is None
+    assert not off.cpu_master and not off.cpu_flat and not off.remove_handles
+    for i, weights in expected.items():
+        actual = [mod.weight for mod in off._modules(i)]
+        assert all(id(p) not in ring_ids and not p.requires_grad for p in actual)
+        assert all(torch.equal(p, w) for p, w in zip(actual, weights))
+
+
+@pytest.mark.parametrize("slots", [2, 3, 4])
+def test_moss_preview_replacement_retires_previous_ring(monkeypatch, slots):
+    monkeypatch.setenv("FIZGIG_EXPERIMENTAL_STREAM_RING", str(slots))
+    m = _moss("send", swap=2)
+    ref = _train(_moss("none"), _moss_fwd, MOSSImageDriver())
+    drv = MOSSImageDriver()
+    def between(step):
+        if step == 1:
+            old = m.offloader
+            token = drv.park_for_preview(m, CPU)
+            assert old.ring_flat is None and old.copier is None
+            parked = m.offloader
+            drv.unpark_after_preview(m, CPU, token)
+            assert parked.ring_flat is None and parked.copier is None
+            assert m.offloader.B == slots
+    _same(_train(m, _moss_fwd, drv, between), ref)
