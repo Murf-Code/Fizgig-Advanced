@@ -15971,7 +15971,7 @@ function renderCaptionStudio(host,items,ext){
   const cleanTags=async(kind)=>{
     const eligible=selectedForEdit();
     const label=kind==="duplicate"?"duplicate":"empty";
-    const report=(detail,items=[])=>captionConfirmRemoval({title:"Tag cleanup results",detail,items,confirmLabel:"Done",informational:true});
+    const report=detail=>captionConfirmRemoval({title:"Tag cleanup results",detail,confirmLabel:"Done",informational:true});
     if(!eligible.length)return report("No unlocked tag captions selected. No changes made.");
     if(eligible.length>1000)return say("Tag cleanup supports up to 1000 images per operation.");
     if(eligible.some(it=>S.cap.studioDrafts?.has(it.path)&&
@@ -15990,7 +15990,7 @@ function renderCaptionStudio(host,items,ext){
       return {folder:capItemFolder(it),name:it.name,path:it.path,before:it.caption,
         removed,duplicates,after:removed?studioCompose(original,cleaned,"tags"):original};
     }).filter(r=>r.removed>0&&r.after!==r.before);
-    if(!changes.length)return report("Checked "+eligible.length+" captions. No "+label+" tags found. No changes made.");
+    if(!changes.length)return report("0 "+label+" tags found.");
     const total=changes.reduce((sum,row)=>sum+row.removed,0);
     if(!(await captionConfirmRemoval({
       title:"Remove "+(kind==="duplicate"?"duplicate":"empty")+" tags?",
@@ -16008,8 +16008,7 @@ function renderCaptionStudio(host,items,ext){
       }
       S.cap.studioRevision=(S.cap.studioRevision||0)+1;
       renderCaptions();
-      await report("Removed "+total+" "+label+" tag"+(total===1?"":"s")+" from "+changes.length+" of "+eligible.length+" checked captions. You can undo this edit.",
-        changes.map(row=>row.name+" — "+row.removed+" removed"+(kind==="duplicate"?": "+row.duplicates.join(", "):"")));
+      await report(total+" "+label+" tag"+(total===1?"":"s")+" found and removed.");
     }catch(err){await report("Cleanup failed: "+err.message);}
   };
   // Delete Tag removes the *selected tags* from the *selected images*
