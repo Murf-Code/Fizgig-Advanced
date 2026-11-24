@@ -59,7 +59,8 @@ def test_targeted_calibration_includes_both_repeats_and_classic():
     cases = diag.cases(SimpleNamespace(suite="calibration", cpu=False, swap=22))
     selected = diag.select_cases(cases, ["CAL_staged_ring3_1"])
     assert [c["label"] for c in selected] == [
-        "A_classic_pageable", "CAL_staged_ring3_1", "CAL_staged_ring3_2", "D_classic_repeat"]
+        "A_classic_pageable", "CAL_staged_ring2_1", "CAL_staged_ring3_1",
+        "CAL_staged_ring3_2", "CAL_staged_ring2_2", "D_classic_repeat"]
 
 
 def test_tight_vram_only_schedules_fitting_rings():
@@ -135,3 +136,23 @@ def test_no_qualified_speedup_is_not_a_recommendation():
     result = _choose(report)
     assert result["status"] == "no_qualified_fast_strategy"
     assert result["selected"] is None
+
+
+def test_aggressive_mode_requires_valid_staged_ring2_comparison():
+    report = _report()
+    for run in _runs(report, False, 2):
+        report["runs"].remove(run)
+    result = _choose(report)
+    assert result["selected"] is None
+    assert all(not c.get("eligible") for c in result["candidates"])
+
+
+def test_larger_ring_must_beat_staged_ring2_even_if_ring2_misses_classic_threshold():
+    report = _report()
+    for run in report["runs"]:
+        if run["mode"] == "fast":
+            for row in run["steps"]:
+                row["seconds"] = 9.6 if run["ring"] == 2 else 9.4
+    result = _choose(report)
+    assert result["selected"] is None
+    assert result["status"] == "no_qualified_fast_strategy"
