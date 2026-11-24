@@ -252,3 +252,12 @@ Viz.setTagbenchPalette(null);
 console.log("Caption Studio visualization co-occurrence and double-click checks passed");
 
 assert.equal(Viz.constellationPrefs({glass:true}).glassNodes,false,"old default glass preference must not override restored appearance");
+
+const covers=Viz.tagbenchModel(Array.from({length:200},(_,i)=>({tags:["common", "only_"+i],coverIndex:i})));
+assert.equal(covers.covers.get("common"),0);
+assert.equal(covers.coverSamples.get("common").length,8);
+assert.equal(new Set(covers.coverSamples.get("common")).size,8);
+assert.equal(covers.coverSamples.get("common")[0],0);
+assert.equal(covers.coverSamples.has("only_0"),false);
+assert.deepEqual(covers.coverSamples,Viz.tagbenchModel(Array.from({length:200},(_,i)=>({tags:["common","only_"+i],coverIndex:i}))).coverSamples);
+console.log("Bounded deterministic slideshow samples passed");

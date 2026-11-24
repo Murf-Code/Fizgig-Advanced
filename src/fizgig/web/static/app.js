@@ -16371,14 +16371,32 @@ function renderCaptionStudio(host,items,ext){
             preferences:S.cap.studioConstellationPrefs,
             resume,
             thumbToken:TOKEN,
-            coverForTag:tag=>{
-              const index=model.covers?.get(tag);
+            coverCountForTag:tag=>model.coverSamples?.get(tag)?.length||(model.covers?.has(tag)?1:0),
+            coverForTag:(tag,frame=0)=>{
+              const samples=model.coverSamples?.get(tag);
+              const index=samples?.[frame%samples.length]??model.covers?.get(tag);
               if(index===undefined)return null;
               const it=datasetItems[index];
               return "/api/thumb?path="+encodeURIComponent(it.path)+"&size=128&t="+
                 encodeURIComponent(TOKEN)+"&v="+(S.cap.studioThumbRevisions?.get(it.path)||0);
             },
             collectionItems,
+            waterfallScale:()=>S.cap.studioWaterfallScale,
+            onCollectionChange:visible=>{
+              waterfallScaleControl.hidden=!visible;
+              actionBar.classList.toggle("has-waterfall-scale",visible);
+            },
+            openWaterfall:(tag,peer,state)=>{
+              S.cap.studioConstellationReturn={...state,key:datasetKey,revision};
+              $("capSearch").value="";
+              $("capFilter").value="all";
+              S.cap.studioLearningFilter="all";
+              S.cap.studioQuery=peer?CaptionStudioTags.addFilter(JSON.stringify(tag),peer):JSON.stringify(tag);
+              S.cap.studioExploreMode="waterfall";
+              S.cap.studioExploreNeedRedraw=true;
+              S.cap.studioThumbScrollTop=0;S.cap.page=0;
+              renderCaptions();
+            },
             editCollectionImage:(it,state)=>{
               if(!pickImage(it,null,datasetItems))return;
               S.cap.studioConstellationReturn={...state,key:datasetKey,revision};
@@ -16457,9 +16475,11 @@ function renderCaptionStudio(host,items,ext){
         }
       }
     }
-    returnToCollection.hidden=view!=="list"||!S.cap.studioConstellationReturn;
-    waterfallScaleControl.hidden=view!=="waterfall";
-    actionBar.classList.toggle("has-waterfall-scale",view==="waterfall");
+    returnToCollection.hidden=view==="constellation"||!S.cap.studioConstellationReturn;
+    const showWaterfallScale=view==="waterfall"||
+      (view==="constellation"&&!!fullStage.querySelector(".studio-tb-collection"));
+    waterfallScaleControl.hidden=!showWaterfallScale;
+    actionBar.classList.toggle("has-waterfall-scale",showWaterfallScale);
     learningToggle.hidden=view==="constellation";
     learningFilter.hidden=view==="constellation"||!learningCheck.checked;
     for(const button of viewButtons.querySelectorAll("button")){
