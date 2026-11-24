@@ -5518,7 +5518,7 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
     flex:1 1 auto;
     min-height:0;
   }
-  #tab-captions.active #captionsGrid.studio-host {
+  #tab-captions.active[data-caption-load="ready"] #captionsGrid.studio-host {
     display:flex!important;
     flex:1 1 auto;
     min-height:0;
@@ -6823,4 +6823,14 @@ body.caption-glass-ui .studio-image-context-menu .studio-context-action{
 body.caption-glass-ui .studio-image-context-menu .studio-danger-action:not(:disabled){color:var(--danger,#ff7787)}
 #tab-captions .studio-image-toolbar .btn:has(>.studio-action-icon){
   display:inline-flex;align-items:center;justify-content:center;gap:6px;
+}
+
+/* Loading/error/empty and the mounted workspace are mutually exclusive,
+   including the desktop fullscreen flex layout and Glass theme overrides. */
+#tab-captions.active:not([data-caption-load="ready"])>#captionsGrid,
+#tab-captions.active>#captionsGrid[hidden],
+#tab-captions>#captionsGrid[hidden],
+#tab-captions[data-caption-load="ready"]>.caption-initial-state,
+#tab-captions>.caption-initial-state[hidden]{
+  display:none!important;
 }

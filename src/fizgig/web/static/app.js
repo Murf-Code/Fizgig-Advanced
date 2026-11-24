@@ -11887,6 +11887,12 @@ function captionStarStatus(state,label,detail=""){
 function captionInitialState(state,detail=""){
   const tab=$("tab-captions");
   tab.dataset.captionLoad=state;
+  // Keep old content mounted for safe editor cleanup, but make it neither
+  // visible nor interactive until the new dataset has rendered completely.
+  const grid=$("captionsGrid");
+  grid.hidden=state!=="ready";
+  grid.inert=state!=="ready";
+  $("captionInitialState").hidden=state==="ready";
   if(state!=="ready"){
     S.cap.studioStatusClose?.();
     S.cap.studioStatusRefresh=null;
