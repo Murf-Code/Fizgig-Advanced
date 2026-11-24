@@ -433,3 +433,55 @@ def test_collect_takes_a_holder_without_buffers():
     assert sum(len(g) for g in groups) == 2       # weight and bias, each once
     res = vram_reclaim.reclaim(modules=(lin, Holder()), device="cpu", probe_windows=False)
     assert isinstance(res, dict)
+
+
+def _ring_fixture():
+    flat = torch.arange(64, dtype=torch.uint8)
+    p = torch.nn.Parameter(flat[:16].view(torch.float32).view(2, 2), requires_grad=False)
+    m = torch.nn.Module()
+    m.p = p
+    m.offloader = types.SimpleNamespace(ring_flat=[flat], ring_param=[[p]])
+    return m, flat, p
+
+
+def test_ring_views_release_old_storage_before_flush(monkeypatch):
+    m, old, p = _ring_fixture()
+    observed = []
+    def flush(_):
+        observed.append((m.offloader.ring_flat[0].data_ptr(), p.data_ptr()))
+    monkeypatch.setattr(vr, "_flush", flush)
+    vr.reclaim(modules=(m,), device="cpu", probe_windows=False)
+    # First flush settles work, second is the staged ring, third is restored.
+    assert len(observed) == 3
+    assert observed[0][0] == old.data_ptr()
+    assert observed[1][0] != old.data_ptr()
+    assert all(a == b for a, b in observed)
+
+
+def test_reclaim_restores_ring_after_staging_flush_error(monkeypatch):
+    m, old, p = _ring_fixture()
+    before = p.detach().clone()
+    calls = []
+    def flush(_):
+        calls.append(True)
+        if len(calls) == 2:
+            raise RuntimeError("simulated staging failure")
+    monkeypatch.setattr(vr, "_flush", flush)
+    with pytest.raises(RuntimeError, match="simulated staging failure"):
+        vr.reclaim(modules=(m,), device="cpu", probe_windows=False)
+    assert torch.equal(p, before)
+    assert p.data_ptr() == m.offloader.ring_flat[0].data_ptr()
+    assert m.offloader.ring_flat[0] is not old
+
+
+def test_reclaim_reports_incomplete_ring_restore(monkeypatch):
+    m, old, p = _ring_fixture()
+    original_to = torch.Tensor.to
+    def fail_restore(tensor, *args, **kwargs):
+        # Only fail the copy from the staged ring, not the initial staging.
+        if tensor is m.offloader.ring_flat[0] and tensor is not old:
+            raise RuntimeError("simulated restore OOM")
+        return original_to(tensor, *args, **kwargs)
+    monkeypatch.setattr(torch.Tensor, "to", fail_restore)
+    with pytest.raises(vr.ReclaimRestoreError, match="Unable to restore"):
+        vr.reclaim(modules=(m,), device="cpu", probe_windows=False)
