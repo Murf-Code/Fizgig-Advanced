@@ -6561,7 +6561,7 @@ body:has(.caption-removal-backdrop){overflow:hidden}
 }
 @media(prefers-reduced-motion:no-preference){
   #tab-captions .studio-top-actions>.studio-settings-action.is-opening-settings svg{
-    animation:studio-toolbar-spin .9s ease-in-out both;
+    animation:studio-toolbar-spin .45s ease-in-out both;
   }
   #tab-captions .studio-top-actions>.studio-refresh-action.is-refreshing svg{
     animation:studio-toolbar-spin 1s linear infinite;

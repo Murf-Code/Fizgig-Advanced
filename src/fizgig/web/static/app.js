@@ -15476,7 +15476,7 @@ function renderCaptionStudio(host,items,ext){
     if(toolbarMotion()){
       settingsBtn.classList.add("is-opening-settings");
       // Let the entire gear turn be visible before the modal blurs the toolbar.
-      await toolbarDelay(900);
+      await toolbarDelay(450);
       settingsBtn.classList.remove("is-opening-settings");
     }
     if(settingsBtn.isConnected&&$("tab-captions")?.classList.contains("active"))
