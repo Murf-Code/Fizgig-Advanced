@@ -1223,35 +1223,43 @@ class LoRAStreamOffloader:
             _synchronize_device(self.device)
         pinned_flats = self._preallocate_host_buffers() if first_time and self.cuda_available else {}
         cpu_device = torch.device("cpu")
-        for i, b in enumerate(blocks):
-            if not self.is_stream[i]:
-                if first_time:
-                    b.to(self.device)  # resident block: buffers + Linear weights on GPU permanently
-                    weighs_to_device(b, self.device)
-                continue
-
-            if first_time:
-                # move the whole block to device (buffers, norms, bias), then pull the swap weights back to
-                # the CPU into one flat (pinned) buffer per block as the persistent masters
-                b.to(self.device)
+        if first_time:
+            # Establish masters first, including blocks that were resident under
+            # a previous placement. Never round-trip CPU weights through CUDA
+            # just to build a CPU master or transiently exceed the ring budget.
+            for i in self.stream_idx:
                 mods = self._modules(i)
                 weights = [m.weight.data for m in mods]
                 if self._layout is None:
-                    self._layout = self._compute_layout(weights)  # first streaming block defines the shared layout
+                    self._layout = self._compute_layout(weights)
                 flat = pinned_flats.pop(i) if i in pinned_flats else torch.empty(
                     self._layout[1], dtype=torch.uint8, device=cpu_device)
                 master = []
                 for m, view in zip(mods, self._flat_views(flat, weights)):
-                    view.copy_(m.weight.data)  # one-time D2H into the flat master
+                    view.copy_(m.weight.data)
                     m.weight.data = view
-                    master.append(m.weight)  # keep the original Parameter object as the persistent master
+                    master.append(m.weight)
                 self.cpu_flat[i] = flat
                 self.cpu_master[i] = master
-            else:
-                # re-prepare (e.g. around in-training sampling): the non-swap parts are already on the device
-                # and the CPU masters have stayed on the CPU throughout, so just repoint weights to the masters.
-                # IMPORTANT: do NOT call b.to(device) here -- it would drag the CPU masters onto the GPU and
-                # they would never be released (every swap block would end up resident).
+                del weights  # release old device storage before placing the next block
+
+            for i, block in enumerate(blocks):
+                if not self.is_stream[i]:
+                    block.to(self.device)
+                    weighs_to_device(block, self.device)
+                    continue
+                # Place norms, scales, biases, adapters and other non-streamed
+                # tensors while leaving the frozen Linear masters on CPU.
+                mods = self._modules(i)
+                masters = self.cpu_master[i]
+                try:
+                    for m in mods:
+                        m.weight = None
+                    block.to(self.device)
+                finally:
+                    self._bind(i, masters)
+        else:
+            for i in self.stream_idx:
                 self._bind(i, self.cpu_master[i])
 
         # validate homogeneous streaming blocks (shared ring template)
