@@ -254,6 +254,91 @@ const CaptionStudioViz = (() => {
   function tagAffinity(shared,leftCount,rightCount){
     return shared/Math.sqrt(leftCount*rightCount)*shared/(shared+2);
   }
+  // Multiscale atlas built in the existing bounded graph worker. Community
+  // counts are tag occurrences, not unique images across several tags.
+  function constellationAtlas(nodes,all,edges){
+    if(!nodes.length)return {clusters:[],rivers:[],unmapped:0};
+    const groups=new Map();
+    for(const n of nodes){
+      if(!groups.has(n.group))groups.set(n.group,[]);
+      groups.get(n.group).push(n);
+    }
+    const maxCount=Math.max(1,...nodes.map(n=>n.count));
+    const clusters=[...groups].map(([id,rows])=>{
+      rows.sort((a,b)=>b.count-a.count||a.tag.localeCompare(b.tag));
+      const x=rows.reduce((sum,n)=>sum+n.x,0)/rows.length;
+      const y=rows.reduce((sum,n)=>sum+n.y,0)/rows.length;
+      const count=rows.reduce((sum,n)=>sum+n.count,0);
+      // Gaussian density on a bounded grid, sampled once in the worker.
+      const sigma=27,step=9;
+      const left=Math.min(...rows.map(n=>n.x))-sigma*3;
+      const top=Math.min(...rows.map(n=>n.y))-sigma*3;
+      const nx=Math.min(100,Math.max(2,Math.ceil((Math.max(...rows.map(n=>n.x))+sigma*3-left)/step)+1));
+      const ny=Math.min(100,Math.max(2,Math.ceil((Math.max(...rows.map(n=>n.y))+sigma*3-top)/step)+1));
+      const grid=new Float32Array(nx*ny);let peak=0;
+      for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){
+        const px=left+i*step,py=top+j*step;
+        let value=0;
+        for(const n of rows){
+          const d2=(n.x-px)**2+(n.y-py)**2;
+          if(d2<9*sigma*sigma)value+=Math.sqrt(n.count/maxCount)*Math.exp(-d2/(2*sigma*sigma));
+        }
+        grid[j*nx+i]=value;peak=Math.max(peak,value);
+      }
+      const contours=[.16,.34,.60].map(level=>{
+        const segments=[],threshold=peak*level;
+        for(let j=0;j<ny-1;j++)for(let i=0;i<nx-1;i++){
+          const v=[grid[j*nx+i],grid[j*nx+i+1],grid[(j+1)*nx+i+1],grid[(j+1)*nx+i]];
+          const p=[[left+i*step,top+j*step],[left+(i+1)*step,top+j*step],
+            [left+(i+1)*step,top+(j+1)*step],[left+i*step,top+(j+1)*step]];
+          const crossings=[];
+          for(let k=0;k<4;k++){
+            const next=(k+1)%4;
+            if((v[k]>=threshold)===(v[next]>=threshold))continue;
+            const t=(threshold-v[k])/(v[next]-v[k]);
+            crossings.push([p[k][0]+t*(p[next][0]-p[k][0]),p[k][1]+t*(p[next][1]-p[k][1])]);
+          }
+          for(let k=0;k+1<crossings.length;k+=2)segments.push([...crossings[k],...crossings[k+1]]);
+        }
+        return segments;
+      });
+      return {id,x,y,count,label:rows[0].tag,tags:rows.map(n=>n.tag),color:rows[0].color,
+        spread:Math.max(45,...rows.map(n=>Math.hypot(n.x-x,n.y-y)+45)),contours};
+    });
+    const byTag=new Map(nodes.map(n=>[n.tag,n]));
+    const unmapped=Math.max(0,all.length-nodes.length);
+    if(unmapped)clusters.push({id:"other",label:"Other tags",count:all.reduce((sum,n)=>sum+(byTag.has(n.tag)?0:n.count),0),
+      tags:[],color:"var(--text-muted)",unmapped});
+    clusters.sort((a,b)=>b.count-a.count||a.label.localeCompare(b.label));
+    // Deterministic nonoverlapping packing; compressed frequency scaling.
+    const largest=clusters[0].count||1,placed=[];
+    for(const c of clusters){
+      const r=25+57*Math.sqrt(c.count/largest);
+      let px=0,py=0;
+      if(placed.length){
+        for(let i=1;;i++){
+          const angle=i*.43,dist=18*Math.sqrt(i);
+          px=Math.cos(angle)*dist;py=Math.sin(angle)*dist;
+          if(placed.every(p=>Math.hypot(p.px-px,p.py-py)>=p.r+r+9))break;
+        }
+      }
+      Object.assign(c,{px,py,r});placed.push(c);
+    }
+    const left=Math.min(...placed.map(c=>c.px-c.r)),right=Math.max(...placed.map(c=>c.px+c.r));
+    const top=Math.min(...placed.map(c=>c.py-c.r)),bottom=Math.max(...placed.map(c=>c.py+c.r));
+    const scale=Math.min(760/(right-left),490/(bottom-top));
+    for(const c of placed){c.px=500+(c.px-(left+right)/2)*scale;c.py=350+(c.py-(top+bottom)/2)*scale;c.r*=scale;}
+    const bridges=new Map();
+    for(const edge of edges){
+      const a=byTag.get(edge.a),b=byTag.get(edge.b);
+      if(!a||!b||a.group===b.group)continue;
+      const lo=Math.min(a.group,b.group),hi=Math.max(a.group,b.group),key=lo+":"+hi;
+      const old=bridges.get(key)||{a:lo,b:hi,weight:0,count:0};
+      old.weight+=tagAffinity(edge.w,a.count,b.count);old.count+=edge.w;bridges.set(key,old);
+    }
+    const rivers=[...bridges.values()].sort((a,b)=>b.weight-a.weight||a.a-b.a||a.b-b.b).slice(0,14);
+    return {clusters,rivers,unmapped};
+  }
   function tagbenchModel(items,categories) {
     const graph=tagbenchGraph(items),{all,top,edges,linkCounts}=graph;
     const index=new Map(top.map((row,i)=>[row.tag,i]));
@@ -367,7 +452,7 @@ const CaptionStudioViz = (() => {
       const manual=categories?.tagColors?.[tag.tag]||(category&&categories.colors?.[category]);
       if(manual||friendColor)colors.set(tag.tag,manual||friendColor);
     }
-    return {...graph,nodes,chosen,colors};
+    return {...graph,nodes,chosen,colors,atlas:constellationAtlas(nodes,all,edges)};
   }
   const waterfallScale=value=>{
     const n=Number(value);
@@ -521,7 +606,7 @@ const CaptionStudioViz = (() => {
     return length?{x:dx/length*amount,y:dy/length*amount}:{x:0,y:0};
   }
   function countRadius(count,maxCount){
-    return 4+3.8*String(count).length+10*Math.sqrt(count/maxCount);
+    return 5+3.8*String(count).length+20*Math.sqrt(count/Math.max(1,maxCount));
   }
   function tagbenchConstellation(model,onPick,pickedTag=null,options={}){
     const stage=document.createElement("div");stage.className="studio-tb-constellation";
@@ -548,6 +633,7 @@ const CaptionStudioViz = (() => {
     const canvas=html("canvas","studio-tb-strands");
     canvas.setAttribute("aria-hidden","true");
     const ctx=canvas.getContext("2d");
+    const packLayer=make("g",{"aria-label":"Dataset community overview"});
     const edgeLayer=make("g"),nodeLayer=make("g"),labelLayer=make("g");
     const nodes=model.nodes.map(n=>({...n,ox:0,oy:0,
       color:n.color===tbHue(n.group)?tbHue(n.group,92):n.color}));
@@ -562,7 +648,8 @@ const CaptionStudioViz = (() => {
     let closingWheel=null;
     const temporaryTags=new Set(),focusEdges=new Map();
     const focusedTags=new Set();
-    let typeScale=1;
+    let typeScale=1,packed=false;
+    const atlas=model.atlas||constellationAtlas(model.nodes,model.all,model.edges);
     const labelSize=n=>(n.tag===picked?22:13+8*Math.sqrt(n.count/maxCount))*typeScale/zoom;
 
     // Group strokes by color and width so each batch shares a Canvas path.
@@ -589,7 +676,12 @@ const CaptionStudioViz = (() => {
     // Reserve room for the full total even when selection shows a shorter shared count.
     const radius=n=>countRadius(n.count,maxCount)*typeScale/zoom;
     const position=n=>({x:n.x+n.ox,y:n.y+n.oy});
-    const view=()=>svg.setAttribute("viewBox",[500-500/zoom+pan.x,350-350/zoom+pan.y,1000/zoom,700/zoom].join(" "));
+    const view=()=>{
+      packed=!picked&&atlas.clusters.length>1&&zoom<overviewZoom*.82;
+      svg.setAttribute("viewBox",[500-500/zoom+pan.x,350-350/zoom+pan.y,1000/zoom,700/zoom].join(" "));
+      packLayer.style.display=packed?"":"none";
+      for(const layer of [edgeLayer,nodeLayer,labelLayer])layer.style.display=packed?"none":"";
+    };
     const search=html("div","studio-tb-search"),input=html("input","",undefined,search),matches=html("div","studio-tb-suggest",undefined,search);
     input.placeholder="Search Tags";input.setAttribute("aria-label","Search all dataset tags");
     const zoomCtl=html("div","studio-tb-zoom"),spotlight=html("aside","studio-tb-cluster");
@@ -598,6 +690,59 @@ const CaptionStudioViz = (() => {
     const dismissMenu=()=>{menu.hidden=true;menu.replaceChildren();};
     const point=e=>{const p=svg.createSVGPoint();p.x=e.clientX;p.y=e.clientY;return p.matrixTransform(svg.getScreenCTM().inverse());};
     const scalePixels=()=>Math.max(.001,Math.abs(svg.getScreenCTM()?.a||1));
+    const packedById=new Map(atlas.clusters.map(c=>[c.id,c]));
+    for(const river of atlas.rivers){
+      const a=packedById.get(river.a),b=packedById.get(river.b);
+      if(!a||!b)continue;
+      const dx=b.px-a.px,dy=b.py-a.py;
+      const path=make("path",{d:"M "+a.px+" "+a.py+" Q "+((a.px+b.px)/2-dy*.18)+" "+((a.py+b.py)/2+dx*.18)+" "+b.px+" "+b.py,
+        fill:"none",stroke:a.color,"stroke-opacity":.20,"stroke-width":2+14*Math.sqrt(river.weight/(atlas.rivers[0]?.weight||1)),
+        "stroke-linecap":"round","pointer-events":"none"},packLayer);
+      make("title",{},path).textContent=river.count+" cross-community tag-pair occurrences";
+    }
+    for(const c of atlas.clusters){
+      const desc=c.unmapped?c.unmapped+" other tags; browse tags outside the graph":
+        c.label+", "+c.tags.length+" tags, "+c.count+" tag occurrences";
+      const g=make("g",{transform:"translate("+c.px+" "+c.py+")",role:"button",tabindex:0,
+        class:"studio-tb-atlas-community","aria-label":desc,style:"cursor:pointer"},packLayer);
+      make("circle",{r:c.r,fill:c.color,"fill-opacity":.16,stroke:c.color,"stroke-opacity":.72,"stroke-width":1.5},g);
+      make("circle",{r:c.r*.83,fill:"none",stroke:c.color,"stroke-opacity":.22,"stroke-width":1},g);
+      const font=Math.max(5,Math.min(17,c.r*.25));
+      const title=make("text",{"text-anchor":"middle",y:-font*.1,fill:"var(--text-primary)","font-size":font,"font-weight":700,"pointer-events":"none"},g);
+      const maxChars=Math.max(5,Math.floor(c.r*1.7/(font*.56)));
+      title.textContent=c.label.length>maxChars?c.label.slice(0,maxChars-1)+"…":c.label;
+      make("text",{"text-anchor":"middle",y:font*1.1,fill:"var(--text-primary)","font-size":font*.72,"pointer-events":"none"},g)
+        .textContent=(c.unmapped||c.tags.length)+" tags";
+      make("title",{},g).textContent=desc;
+      const enter=()=>{
+        if(c.unmapped){
+          input.focus();matches.replaceChildren();
+          let shown=0;
+          for(const n of model.all){
+            if(at.has(n.tag))continue;
+            const b=button(matches,n.tag+" · "+n.count,"Focus "+n.tag,()=>{
+              input.value=n.tag;choose(n.tag,false);center(n.tag);matches.replaceChildren();
+            });
+            b.style.color=model.colors.get(n.tag)||"var(--text-primary)";
+            if(++shown>=8)break;
+          }
+          return;
+        }
+        cameraTo(Math.min(5,Math.max(overviewZoom*1.35,1.25)),{x:c.x-500,y:c.y-350});
+      };
+      g.addEventListener("pointerdown",e=>e.stopPropagation());
+      g.addEventListener("click",enter);
+      g.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();e.stopPropagation();enter();}});
+    }
+    const contourPaths=new Map();
+    if(typeof Path2D==="function")for(const c of atlas.clusters){
+      if(c.unmapped)continue;
+      contourPaths.set(c.id,c.contours.map(segments=>{
+        const path=new Path2D();
+        for(const [x1,y1,x2,y2] of segments){path.moveTo(x1,y1);path.lineTo(x2,y2);}
+        return path;
+      }));
+    }
     function drawStrands(){
       const width=svg.clientWidth,height=svg.clientHeight;
       if(!ctx||!width||!height)return;
@@ -607,6 +752,30 @@ const CaptionStudioViz = (() => {
       ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,w,h);
       const scale=Math.min(width/1000,height/700)*zoom*ratio;
       ctx.setTransform(scale,0,0,scale,w/2-(500+pan.x)*scale,h/2-(350+pan.y)*scale);
+      if(packed)return;
+      // Density regions share the existing invalidation lifecycle; no
+      // additional physics or animation loop.
+      if(!picked&&prefs.celestial){
+        for(const c of atlas.clusters){
+          if(c.unmapped)continue;
+          const anchor=visual.get(c.tags[0]);
+          if(!anchor)continue;
+          const color=getComputedStyle(anchor.halo).fill;
+          const gradient=ctx.createRadialGradient(c.x,c.y,0,c.x,c.y,c.spread);
+          gradient.addColorStop(0,color);gradient.addColorStop(1,"transparent");
+          ctx.globalAlpha=.15;ctx.fillStyle=gradient;ctx.beginPath();
+          ctx.arc(c.x,c.y,c.spread,0,Math.PI*2);ctx.fill();
+          ctx.strokeStyle=color;ctx.lineWidth=ratio/scale;
+          c.contours.forEach((segments,i)=>{
+            ctx.globalAlpha=.16+i*.075;
+            const path=contourPaths.get(c.id)?.[i];
+            if(path){ctx.stroke(path);return;}
+            ctx.beginPath();
+            for(const [x1,y1,x2,y2] of segments){ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);}
+            ctx.stroke();
+          });
+        }
+      }
       const curve=(a,b)=>{
         const p=position(at.get(a)),q=position(at.get(b));
         ctx.moveTo(p.x,p.y);
@@ -633,7 +802,7 @@ const CaptionStudioViz = (() => {
         const path="M "+from.x+" "+from.y+" Q "+cx+" "+cy+" "+to.x+" "+to.y;
         const strength=associationStrength(tag,shared.get(tag));
         edge.line.setAttribute("d",path);edge.hit.setAttribute("d",path);
-        edge.line.setAttribute("stroke-width",1.25+5.5*strength);
+        edge.line.setAttribute("stroke-width",1.25+9.5*strength);
         edge.line.setAttribute("stroke-opacity",activePair===tag?1:.42+.48*strength);
         edge.caption.setAttribute("x",.04*from.x+.32*cx+.64*to.x);
         edge.caption.setAttribute("y",.04*from.y+.32*cy+.64*to.y-10*typeScale/zoom);
@@ -717,6 +886,7 @@ const CaptionStudioViz = (() => {
       return n;
     }
     function placeLabels(){
+      if(packed)return;
       const boxes=[];
       let coverSlots=options.coverForTag?12:0;
       const pixels=coverSlots&&svg.isConnected?scalePixels():0;
@@ -1018,6 +1188,7 @@ const CaptionStudioViz = (() => {
       let target={...pan};
       if(e){const p=point(e),ratio=zoom/next;
         target={x:p.x-(p.x-500-pan.x)*ratio-500,y:p.y-(p.y-350-pan.y)*ratio-350};}
+      if(!picked&&!packed&&next<overviewZoom*.82&&atlas.clusters.length>1)target={x:0,y:0};
       cameraTo(next,target,!e);
     }
     button(zoomCtl,"+","Zoom in",()=>zoomBy(1.2));button(zoomCtl,"−","Zoom out",()=>zoomBy(1/1.2));
@@ -1060,7 +1231,7 @@ const CaptionStudioViz = (() => {
       if(camera||settling||pulse)wake();
     }
     svg.addEventListener("pointerdown",e=>{
-      if(e.button!==0||e.target.closest(".studio-tb-orb,.studio-tb-pair-edge"))return;
+      if(e.button!==0||e.target.closest(".studio-tb-orb,.studio-tb-pair-edge,.studio-tb-atlas-community"))return;
       dismissMenu();cancelMotion();const p=point(e);
       drag={kind:"pan",x:e.clientX,y:e.clientY,world:p,px:pan.x,py:pan.y,moved:false};
       svg.setPointerCapture(e.pointerId);
@@ -1180,7 +1351,7 @@ const CaptionStudioViz = (() => {
     return stage;
   }
 
-  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset});
+  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas});
 })();
 // A classic WebWorker can import this existing pure graph implementation
 // without maintaining a second constellation algorithm.

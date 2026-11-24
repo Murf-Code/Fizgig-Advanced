@@ -24,3 +24,14 @@ assert.notEqual(groups.get("solitary"),groups.get("lion"));
 assert.ok(clustered.chosen.some(e=>e.a==="jacket"&&e.b==="shirt"&&e.w===1));
 assert.ok(clustered.chosen.every(e=>clustered.edges.includes(e)));
 console.log("Caption communities, real bridge links, counts and deterministic layout passed");
+
+const atlas=clustered.atlas;
+assert.ok(atlas.clusters.length>=3);
+assert.ok(atlas.rivers.length<=14);
+assert.ok(atlas.clusters.every(c=>c.unmapped||c.contours.length===3));
+assert.equal(atlas.clusters.reduce((sum,c)=>sum+c.count,0),clustered.all.reduce((sum,n)=>sum+n.count,0));
+for(const [i,c] of atlas.clusters.entries())for(const d of atlas.clusters.slice(i+1))
+  assert.ok(Math.hypot(c.px-d.px,c.py-d.py)+1e-7>=c.r+d.r);
+assert.equal(model.atlas.unmapped,model.all.length-model.nodes.length);
+assert.equal(Viz.tagbenchModel([]).atlas.clusters.length,0);
+console.log("Packed community atlas, density contours and bounded rivers passed");
