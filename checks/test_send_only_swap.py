@@ -788,3 +788,23 @@ def test_resume_with_changed_ring_and_validation(monkeypatch, tmp_path, family):
         assert torch.equal(actual, expected)
         assert all(torch.equal(grads[k], ref_grads[k]) for k in grads)
     assert all(torch.equal(p, _lora_params(baseline)[k]) for k, p in _lora_params(resumed).items())
+
+
+def test_moss_factory_fallback_does_not_leave_duplicate_hooks():
+    a = MOSSImageDiT(**MTINY).requires_grad_(False)
+    b = MOSSImageDiT(**MTINY).requires_grad_(False)
+    # Force the H2D factory to decline frozen-base streaming.
+    a.layers[2].proj.q.weight.requires_grad_(True)
+    a.enable_block_swap(2, CPU, True, send_only=True)
+    b.enable_block_swap(2, CPU, True, send_only=False)
+    assert type(a.offloader) is shared_offloading.ModelOffloader
+    assert [len(layer._backward_hooks) for layer in a.layers] == [
+        len(layer._backward_hooks) for layer in b.layers]
+
+
+def test_invalid_replacement_does_not_retire_live_offloader():
+    m = _krea("send")
+    old = m.offloader
+    with pytest.raises(AssertionError):
+        m.enable_block_swap(8, offloading.BlockSwapConfig(CPU, True, h2d_only=True))
+    assert m.offloader is old and old.ring_flat is not None
