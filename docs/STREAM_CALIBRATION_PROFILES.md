@@ -1,7 +1,6 @@
 # Experimental stream calibration profiles
 
-Profiles are opt-in, local, workload-specific recommendations. This branch does
-not automatically modify the normal trainer, WIP, or production preferences.
+Profiles are opt-in, local, workload-specific recommendations. This branch does not automatically apply a profile to normal training or modify WIP or production preferences.
 
 ## Full calibration
 
@@ -39,4 +38,21 @@ training, auto SDPA, BF16 or INT8, AdamW or Muon, with actual cached inputs. It
 does not establish parity for all production datasets, Global Replay, resume,
 MOSS-Image, LoKR or arbitrary compile/attention configurations. A profile is a
 local recommendation for its measured workload, not a hardware-wide guarantee.
-The normal trainer is intentionally not yet wired to apply it.
+## Normal training (experimental)
+
+In Preferences > Training memory > Stream strategy (experimental), select
+the measured staged or fully pinned strategy manually. Default preserves the
+existing staged two-slot behavior. Changes apply at the next Start, and are
+ignored for classic swap, forward-only inference, CPU, unsupported families,
+and Global Replay. The GPU ring remains capped by the classic block-weight
+VRAM budget, and host pinning still goes through the live RAM safety
+preflight. A fully pinned request can fall back to staged transfers; the host
+staging pool can shrink independently of the GPU ring.
+
+For CLI training, the equivalent option is
+`--send_only_strategy {default,staged3,staged4,direct2,direct3,direct4}`.
+
+Do not treat a diagnostic profile as automatically applicable to a normal
+training dataset. The diagnostic's workload identity does not establish
+equivalence to an arbitrary production training run. Automatic profile
+application remains gated on broader lifecycle and real GPU validation.
