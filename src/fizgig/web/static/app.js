@@ -15448,7 +15448,11 @@ function renderCaptionStudio(host,items,ext){
   settingsBtn.classList.add("studio-icon-action");
   settingsBtn.setAttribute("aria-label","Settings");
   settingsBtn.title="Settings";
-  settingsBtn.replaceChildren(toolbarIcon(["M4 7h16","M4 17h16","M8 4v6","M16 14v6"]));
+  settingsBtn.classList.add("studio-settings-action");
+  settingsBtn.replaceChildren(toolbarIcon([
+    "M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6",
+    "M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.09a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.09a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.09a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.09a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+  ]));
   const refreshBtn=btn("Refresh",async()=>{
     if(refreshBtn.disabled)return;
     refreshBtn.disabled=true;
@@ -15552,6 +15556,22 @@ function renderCaptionStudio(host,items,ext){
   editMenu.addEventListener("toggle",()=>{if(editMenu.open)toolsMenu.open=false;});
   const actionBar=el("nav",{class:"studio-top-actions","aria-label":"Caption Workbench tools"},
     settingsBtn,refreshBtn,editMenu,toolsMenu);
+  actionBar.addEventListener("click",event=>{
+    if(window.matchMedia("(prefers-reduced-motion: reduce)").matches)return;
+    const control=event.target.closest("button,summary,.studio-learning-toggle");
+    if(!control||!actionBar.contains(control)||control.disabled||
+        control.closest(".studio-bulk,.studio-tools-options"))return;
+    const target=control===settingsBtn?settingsBtn.querySelector("svg"):control;
+    if(!target||typeof target.animate!=="function")return;
+    if(control===settingsBtn){
+      target.getAnimations().forEach(animation=>animation.cancel());
+      target.animate([{transform:"rotate(0deg)"},{transform:"rotate(360deg)"}],
+        {duration:1200,easing:"ease-in-out"});
+    }else{
+      target.animate([{transform:"scale(1)"},{transform:"scale(.96)"},{transform:"scale(1)"}],
+        {duration:180,easing:"ease-out"});
+    }
+  },true);
   // TagBench's Waterfall and Constellation replace the ENTIRE three-panel
   // stage. The normal Tags button restores the caption editor and lists.
   const fullStage=el("section",{class:"studio-tb-explore",hidden:true,

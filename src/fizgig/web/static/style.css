@@ -3573,7 +3573,7 @@ label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; 
 #tab-captions .studio-top-actions>details>summary::-webkit-details-marker{display:none}
 #tab-captions .studio-top-actions>details>summary:hover{background:var(--bg-hover);border-color:var(--accent-border)}
 #tab-captions .studio-top-actions>details[open]{flex-basis:100%;order:10}
-#tab-captions .studio-top-actions>details[open]>summary{display:inline-block}
+#tab-captions .studio-top-actions>details[open]>summary{display:flex;align-items:center}
 #tab-captions .studio-top-actions .studio-bulk{padding:12px 3px 4px}
 #tab-captions .studio-top-actions .studio-bulk .btn{font-size:12px}
 #tab-captions .studio-main-actions>.studio-duplicate-browser,
@@ -6501,5 +6501,26 @@ body:has(.caption-removal-backdrop){overflow:hidden}
   #tab-captions .studio-top-actions>.studio-learning-filter-label{flex:1 1 110px}
   #tab-captions .studio-top-actions>.studio-learning-filter-label>.studio-learning-filter{
     width:100%;max-width:none;
+  }
+}
+
+/* Stable toolbar geometry and restrained action feedback. */
+#tab-captions .studio-top-actions>details:is(.studio-edit-menu,.studio-tools-menu)>summary{
+  align-items:center;justify-content:center;line-height:1.2;list-style:none;
+}
+#tab-captions .studio-top-actions>details:is(.studio-edit-menu,.studio-tools-menu)>summary::after{
+  position:static;flex:0 0 7px;box-sizing:border-box;
+  width:7px;height:7px;transform:translateY(-2px) rotate(45deg);
+}
+#tab-captions .studio-top-actions>details:is(.studio-edit-menu,.studio-tools-menu)[open]>summary::after{
+  transform:translateY(2px) rotate(225deg);
+}
+#tab-captions .studio-top-actions .studio-settings-action svg{transform-origin:center;transform-box:fill-box}
+@media(prefers-reduced-motion:no-preference){
+  #tab-captions .studio-top-actions :is(.btn,summary,.studio-learning-toggle,.studio-learning-filter){
+    transition:background-color .16s ease,border-color .16s ease,color .16s ease,box-shadow .16s ease;
+  }
+  #tab-captions .studio-top-actions>details:is(.studio-edit-menu,.studio-tools-menu)>summary::after{
+    transition:transform .2s ease;
   }
 }
