@@ -108,6 +108,8 @@ class Krea2Driver(FamilyDriver):
 
     def enable_block_swap(self, dit, num_blocks, device, supports_backward=True, send_only=False):
         from fizgig.krea2.offloading import BlockSwapConfig
+        if supports_backward and send_only:
+            dit._stream_strategy = getattr(self, "stream_strategy", "default")
         dit.enable_block_swap(num_blocks, BlockSwapConfig(torch.device(device), supports_backward=supports_backward,
                                                           h2d_only=bool(send_only)))
         dit.move_to_device_except_swap_blocks(torch.device(device))
