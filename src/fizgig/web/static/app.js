@@ -16362,7 +16362,7 @@ function renderCaptionStudio(host,items,ext){
           }
           if(mapState){
             heading.replaceChildren();
-            for(const [i,tag] of [...new Set([...(mapState.branchTrail||[]),mapState.tag])].entries()){
+            for(const [i,tag] of [...new Set([...(mapState.branchTrail||[]),mapState.tag,...(mapState.peer?[mapState.peer]:[])])].entries()){
               if(i)heading.append(document.createTextNode(" + "));
               const span=el("span",{text:tag});
               span.style.color=CaptionStudioViz.colorForTag(tag,categoryState);heading.append(span);
@@ -16393,54 +16393,7 @@ function renderCaptionStudio(host,items,ext){
           constellation.classList.add("studio-tb-pair-action");
           constellation.title=focusTag?"Select and zoom to "+focusTag:"Open the tag map overview";
           header.append(constellation);
-          if(mapState){
-            const related=[...new Set([...(mapState.related||[]),...(mapState.peer?[mapState.peer]:[])])];
-            if(related.length){
-              const filter=el("select",{class:"studio-tb-collection-filter","aria-label":"Filter by related tag"});
-              filter.append(el("option",{value:"",text:(mapState.branchTrail||[]).length>1?
-                "All branch images":"All "+mapState.tag+" images"}));
-              for(const tag of related)filter.append(el("option",{value:tag,text:tag}));
-              filter.value=mapState.peer||"";
-              filter.title=filter.options[filter.selectedIndex]?.textContent||"";
-              filter.addEventListener("change",()=>{
-                mapState.peer=filter.value||null;
-                S.cap.studioQuery=waterfallQuery(mapState);S.cap.page=0;
-                S.cap.studioThumbScrollTop=0;renderCaptions();
-              });
-              header.append(filter);
-            }
-            // Preserve the old zoom-out gesture: a fresh upward scroll at
-            // the top (or downward scroll over the header) returns to the map.
-            // Momentum from the original zoom-in must never exit immediately.
-            let gesture=Number.isFinite(mapState.wheelAt)?
-              {direction:-1,at:mapState.wheelAt,canExit:false,distance:0}:null;
-            delete mapState.wheelAt;
-            const wheel=event=>{
-              const {deltaX,deltaY,deltaMode,timeStamp,target}=event;
-              if(event.ctrlKey||event.shiftKey||!deltaY||Math.abs(deltaX)>Math.abs(deltaY)||
-                 target.closest?.("select"))return;
-              const direction=Math.sign(deltaY);
-              const atBoundary=direction<0?flow.scrollTop<=0:header.contains(target);
-              if(!gesture||gesture.direction!==direction||timeStamp-gesture.at>=180)
-                gesture={direction,at:timeStamp,canExit:atBoundary,distance:0};
-              gesture.at=timeStamp;
-              if(!atBoundary){gesture.canExit=false;return;}
-              event.preventDefault();
-              if(!gesture.canExit)return;
-              gesture.distance+=Math.abs(deltaY)*(deltaMode===1?16:deltaMode===2?Math.max(40,flow.clientHeight):1);
-              if(gesture.distance>=40){
-                event.stopPropagation();
-                mapState.closingWheel={direction,at:timeStamp};mapReturn();
-              }
-            };
-            fullStage.addEventListener("wheel",wheel,{capture:true,passive:false});
-            header.addEventListener("wheel",wheel,{capture:true,passive:false});
-            const dispose=flow.dispose;
-            flow.dispose=()=>{
-              fullStage.removeEventListener("wheel",wheel,true);
-              header.removeEventListener("wheel",wheel,true);dispose?.();
-            };
-          }else{
+          if(!mapState){
             const clear=btn("×",()=>{
               S.cap.studioQuery="";S.cap.studioSearchDraft=null;S.cap.studioConstellationReturn=null;
               S.cap.page=0;S.cap.studioThumbScrollTop=0;renderCaptions();
