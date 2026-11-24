@@ -1,0 +1,12 @@
+const assert=require("node:assert/strict"),fs=require("node:fs");
+const app=fs.readFileSync("src/fizgig/web/static/app.js","utf8");
+const css=fs.readFileSync("src/fizgig/web/static/style.css","utf8");
+const viz=fs.readFileSync("src/fizgig/web/static/caption_studio_viz.js","utf8");
+assert.match(app,/waterfallScaleControl\.hidden=view!=="waterfall"/);
+assert.match(app,/localStorage\.setItem\("fizgig.caption.waterfall_scale",String\(scale\)\)/);
+assert.match(app,/scaleInput\.addEventListener\("dblclick",[\s\S]*?updateScale\(100,true\)/);
+assert.match(app,/fullStage\.querySelector\("\.studio-tb-waterfall"\)\?\.setScale\(scale\)/);
+assert.match(viz,/tiles\.forEach\(\(tile,i\)=>nextColumns\[i%wanted\]\.append\(tile\)\)/);
+assert.match(viz,/stage\.scrollTop\+=anchor\.getBoundingClientRect\(\)\.top-top-offset/);
+assert.match(css,/\.studio-waterfall-scale\[hidden\]\{display:none!important\}/);
+console.log("Waterfall scale integration checks passed");

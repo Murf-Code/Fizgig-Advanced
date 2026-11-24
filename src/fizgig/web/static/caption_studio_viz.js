@@ -441,11 +441,19 @@ const CaptionStudioViz = (() => {
     }
     return {...graph,nodes,chosen,alike,colors};
   }
-  function tagbenchWaterfall(items,onSelect,onContextMenu,activePath,selection,token,onDecorate=null,onOpenTags=null) {
+  const waterfallScale=value=>{
+    const n=Number(value);
+    return value==null||value===""||!Number.isFinite(n)?100:Math.max(50,Math.min(150,Math.round(n/10)*10));
+  };
+  const waterfallColumns=(width,scale=100)=>Math.max(1,
+    Math.floor((Math.max(100,width)-16+9)/(228*waterfallScale(scale)/100)));
+  function tagbenchWaterfall(items,onSelect,onContextMenu,activePath,selection,token,onDecorate=null,onOpenTags=null,initialScale=100) {
     const stage=document.createElement("div");stage.className="studio-tb-waterfall";
     const flow=document.createElement("div");flow.className="studio-tb-flow";
     const pictures=items.filter(it=>it.size);
-    const initialColumns=Math.max(2,Math.floor(Math.max(300,window.innerWidth-60)/228));
+    let scale=waterfallScale(initialScale);
+    const initialColumns=waterfallColumns(window.innerWidth-60,scale);
+    const tiles=[]; // Dataset order, independent of the column DOM order.
     let columns=Array.from({length:initialColumns},()=>{
       const col=document.createElement("div");col.className="studio-tb-flow-column";
       flow.append(col);return col;
@@ -453,7 +461,7 @@ const CaptionStudioViz = (() => {
     // Decode only the first page of thumbnails. The dataset may have tens of
     // thousands of images; creating every DOM node and image at once is costly.
     const batchSize=120;
-    let count=0,disposed=false,resizeObserver=null,loadObserver=null;
+    let count=0,disposed=false,resizeObserver=null,loadObserver=null,resizeFrame=null;
     const createTile=it=>{
       const tile=document.createElement("button");
       tile.type="button";tile.className="studio-tb-flow-tile";
@@ -466,6 +474,9 @@ const CaptionStudioViz = (() => {
       img.loading="lazy";img.decoding="async";
       img.src="/api/thumb?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(token||"");
       img.alt="";
+      if(it.size[0]>0&&it.size[1]>0){
+        img.width=it.size[0];img.height=it.size[1];
+      }
       tile.append(img);
       onDecorate?.(tile,it);
       tile.addEventListener("click",event=>onSelect(it,event));
@@ -482,7 +493,10 @@ const CaptionStudioViz = (() => {
     const loadMore=()=>{
       if(disposed||count>=pictures.length)return;
       const end=Math.min(pictures.length,count+batchSize);
-      for(;count<end;count++)columns[count%columns.length].append(createTile(pictures[count]));
+      for(;count<end;count++){
+        const tile=createTile(pictures[count]);
+        tiles.push(tile);columns[count%columns.length].append(tile);
+      }
       if(count>=pictures.length){
         sentinel.remove();
         loadObserver?.disconnect();
@@ -496,7 +510,7 @@ const CaptionStudioViz = (() => {
     }else{
       stage.append(sentinel);
       loadMore();
-      if(typeof IntersectionObserver!=="undefined"&&sentinel.isConnected){
+      if(typeof IntersectionObserver!=="undefined"&&count<pictures.length){
         loadObserver=new IntersectionObserver(entries=>{
           if(entries.some(entry=>entry.isIntersecting))loadMore();
         },{root:stage,rootMargin:"450px 0px"});
@@ -504,23 +518,51 @@ const CaptionStudioViz = (() => {
       }
     }
     const resize=()=>{
-      if(disposed||!stage.isConnected)return;
-      const wanted=Math.max(2,Math.floor(Math.max(400,stage.clientWidth)/228));
+      if(disposed||!stage.isConnected||!stage.clientWidth||!tiles.length)return;
+      const wanted=waterfallColumns(stage.clientWidth,scale);
       if(wanted===columns.length)return;
-      const tiles=[...flow.querySelectorAll(".studio-tb-flow-tile")];
-      flow.replaceChildren();
-      columns=Array.from({length:wanted},()=>{
+      // Anchor the first visible image rather than a percentage of scroll
+      // height. Binary search each column; no full-dataset layout scan.
+      const top=stage.getBoundingClientRect().top;
+      let anchor=null,offset=0,best=Infinity;
+      for(const col of columns){
+        const children=col.children;
+        let lo=0,hi=children.length;
+        while(lo<hi){
+          const mid=(lo+hi)>>1;
+          if(children[mid].getBoundingClientRect().bottom<=top)lo=mid+1;
+          else hi=mid;
+        }
+        if(lo===children.length)continue;
+        const tile=children[lo],rect=tile.getBoundingClientRect();
+        const distance=Math.abs(rect.top-top);
+        if(distance<best){best=distance;anchor=tile;offset=rect.top-top;}
+      }
+      const focused=document.activeElement;
+      const nextColumns=Array.from({length:wanted},()=>{
         const col=document.createElement("div");col.className="studio-tb-flow-column";
-        flow.append(col);return col;
+        return col;
       });
-      tiles.forEach((tile,i)=>columns[i%wanted].append(tile));
+      // Keep the original image nodes, selection classes and event handlers.
+      // Use dataset order, not column-major querySelectorAll order.
+      tiles.forEach((tile,i)=>nextColumns[i%wanted].append(tile));
+      flow.replaceChildren(...nextColumns);columns=nextColumns;
+      if(anchor)stage.scrollTop+=anchor.getBoundingClientRect().top-top-offset;
+      if(focused&&tiles.includes(focused))focused.focus({preventScroll:true});
     };
+    const queueResize=()=>{
+      if(disposed||resizeFrame!==null)return;
+      if(typeof requestAnimationFrame!=="function"){resize();return;}
+      resizeFrame=requestAnimationFrame(()=>{resizeFrame=null;resize();});
+    };
+    stage.setScale=value=>{scale=waterfallScale(value);queueResize();};
     if(typeof ResizeObserver!=="undefined"){
-      resizeObserver=new ResizeObserver(resize);
+      resizeObserver=new ResizeObserver(queueResize);
       resizeObserver.observe(stage);
     }
     stage.dispose=()=>{
       disposed=true;
+      if(resizeFrame!==null)cancelAnimationFrame(resizeFrame);
       resizeObserver?.disconnect();
       loadObserver?.disconnect();
     };
@@ -724,7 +766,7 @@ const CaptionStudioViz = (() => {
     return stage;
   }
 
-  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation});
+  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns});
 })();
 // A classic WebWorker can import this existing pure graph implementation
 // without maintaining a second constellation algorithm.

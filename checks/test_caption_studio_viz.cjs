@@ -1,6 +1,15 @@
 const assert = require("node:assert/strict");
 const Viz = require("../src/fizgig/web/static/caption_studio_viz.js");
 
+assert.equal(Viz.waterfallScale(null),100);
+assert.equal(Viz.waterfallScale(""),100);
+assert.equal(Viz.waterfallScale("invalid"),100);
+assert.equal(Viz.waterfallScale("111"),110);
+assert.equal(Viz.waterfallScale(2),50);
+assert.equal(Viz.waterfallScale(500),150);
+assert.ok(Viz.waterfallColumns(1200,50)>Viz.waterfallColumns(1200,100));
+assert.ok(Viz.waterfallColumns(1200,100)>Viz.waterfallColumns(1200,150));
+assert.equal(Viz.waterfallColumns(250,150),1);
 const index = [["lion", 4], ["blue", 3], ["red", 2]];
 const captions = [["Lion", "blue"], ["lion", "blue", "red"], ["lion", "blue"],
   ["lion", "red"], ["red"]];

@@ -6891,3 +6891,33 @@ body.caption-glass-ui .studio-image-context-menu .studio-danger-action:not(:disa
   }
   #tab-captions .studio-stuck-halo{animation:none!important}
 }
+
+/* Waterfall zoom is a local view control, not another settings panel. */
+#tab-captions .studio-top-actions>.studio-waterfall-scale{
+  display:flex;align-items:center;justify-content:center;gap:7px;
+  flex:1 1 140px;min-width:100px;height:36px;margin:0;
+  color:var(--text-secondary);
+}
+#tab-captions .studio-top-actions>.studio-waterfall-scale[hidden]{display:none!important}
+#tab-captions .studio-waterfall-scale>svg{flex:none;width:15px;height:15px}
+#tab-captions .studio-waterfall-scale>svg:last-child{width:21px;height:21px}
+#tab-captions .studio-waterfall-scale>input[type=range]{
+  flex:1 1 90px;width:100%;min-width:40px;max-width:144px;margin:0;
+  padding:0;accent-color:var(--accent);cursor:pointer;
+}
+#tab-captions .studio-waterfall-scale>input[type=range]:focus-visible{
+  outline:2px solid var(--accent);outline-offset:3px;border-radius:5px;
+}
+#tab-captions .studio-top-actions.has-waterfall-scale>.studio-learning-toggle{margin-left:0}
+@container caption-toolbar (max-width:980px){
+  #tab-captions .studio-top-actions.has-waterfall-scale{flex-wrap:wrap}
+  #tab-captions .studio-top-actions.has-waterfall-scale>.studio-waterfall-scale{
+    flex:1 1 110px;min-width:100px;
+  }
+}
+@container caption-toolbar (max-width:740px){
+  #tab-captions .studio-top-actions.has-waterfall-scale>.studio-waterfall-scale{
+    order:4;flex:1 1 100%;
+  }
+}
+#tab-captions .studio-tb-flow-tile{min-height:0}

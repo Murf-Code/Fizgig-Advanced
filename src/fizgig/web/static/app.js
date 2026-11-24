@@ -15900,8 +15900,30 @@ function renderCaptionStudio(host,items,ext){
   document.addEventListener("keydown",S.cap.studioToolsMenuDismiss);
   toolsMenu.addEventListener("toggle",()=>{if(toolsMenu.open)editMenu.open=false;});
   editMenu.addEventListener("toggle",()=>{if(editMenu.open)toolsMenu.open=false;});
+  if(typeof S.cap.studioWaterfallScale!=="number"){
+    try{S.cap.studioWaterfallScale=CaptionStudioViz.waterfallScale(localStorage.getItem("fizgig.caption.waterfall_scale"));}
+    catch(e){S.cap.studioWaterfallScale=100;}
+  }
+  const scaleInput=el("input",{type:"range",min:"50",max:"150",step:"10",
+    value:String(S.cap.studioWaterfallScale),"aria-label":"Waterfall image scale"});
+  const scaleIcon=()=>toolbarIcon(["M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1","M3 17l6-6 4 4 3-3 5 5","M15 7h.01"]);
+  const waterfallScaleControl=el("div",{class:"studio-waterfall-scale",hidden:true},
+    scaleIcon(),scaleInput,scaleIcon());
+  const updateScale=(value,persist=false)=>{
+    const scale=CaptionStudioViz.waterfallScale(value);
+    S.cap.studioWaterfallScale=scale;scaleInput.value=String(scale);
+    scaleInput.setAttribute("aria-valuetext",scale+"%");
+    scaleInput.title="Image scale: "+scale+"% · Double-click to reset";
+    fullStage.querySelector(".studio-tb-waterfall")?.setScale(scale);
+    if(persist)try{localStorage.setItem("fizgig.caption.waterfall_scale",String(scale));}catch(e){}
+  };
+  scaleInput.setAttribute("aria-valuetext",S.cap.studioWaterfallScale+"%");
+  scaleInput.title="Image scale: "+S.cap.studioWaterfallScale+"% · Double-click to reset";
+  scaleInput.addEventListener("input",()=>updateScale(scaleInput.value));
+  scaleInput.addEventListener("change",()=>updateScale(scaleInput.value,true));
+  scaleInput.addEventListener("dblclick",event=>{event.preventDefault();updateScale(100,true);});
   const actionBar=el("nav",{class:"studio-top-actions","aria-label":"Caption Workbench tools"},
-    settingsBtn,refreshBtn,editMenu,toolsMenu);
+    settingsBtn,refreshBtn,editMenu,toolsMenu,waterfallScaleControl);
   actionBar.addEventListener("click",event=>{
     if(window.matchMedia("(prefers-reduced-motion: reduce)").matches)return;
     const control=event.target.closest("button,summary,.studio-learning-toggle");
@@ -15999,8 +16021,9 @@ function renderCaptionStudio(host,items,ext){
           });
         };
         const flow=CaptionStudioViz.tagbenchWaterfall(items,chooseImage,openImageMenu,
-          S.cap.studioPath,S.cap.studioSelection,TOKEN,captionLearningDecorate,openTagsImage);
+          S.cap.studioPath,S.cap.studioSelection,TOKEN,captionLearningDecorate,openTagsImage,S.cap.studioWaterfallScale);
         fullStage.append(flow);
+        flow.setScale(S.cap.studioWaterfallScale);
       }else{
         const revision=S.cap.studioRevision||0;
         const cache=S.cap.studioTagbenchGraph;
@@ -16074,6 +16097,8 @@ function renderCaptionStudio(host,items,ext){
         }
       }
     }
+    waterfallScaleControl.hidden=view!=="waterfall";
+    actionBar.classList.toggle("has-waterfall-scale",view==="waterfall");
     learningToggle.hidden=view==="constellation";
     learningFilter.hidden=view==="constellation"||!learningCheck.checked;
     for(const button of viewButtons.querySelectorAll("button")){
