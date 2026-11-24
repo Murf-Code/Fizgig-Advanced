@@ -216,10 +216,10 @@ const CaptionStudioViz = (() => {
   };
   // Stable semantic cluster identity, blended toward the active theme's
   // foreground for readability on both light and dark surfaces.
-  const tbHue=id=>{
+  const tbHue=(id,colorMix=72)=>{
     const hue=id<TB_HUES.length?TB_HUES[id]:
       "hsl("+Math.round(id*137.508%360)+" 72% 62%)";
-    return "color-mix(in srgb, "+hue+" 72%, var(--text-primary))";
+    return "color-mix(in srgb, "+hue+" "+colorMix+"%, var(--text-primary))";
   };
   function tagbenchGraph(items) {
     // Bound pair storage by the visible vocabulary. Search still indexes every tag.
@@ -248,6 +248,9 @@ const CaptionStudioViz = (() => {
     }
     return {all,top,edges,linkCounts,imageCount:items.length};
   }
+  function tagAffinity(shared,leftCount,rightCount){
+    return shared/Math.sqrt(leftCount*rightCount)*shared/(shared+2);
+  }
   function tagbenchModel(items,categories) {
     const graph=tagbenchGraph(items),{all,top,edges,linkCounts}=graph;
     const index=new Map(top.map((row,i)=>[row.tag,i]));
@@ -255,7 +258,7 @@ const CaptionStudioViz = (() => {
     // Cosine normalization discounts ubiquitous tags; shrink one-off coincidences.
     for(const edge of edges){
       const i=index.get(edge.a),j=index.get(edge.b);
-      const weight=edge.w/Math.sqrt(top[i].count*top[j].count)*edge.w/(edge.w+2);
+      const weight=tagAffinity(edge.w,top[i].count,top[j].count);
       neighbors[i].push({peer:j,weight,edge});
       neighbors[j].push({peer:i,weight,edge});
     }
@@ -532,54 +535,35 @@ const CaptionStudioViz = (() => {
     const canvas=html("canvas","studio-tb-strands");
     canvas.setAttribute("aria-hidden","true");
     const ctx=canvas.getContext("2d");
-    const regionLayer=make("g"),edgeLayer=make("g"),nodeLayer=make("g"),labelLayer=make("g");
-    const nodes=model.nodes.map(n=>({...n,ox:0,oy:0}));
+    const edgeLayer=make("g"),nodeLayer=make("g"),labelLayer=make("g");
+    const nodes=model.nodes.map(n=>({...n,ox:0,oy:0,
+      color:n.color===tbHue(n.group)?tbHue(n.group,92):n.color}));
     const at=new Map(nodes.map(n=>[n.tag,n])),all=new Map(model.all.map(n=>[n.tag,n]));
     const adjacency=new Map(nodes.map(n=>[n.tag,new Map()]));
     for(const e of model.edges){adjacency.get(e.a)?.set(e.b,e.w);adjacency.get(e.b)?.set(e.a,e.w);}
     const maxCount=nodes[0].count;
     const visual=new Map();
-    const leaders=new Map();
-    // The model is frequency-ranked; give each community a named landmark.
-    for(const n of nodes)if(!leaders.has(n.group))leaders.set(n.group,n);
-    const groups=new Map();
-    for(const n of nodes){
-      if(!groups.has(n.group))groups.set(n.group,[]);
-      groups.get(n.group).push(n);
-    }
-    const regionByTag=new Map();
-    const regions=[...groups.values()].filter(group=>group.length>=3)
-      .sort((a,b)=>b.length-a.length).map(group=>{
-        const x=group.reduce((sum,n)=>sum+n.x,0)/group.length;
-        const y=group.reduce((sum,n)=>sum+n.y,0)/group.length;
-        const rx=Math.max(...group.map(n=>Math.abs(n.x-x)))+24;
-        const ry=Math.max(...group.map(n=>Math.abs(n.y-y)))+24;
-        const color=tbHue(group[0].group);
-        const wash=make("ellipse",{cx:x,cy:y,rx,ry,fill:color,"fill-opacity":".085","pointer-events":"none"},regionLayer);
-        return {group,x,y,rx,ry,color,wash};
-      });
-    const regionLabels=make("g",{},svg);
-    for(const region of regions){
-      for(const n of region.group)regionByTag.set(n.tag,region);
-      const names=region.group.slice(0,2).map(n=>n.tag);
-      region.label=make("text",{x:region.x,y:region.y,"text-anchor":"middle","dominant-baseline":"central",
-        fill:"color-mix(in srgb, "+region.color+" 65%, var(--text-primary))",stroke:"var(--bg-deep)",
-        "paint-order":"stroke","font-weight":750,"pointer-events":"none"},regionLabels);
-      region.label.textContent=names.map(name=>name.length>23?name.slice(0,22)+"…":name).join(" · ");
-    }
     let labelOrder=nodes,overviewCamera=null,overviewZoom=1;
     let expanded=false,activePair=null;
     const temporaryTags=new Set(),focusEdges=new Map();
-    const focusPositions=new Map();
+    const focusedTags=new Set();
     let typeScale=1;
-    const labelSize=n=>(n.tag===picked?22:leaders.get(n.group)===n?19:15)*typeScale/zoom;
+    const labelSize=n=>(n.tag===picked?22:13+8*Math.sqrt(n.count/maxCount))*typeScale/zoom;
 
-    const bridges=[],communityStrands=new Map();
-    for(const edge of model.chosen){
+    // Group strokes by color and width so each batch shares a Canvas path.
+    const strandBatches=new Map();
+    const overviewEdges=model.chosen.map(edge=>({
+      ...edge,strength:tagAffinity(edge.w,at.get(edge.a).count,at.get(edge.b).count)
+    })).sort((a,b)=>b.strength-a.strength).slice(0,150);
+    const strongest=overviewEdges[0]?.strength||1;
+    for(const edge of overviewEdges){
       const a=at.get(edge.a),b=at.get(edge.b);
-      if(a.group!==b.group||a.color!==b.color){bridges.push(edge);continue;}
-      if(!communityStrands.has(a.color))communityStrands.set(a.color,[]);
-      communityStrands.get(a.color).push(edge);
+      const tag=a.group===b.group&&a.color===b.color?a.tag:null;
+      const color=tag?a.color:null;
+      const band=Math.min(4,Math.floor(5*Math.sqrt(edge.strength/strongest)));
+      const key=band+"|"+color;
+      if(!strandBatches.has(key))strandBatches.set(key,{color,tag,band,edges:[]});
+      strandBatches.get(key).edges.push(edge);
     }
     // Resolve theme-dependent SVG colors after mount, then reuse them during motion.
     const strandColors=new Map();
@@ -589,8 +573,7 @@ const CaptionStudioViz = (() => {
     const reduced=()=>!!media?.matches;
     // Reserve room for the full total even when selection shows a shorter shared count.
     const radius=n=>countRadius(n.count,maxCount)*typeScale/zoom;
-    const location=n=>focusPositions.get(n.tag)||n;
-    const position=n=>({x:location(n).x+n.ox,y:location(n).y+n.oy});
+    const position=n=>({x:n.x+n.ox,y:n.y+n.oy});
     const view=()=>svg.setAttribute("viewBox",[500-500/zoom+pan.x,350-350/zoom+pan.y,1000/zoom,700/zoom].join(" "));
     const search=html("div","studio-tb-search"),input=html("input","",undefined,search),matches=html("div","studio-tb-suggest",undefined,search);
     input.placeholder="Search Tags";input.setAttribute("aria-label","Search all dataset tags");
@@ -614,62 +597,24 @@ const CaptionStudioViz = (() => {
         ctx.moveTo(p.x,p.y);
         ctx.quadraticCurveTo((p.x+q.x)/2-(q.y-p.y)*.09,(p.y+q.y)/2+(q.x-p.x)*.09,q.x,q.y);
       };
-      ctx.lineWidth=.85*ratio/scale;
-      const stroke=(edges,color,alpha)=>{
-        if(!edges.length)return;
-        ctx.strokeStyle=color;ctx.globalAlpha=alpha;ctx.beginPath();
+      const neutral=getComputedStyle(canvas).color;
+      for(const {color,tag,band,edges} of strandBatches.values()){
+        if(color&&!strandColors.has(color)){
+          strandColors.set(color,getComputedStyle(visual.get(tag).halo).fill);
+        }
+        ctx.strokeStyle=strandColors.get(color)||neutral;
+        ctx.lineWidth=(.65+band*.6)*ratio/scale;
+        ctx.globalAlpha=picked?.05:(color?.18:.085)+band*.055;
+        ctx.beginPath();
         for(const e of edges)curve(e.a,e.b);
         ctx.stroke();
-      };
-      if(picked)return;
-      if(regionOverview()){
-        const routes=new Map();
-        for(const e of bridges){
-          const from=regionByTag.get(e.a),to=regionByTag.get(e.b);
-          if(!from||!to||from===to)continue;
-          const key=[from.group[0].group,to.group[0].group].sort().join(":");
-          if(!routes.has(key)||e.w>routes.get(key).w)routes.set(key,{from,to,w:e.w});
-        }
-        ctx.strokeStyle=getComputedStyle(canvas).color;
-        ctx.globalAlpha=.22;
-        ctx.beginPath();
-        for(const {from,to} of [...routes.values()].sort((a,b)=>b.w-a.w).slice(0,9)){
-          ctx.moveTo(from.x,from.y);
-          ctx.quadraticCurveTo((from.x+to.x)/2-(to.y-from.y)*.12,(from.y+to.y)/2+(to.x-from.x)*.12,to.x,to.y);
-        }
-        ctx.stroke();
-        return;
-      }
-      stroke(bridges,getComputedStyle(canvas).color,.10);
-      for(const [color,edges] of communityStrands){
-        if(!strandColors.has(color)){
-          strandColors.set(color,getComputedStyle(visual.get(edges[0].a).halo).fill);
-        }
-        stroke(edges,strandColors.get(color),.40);
-      }
-    }
-    function regionOverview(){
-      return !picked&&regions.length>0&&zoom<=overviewZoom*1.15;
-    }
-    function updateRegions(){
-      const overview=regionOverview(),boxes=[];
-      for(const region of regions){
-        region.wash.style.display=picked?"none":"";
-        const size=21*typeScale/zoom;
-        const width=region.label.textContent.length*size*.59;
-        const box={left:region.x-width/2,right:region.x+width/2,top:region.y-size,bottom:region.y+size};
-        const show=overview&&!boxes.some(b=>b.left<box.right&&box.left<b.right&&b.top<box.bottom&&box.top<b.bottom);
-        region.label.style.display=show?"":"none";
-        region.label.setAttribute("font-size",size);
-        region.label.setAttribute("stroke-width",size*.27);
-        if(show)boxes.push(box);
       }
     }
     function updateFocusEdges(){
       for(const [tag,edge] of focusEdges){
         const from=position(at.get(picked)),to=position(at.get(tag));
         const dx=to.x-from.x,dy=to.y-from.y;
-        const cx=from.x+dx*.62,cy=from.y+dy*.24;
+        const cx=(from.x+to.x)/2-dy*.09,cy=(from.y+to.y)/2+dx*.09;
         const path="M "+from.x+" "+from.y+" Q "+cx+" "+cy+" "+to.x+" "+to.y;
         const strength=associationStrength(tag,shared.get(tag));
         edge.line.setAttribute("d",path);edge.hit.setAttribute("d",path);
@@ -683,16 +628,12 @@ const CaptionStudioViz = (() => {
     }
     const nodeGeometry=n=>{
       const v=visual.get(n.tag);if(!v)return;
-      const p=position(n),r=radius(n)*(regionOverview()?.43:1),sz=labelSize(n);
+      const p=position(n),r=radius(n),sz=labelSize(n);
       v.g.setAttribute("transform","translate("+p.x+" "+p.y+")");
       v.hit.setAttribute("r",Math.max(9/zoom,r));v.core.setAttribute("r",r);v.halo.setAttribute("r",r*1.34);
       v.ring.setAttribute("r",r+3/zoom);
       v.number.setAttribute("font-size",13*typeScale/zoom);
       v.number.setAttribute("stroke-width",1.2/zoom);
-      const anchor=n.tag===picked?"end":"start";
-      v.label.setAttribute("text-anchor",anchor);
-      v.label.setAttribute("x",p.x+(anchor==="end"?-1:1)*(r+6/zoom));
-      v.label.setAttribute("y",p.y+sz*.32);
       v.label.setAttribute("font-size",sz);v.label.setAttribute("stroke-width",Math.max(sz*.28,2/zoom));
       v.ripple.setAttribute("r",r+4/zoom+(pulse?.tag===n.tag?pulse.amount*13/zoom:0));
     };
@@ -700,10 +641,11 @@ const CaptionStudioViz = (() => {
       if(!changed){for(const n of at.values())nodeGeometry(n);}
       else for(const tag of changed){const n=at.get(tag);if(n)nodeGeometry(n);}
       drawStrands();
-      updateRegions();
       updateFocusEdges();
-      const overview=regionOverview();
-      for(const n of labelOrder)visual.get(n.tag).number.style.display=overview?"none":"";
+      for(const n of at.values()){
+        const show=picked?focusedTags.has(n.tag):zoom>overviewZoom*1.15||n.count>=maxCount*.18;
+        visual.get(n.tag).number.style.display=show?"":"none";
+      }
       placeLabels();
     };
     function createNode(n){
@@ -721,12 +663,12 @@ const CaptionStudioViz = (() => {
         "font-family":"system-ui, sans-serif","font-weight":750,style:"font-variant-numeric:tabular-nums",fill:"#161823",stroke:"#fff",
         "stroke-opacity":.75,"paint-order":"stroke","pointer-events":"none","aria-hidden":"true"},g);
       const hit=make("circle",{fill:"transparent"},g);
-      const label=make("text",{fill:"var(--text-primary)","font-family":"system-ui, sans-serif","font-weight":leaders.get(n.group)===n?750:600,stroke:"var(--bg-deep)","paint-order":"stroke","pointer-events":"none"},labelLayer);
+      const label=make("text",{fill:"var(--text-primary)","font-family":"system-ui, sans-serif","font-weight":650,stroke:"var(--bg-deep)","paint-order":"stroke","pointer-events":"none"},labelLayer);
       label.textContent=n.tag;
       visual.set(n.tag,{g,core,halo,ripple,ring,hit,number,label,grad,id});
       g.addEventListener("pointerdown",e=>{
         if(e.button!==0)return;e.stopPropagation();dismissMenu();cancelMotion();
-        const p=point(e);drag={kind:"node",tag:n.tag,dx:p.x-location(n).x,dy:p.y-location(n).y,x:e.clientX,y:e.clientY,moved:false};
+        const p=point(e);drag={kind:"node",tag:n.tag,dx:p.x-n.x,dy:p.y-n.y,x:e.clientX,y:e.clientY,moved:false};
         svg.setPointerCapture(e.pointerId);
       });
       g.addEventListener("keydown",e=>{
@@ -754,33 +696,32 @@ const CaptionStudioViz = (() => {
       return n;
     }
     function placeLabels(){
-      if(regionOverview()){
-        for(const n of labelOrder)visual.get(n.tag).label.setAttribute("visibility","hidden");
-        return;
-      }
-      if(picked){
-        for(const n of labelOrder)visual.get(n.tag).label.setAttribute("visibility","visible");
-        return;
-      }
       const boxes=[];
+      const left=500+pan.x-500/zoom,right=500+pan.x+500/zoom;
+      const top=350+pan.y-350/zoom,bottom=350+pan.y+350/zoom;
       const discs=labelOrder.map(n=>({...position(n),r:radius(n),tag:n.tag}));
       for(const n of labelOrder){
         const v=visual.get(n.tag),p=position(n),sz=labelSize(n);
-        const width=(n.tag.length*.60+.5)*sz,gap=radius(n)+3/zoom;
+        const gap=radius(n)+3/zoom;
+        if(p.x+gap<left||p.x-gap>right||p.y+gap<top||p.y-gap>bottom){
+          v.label.setAttribute("visibility","hidden");continue;
+        }
+        const width=(n.tag.length*.60+.5)*sz;
         const candidates=[[p.x+gap,p.y],[p.x-gap-width,p.y],
           [p.x-width/2,p.y-gap-sz*.6],[p.x-width/2,p.y+gap+sz*.6]];
         let best=null,bestScore=Infinity;
-        for(const [left,y] of candidates){
-          const box={left,right:left+width,top:y-sz*.6,bottom:y+sz*.6};
+        for(const [x,y] of candidates){
+          const box={left:x,right:x+width,top:y-sz*.6,bottom:y+sz*.6};
           const overlaps=b=>b.left<box.right&&box.left<b.right&&b.top<box.bottom&&box.top<b.bottom;
-          const score=boxes.filter(overlaps).length*4+discs.filter(d=>d.tag!==n.tag&&
+          const clipped=box.left<left||box.right>right||box.top<top||box.bottom>bottom;
+          const score=(clipped?20:0)+boxes.filter(overlaps).length*4+discs.filter(d=>d.tag!==n.tag&&
             d.x+d.r>box.left&&d.x-d.r<box.right&&d.y+d.r>box.top&&d.y-d.r<box.bottom).length;
-          if(score<bestScore){best={box,left,y};bestScore=score;}
+          if(score<bestScore){best={box,x,y};bestScore=score;}
           if(!score)break;
         }
-        const show=bestScore===0||n===labelOrder[0];
+        const show=bestScore===0||n.tag===picked||(!picked&&n===labelOrder[0]);
         if(show){
-          v.label.setAttribute("x",best.left);v.label.setAttribute("y",best.y+sz*.32);
+          v.label.setAttribute("x",best.x);v.label.setAttribute("y",best.y+sz*.32);
           boxes.push(best.box);
         }
         v.label.setAttribute("visibility",show?"visible":"hidden");
@@ -788,11 +729,11 @@ const CaptionStudioViz = (() => {
     }
     function updateAppearance(){
       const focus=picked,neighbors=shared;
-      labelOrder=picked?[...focusPositions.keys()].map(tag=>at.get(tag)):nodes;
+      labelOrder=picked?[...focusedTags].map(tag=>at.get(tag)):nodes;
       for(const n of at.values()){
-        const v=visual.get(n.tag),selected=n.tag===picked,related=!focus||focusPositions.has(n.tag);
-        v.g.style.display=v.label.style.display=related?"":"none";
-        v.g.setAttribute("opacity",related?1:.22);
+        const v=visual.get(n.tag),selected=n.tag===picked,related=!focus||focusedTags.has(n.tag);
+        v.g.setAttribute("opacity",related?1:.23);
+        v.label.style.display=related?"":"none";
         v.g.setAttribute("aria-pressed",String(selected));
         const sharedCount=neighbors.get(n.tag);
         v.number.textContent=String(sharedCount??n.count);
@@ -801,8 +742,8 @@ const CaptionStudioViz = (() => {
         v.core.setAttribute("fill",selected?"#efd16e":prefs.glassNodes?"url(#"+v.id+")":n.color);
         v.ring.setAttribute("opacity",selected?"1":"0");
         v.halo.setAttribute("opacity",n.tag===focus?".24":"0");
-        v.label.setAttribute("fill",selected?"#efd16e":leaders.get(n.group)===n?
-          "color-mix(in srgb, "+n.color+" 50%, var(--text-primary))":"var(--text-primary)");
+        v.label.setAttribute("fill",selected?"#efd16e":"color-mix(in srgb, "+n.color+" 82%, var(--text-primary))");
+        v.label.setAttribute("font-weight",selected?750:650);
         v.label.setAttribute("opacity",related?"1":".38");
       }
       updateGeometry();
@@ -856,17 +797,27 @@ const CaptionStudioViz = (() => {
       return count/(count+2)*logLift/(1+logLift);
     }
     function layoutNeighborhood(){
-      focusPositions.clear();focusEdges.clear();edgeLayer.replaceChildren();
+      focusedTags.clear();focusEdges.clear();edgeLayer.replaceChildren();
       clearTemporaryTags(picked);
       if(!picked)return;
       const limit=expanded?12:8;
       const peers=[...shared.keys()].slice(0,limit);
-      const step=Math.min(70,510/Math.max(1,peers.length-1));
-      focusPositions.set(picked,{x:350,y:350});
+      focusedTags.add(picked);
+      const anchor=at.get(picked);
       peers.forEach((tag,i)=>{
+        const exists=at.has(tag);
         const n=ensureTag(tag);
-        if(!n)return;
-        focusPositions.set(tag,{x:650,y:350+(i-(peers.length-1)/2)*step});
+        if(!exists){
+          // Tags outside the overview occupy free space close to the anchor.
+          const distance=70/zoom,angle=i*2.39996;
+          for(let ring=1;ring<=4;ring++){
+            n.x=anchor.x+Math.cos(angle)*distance*ring;
+            n.y=anchor.y+Math.sin(angle)*distance*ring;
+            if(![...at.values()].some(other=>other!==n&&
+              Math.hypot(other.x-n.x,other.y-n.y)<radius(n)+radius(other)+4/zoom))break;
+          }
+        }
+        focusedTags.add(tag);
         const count=shared.get(tag);
         const control=make("g",{role:"button",tabindex:0,class:"studio-tb-pair-edge",
           "aria-label":picked+" and "+tag+", "+count+(count===1?" shared image":" shared images")},edgeLayer);
@@ -892,7 +843,6 @@ const CaptionStudioViz = (() => {
         shared=new Map([...related].filter(([peer])=>peer!==tag&&all.has(peer))
           .sort((a,b)=>associationStrength(b[0],b[1])-associationStrength(a[0],a[1])
             ||b[1]-a[1]||a[0].localeCompare(b[0])));
-        zoom=1;pan={x:0,y:0};
       }else{
         shared=new Map();
         if(overviewCamera){zoom=overviewCamera.zoom;pan=overviewCamera.pan;overviewCamera=null;}
@@ -922,7 +872,7 @@ const CaptionStudioViz = (() => {
       if(reduced()||!animate){camera=null;zoom=nextZoom;pan=nextPan;view();updateAppearance();return;}
       camera={start:performance.now(),fromZoom:zoom,fromPan:{...pan},toZoom:nextZoom,toPan:nextPan};wake();
     }
-    function center(tag){if(picked){cameraTo(1,{x:0,y:0});return;}const n=at.get(tag);if(n)cameraTo(Math.max(zoom,1.45),{x:n.x-500,y:n.y-350});}
+    function center(tag){const n=at.get(tag);if(n)cameraTo(Math.max(zoom,1.45),{x:n.x-500,y:n.y-350});}
     function fit(animate=true){
       const values=[...at.values()],minX=Math.min(...values.map(n=>n.x))-80,maxX=Math.max(...values.map(n=>n.x))+130;
       const minY=Math.min(...values.map(n=>n.y))-80,maxY=Math.max(...values.map(n=>n.y))+80;
@@ -988,7 +938,7 @@ const CaptionStudioViz = (() => {
       if(!drag.moved&&Math.hypot(dx,dy)<4)return;drag.moved=true;
       if(drag.kind==="node"){
         const n=at.get(drag.tag),p=point(e);if(!n)return;
-        location(n).x=p.x-drag.dx;location(n).y=p.y-drag.dy;dirty.add(n.tag);
+        n.x=p.x-drag.dx;n.y=p.y-drag.dy;dirty.add(n.tag);
         const scale=scalePixels();
         if(!reduced()&&prefs.elasticity>0)for(const [tag,w] of relationMap(n.tag)){
           const peer=at.get(tag);if(!peer)continue;
@@ -997,7 +947,7 @@ const CaptionStudioViz = (() => {
         }
         wake();
       }else{
-        const scale=scalePixels();pan={x:drag.px-dx/scale,y:drag.py-dy/scale};view();drawStrands();
+        const scale=scalePixels();pan={x:drag.px-dx/scale,y:drag.py-dy/scale};view();drawStrands();placeLabels();
       }
     });
     function release(e,cancel=false){

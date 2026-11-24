@@ -19,4 +19,4 @@ assert.match(graph,/setAttribute\("visibility",show/);
 assert.match(graph,/prefs\.glassNodes\?/);
 assert.match(graph,/button\(item,String\(w\),"Preview "/);
 assert.doesNotMatch(graph,/hovered|g\.addEventListener\("(pointerenter|pointerleave|mouseover|focus|blur)"/);
-assert.match(graph,/stroke\(edges,strandColors\.get\(color\)/);
+assert.match(graph,/ctx\.lineWidth=\(\.65\+band\*\.6\)/);

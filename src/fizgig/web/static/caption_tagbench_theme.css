@@ -224,3 +224,9 @@
   font-variant-numeric:tabular-nums
 }
 #tab-captions .studio-tb-cluster li .studio-tb-pair-count-button:hover{text-decoration:underline}
+
+#tab-captions .studio-tb-constellation:not(.no-celestial){
+  background:radial-gradient(ellipse at 50% 45%,
+    color-mix(in srgb,var(--data-blue) 4%,var(--bg-deep)),var(--bg-deep) 72%);
+}
+#tab-captions .studio-tb-constellation::before{opacity:.10}

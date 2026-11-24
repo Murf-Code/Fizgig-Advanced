@@ -96,13 +96,21 @@ try {
   ]);
   graph.nodes=graph.nodes.filter(node=>node.tag!=="white fur");
   graph.chosen=[];graph.edges=[];
+  const savedMotion=global.matchMedia;
+  global.matchMedia=()=>({matches:true});
   const pairCalls=[];
-  const network=Viz.tagbenchConstellation(graph,()=>{},"paws",{
+  const network=Viz.tagbenchConstellation(graph,()=>{},null,{
     relationsForTag:()=>new Map([["digital art",1],["white fur",1]]),
     previewPair:(...pair)=>{pairCalls.push(pair);return [{src:"/thumb",name:"sample.png"}];},
     openPair:(...pair)=>pairCalls.push(pair)
   });
   const descendants=node=>[node,...node.children.flatMap(descendants)];
+  const paws=descendants(network).find(node=>node.attrs["data-tag"]==="paws");
+  const art=descendants(network).find(node=>node.attrs["data-tag"]==="digital art");
+  const before=[paws.attrs.transform,art.attrs.transform];
+  paws.handlers.keydown({key:"Enter",preventDefault(){},stopPropagation(){}});
+  assert.deepEqual([paws.attrs.transform,art.attrs.transform],before);
+  global.matchMedia=savedMotion;
   const edges=descendants(network).filter(node=>node.attrs.class==="studio-tb-pair-edge");
   assert.equal(edges[0].attrs["aria-label"],"paws and white fur, 1 shared image");
   assert.ok(Number(edges[0].children[0].attrs["stroke-width"])>Number(edges[1].children[0].attrs["stroke-width"]));
