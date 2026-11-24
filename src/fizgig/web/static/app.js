@@ -13952,8 +13952,10 @@ function renderCaptionStudio(host,items,ext){
       action("Copy Caption","",()=>copyImageText(ta.value,"caption"),!ta.value.trim());
       action("Copy File Name","",()=>copyImageText(it.name,"file name"));
     }else{
-      action("Copy Tags","Ctrl+C",()=>copyImageTags(it.path),!count);
-      action("Paste Tags","Ctrl+V",()=>pasteImageTags(it.path),!count);
+      if(S.cap.studioExploreMode==="list"){
+        action("Copy Tags","Ctrl+C",()=>copyImageTags(it.path),!count);
+        action("Paste Tags","Ctrl+V",()=>pasteImageTags(it.path),!count);
+      }
       action("Copy File "+(count===1?"Name":"Names"),"Ctrl+Alt+C",()=>copyImageNames(it.path),!count);
     }
     separator();

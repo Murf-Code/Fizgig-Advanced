@@ -9,4 +9,5 @@ assert.match(css,/data-learning-status="stuck"\]\[data-learning-visible="true"\]
 assert.match(css,/prefers-reduced-motion:reduce/);
 assert.doesNotMatch(app,/selection\.has\(image\)\|\|image===S\.cap\.studioPath/);
 assert.match(menu,/if\(S\.cap\.studioExploreMode==="list"\)\s*action\("Clear Selection"/);
+assert.match(menu,/if\(S\.cap\.studioExploreMode==="list"\)\{\s*action\("Copy Tags"[\s\S]*?action\("Paste Tags"/);
 console.log("Glass selection and Waterfall menu checks passed");
