@@ -6250,6 +6250,11 @@ body:has(.caption-removal-backdrop){overflow:hidden}
 .caption-removal-compact .caption-removal-heading h2{font-size:15px}
 .caption-removal-compact .caption-removal-body{padding:12px 16px}
 .caption-removal-compact .caption-removal-actions{padding:0 16px 12px}
+.caption-removal-tag-counts{max-height:180px;overflow:auto;margin-top:12px;border-block:1px solid var(--border)}
+.caption-removal-tag-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:6px 0;color:var(--text-primary)}
+.caption-removal-tag-row+ .caption-removal-tag-row{border-top:1px solid var(--border)}
+.caption-removal-tag-row span:first-child{min-width:0;overflow-wrap:anywhere}
+.caption-removal-tag-row span:last-child{flex-shrink:0;color:var(--text-secondary);font-variant-numeric:tabular-nums}
 .caption-removal-toggle{margin-top:8px}
 .caption-removal-heading,.caption-removal-actions{flex-shrink:0}
 .caption-removal-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:10px;padding:14px 22px 20px}
