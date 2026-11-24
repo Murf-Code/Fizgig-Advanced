@@ -8321,13 +8321,16 @@ function meWire() {
       if(S.cap?.imageEditing?.inline)document.querySelector("#captionsGrid .studio-image-redo")?.click();
       else meRestore(m.redo,m.undo);
     }
-    else if (k === "ArrowLeft") { e.preventDefault();
-      if(S.cap?.imageEditing?.inline)S.cap.studioStepImage?.(-1);
-      else meGo(m.at - 1);
+    else if (S.cap?.imageEditing?.inline&&captionImageArrowDelta(e)) {
+      const delta=captionImageArrowDelta(e);
+      e.preventDefault();
+      S.cap.studioStepImage?.(delta);
     }
-    else if (k === "ArrowRight") { e.preventDefault();
-      if(S.cap?.imageEditing?.inline)S.cap.studioStepImage?.(1);
-      else meGo(m.at + 1);
+    else if (!S.cap?.imageEditing?.inline&&k === "ArrowLeft") {
+      e.preventDefault();meGo(m.at - 1);
+    }
+    else if (!S.cap?.imageEditing?.inline&&k === "ArrowRight") {
+      e.preventDefault();meGo(m.at + 1);
     }
     else if (k === "[" || k === "]") meSizeKey(k);
     else if (k === "Enter" && (m.tool === "crop" || m.tool === "remove" || m.rmDirty)) {
@@ -12555,6 +12558,14 @@ function studioLiveSummary(status){
 // Keep the one Image Prep canvas, with its existing Remove/Crop/pointer
 // handlers, but mount ONLY the stage inside Tags. The heavy editor form and
 // its advanced mask controls stay in Image Prep.
+// All four arrows navigate the ordered image list; modifiers and native
+// text/slider controls retain their own keyboard behavior.
+function captionImageArrowDelta(event){
+  if(event.defaultPrevented||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey||event.isComposing)return 0;
+  if(event.target?.closest?.("input,textarea,select,[contenteditable],[role=dialog]"))return 0;
+  return ["ArrowUp","ArrowLeft"].includes(event.key)?-1:
+    ["ArrowDown","ArrowRight"].includes(event.key)?1:0;
+}
 function captionInlineStageDetach(){
   const stage=$("meStage"),home=S.cap?.inlineStageHome;
   if(!stage||!home?.parent||stage.parentNode===home.parent)return;
@@ -14048,7 +14059,17 @@ function renderCaptionStudio(host,items,ext){
   left.append(el("div",{class:"studio-browser-heading"},
     el("strong",{text:"Images"})));
   left.append(createTagFilterBar());
-  const thumbs=el("div",{class:"studio-thumb-rail",role:"list","aria-label":"Dataset thumbnails",tabindex:"0"});
+  const thumbs=el("div",{class:"studio-thumb-rail",role:"list","aria-label":"Dataset thumbnails",
+    "aria-keyshortcuts":"ArrowUp ArrowDown ArrowLeft ArrowRight",tabindex:"0"});
+  const focusImageRail=()=>document.querySelector("#captionsGrid .studio-thumb-rail")?.focus({preventScroll:true});
+  thumbs.addEventListener("keydown",event=>{
+    const delta=captionImageArrowDelta(event);
+    if(!delta||!$("tab-captions").classList.contains("active")||
+       (S.cap.studioExploreMode||"list")!=="list")return;
+    event.preventDefault();event.stopPropagation();
+    stepImage(delta);
+    focusImageRail();
+  });
   const thumbViewKey=JSON.stringify([String(S.imageFolder||""),ext,
     $("capSearch").value,$("capFilter").value,$("capSort").value,S.cap.studioQuery||"",
     S.cap.studioLearningFilter||"all"]);
@@ -14416,7 +14437,7 @@ function renderCaptionStudio(host,items,ext){
         const previous=S.cap.studioPath;
         if(!pickImage(it,e))return;
         if(S.cap.studioPath===previous)syncMountedSelection();
-        else renderCaptions();
+        else {renderCaptions();focusImageRail();}
       }},thumb);
     captionLearningDecorate(tile,it);
     const row=el("div",{class:"studio-browser-row",role:"listitem"},tile);
@@ -15780,6 +15801,11 @@ function renderCaptionStudio(host,items,ext){
       });
   }
   const stepImage=delta=>{
+    if(S.cap.imageEditing?.inline){
+      const m=meState();
+      if(m.stepBusy||m.applyPreparing||m.samBusy||m.wmBusy||m.saveTask||
+         S.cap.inlineOpenTask||S.cap.imageClosing||studioHistory().busy)return;
+    }
     // Waterfall clicks update the live path without remounting the stage.
     const activePath=S.cap.studioPath||current.path;
     const idx=items.findIndex(i=>i.path===activePath);
@@ -16704,8 +16730,9 @@ function renderCaptionStudio(host,items,ext){
     }
     if(e.key==="Backspace")return;
     if(e.altKey)return;
-    if(["ArrowRight","ArrowDown","ArrowLeft","ArrowUp"].includes(e.key)){
-      handled();stepImage(["ArrowRight","ArrowDown"].includes(e.key)?1:-1);return;
+    const imageDelta=captionImageArrowDelta(e);
+    if(imageDelta){
+      handled();stepImage(imageDelta);return;
     }
     if(!cmd){
       if(key==="/"){handled();left.querySelector(".studio-tag-query")?.focus();}
