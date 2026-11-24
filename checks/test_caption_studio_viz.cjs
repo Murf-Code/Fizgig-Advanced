@@ -137,7 +137,7 @@ try {
   const gallery=root=>allIn(root).find(node=>node.className==="studio-tb-collection");
   const tiles=root=>allIn(root).filter(node=>node.className==="studio-tb-flow-tile");
   const map=atlas.children[1],mapView=map.attrs.viewBox;
-  assert.ok(allIn(atlas).some(node=>node.attrs.href==="/cover"));
+  assert.ok(!allIn(atlas).some(node=>node.attrs.href==="/cover"),"No selected-node exception at overview zoom");
   byLabel(atlas,"View images tagged paws").handlers.click();
   assert.equal(tiles(gallery(atlas)).length,50);
   assert.equal(map.inert,true);
@@ -329,6 +329,28 @@ try {
     global.getComputedStyle=oldStyle;
   }
 
+  // A shared threshold reveals all eligible on-screen covers, even small
+  // or label-collision-hidden nodes. Zooming out hides them again.
+  const previewModel=Viz.tagbenchModel(Array.from({length:10},(_,i)=>({tags:["anchor","peer_"+i],coverIndex:i})));
+  let requests=0;
+  const previews=Viz.tagbenchConstellation(previewModel,()=>{},null,{
+    coverForTag:tag=>{requests++;return "/preview/"+tag;}
+  });
+  const previewSvg=previews.children[1];
+  assert.equal(requests,0);
+  const wheelPreview=(direction)=>{
+    const [x,y,w,h]=previewSvg.attrs.viewBox.split(" ").map(Number);
+    previewSvg.handlers.wheel({deltaY:direction,clientX:x+w/2,clientY:y+h/2,
+      target:{closest:()=>null},preventDefault(){}});
+  };
+  for(let i=0;i<7;i++)wheelPreview(-1);
+  const coversIn=()=>allIn(previews).filter(n=>String(n.attrs.href||"").startsWith("/preview/"));
+  assert.ok(coversIn().length>0);
+  assert.ok(coversIn().every(n=>Number(n.parent.attrs.opacity)>0&&Number(n.parent.attrs.opacity)<=1));
+  for(let i=0;i<7;i++)wheelPreview(1);
+  assert.ok(coversIn().every(n=>Number(n.parent.attrs.opacity)===0));
+  previews.dispose();
+
   // One shared timer, actual href advancement, pause while Waterfall
   // is open, and cleanup when the map is disposed.
   const oldInterval=global.setInterval,oldClear=global.clearInterval,oldMatch=global.matchMedia;
@@ -346,6 +368,16 @@ try {
     });
     rotating.isConnected=true;
     rotating.setPreferences({elasticity:0});
+    assert.equal(starts,0);
+    assert.ok(!allIn(rotating).some(node=>node.attrs.href==="/slide-0"));
+    // Wheel zoom is immediate even with motion enabled. Keep the pointer at
+    // the camera center and outside the selected node to avoid Waterfall.
+    const rotSvg=rotating.children[1];
+    for(let i=0;i<7;i++){
+      const [x,y,w,h]=rotSvg.attrs.viewBox.split(" ").map(Number);
+      rotSvg.handlers.wheel({deltaY:-1,clientX:x+w/2,clientY:y+h/2,
+        target:{closest:()=>null},preventDefault(){}});
+    }
     assert.equal(starts,1);
     const cover=allIn(rotating).find(node=>node.attrs.href==="/slide-0");
     assert.ok(cover);
@@ -436,3 +468,12 @@ const arrow=Viz.tagArrow({x:0,y:0},{x:100,y:0},20,8,4);
 assert.ok(arrow&&Math.abs(Math.hypot(arrow[0].x-100,arrow[0].y)-20)<.1);
 assert.equal(Viz.tagArrow({x:0,y:0},{x:10,y:0},20,8,4),null);
 console.log("Directional tag associations and arrow geometry passed");
+
+const levels=Viz.coverZoomLevels(1);
+assert.equal(Viz.coverZoomOpacity(1,1),0);
+assert.equal(Viz.coverZoomOpacity(levels.start,1),0);
+assert.ok(Math.abs(Viz.coverZoomOpacity((levels.start+levels.end)/2,1)-.5)<1e-9);
+assert.equal(Viz.coverZoomOpacity(levels.end,1),1);
+assert.equal(Viz.coverZoomOpacity(5,1),1);
+for(const fit of [.35,.7,1,1.6])assert.equal(Viz.coverZoomOpacity(fit,fit),0);
+console.log("Consistent zoom-gated image previews and opacity fade passed");

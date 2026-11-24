@@ -924,6 +924,17 @@ const CaptionStudioViz = (() => {
     const amount=Math.min(cap,length*.12)*strength;
     return length?{x:dx/length*amount,y:dy/length*amount}:{x:0,y:0};
   }
+  // A shared semantic zoom level, independent of node frequency, selection
+  // or label priority. Smoothstep cross-fades the count into the thumbnail.
+  function coverZoomLevels(overview){
+    const start=Math.max(1.1,Math.min(2.2,overview*1.45));
+    return {start,end:Math.min(3.2,Math.max(start+.6,overview*2))};
+  }
+  function coverZoomOpacity(zoom,overview){
+    const {start,end}=coverZoomLevels(overview);
+    const t=Math.max(0,Math.min(1,(zoom-start)/(end-start)));
+    return t*t*(3-2*t);
+  }
   function countRadius(count,maxCount){
     return 5+3.8*String(count).length+20*Math.sqrt(count/Math.max(1,maxCount));
   }
@@ -1241,7 +1252,8 @@ const CaptionStudioViz = (() => {
       const warning=make("text",{fill:"var(--warning)",stroke:"var(--bg-deep)","paint-order":"stroke",
         "stroke-width":1.5,"font-weight":900,"pointer-events":"none",opacity:0},g);
       warning.textContent="!";
-      const artwork=make("g",{"pointer-events":"none","aria-hidden":"true"},g);
+      const artwork=make("g",{"pointer-events":"none","aria-hidden":"true",opacity:0},g);
+      artwork.style.display="none";
       const number=make("text",{"text-anchor":"middle","dominant-baseline":"central",
         "font-family":"system-ui, sans-serif","font-weight":750,style:"font-variant-numeric:tabular-nums",fill:"#161823",stroke:"#fff",
         "stroke-opacity":.75,"paint-order":"stroke","pointer-events":"none","aria-hidden":"true"},g);
@@ -1304,16 +1316,23 @@ const CaptionStudioViz = (() => {
       return n;
     }
     function placeLabels(){
+      const previousCovers=new Set(activeCovers);
       activeCovers.clear();
-      if(packed){syncCoverTimer();return;}
+      const finish=()=>{
+        for(const tag of previousCovers)if(!activeCovers.has(tag)){
+          const v=visual.get(tag);if(!v)continue;
+          v.artwork.setAttribute("opacity",0);v.artwork.style.display="none";
+          v.number.setAttribute("opacity",1);
+        }
+        syncCoverTimer();
+      };
+      if(packed){finish();return;}
       const boxes=[];
-      let coverSlots=options.coverForTag?12:0;
-      const pixels=coverSlots&&svg.isConnected?scalePixels():0;
+      const coverOpacity=options.coverForTag?coverZoomOpacity(zoom,overviewZoom):0;
+      // Avoid unnecessary layout reads or thumbnail requests at overview zoom.
       for(const n of at.values()){
         const v=visual.get(n.tag);
-        v.artwork.style.display="none";
-        const show=picked?focusedTags.has(n.tag):zoom>overviewZoom*1.15||n.count>=maxCount*.18;
-        v.number.style.display=show?"":"none";
+        v.number.style.display="";
       }
       const left=500+pan.x-500/zoom,right=500+pan.x+500/zoom;
       const top=350+pan.y-350/zoom,bottom=350+pan.y+350/zoom;
@@ -1324,9 +1343,11 @@ const CaptionStudioViz = (() => {
         if(p.x+gap<left||p.x-gap>right||p.y+gap<top||p.y-gap>bottom){
           v.label.setAttribute("visibility","hidden");continue;
         }
-        const coverSrc=coverSlots>0&&(n.tag===picked||2*radius(n)*pixels>=32)?
-          options.coverForTag?.(n.tag,v.coverFrame||0):null;
-        const label=coverSrc?n.tag+" · "+n.count:n.tag;
+        // Covers are not contingent on winning the label collision test.
+        // Every on-screen node with an image gets the same fade amount.
+        const coverSrc=coverOpacity>0?options.coverForTag?.(n.tag,v.coverFrame||0):null;
+        if(coverSrc)showCover(n,v,coverSrc,coverOpacity);
+        const label=coverSrc?n.tag+" · "+(shared.get(n.tag)??n.count):n.tag;
         const width=(label.length*.60+.5)*sz;
         const candidates=[[p.x+gap,p.y],[p.x-gap-width,p.y],
           [p.x-width/2,p.y-gap-sz*.6],[p.x-width/2,p.y+gap+sz*.6]];
@@ -1343,27 +1364,27 @@ const CaptionStudioViz = (() => {
         const show=bestScore===0||n.tag===picked||(picked&&temporaryTags.has(n.tag))||(!picked&&n===labelOrder[0]);
         if(show){
           v.label.textContent=label;
-          if(coverSrc){
-            showCover(n,v,coverSrc);
-            coverSlots--;
-          }
           v.label.setAttribute("x",best.x);v.label.setAttribute("y",best.y+sz*.32);
           boxes.push(best.box);
         }
         v.label.setAttribute("visibility",show?"visible":"hidden");
       }
-      syncCoverTimer();
+      finish();
     }
-    function showCover(n,v,src){
+    function showCover(n,v,src,opacity){
       if(!v.cover){
         v.clip=make("clipPath",{id:v.id+"-cover"},defs);
         v.coverClip=make("circle",{},v.clip);
         v.cover=make("image",{href:src,"clip-path":"url(#"+v.id+"-cover)",
           preserveAspectRatio:"xMidYMid slice"},v.artwork);
+        v.coverSrc=src;
         nodeGeometry(n);
+      }else if(v.coverSrc!==src){
+        v.cover.setAttribute("href",src);v.coverSrc=src;
       }
       v.artwork.style.display="";
-      v.number.style.display="none";
+      v.artwork.setAttribute("opacity",opacity);
+      v.number.setAttribute("opacity",1-opacity);
       activeCovers.add(n.tag);
     }
     function stopCoverTimer(){
@@ -1389,7 +1410,7 @@ const CaptionStudioViz = (() => {
           if(!v?.cover||count<2)continue;
           v.coverFrame=((v.coverFrame||0)+1)%count;
           const src=options.coverForTag(tag,v.coverFrame);
-          if(src)v.cover.setAttribute("href",src);
+          if(src&&src!==v.coverSrc){v.cover.setAttribute("href",src);v.coverSrc=src;}
         }
       },2000);
     }
@@ -1859,7 +1880,7 @@ const CaptionStudioViz = (() => {
       e.preventDefault();
       if(!e.deltaY)return;
       const overPicked=picked&&e.target.closest(".studio-tb-orb")===visual.get(picked)?.g;
-      if(overPicked&&e.deltaY<0&&zoom*1.12>=Math.min(3.5,overviewZoom*1.7)&&options.collectionItems){
+      if(overPicked&&e.deltaY<0&&zoom*1.12>=Math.min(3.5,Math.max(overviewZoom*1.7,coverZoomLevels(overviewZoom).end+.15))&&options.collectionItems){
         openCollection(picked);
         // Ignore the rest of the wheel gesture that zoomed into the circle.
         collection.wheel={direction:-1,canExit:false,distance:0,at:e.timeStamp};
@@ -1956,7 +1977,7 @@ const CaptionStudioViz = (() => {
     return stage;
   }
 
-  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings,tagDirection,tagArrow,auraDensity,auraCache,auraPaintAlpha,mergeAuraFields});
+  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings,tagDirection,tagArrow,auraDensity,auraCache,auraPaintAlpha,mergeAuraFields,coverZoomLevels,coverZoomOpacity});
 })();
 // A classic WebWorker can import this existing pure graph implementation
 // without maintaining a second constellation algorithm.
