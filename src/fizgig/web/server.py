@@ -1229,17 +1229,17 @@ def _stream_sync_plan(values, image_folder):
     out = os.path.join(default_output_dir(), "stream_sync_diagnostics", name)
     inputs = {"LORA_NAME": name, "LORA_OUTPUT_DIR": out}
     plan = launch.LaunchPlan()
-    model = desc.model_path("dit", lambda k: pref_path(prefs, k))
-    root = pref_path(prefs, "cache_dir")
+    models = {role: desc.model_path(role, lambda k: pref_path(prefs, k))
+              for role in ("dit", "vae", "text_encoder")}
+    model = models["dit"]
     folder = str(image_folder or "").strip()
-    cache = launch.cache_dir_for(root, folder) if root else folder
-    import glob
+    cache = os.path.join(out, "cache")
+    config = os.path.join(out, "diagnostic_dataset.toml")
     if not os.path.isdir(folder):
-        plan.problems.append("Select the cached Krea 2 dataset on Start.")
-    if not model or not os.path.isfile(model):
-        plan.problems.append("Set the Krea 2 checkpoint in Preferences.")
-    if not cache or not glob.glob(os.path.join(glob.escape(cache), "*_krea2.safetensors")):
-        plan.problems.append("No Krea 2 latents found in " + str(cache) + ". Cache the dataset first.")
+        plan.problems.append("Select the Krea 2 test dataset on Start.")
+    for role, path in models.items():
+        if not path or not os.path.isfile(path):
+            plan.problems.append("Set the Krea 2 " + role + " in Preferences.")
     report = os.path.join(out, "stream-sync-report.json")
     if os.path.exists(report):
         plan.problems.append("This diagnostic already has a report. Queue a new Test Mode run.")
@@ -1248,9 +1248,24 @@ def _stream_sync_plan(values, image_folder):
                "--model", model, "--cache", cache, "--steps", "3", "--rank", "32", "--swap", "22",
                "--precision", "int8", "--optimizer", "muon", "--seed", "42", "--lr", "0.00025",
                "--report", report, "--scratch", out]
-        plan.dirs.append(out)
+        # Fresh per-suite cache using the production cache stages.
+        quote = lambda path: json.dumps(path.replace(chr(92), "/"), ensure_ascii=False)
+        plan.dataset_toml = "\n".join([
+            "[general]", "resolution = [496, 496]", 'caption_extension = ".txt"',
+            "batch_size = 1", "num_repeats = 1", "enable_bucket = true",
+            "bucket_no_upscale = true", "", "[[datasets]]",
+            "image_directory = " + quote(folder), "cache_directory = " + quote(cache), ""])
+        plan.dirs.extend([out, cache])
+        plan.files.append((config, plan.dataset_toml))
+        for stage, role, label in (("latents", "vae", "Cache Preparation"),
+                                   ("text", "text_encoder", "Text Encoder Caching")):
+            plan.stages.append(launch.Stage(label, [
+                sys.executable, "-u", os.path.join(BASE_DIR, desc.cache_script),
+                "--family", desc.key, "--stage", stage, "--dataset_config", config,
+                "--model", models[role], "--device", "cuda"]))
         plan.stages.append(launch.Stage("GPU correctness diagnostic", cmd))
-        plan.console.extend(["[test mode] INT8 / rank 32 / Muon / 22 swaps / seed 42.",
+        plan.console.extend(["[test mode] Fresh isolated cache at 0.25 MP, shared by all comparisons: " + cache,
+                             "[test mode] INT8 / rank 32 / Muon / 22 swaps / seed 42.",
                              "[test mode] Classic twice, fast twice, fast serialized; three steps each.",
                              "[test mode] Report: " + report])
     return desc, inputs, plan

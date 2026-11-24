@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import torch
 from fizgig.families import quant
 from fizgig.families.lora import FamilyLoRA
-from fizgig.krea2.driver import Krea2Driver
+from fizgig.families.krea2 import KREA2
 from fizgig.krea2.model import SingleMMDiTConfig, SingleStreamDiT
 from fizgig.krea2.offloading import LoRAStreamOffloader
 from fizgig.training.optimizers import create_optimizer
@@ -37,9 +37,10 @@ def inputs(args, config):
         from safetensors.torch import load_file
         from fizgig.dataset import compact_text
         folder = Path(args.cache)
-        for path in sorted(folder.glob("*_krea2.safetensors")):
+        arch = KREA2.arch_id
+        for path in sorted(folder.glob(f"*_{arch}.safetensors")):
             stem = path.name.rsplit("_", 2)[0]
-            te = folder / (stem + "_krea2_te.safetensors")
+            te = folder / f"{stem}_{arch}_te.safetensors"
             if te.is_file():
                 pairs.append((path, te))
         if not pairs:
@@ -54,7 +55,7 @@ def inputs(args, config):
                 raise ValueError(f"Expected one still latent in {path}, found {keys}")
             latent = data[keys[0]].unsqueeze(0)
             text = compact_text.load(str(te))
-            cond = {k: text[k] for k in ("hidden_states", "attention_mask")}
+            cond = {k: text["cond__" + k] for k in ("hidden_states", "attention_mask")}
             name = path.name
         else:
             latent = torch.randn(1, config.channels, args.latent_size, args.latent_size, generator=gen)
@@ -68,7 +69,7 @@ def inputs(args, config):
 
 
 def build(args, device, mode):
-    driver = Krea2Driver()
+    driver = KREA2.load_driver()
     torch.manual_seed(args.seed)
     random.seed(args.seed)
     if args.model:
