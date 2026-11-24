@@ -16374,12 +16374,18 @@ function renderCaptionStudio(host,items,ext){
             resume,
             thumbToken:TOKEN,
             coverCountForTag:tag=>model.coverSamples?.get(tag)?.length||(model.covers?.has(tag)?1:0),
-            coverForTag:(tag,frame=0)=>{
+            coverForTag:(tag,frame=0,size=128)=>{
               const samples=model.coverSamples?.get(tag);
               const index=samples?.[frame%samples.length]??model.covers?.get(tag);
               if(index===undefined)return null;
               const it=datasetItems[index];
-              return "/api/thumb?path="+encodeURIComponent(it.path)+"&size=128&t="+
+              if(!it?.size)return null;
+              // The endpoint bounds the longest side; circular crop needs
+              // adequate resolution along the shorter side, too.
+              const [w,h]=it.size;
+              const cropScale=w>0&&h>0?Math.max(w,h)/Math.min(w,h):1;
+              const tier=CaptionStudioViz.coverResolution(size*cropScale);
+              return "/api/thumb?path="+encodeURIComponent(it.path)+"&size="+tier+"&t="+
                 encodeURIComponent(TOKEN)+"&v="+(S.cap.studioThumbRevisions?.get(it.path)||0);
             },
             collectionItems,

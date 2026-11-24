@@ -384,7 +384,7 @@ try {
   const previewModel=Viz.tagbenchModel(Array.from({length:10},(_,i)=>({tags:["anchor","peer_"+i],coverIndex:i})));
   let requests=0;
   const previews=Viz.tagbenchConstellation(previewModel,()=>{},null,{
-    coverForTag:tag=>{requests++;return "/preview/"+tag;}
+    coverForTag:(tag,frame,size)=>{requests++;return "/preview/"+tag+"?size="+size;}
   });
   const previewSvg=previews.children[1];
   assert.equal(requests,0);
@@ -397,6 +397,12 @@ try {
   const coversIn=()=>allIn(previews).filter(n=>String(n.attrs.href||"").startsWith("/preview/"));
   assert.ok(coversIn().length>0);
   assert.ok(coversIn().some(n=>Number(n.parent.attrs.opacity)>0&&Number(n.parent.attrs.opacity)<=1));
+  assert.ok(coversIn().every(n=>{
+    const caption=n.parent.children.find(c=>c.attrs.class==="studio-tb-cover-caption");
+    return caption&&caption.attrs["clip-path"]===n.attrs["clip-path"]&&
+      allIn(caption).some(c=>String(c.textContent||"").endsWith(" images"));
+  }));
+  assert.ok(coversIn().every(n=>/size=(128|256|512|768)$/.test(n.attrs.href)));
   for(let i=0;i<14;i++)wheelPreview(1);
   assert.ok(coversIn().every(n=>Number(n.parent.attrs.opacity)===0));
   previews.dispose();
@@ -527,3 +533,13 @@ assert.equal(Viz.coverZoomOpacity(levels.end,1),1);
 assert.equal(Viz.coverZoomOpacity(5,1),1);
 for(const fit of [.35,.7,1,1.6])assert.equal(Viz.coverZoomOpacity(fit,fit),0);
 console.log("Consistent zoom-gated image previews and opacity fade passed");
+
+assert.equal(Viz.coverResolution(80),128);
+assert.equal(Viz.coverResolution(180),256);
+assert.equal(Viz.coverResolution(300),512);
+assert.equal(Viz.coverResolution(220,2),512);
+assert.equal(Viz.coverResolution(2000),768);
+assert.deepEqual(Viz.coverLabelLines("green leaves",7),["green","leaves"]);
+assert.deepEqual(Viz.coverLabelLines("a very long descriptive tag",8),["a very","long de…"]);
+assert.ok(Viz.coverLabelLines("averylongunbrokenword",6).every(line=>Array.from(line).length<=6));
+console.log("Adaptive thumbnail tiers and bounded in-circle label wrapping passed");

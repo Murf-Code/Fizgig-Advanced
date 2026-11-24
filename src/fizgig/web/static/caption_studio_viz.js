@@ -933,6 +933,28 @@ const CaptionStudioViz = (() => {
   }
   // A shared semantic zoom level, independent of node frequency, selection
   // or label priority. Smoothstep cross-fades the count into the thumbnail.
+  // Discrete thumbnail sizes reuse the existing persistent thumbnail cache.
+  // Cap resolution to avoid fetching full-size images for large close-ups.
+  function coverResolution(diameter,dpr=1){
+    const pixels=Math.max(0,diameter)*Math.min(2,Math.max(1,dpr||1));
+    return [128,256,512,768].find(size=>size>=pixels)||768;
+  }
+  function coverLabelLines(tag,limit,maxLines=2){
+    const chars=Array.from(tag);
+    if(limit<2)return ["…"];
+    const rows=[];let remaining=chars.join("").trim();
+    while(remaining&&rows.length<maxLines){
+      const points=Array.from(remaining);
+      if(points.length<=limit){rows.push(remaining);break;}
+      if(rows.length===maxLines-1){rows.push(points.slice(0,limit-1).join("").trimEnd()+"…");break;}
+      let cut=points.slice(0,limit+1).join("").lastIndexOf(" ");
+      if(cut<=0)cut=limit;
+      else cut=Array.from(remaining.slice(0,cut)).length;
+      rows.push(points.slice(0,cut).join("").trimEnd());
+      remaining=points.slice(cut).join("").trimStart();
+    }
+    return rows;
+  }
   function coverZoomLevels(overview){
     const start=Math.max(1.1,Math.min(2.2,overview*1.45));
     return {start,end:Math.min(3.2,Math.max(start+.6,overview*2))};
@@ -1393,12 +1415,16 @@ const CaptionStudioViz = (() => {
           const v=visual.get(tag);if(!v)continue;
           v.artwork.setAttribute("opacity",0);v.artwork.style.display="none";
           v.number.setAttribute("opacity",1);
+          v.label.setAttribute("opacity",1);
+          v.coverSize=0;
         }
         syncCoverTimer();
       };
       if(atlasOpacity>=.999){finish();return;}
       const boxes=[];
       const coverOpacity=options.coverForTag?coverZoomOpacity(zoom,overviewZoom):0;
+      const pixels=coverOpacity>0?scalePixels():0;
+      const dpr=window.devicePixelRatio||1;
       // Avoid unnecessary layout reads or thumbnail requests at overview zoom.
       for(const n of at.values()){
         const v=visual.get(n.tag);
@@ -1415,9 +1441,20 @@ const CaptionStudioViz = (() => {
         }
         // Covers are not contingent on winning the label collision test.
         // Every on-screen node with an image gets the same fade amount.
-        const coverSrc=coverOpacity>0?options.coverForTag?.(n.tag,v.coverFrame||0):null;
-        if(coverSrc)showCover(n,v,coverSrc,coverOpacity);
-        const label=coverSrc?n.tag+" · "+(shared.get(n.tag)??n.count):n.tag;
+        const requested=coverOpacity>0?coverResolution(2*radius(n)*pixels,dpr):0;
+        // Retain a higher tier until the node leaves view to avoid
+        // repeated requests when the user scrolls around a tier boundary.
+        const size=Math.max(requested,v.coverSize||0);
+        const coverSrc=coverOpacity>0?options.coverForTag?.(n.tag,v.coverFrame||0,size):null;
+        if(coverSrc){
+          v.coverSize=size;
+          showCover(n,v,coverSrc,coverOpacity,pixels);
+          v.label.setAttribute("opacity",1-coverOpacity);
+          // Fully visible photographs carry their own clipped label;
+          // don't waste collision-layout work on an invisible external label.
+          if(coverOpacity>=.999){v.label.setAttribute("visibility","hidden");continue;}
+        }else v.label.setAttribute("opacity",1);
+        const label=n.tag;
         const width=(label.length*.60+.5)*sz;
         const candidates=[[p.x+gap,p.y],[p.x-gap-width,p.y],
           [p.x-width/2,p.y-gap-sz*.6],[p.x-width/2,p.y+gap+sz*.6]];
@@ -1441,21 +1478,52 @@ const CaptionStudioViz = (() => {
       }
       finish();
     }
-    function showCover(n,v,src,opacity){
+    function showCover(n,v,src,opacity,pixels){
       if(!v.cover){
         v.clip=make("clipPath",{id:v.id+"-cover"},defs);
         v.coverClip=make("circle",{},v.clip);
         v.cover=make("image",{href:src,"clip-path":"url(#"+v.id+"-cover)",
           preserveAspectRatio:"xMidYMid slice"},v.artwork);
+        v.coverCaption=make("g",{"clip-path":"url(#"+v.id+"-cover)","pointer-events":"none",class:"studio-tb-cover-caption"},v.artwork);
+        v.coverBacking=make("rect",{fill:"#080911","fill-opacity":.64},v.coverCaption);
+        v.coverText=make("text",{fill:"#fff","text-anchor":"middle","font-family":"system-ui, sans-serif",
+          "font-weight":700,stroke:"#080911","stroke-opacity":.7,"paint-order":"stroke"},v.coverCaption);
         v.coverSrc=src;
         nodeGeometry(n);
       }else if(v.coverSrc!==src){
         v.cover.setAttribute("href",src);v.coverSrc=src;
       }
+      layoutCoverCaption(n,v,pixels);
       v.artwork.style.display="";
       v.artwork.setAttribute("opacity",opacity);
       v.number.setAttribute("opacity",1-opacity);
       activeCovers.add(n.tag);
+    }
+    function layoutCoverCaption(n,v,pixels){
+      const r=radius(n),scale=Math.max(.001,pixels);
+      // Readable screen-space text, bounded by the world-space circle.
+      const font=Math.min(r*.25,Math.max(10,Math.min(18,r*scale*.19))/scale);
+      const width=r*1.52,limit=Math.max(2,Math.floor(width/(font*.72)));
+      const lines=coverLabelLines(n.tag,limit,2);
+      const count=String(shared.get(n.tag)??n.count)+" images";
+      const key=[font,limit,count,lines.join("\n")].join("|");
+      if(v.coverCaptionKey===key)return;
+      v.coverCaptionKey=key;
+      const lineHeight=font*1.16,height=(lines.length+.9)*lineHeight+font*.6;
+      const y=Math.min(r*.37,r*.69-height/2);
+      const top=y-height/2;
+      for(const [k,val] of Object.entries({x:-width/2-font*.19,y:top,width:width+font*.38,
+        height,rx:font*.40}))v.coverBacking.setAttribute(k,val);
+      v.coverText.setAttribute("font-size",font);
+      v.coverText.setAttribute("stroke-width",font*.10);
+      v.coverText.replaceChildren();
+      lines.forEach((line,i)=>{
+        const span=make("tspan",{x:0,y:top+font*(1.05+i*1.16)},v.coverText);
+        span.textContent=line;
+      });
+      const sub=make("tspan",{x:0,y:top+font*(1.05+lines.length*1.16),
+        "font-size":font*.74,"font-weight":550},v.coverText);
+      sub.textContent=count;
     }
     function stopCoverTimer(){
       if(coverTimer!==null)clearInterval(coverTimer);
@@ -1479,7 +1547,7 @@ const CaptionStudioViz = (() => {
           const v=visual.get(tag),count=options.coverCountForTag(tag);
           if(!v?.cover||count<2)continue;
           v.coverFrame=((v.coverFrame||0)+1)%count;
-          const src=options.coverForTag(tag,v.coverFrame);
+          const src=options.coverForTag(tag,v.coverFrame,v.coverSize||128);
           if(src&&src!==v.coverSrc){v.cover.setAttribute("href",src);v.coverSrc=src;}
         }
       },2000);
@@ -2037,7 +2105,7 @@ const CaptionStudioViz = (() => {
     return stage;
   }
 
-  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings,tagDirection,tagArrow,auraDensity,auraCache,auraPaintAlpha,mergeAuraFields,coverZoomLevels,coverZoomOpacity,countRadius,communityEnvelope,overviewBlend});
+  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings,tagDirection,tagArrow,auraDensity,auraCache,auraPaintAlpha,mergeAuraFields,coverZoomLevels,coverZoomOpacity,countRadius,communityEnvelope,overviewBlend,coverResolution,coverLabelLines});
 })();
 // A classic WebWorker can import this existing pure graph implementation
 // without maintaining a second constellation algorithm.
