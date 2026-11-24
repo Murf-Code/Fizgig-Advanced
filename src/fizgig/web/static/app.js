@@ -11940,8 +11940,15 @@ async function loadCaptions() {
     return false;
   };
   const sameWorkspace=tab.dataset.captionLoad==="ready"&&S.cap.studioMountedDataset===datasetKey;
-  if(!sameWorkspace)captionInitialState("loading");
+  const stage=detail=>{
+    if(current()&&!sameWorkspace){
+      const node=$("captionInitialDetail");
+      if(node)node.textContent=detail;
+    }
+  };
   try {
+  if(!sameWorkspace)captionInitialState("loading");
+  stage("Preparing caption controls…");
   // A dataset switch must not leave Image Prep mounted on the former folder.
   if(S.cap?.imageEditing&&!S.cap.imageClosing){
     const normalized=p=>String(p||"").replace(/\\/g,"/").replace(/\/+$/,"").toLowerCase();
@@ -11953,6 +11960,7 @@ async function loadCaptions() {
     }
   }
   if (!S.cap.opts || S.cap.optsFamily !== S.family) {
+    stage("Checking caption model options…");
     await captionLoadRequest("Caption model options",8000,signal=>loadCaptionOptions(signal))
       .catch(e=>{if(current()){S.cap.opts=null;$("capModelHint").textContent="Couldn't get the caption models: "+e.message;}});
     if(!valid())return;
@@ -11988,6 +11996,7 @@ async function loadCaptions() {
     return;
   }
   const ext = $("captionExt").value.trim() || ".txt",folderAtRequest=String(S.imageFolder);
+  stage("Scanning dataset and reading captions…");
   const r = await captionLoadRequest("Dataset scan",120000,signal=>api(
     `/api/captions?folder=${encodeURIComponent(folderAtRequest)}&ext=${encodeURIComponent(ext)}&family=${encodeURIComponent(S.family||"")}`,undefined,signal));
   if(!valid())return;
@@ -11995,6 +12004,7 @@ async function loadCaptions() {
   const items=r.items;
   const folders=[...new Set(items.map(capItemFolder))];
   const reviewLookup=new Map();
+  stage("Checking reviewed images ("+items.length+" files)…");
   await Promise.all(folders.map(async folder=>{
     try{
       const data=await captionLoadRequest("Review status",15000,signal=>api(
@@ -12017,6 +12027,7 @@ async function loadCaptions() {
   S.cap.items=items;
   S.cap.studioReviewed=reviewed;
   if(!sameWorkspace)S.cap.liveStatus=null;
+  stage("Building Caption Workbench ("+items.length+" files)…");
   S.cap.studioMounting=true;
   try{renderCaptions();}
   finally{S.cap.studioMounting=false;}
@@ -12029,7 +12040,10 @@ async function loadCaptions() {
     .catch(e=>console.warn("Caption live status:",e.message));
   }catch(error){
     if(current()&&key()!==datasetKey){valid();return;}
-    if(current()&&!sameWorkspace)captionInitialState("error",error.message||String(error));
+    if(current()&&!sameWorkspace){
+      console.error("Caption Workbench initialization:",error);
+      captionInitialState("error",error.message||String(error));
+    }
     if(current()&&sameWorkspace){
       console.warn("Caption Workbench refresh:",error);
       throw error;

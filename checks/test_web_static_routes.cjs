@@ -22,4 +22,11 @@ assert.ok(scriptFiles.indexOf("caption_studio_selection.js") >= 0);
 assert.ok(scriptFiles.indexOf("caption_studio_training_picks.js") >= 0);
 assert.ok(scriptFiles.indexOf("caption_studio_selection.js") < scriptFiles.indexOf("app.js"));
 assert.ok(scriptFiles.indexOf("caption_studio_training_picks.js") < scriptFiles.indexOf("app.js"));
-console.log("All " + scriptFiles.length + " webapp scripts exist and are routed by Fizgig's HTTP server");
+const stylesheets = [...index.matchAll(/<link\s+rel="stylesheet"\s+href="\/([^"?]+)(?:\?[^"]*)?"/g)].map(m => m[1]);
+assert.ok(stylesheets.includes("caption_tagbench_theme.css"), "expected Caption Workbench stylesheet");
+for (const name of stylesheets) {
+  assert.ok(fs.existsSync(path.join(root, name)), "missing stylesheet on disk: " + name);
+  assert.ok(allowed.has(name), "server will return JSON 404 for stylesheet: /" + name);
+}
+assert.match(server, /path\.endswith\("\.js"\) else "text\/css"/);
+console.log("All " + scriptFiles.length + " scripts and " + stylesheets.length + " stylesheets exist and are routed by Fizgig's HTTP server");

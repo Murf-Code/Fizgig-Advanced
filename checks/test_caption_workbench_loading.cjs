@@ -18,7 +18,7 @@ function harness(apiImpl,optionsImpl=async()=>{},initialOpts=true){
     CaptionStudioSelection:{prune:()=>({selected:[],active:null,anchor:null})},
     renderCaptions:()=>renders.push(S.cap.items.map(it=>it.path)),
     AbortController:Controller,setTimeout:(fn,ms)=>setTimeout(fn,Math.min(ms,25)),clearTimeout,
-    console:{warn:()=>{}}};
+    console:{warn:()=>{},error:()=>{}}};
   const load=new Function(...Object.keys(deps),src+"\nreturn loadCaptions;")(...Object.values(deps));
   return {load,S,states,renders};
 }
