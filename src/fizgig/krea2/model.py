@@ -387,6 +387,8 @@ class SingleStreamDiT(nn.Module):
         # guard Klein has. enable_block_swap can run more than once (e.g. around
         # previews); a replaced offloader's stale hooks otherwise fire alongside the
         # new ones on the next backward -> "mat2 is on cpu" / exploding loss.
+        num_main_blocks = len(self.blocks)
+        assert 0 <= num_blocks <= num_main_blocks - 2, f"Cannot swap more than {num_main_blocks - 2} blocks. Requested {num_blocks}."
         _off = getattr(self, "offloader", None)
         if _off is not None and hasattr(_off, "retire"):
             _off.retire()
@@ -395,8 +397,6 @@ class SingleStreamDiT(nn.Module):
             _off.remove_hooks()
 
         self.blocks_to_swap = num_blocks
-        num_main_blocks = len(self.blocks)
-        assert num_blocks <= num_main_blocks - 2, f"Cannot swap more than {num_main_blocks - 2} blocks. Requested {num_blocks}."
         from fizgig.krea2.stream_strategy import apply_stream_strategy
         config = apply_stream_strategy(config, getattr(self, "_stream_strategy", "default"))
         self.offloader = create_offloader("single", self.blocks, num_main_blocks, num_blocks, config)
