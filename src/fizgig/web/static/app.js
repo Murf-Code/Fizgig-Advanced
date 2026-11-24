@@ -13252,16 +13252,69 @@ function renderCaptionStudio(host,items,ext){
     sync();
     return {wrap,sync};
   };
+  const categoryState=studioCategories();
+  // Never build Constellation while showing Tags or Waterfall.
+  // Its clustering and 220 physics passes are expensive CPU work and were
+  // previously executed on every normal image/tag selection!
+  // Keep only its tiny color palette, if a user visited the graph before.
+  const colorScope=String(S.imageFolder||"")+"|"+ext;
+  const palette=S.cap.studioTagbenchPalette?.key===colorScope&&
+    S.cap.studioTagbenchPalette?.revision===(S.cap.studioRevision||0)
+    ? S.cap.studioTagbenchPalette.colors : null;
+  categoryState.generatedColors=palette||new Map();
+  CaptionStudioViz.setTagbenchPalette(palette);
+  const searchRevision=S.cap.studioRevision||0;
+  const searchDelimiter=S.cap.studioDelimiter||localStorage.getItem("fizgig_caption_separator")||",";
+  let vocabularyCache=S.cap.studioSearchVocabulary;
+  if(!vocabularyCache||vocabularyCache.items!==S.cap.items||
+      vocabularyCache.revision!==searchRevision||vocabularyCache.delimiter!==searchDelimiter){
+    const vocabulary=new Set();
+    for(const item of S.cap.items||[])
+      for(const tag of studioTokens(item.caption,studioCaptionMode(item)))
+        vocabulary.add(tag.toLocaleLowerCase());
+    vocabularyCache=S.cap.studioSearchVocabulary={items:S.cap.items,revision:searchRevision,
+      delimiter:searchDelimiter,vocabulary};
+  }
+  const vocabulary=vocabularyCache.vocabulary;
+  const tintTagField=field=>{
+    const tag=field.value.trim();
+    if(vocabulary.has(tag.toLocaleLowerCase()))
+      field.style.color=CaptionStudioViz.colorForTag(tag,categoryState);
+    else field.style.removeProperty("color");
+  };
   const createTagFilterBar=()=>{
-    const field=el("input",{type:"text",class:"w-path studio-tag-query",
+    const field=el("textarea",{rows:"1",class:"w-path studio-tag-query",
       placeholder:"Filter images by tags","aria-label":"Filter images by tags",
-      title:"Filter as you type. Supports AND, OR, NOT and quoted tags."});
-    field.value=S.cap.studioQuery||"";
+      title:"Filter as you type. Supports AND, OR, NOT and multiword tags.",spellcheck:"false"});
+    const canonical=S.cap.studioQuery||"";
+    const draft=S.cap.studioSearchDraft;
+    field.value=canonical&&draft?.canonical===canonical&&draft?.vocabulary===vocabulary
+      ?draft.text:CaptionStudioTags.displaySearch(canonical,vocabulary);
     const bar=el("div",{class:"studio-filter-bar"});
     const decorated=decorateStudioField(field,"search","Clear image tag filter");
+    decorated.wrap.classList.add("studio-query-field");
+    const mirror=el("div",{class:"studio-query-mirror","aria-hidden":"true"});
+    decorated.wrap.insertBefore(mirror,field);
+    let composing=false;
+    const paint=()=>{
+      mirror.replaceChildren();
+      for(const p of CaptionStudioTags.searchParts(field.value,vocabulary)){
+        const span=el("span",{text:p.text});
+        if(p.operator)span.classList.add("studio-query-operator");
+        else if(p.tag)span.style.color=CaptionStudioViz.colorForTag(p.tag,categoryState);
+        mirror.append(span);
+      }
+      mirror.append(document.createTextNode("\u200b"));
+    };
     const apply=()=>{
-      if(field.isComposing)return;
-      const next=field.value.trim();
+      if(composing)return;
+      const a=field.selectionStart,b=field.selectionEnd;
+      const normalized=CaptionStudioTags.searchParts(field.value,vocabulary).map(p=>p.text).join("");
+      if(normalized!==field.value){
+        field.value=normalized;field.setSelectionRange(a,b);
+      }
+      paint();
+      const next=CaptionStudioTags.naturalSearch(field.value,vocabulary);
       try{CaptionStudioTags.search([],next);}
       catch(e){
         field.setAttribute("aria-invalid","true");
@@ -13269,20 +13322,29 @@ function renderCaptionStudio(host,items,ext){
         return;
       }
       field.removeAttribute("aria-invalid");
-      field.title="Filter as you type. Supports AND, OR, NOT and quoted tags.";
+      field.title="Filter as you type. Supports AND, OR, NOT and multiword tags.";
+      S.cap.studioSearchDraft={canonical:next,text:field.value,vocabulary};
       if(next===S.cap.studioQuery)return;
-      const caret=field.selectionStart;
       S.cap.studioQuery=next;
       S.cap.page=0;
       renderCaptions();
       const replacement=$("captionsGrid").querySelector(".studio-tag-query");
       if(replacement){
         replacement.focus({preventScroll:true});
-        if(caret!==null)replacement.setSelectionRange(caret,caret);
+        replacement.setSelectionRange(a,b);
       }
     };
     field.addEventListener("input",apply);
-    field.addEventListener("compositionend",apply);
+    field.addEventListener("compositionstart",()=>{
+      composing=true;decorated.wrap.classList.add("is-composing");
+    });
+    field.addEventListener("compositionend",()=>{
+      composing=false;decorated.wrap.classList.remove("is-composing");apply();
+    });
+    field.addEventListener("keydown",event=>{
+      if(event.key==="Enter"&&!event.isComposing){event.preventDefault();}
+    });
+    paint();
     bar.append(decorated.wrap);
     return bar;
   };
@@ -13355,17 +13417,6 @@ function renderCaptionStudio(host,items,ext){
   }
   let captionMode=studioCaptionMode(current);
   const locked=!!S.cap.studioReviewed?.has(current.path);
-  const categoryState=studioCategories();
-  // Never build Constellation while showing Tags or Waterfall.
-  // Its clustering and 220 physics passes are expensive CPU work and were
-  // previously executed on every normal image/tag selection!
-  // Keep only its tiny color palette, if a user visited the graph before.
-  const colorScope=String(S.imageFolder||"")+"|"+ext;
-  const palette=S.cap.studioTagbenchPalette?.key===colorScope&&
-    S.cap.studioTagbenchPalette?.revision===(S.cap.studioRevision||0)
-    ? S.cap.studioTagbenchPalette.colors : null;
-  categoryState.generatedColors=palette||new Map();
-  CaptionStudioViz.setTagbenchPalette(palette);
   const editorCompose=tags=>studioCompose(ta.value,tags,captionMode);
   const left=el("aside",{class:"caption-studio-panel studio-browser"});
   const center=el("div",{class:"caption-studio-panel studio-editor"});
@@ -14501,6 +14552,7 @@ function renderCaptionStudio(host,items,ext){
     if(!tag)return;
     ta.value=editorCompose(studioUnique([...studioTokens(ta.value,captionMode),tag]));
     newTag.value="";
+    tintTagField(newTag);
     decoratedAdd.sync();
     remember(true);redraw();
   };
@@ -14586,6 +14638,7 @@ function renderCaptionStudio(host,items,ext){
         id:"studio-add-tag-option-"+i,
         class:"studio-add-tag-suggestion",text:tag+" ("+count+")",
         "aria-label":"Add tag "+tag});
+      option.style.setProperty("--studio-tag-color",CaptionStudioViz.colorForTag(tag,categoryState));
       option.addEventListener("click",()=>chooseSuggestion(tag));
       fragment.append(option);
     });
@@ -14602,7 +14655,7 @@ function renderCaptionStudio(host,items,ext){
       updateSuggestions();
     });
   };
-  newTag.addEventListener("input",scheduleSuggestions);
+  newTag.addEventListener("input",()=>{tintTagField(newTag);scheduleSuggestions();});
   newTag.addEventListener("focus",scheduleSuggestions);
   newTag.addEventListener("blur",()=>{
     // Let pointer-based suggestion selection finish before dismissing.
@@ -14682,6 +14735,8 @@ function renderCaptionStudio(host,items,ext){
   const indexSearch=el("input",{type:"search",class:"studio-tag-search w-path",
     placeholder:"Search Tags","aria-label":"Search Tags"});
   indexSearch.value=S.cap.studioIndexSearch||"";
+  tintTagField(indexSearch);
+  indexSearch.addEventListener("input",()=>tintTagField(indexSearch));
   const tagCount=el("div",{class:"studio-tag-count field-hint"});
   const selectionState=S.cap.studioPickedTags||(S.cap.studioPickedTags=new Set());
   const syncAllTagSelection=()=>{

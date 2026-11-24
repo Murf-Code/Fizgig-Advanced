@@ -6611,3 +6611,51 @@ body:has(.caption-removal-backdrop){overflow:hidden}
     transition:background-color .18s ease,border-color .18s ease,color .18s ease;
   }
 }
+
+/* Native multiline editor over a layout-identical color layer. */
+#tab-captions .studio-accent-field.studio-query-field{
+  display:grid;grid-template-columns:minmax(0,1fr);align-items:stretch;
+  border:1px solid color-mix(in srgb,var(--border-strong) 80%,var(--text-secondary));
+  border-left:3px solid var(--accent);border-radius:8px;
+  background:color-mix(in srgb,var(--bg-inset) 82%,var(--text-primary));
+}
+#tab-captions .studio-query-field:focus-within:not(:has([aria-invalid="true"])){
+  border-color:var(--accent);outline:1px solid var(--accent);outline-offset:1px;
+}
+#tab-captions .studio-query-field:has([aria-invalid="true"]){border-color:var(--warning)}
+#tab-captions .studio-query-field>.studio-query-mirror,
+#tab-captions .studio-query-field>textarea.studio-tag-query{
+  grid-area:1/1;box-sizing:border-box;width:100%;min-width:0;
+  padding:9px 30px 9px 31px;margin:0;border:0;outline:0;
+  font:inherit;font-size:12px;font-weight:450;line-height:18px;
+  letter-spacing:normal;white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal;
+  text-align:left;min-height:36px;
+}
+#tab-captions .studio-query-field>.studio-query-mirror{
+  color:var(--text-secondary);pointer-events:none;
+}
+#tab-captions .studio-query-field>textarea.studio-tag-query{
+  position:relative;resize:none;overflow:hidden;height:100%;background:transparent;
+  color:transparent;-webkit-text-fill-color:transparent;caret-color:var(--text-primary);
+  box-shadow:none;
+}
+#tab-captions .studio-query-field>textarea.studio-tag-query::placeholder{
+  color:var(--text-secondary);-webkit-text-fill-color:var(--text-secondary);opacity:1;
+}
+#tab-captions .studio-query-field>textarea.studio-tag-query::selection{
+  background:color-mix(in srgb,var(--accent) 40%,transparent);
+}
+#tab-captions .studio-query-field.is-composing>.studio-query-mirror{visibility:hidden}
+#tab-captions .studio-query-field.is-composing>textarea.studio-tag-query{
+  color:var(--text-primary);-webkit-text-fill-color:var(--text-primary);
+}
+#tab-captions .studio-query-field .studio-query-operator{color:var(--text-muted)}
+#tab-captions .studio-query-field>.studio-field-icon{top:18px;left:9px}
+#tab-captions .studio-query-field>.studio-field-clear{top:18px}
+#tab-captions .studio-host .studio-add-tag-suggestion{
+  color:var(--studio-tag-color,var(--text-primary));
+  border-left:3px solid var(--studio-tag-color,transparent);
+}
+#tab-captions .studio-host .studio-add-tag-suggestion:is(:hover,.is-active){
+  color:var(--studio-tag-color,var(--text-primary));
+}

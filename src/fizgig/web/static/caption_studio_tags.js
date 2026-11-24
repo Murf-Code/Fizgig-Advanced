@@ -98,6 +98,56 @@ const CaptionStudioTags = (() => {
   function search(values, expression) {
     return compileSearch(expression)(values);
   }
+
+  // Longest known multiword tags win; explicit Boolean operators delimit terms.
+  function searchParts(expression, vocabulary=new Set()) {
+    const raw=String(expression||"");
+    const tokens=raw.match(/"(?:[^"\\]|\\.)*"|'[^']*'|\s+|[()]|[^\s()"]+|"/g)||[];
+    const op=x=>/^(AND|OR|NOT)$/i.test(x||"");
+    const boundary=x=>!x||op(x)||/^[()"']/.test(x)||x.startsWith("-");
+    const parts=[];
+    for(let i=0;i<tokens.length;i++){
+      const token=tokens[i];
+      if(/^\s+$/.test(token)||token==="("||token===")"){
+        parts.push({text:token,syntax:token});continue;
+      }
+      if(op(token)){
+        parts.push({text:token.toUpperCase(),syntax:token.toUpperCase(),operator:true});continue;
+      }
+      if(/^["']/.test(token)){
+        let label=token;
+        if(token[0]==='"'){try{label=JSON.parse(token);}catch(_){}}
+        else if(token.endsWith("'")&&token.length>1)label=token.slice(1,-1);
+        const known=vocabulary.has(String(label).toLocaleLowerCase());
+        parts.push({text:token,syntax:token,tag:known?label:null});continue;
+      }
+      const negative=token.startsWith("-")&&token.length>1;
+      let phrase=negative?token.slice(1):token,best=phrase,end=i;
+      let found=vocabulary.has(phrase.toLocaleLowerCase());
+      for(let j=i+1;j+1<tokens.length&&/^\s+$/.test(tokens[j])&&!boundary(tokens[j+1]);j+=2){
+        phrase+=tokens[j]+tokens[j+1];
+        if(vocabulary.has(phrase.toLocaleLowerCase())){best=phrase;end=j+1;found=true;}
+      }
+      if(found){
+        if(negative)parts.push({text:"-",syntax:"NOT ",operator:true});
+        parts.push({text:best,syntax:JSON.stringify(best),tag:best});
+        i=end;
+      }else parts.push({text:token,syntax:token});
+    }
+    return parts;
+  }
+  function naturalSearch(expression,vocabulary){
+    return searchParts(expression,vocabulary).map(p=>p.syntax).join("").trim();
+  }
+  function displaySearch(expression,vocabulary){
+    return searchParts(expression,vocabulary).map(p=>{
+      if(!p.tag||!/^["']/.test(p.text))return p.text;
+      const tag=String(p.tag);
+      if(/[()"']/.test(tag)||/(^|\s)(AND|OR|NOT)(\s|$)/i.test(tag)||tag.startsWith("-"))return p.text;
+      return tag;
+    }).join("");
+  }
+
   // TagBench context-menu Boolean actions: preserve the user's existing
   // expression and wrap it before combining to avoid changing precedence.
   function addFilter(expression, tag, mode = "and") {
@@ -188,7 +238,7 @@ const CaptionStudioTags = (() => {
     return cleared;
   }
 
-  return Object.freeze({kind, tags, compose, unique, search, compileSearch, addFilter,
+  return Object.freeze({kind, tags, compose, unique, search, compileSearch, addFilter, searchParts, naturalSearch, displaySearch,
     order, captionWildcards, wildcards, findTagMatches, tagSelectionScope, scopeTagSelections});
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = CaptionStudioTags;

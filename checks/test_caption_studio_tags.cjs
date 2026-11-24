@@ -129,3 +129,11 @@ assert.deepEqual(T.scopeTagSelections(imagePicked,allPicked,null),
   {image:true,all:true});
 assert.equal(imagePicked.size,0,"clicking outside clears Image Tags");
 assert.equal(allPicked.size,0,"clicking outside clears All Tags");
+
+const vocab=new Set(["cute","lion","blue eyes","red hair"]);
+assert.equal(T.naturalSearch("cute and lion",vocab),'"cute" AND "lion"');
+assert.equal(T.naturalSearch("cute not blue eyes",vocab),'"cute" NOT "blue eyes"');
+assert.equal(T.displaySearch('("cute") AND NOT "blue eyes"',vocab),"(cute) AND NOT blue eyes");
+assert.equal(T.search(["cute","lion"],T.naturalSearch("cute and not blue eyes",vocab)),true);
+assert.equal(T.search(["cute","blue eyes"],T.naturalSearch("cute and not blue eyes",vocab)),false);
+assert.equal(T.search(["lion"],T.naturalSearch("cute or lion",vocab)),true);
