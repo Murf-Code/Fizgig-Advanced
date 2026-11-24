@@ -6524,3 +6524,27 @@ body:has(.caption-removal-backdrop){overflow:hidden}
     transition:transform .2s ease;
   }
 }
+
+/* The native select keeps its keyboard behaviour; draw a theme-aware arrow. */
+#tab-captions .studio-top-actions>.studio-learning-filter-label{position:relative}
+#tab-captions .studio-top-actions>.studio-learning-filter-label>.studio-learning-filter{
+  appearance:none;-webkit-appearance:none;padding-right:26px;
+}
+#tab-captions .studio-top-actions>.studio-learning-filter-label::after{
+  content:"";position:absolute;right:11px;top:50%;
+  width:7px;height:7px;box-sizing:border-box;
+  border-right:1.5px solid var(--text-primary);
+  border-bottom:1.5px solid var(--text-primary);
+  opacity:.7;transform:translateY(-70%) rotate(45deg);pointer-events:none;
+}
+#tab-captions .studio-top-actions>.studio-icon-action svg{
+  transform-origin:50% 50%;transform-box:view-box;
+}
+@media(prefers-reduced-motion:no-preference){
+  #tab-captions .studio-top-actions>.studio-settings-action.is-opening-settings svg{
+    animation:studio-toolbar-spin .9s ease-in-out both;
+  }
+  #tab-captions .studio-top-actions>.studio-refresh-action.is-refreshing svg{
+    animation:studio-toolbar-spin 1s linear infinite;
+  }
+}

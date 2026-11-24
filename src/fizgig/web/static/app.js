@@ -15444,7 +15444,19 @@ function renderCaptionStudio(host,items,ext){
     }
     return svg;
   };
-  const settingsBtn=btn("Settings",()=>captionWorkbenchSettingsOpen());
+  const toolbarMotion=()=>!window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const toolbarDelay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  const settingsBtn=btn("Settings",async()=>{
+    if(settingsBtn.classList.contains("is-opening-settings"))return;
+    if(toolbarMotion()){
+      settingsBtn.classList.add("is-opening-settings");
+      // Let the entire gear turn be visible before the modal blurs the toolbar.
+      await toolbarDelay(900);
+      settingsBtn.classList.remove("is-opening-settings");
+    }
+    if(settingsBtn.isConnected&&$("tab-captions")?.classList.contains("active"))
+      captionWorkbenchSettingsOpen();
+  });
   settingsBtn.classList.add("studio-icon-action");
   settingsBtn.setAttribute("aria-label","Settings");
   settingsBtn.title="Settings";
@@ -15454,25 +15466,35 @@ function renderCaptionStudio(host,items,ext){
     "M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.09a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.09a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.09a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.09a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
   ]));
   const refreshBtn=btn("Refresh",async()=>{
-    if(refreshBtn.disabled)return;
-    refreshBtn.disabled=true;
-    refreshBtn.classList.add("is-refreshing");
-    refreshBtn.setAttribute("aria-busy","true");
+    if(S.cap.studioToolbarRefreshing)return;
+    S.cap.studioToolbarRefreshing=true;
+    const syncRefresh=button=>{
+      button.disabled=!!S.cap.studioToolbarRefreshing;
+      button.classList.toggle("is-refreshing",button.disabled);
+      if(button.disabled)button.setAttribute("aria-busy","true");
+      else button.removeAttribute("aria-busy");
+    };
+    syncRefresh(refreshBtn);
+    const minimum=toolbarMotion()?toolbarDelay(1000):Promise.resolve();
     try{
-      // Re-list from disk, including images manually restored from removed/.
-      // This must not move or restore files automatically.
+      // Paint the busy state before refreshing, and preserve it across remounts.
+      if(toolbarMotion())await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
       await loadCaptions();
     }catch(error){
       alert("Dataset refresh failed: "+error.message);
     }finally{
-      if(refreshBtn.isConnected){
-        refreshBtn.disabled=false;
-        refreshBtn.classList.remove("is-refreshing");
-        refreshBtn.removeAttribute("aria-busy");
-      }
+      await minimum;
+      S.cap.studioToolbarRefreshing=false;
+      syncRefresh(refreshBtn);
+      document.querySelectorAll("#tab-captions .studio-refresh-action").forEach(syncRefresh);
     }
   });
-  refreshBtn.classList.add("studio-icon-action");
+  refreshBtn.classList.add("studio-icon-action","studio-refresh-action");
+  if(S.cap.studioToolbarRefreshing){
+    refreshBtn.disabled=true;
+    refreshBtn.classList.add("is-refreshing");
+    refreshBtn.setAttribute("aria-busy","true");
+  }
   refreshBtn.title="Reload images and captions from the dataset folder";
   refreshBtn.setAttribute("aria-label","Refresh dataset images and captions");
   refreshBtn.replaceChildren(toolbarIcon([
@@ -15561,16 +15583,9 @@ function renderCaptionStudio(host,items,ext){
     const control=event.target.closest("button,summary,.studio-learning-toggle");
     if(!control||!actionBar.contains(control)||control.disabled||
         control.closest(".studio-bulk,.studio-tools-options"))return;
-    const target=control===settingsBtn?settingsBtn.querySelector("svg"):control;
-    if(!target||typeof target.animate!=="function")return;
-    if(control===settingsBtn){
-      target.getAnimations().forEach(animation=>animation.cancel());
-      target.animate([{transform:"rotate(0deg)"},{transform:"rotate(360deg)"}],
-        {duration:1200,easing:"ease-in-out"});
-    }else{
-      target.animate([{transform:"scale(1)"},{transform:"scale(.96)"},{transform:"scale(1)"}],
-        {duration:180,easing:"ease-out"});
-    }
+    if(control===settingsBtn||control===refreshBtn||typeof control.animate!=="function")return;
+    control.animate([{transform:"scale(1)"},{transform:"scale(.96)"},{transform:"scale(1)"}],
+      {duration:180,easing:"ease-out"});
   },true);
   // TagBench's Waterfall and Constellation replace the ENTIRE three-panel
   // stage. The normal Tags button restores the caption editor and lists.
