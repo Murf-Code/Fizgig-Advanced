@@ -13295,18 +13295,21 @@ function captionConfirmRemoval({title,detail,items=[],tagCounts=[],confirmLabel=
       if(e.key==="Enter"&&!e.isComposing){
         e.preventDefault();e.stopPropagation();
         if(e.repeat)return;
-        if(document.activeElement?.classList?.contains("caption-removal-toggle")){
-          document.activeElement.click();return;
+        const focused=document.activeElement;
+        if(focused===cancel){close(false);return;}
+        if(focused?.classList?.contains("caption-removal-toggle")){
+          focused.click();return;
         }
         close(true);return;
       }
       if(e.key!=="Tab")return;
       const focusable=[...modal.querySelectorAll("button, .caption-removal-tag-counts")],first=focusable[0],last=focusable[focusable.length-1];
+      if(document.activeElement===modal){e.preventDefault();(e.shiftKey?last:first)?.focus();return;}
       if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
       else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
     });
-    // Enter confirms the dialog; Escape cancels. Keep initial focus on Cancel.
-    (informational?proceed:cancel).focus({preventScroll:true});
+    // Enter confirms by default, but explicitly focused controls keep their meaning.
+    (informational?proceed:modal).focus({preventScroll:true});
   });
 }
 
