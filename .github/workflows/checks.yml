@@ -3,7 +3,7 @@ name: Checks
 on:
   pull_request:
   push:
-    branches: [master, fizgig-advanced, test/caption-workbench]
+    branches: [master, fizgig-advanced, test/caption-workbench, test/stream-sync]
 
 jobs:
   checks:
@@ -34,6 +34,8 @@ jobs:
         run: |
           python -m pytest checks/test_krea2_direction_edit_v2.py -k "scan_adds_auto_targets_to_manual or manual_target_is_kept_even_if_scan_does_not_show_suppression or manual_probe_keeps_weak_concept_not_strong_or_inconsistent or manual_target_without_any_caption_is_measured_against_controls or manual_target_survives_when_automatic_scan_cannot_fit or auto_selection_prefers_frequent_confirmed_targets or frequent_auto_pool_excludes_uncommon_tags_but_keeps_manual_tags or direct_auto_candidate_pool_uses_frequency_only or direct_auto_final_order_ignores_caption_frequency or direct_auto_only_preliminary_caption_sampling" -q
           python -m pytest checks/test_krea2_calibration_lifecycle.py -k "auto_target_budget_is_four_percent or fresh_calibration_reads_family_options" -q
+      - name: Send-only stream synchronization, ring sizing and replay regression checks
+        run: python -m pytest checks/test_send_only_swap.py checks/test_krea2_global_replay.py -q
       - name: Mask weights in Global Replay and H3 reference distillation
         run: |
           python -m pytest checks/test_krea2_global_replay.py -k "masked_global_replay" -q

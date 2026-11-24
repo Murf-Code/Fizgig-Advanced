@@ -456,16 +456,54 @@ def test_sparse_backward_waits_for_previous_stream_rank():
     assert off._wait_ctx == "fwd"
 
 
+def _experimental_ring(monkeypatch, slots, pinned=None):
+    """Test-only override, preserving the production preference and VRAM planner."""
+    from dataclasses import replace
+    original = offloading.create_offloader
+
+    def factory(block_type, blocks, num_blocks, blocks_to_swap, config):
+        if config.h2d_only:
+            settings = {"ring_size": slots}
+            if pinned is not None:
+                settings["use_pinned_memory"] = pinned
+            config = replace(config, **settings)
+        return original(block_type, blocks, num_blocks, blocks_to_swap, config)
+
+    monkeypatch.setattr(offloading, "create_offloader", factory)
+
+
+@pytest.mark.parametrize("family", ["krea", "moss"])
+@pytest.mark.parametrize("slots", [2, 3, 4])
+def test_experimental_ring_sizes_cpu(monkeypatch, family, slots):
+    _experimental_ring(monkeypatch, slots)
+    build, fwd, drv = (_krea, _krea_fwd, Krea2Driver()) if family == "krea" else (
+        _moss, _moss_fwd, MOSSImageDriver())
+    ref = _train(build("none", swap=2), fwd, drv)
+    model = build("send", swap=2)
+    off = model.offloader
+    assert off.B == slots and off.S == 2 + slots
+    assert off.num_blocks - off.S + off.B == off.num_blocks - 2
+    _same(_train(model, fwd, drv, _val(drv, model, fwd)), ref)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires real asynchronous CUDA copies")
-@pytest.mark.parametrize("family,swap", [("krea", 2), ("krea", 6), ("moss", 2), ("moss", 4)])
+@pytest.mark.parametrize("family,swap,slots,pinned", [
+    ("krea", 2, 2, False), ("krea", 6, 2, False),
+    ("moss", 2, 2, False), ("moss", 4, 2, False),
+    ("krea", 2, 3, False), ("krea", 2, 4, False),
+    ("moss", 2, 3, False), ("moss", 2, 4, False),
+    ("krea", 2, 2, True), ("krea", 2, 4, True),
+    ("moss", 2, 2, True), ("moss", 2, 4, True),
+])
 @pytest.mark.parametrize("kind", ["lora", "lokr"])
-def test_cuda_stream_sync_parity(family, swap, kind):
+def test_cuda_stream_sync_parity(monkeypatch, family, swap, slots, pinned):
     """Run manually on a GPU; CPU CI cannot reproduce DMA timing.
     
     Compare no swap, classic swap and send-only, including sparse and dense
     layouts, multiple optimizer steps and validation transitions. Add a short
     copy-stream delay to stress compute/copy ordering without device-wide syncs.
     """
+    _experimental_ring(monkeypatch, slots, pinned)
     device = torch.device("cuda")
     build, fwd, drv = (_krea, _krea_fwd, Krea2Driver()) if family == "krea" else (
         _moss, _moss_fwd, MOSSImageDriver())
@@ -476,6 +514,8 @@ def test_cuda_stream_sync_parity(family, swap, kind):
         model = build(mode, kind=kind, swap=swap, device=device)
         if mode == "send":
             assert isinstance(model.offloader, offloading.LoRAStreamOffloader)
+            assert model.offloader.B == slots
+            assert model.offloader.num_blocks - model.offloader.S + slots == model.offloader.num_blocks - swap
             copier = model.offloader.copier
             original_submit = copier.submit
 
