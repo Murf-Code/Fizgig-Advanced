@@ -15,10 +15,12 @@ CASES = (
     ("rotational", "Global replay", True),
     ("standard", "Standard", False),
 )
+CASES = CASES + tuple((case + "-lr450", method, selective)
+                      for case, method, selective in CASES if selective)
 
 
 def preview_prompts(folder, supplied="", trigger=""):
-    """Resolve the same prompt set once, before queuing any of the eight cases."""
+    """Resolve the same prompt set once, before queuing any of the fourteen cases."""
     supplied = str(supplied or "").strip()
     if supplied:
         return supplied
@@ -61,7 +63,8 @@ def settings(group, output_root, epochs=3, prompt=""):
         "SAMPLE_EVERY_N_EPOCHS": "1", "SAMPLE_AT_FIRST": True,
         "SAMPLE_WIDTH": "512", "SAMPLE_HEIGHT": "512", "SAMPLE_STEPS": "20",
     }
-    return [{**common, "__replay_compare": case, "LORA_NAME": f"{group}-{case}",
+    return [{**common, "LEARNING_RATE": "0.00045" if case.endswith("-lr450") else "0.00025",
+             "__replay_compare": case, "LORA_NAME": f"{group}-{case}",
              "LORA_OUTPUT_DIR": os.path.join(output_root, group, case),
              "KREA2_TRAINING_METHOD": method, "KREA2_SELECTIVE_BLOCK_CHECK": selective}
             for case, method, selective in CASES]
@@ -81,8 +84,9 @@ def adjust_plan(desc, values, plan):
         plan.problems.append("Replay comparison needs exactly one normal Training stage.")
         return plan
     from fizgig.krea2.selective_policy import STRATEGIES
-    if case in STRATEGIES:
-        stages[0].cmd.extend(["--family_option", f"selective_strategy={case}",
+    strategy = case.removesuffix("-lr450")
+    if strategy in STRATEGIES:
+        stages[0].cmd.extend(["--family_option", f"selective_strategy={strategy}",
                               "--family_option", "selective_budget=14"])
     if case == "standard-matched":
         cmd = stages[0].cmd

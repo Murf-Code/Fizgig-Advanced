@@ -2306,6 +2306,31 @@ def _progress_dict(upd):
 
 
 def _run_stages(stages, out_dir):
+    # Capture the identity/log before a following queue item can replace the live console.
+    from fizgig.web import replay_report
+    with _lock:
+        case = (_run.get("values") or {}).get("__replay_compare")
+        log_path = _run_log["path"]
+        history_id = _run.get("history_id")
+    began = time.monotonic()
+    replay_report.update(out_dir, case, "running")
+    try:
+        _run_stages_impl(stages, out_dir)
+    finally:
+        with _lock:
+            state = _run["state"] if _run.get("history_id") == history_id else "unknown"
+        status = {"completed": "finished", "failed": "failed", "stopped": "stopped",
+                  "paused": "paused"}.get(state, "failed")
+        replay_report.update(out_dir, case, status, log_path=log_path,
+                             wall_seconds=time.monotonic() - began)
+    if state == "completed":
+        from fizgig.web import helpers as _h
+        if not (_run.get("values") or {}).get("__stream_sync") and not webqueue.status()["items"] and not _h.moved_in_waiting(out_dir):
+            from fizgig.web import pod_stop
+            pod_stop.maybe_start(load_prefs(), append_log)
+
+
+def _run_stages_impl(stages, out_dir):
     from fizgig.training.progress import TrainingProgressTracker
     append_log(f"\n=== Fizgig run, {datetime.datetime.now():%Y-%m-%d %H:%M:%S} ===\n")
     with _lock:
@@ -2444,10 +2469,6 @@ def _run_stages(stages, out_dir):
     append_log(("\n⏸ Restore point saved and training stopped. Resume continues from it.\n" if _run.get("save_stop")
                 else "\n⏸ Paused. Resume continues from the saved state.\n") if paused else
                f"\n✔ Run complete. {_run['early_stop']}\n" if _run.get("early_stop") else "\n✔ Run complete.\n")
-    from fizgig.web import helpers as _h
-    if not paused and not (_run.get("values") or {}).get("__stream_sync") and not webqueue.status()["items"] and not _h.moved_in_waiting(out_dir):
-        from fizgig.web import pod_stop                    # the last run done: a pod can stop billing (a run moved
-        pod_stop.maybe_start(load_prefs(), append_log)     # here waits until its computer has taken it back)
 
 
 def _perf_status(r):
@@ -5126,6 +5147,11 @@ class Handler(BaseHTTPRequestHandler):
                     if os.path.exists(out) or name_taken(vals, inputs) or webqueue.clashes(out, name):
                         return self.json({"error": "Comparison output already exists; queue a new comparison."}, 400)
                     entries.append(("krea2", vals, folder, name, out))
+                from fizgig.web import replay_report
+                try:
+                    replay_report.create(os.path.join(root, group), folder, configs)
+                except OSError as exc:
+                    return self.json({"error": f"Could not create comparison report: {exc}"}, 400)
                 items = webqueue.add_many(entries)
                 with _lock:
                     idle = not (_run["proc"] is not None and _run["proc"].poll() is None) and (
@@ -5133,7 +5159,8 @@ class Handler(BaseHTTPRequestHandler):
                 if idle and not webqueue.status()["held"]:
                     webqueue.start_next(_queue_starter)
                 return self.json({"ok": True, "ids": [i["id"] for i in items],
-                                  "output": os.path.join(root, group)})
+                                  "output": os.path.join(root, group),
+                                  "report": os.path.join(root, group, replay_report.COMBINED)})
             if path == "/api/queue/stream-sync":
                 folder = str(b.get("image_folder") or "").strip()
                 name = "stream-sync-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
@@ -5218,6 +5245,10 @@ class Handler(BaseHTTPRequestHandler):
                 r = startup_choice(str(b.get("choice") or ""))
                 return self.json(r, 400 if r.get("error") else 200)
             if path == "/api/queue/remove":
+                item = webqueue.get(str(b.get("id") or "")) or {}
+                from fizgig.web import replay_report
+                replay_report.update(item.get("output_dir"), (item.get("values") or {}).get("__replay_compare"),
+                                     "removed", reason="Removed from queue")
                 webqueue.remove(str(b.get("id") or ""))
                 return self.json({"ok": True})
             if path == "/api/queue/move":

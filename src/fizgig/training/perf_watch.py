@@ -82,6 +82,8 @@ class PerfWatch:
         self._sum = {"cpu": 0.0, "gpu_util": 0.0, "gpu_w": 0.0, "disk_mb_s": 0.0}
         self._n = {k: 0 for k in self._sum}
         self.vram_peak = None
+        self.system_ram_peak = None
+        self.process_ram_peak = None
         self.vram_total = None
         self.t0 = time.time()
         self._base = self._counts()
@@ -107,6 +109,11 @@ class PerfWatch:
         try:
             import psutil
             s["cpu"] = round(psutil.cpu_percent(None), 1)
+            vm = psutil.virtual_memory()
+            s["system_ram_gib"] = round((vm.total - vm.available) / 2 ** 30, 2)
+            s["process_ram_gib"] = round(psutil.Process().memory_info().rss / 2 ** 30, 2)
+            self.system_ram_peak = max(self.system_ram_peak or 0.0, s["system_ram_gib"])
+            self.process_ram_peak = max(self.process_ram_peak or 0.0, s["process_ram_gib"])
         except Exception:
             pass
         disk = self._disk_bytes()
@@ -199,6 +206,10 @@ class PerfWatch:
             out["vram_peak_gb"] = self.vram_peak
             if self.vram_total:
                 out["vram_total_gb"] = self.vram_total
+        if self.system_ram_peak is not None:
+            out["system_ram_peak_gib"] = self.system_ram_peak
+        if self.process_ram_peak is not None:
+            out["process_ram_peak_gib"] = self.process_ram_peak
         out["hint"] = hint(out)
         return out
 
