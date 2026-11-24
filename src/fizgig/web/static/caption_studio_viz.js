@@ -181,8 +181,8 @@ const CaptionStudioViz = (() => {
 
   // Adapted from the user-supplied TagBench 1.2 Explore.tsx. TagBench's
   // "Waterfall" is a picture masonry gallery, not a frequency bar chart.
-  // Constellation uses its 120-node, link-weighted cluster/physics arrangement,
-  // count-bearing orbs, label colors, focus relationships and pan/zoom controls.
+  // Constellation uses a compact, co-occurrence network map with focus relationships,
+  // sparse curved strands, frequency-sized points and pan/zoom controls.
   const TB_HUES=["#ff4d6d","#ff7a59","#f0b429","#d6e15a","#3ddc97",
     "#2ee6c7","#3ec6ff","#5b8cff","#9b6bff","#ff7ab6"];
   const TB_SPECIES=/wolf|fox|lion|feline|cat|dragon|horse|avian|bird|shark|rabbit|deer|tiger|leopard|anthro|feral|kobold|bear|otter|sergal/i;
@@ -252,175 +252,103 @@ const CaptionStudioViz = (() => {
     }
     return {all,top,edges,linkCounts};
   }
-  // TagBench's co-occurrence-profile similarity groups unknown tags, while
-  // recognizable tag families remain aligned even on small datasets.
-  function tbGroups(tags,edges) {
-    const n=tags.length;
-    const at=new Map(tags.map((t,i)=>[t.tag,i]));
-    const shared=Array.from({length:n},()=>new Float64Array(n));
-    for(const e of edges){
-      const a=at.get(e.a),b=at.get(e.b);
-      if(a!==undefined&&b!==undefined){shared[a][b]=e.w;shared[b][a]=e.w;}
+  // Cluster by normalized co-occurrence rather than predefined tag families.
+  // The local modularity pass is deterministic and runs in the existing worker.
+  function networkCommunities(top,edges,total){
+    const n=top.length,at=new Map(top.map((t,i)=>[t.tag,i]));
+    const adj=Array.from({length:n},()=>[]),degree=new Float64Array(n);
+    const weighted=edges.map(e=>{
+      const i=at.get(e.a),j=at.get(e.b),a=top[i].count,b=top[j].count;
+      const expected=a*b/Math.max(1,total);
+      const weight=e.w/Math.sqrt(a*b)*Math.max(.06,Math.min(1.5,Math.log1p(e.w/Math.max(expected,.01))-.5));
+      return {...e,i,j,weight};
+    }).sort((a,b)=>b.weight-a.weight||b.w-a.w||a.i-b.i||a.j-b.j);
+    for(const e of weighted){
+      adj[e.i].push([e.j,e.weight]);adj[e.j].push([e.i,e.weight]);
+      degree[e.i]+=e.weight;degree[e.j]+=e.weight;
     }
-    const distance=Array.from({length:n},()=>new Float64Array(n));
-    for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){
-      let dot=0,left=0,right=0;
-      for(let k=0;k<n;k++){
-        if(k===i||k===j||tags[k].count>tags[0].count*.5)continue;
-        const rare=Math.log((n+1)/(tags[k].count+1));
-        const a=shared[i][k]/Math.max(tags[i].count,1)*rare;
-        const b=shared[j][k]/Math.max(tags[j].count,1)*rare;
-        dot+=a*b;left+=a*a;right+=b*b;
-      }
-      distance[i][j]=distance[j][i]=1-(left&&right?dot/Math.sqrt(left*right):0);
-    }
-    const clusterAt=limit=>{
-      const group=tags.map((_,i)=>i);
-      const alive=tags.map(()=>true);
-      const dist=distance.map(row=>Float64Array.from(row));
-      for(let remaining=n;remaining>1;remaining--){
-        let keep=-1,drop=-1,best=Infinity;
-        for(let i=0;i<n;i++)if(alive[i])for(let j=i+1;j<n;j++){
-          if(alive[j]&&dist[i][j]<best){best=dist[i][j];keep=i;drop=j;}
-        }
-        if(keep<0||best>limit)break;
-        for(let k=0;k<n;k++)if(alive[k]&&k!==keep&&k!==drop)
-          dist[keep][k]=dist[k][keep]=Math.max(dist[keep][k],dist[drop][k]);
-        alive[drop]=false;
-        for(let i=0;i<n;i++)if(group[i]===drop)group[i]=keep;
-      }
-      return group;
-    };
-    // Original TagBench silhouette-driven cut selection (sampled at five levels).
-    const score=ids=>{
-      const groups=new Map();
-      ids.forEach((id,i)=>{if(!groups.has(id))groups.set(id,[]);groups.get(id).push(i);});
-      if(groups.size<2)return -1;
-      let total=0,used=0;
+    const group=top.map((_,i)=>i),mass=Float64Array.from(degree);
+    const sum=degree.reduce((a,b)=>a+b,0)||1;
+    for(let pass=0;pass<24;pass++){
+      let moved=false;
       for(let i=0;i<n;i++){
-        const mine=groups.get(ids[i]);
-        if(mine.length<2)continue;
-        const near=mine.reduce((v,j)=>v+(j===i?0:distance[i][j]),0)/(mine.length-1);
-        let far=Infinity;
-        for(const [id,members] of groups)if(id!==ids[i])
-          far=Math.min(far,members.reduce((v,j)=>v+distance[i][j],0)/members.length);
-        total+=(far-near)/Math.max(near,far,1e-6);used++;
+        if(!degree[i])continue;
+        const old=group[i],weights=new Map();
+        for(const [j,w] of adj[i])weights.set(group[j],(weights.get(group[j])||0)+w);
+        mass[old]-=degree[i];
+        let best=old,score=(weights.get(old)||0)-degree[i]*mass[old]/sum;
+        for(const [g,w] of weights){
+          const gain=w-degree[i]*mass[g]/sum;
+          if(gain>score+1e-10){best=g;score=gain;}
+        }
+        group[i]=best;mass[best]+=degree[i];moved||=best!==old;
       }
-      return used?total/used:-1;
-    };
-    let best=clusterAt(.45),bestScore=score(best);
-    for(const level of [.25,.35,.55,.7]){
-      const next=clusterAt(level),value=score(next);
-      if(value>bestScore){best=next;bestScore=value;}
+      if(!moved)break;
     }
-    const familyMap=new Map(),learnedMap=new Map();
-    let seq=20;
-    tags.forEach((row,i)=>{
-      const family=tbFamily(row.tag);
-      const id=family===null?"learned:"+best[i]:"family:"+family;
-      if(!learnedMap.has(id))learnedMap.set(id,seq++);
-      familyMap.set(row.tag,learnedMap.get(id));
-    });
-    const stems=new Map();
-    for(const row of tags){
-      const stem=tbStem(row.tag);
-      if(stem.length<4)continue;
-      if(!stems.has(stem))stems.set(stem,[]);
-      stems.get(stem).push(row);
-    }
-    const alike=[];
-    for(const members of stems.values()){
-      if(members.length<2)continue;
-      members.sort((a,b)=>b.count-a.count);
-      const first=members[0].tag;
-      for(const m of members){
-        familyMap.set(m.tag,familyMap.get(first));
-        if(m.tag!==first)alike.push({a:first,b:m.tag,w:0});
-      }
-    }
-    const ids=[...new Set(familyMap.values())],compact=new Map(ids.map((id,i)=>[id,i]));
-    for(const [tag,id] of familyMap)familyMap.set(tag,compact.get(id));
-    return {groups:familyMap,alike};
+    const ids=new Map();
+    return {weighted,adj,group:group.map(g=>{if(!ids.has(g))ids.set(g,ids.size);return ids.get(g);})};
+  }
+  function networkRadius(count,maxCount){
+    return 2.5+7.5*Math.sqrt(Math.max(0,count)/Math.max(1,maxCount));
   }
   function tagbenchModel(items,categories) {
     const graph=tagbenchGraph(items),{all,top,edges,linkCounts}=graph;
-    const {groups,alike}=tbGroups(top,edges);
-    const lookup=new Map(top.map((t,i)=>[t.tag,i]));
-    const neigh=new Map(top.map(t=>[t.tag,[]]));
-    for(const e of edges){neigh.get(e.a).push({tag:e.b,w:e.w});neigh.get(e.b).push({tag:e.a,w:e.w});}
-    const nodeGroup=new Map();
-    const pods=new Map();let podIndex=0;
-    for(const id of new Set(groups.values())){
-      const members=top.filter(t=>groups.get(t.tag)===id).map(t=>t.tag);
-      const left=new Set(members);
-      while(left.size){
-        const seed=[...left].sort()[0],chosen=[seed];left.delete(seed);
-        const ranked=members.filter(tag=>left.has(tag))
-          .map(tag=>({tag,w:neigh.get(seed).find(x=>x.tag===tag)?.w||0}))
-          .sort((a,b)=>b.w-a.w);
-        for(const next of ranked){if(chosen.length>=8)break;if(next.w<=0)continue;chosen.push(next.tag);left.delete(next.tag);}
-        for(const tag of chosen)pods.set(tag,podIndex);podIndex++;
-      }
-    }
-    const nodes=top.map(t=>({
-      tag:t.tag,count:t.count,links:linkCounts.get(t.tag)||0,
-      group:groups.get(t.tag),pod:pods.get(t.tag)||0,
-      x:0,y:0,color:null
-    }));
-    const groupIds=[...new Set(nodes.map(n=>n.group))];
-    const weights=new Map(groupIds.map(id=>[id,nodes.filter(n=>n.group===id).reduce((s,n)=>s+n.links,0)]));
-    groupIds.sort((a,b)=>weights.get(b)-weights.get(a)).forEach((id,i)=>{
-      const turn=i/Math.max(1,groupIds.length)*Math.PI*2-Math.PI/2;
-      nodes.filter(n=>n.group===id).sort((a,b)=>b.links-a.links||b.count-a.count)
-        .forEach((n,k)=>{
-          const angle=k*2.399,rad=k?18+Math.sqrt(k)*12:0;
-          n.x=Math.cos(turn)*210+Math.cos(angle)*rad;
-          n.y=Math.sin(turn)*170+Math.sin(angle)*rad;
-        });
-    });
-    const chosen=[],seen=new Set(),attract=[];
-    for(const node of nodes){
-      const related=edges.filter(e=>e.a===node.tag||e.b===node.tag);
-      const picked=related.filter(e=>groups.get(e.a)===groups.get(e.b)).slice(0,3)
-        .map(e=>({edge:e,inside:true}))
-        .concat(related.filter(e=>groups.get(e.a)!==groups.get(e.b)).slice(0,1)
-          .map(e=>({edge:e,inside:false})));
-      for(const item of picked){
-        const edge=item.edge,key=edge.a+"\0"+edge.b;
-        if(seen.has(key))continue;seen.add(key);
-        attract.push({i:lookup.get(edge.a),j:lookup.get(edge.b),
-          w:(.45+.55*(edge.w/Math.max(1,edges[0]?.w||1)))*(item.inside?1:.08)});
-        if(item.inside)chosen.push(edge);
-      }
-    }
-    const mass=nodes.map(n=>1+Math.sqrt(n.links)),linkValues=nodes.map(n=>n.links);
-    const minLinks=Math.min(...linkValues,0),maxLinks=Math.max(...linkValues,1);
-    const radius=links=>4+(maxLinks===minLinks?1:(links-minLinks)/(maxLinks-minLinks))*22;
-    for(let step=0;step<220;step++){
-      const fx=nodes.map(()=>0),fy=nodes.map(()=>0);
-      for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
-        const dx=nodes[i].x-nodes[j].x,dy=nodes[i].y-nodes[j].y;
-        const d=Math.hypot(dx,dy)||.01,fac=2*mass[i]*mass[j]/d/d;
-        fx[i]+=dx*fac;fy[i]+=dy*fac;fx[j]-=dx*fac;fy[j]-=dy*fac;
-      }
-      for(const e of attract){
-        const dx=nodes[e.i].x-nodes[e.j].x,dy=nodes[e.i].y-nodes[e.j].y;
-        const d=Math.hypot(dx,dy)||.01,fac=-3*e.w*Math.log1p(d)/d;
-        fx[e.i]+=dx*fac;fy[e.i]+=dy*fac;fx[e.j]-=dx*fac;fy[e.j]-=dy*fac;
-      }
-      let maxForce=1;
-      nodes.forEach((n,i)=>{
-        fx[i]-=n.x*.012*mass[i];fy[i]-=n.y*.012*mass[i];
-        maxForce=Math.max(maxForce,Math.hypot(fx[i],fy[i]));
+    const {weighted,adj,group}=networkCommunities(top,edges,items.length);
+    const nodes=top.map((t,i)=>({tag:t.tag,count:t.count,links:linkCounts.get(t.tag)||0,
+      group:group[i],x:0,y:0,color:null}));
+    const maxCount=top[0]?.count||1,centers=new Map();
+    const groups=new Map();
+    nodes.forEach((node,i)=>{if(!groups.has(node.group))groups.set(node.group,[]);groups.get(node.group).push(i);});
+    const clusters=[...groups].sort((a,b)=>b[1].length-a[1].length||a[0]-b[0]);
+    // Golden-angle seed avoids a rigid ring; cross-community springs pull
+    // connected communities closer and keep genuine bridges visible.
+    clusters.forEach(([id,members],rank)=>{
+      const a=rank*2.39996323,r=clusters.length===1?0:55+36*Math.sqrt(rank);
+      const center={x:Math.cos(a)*r,y:Math.sin(a)*r};centers.set(id,center);
+      members.forEach((i,k)=>{
+        const a=k*2.39996323,r=k?16*Math.sqrt(k):0;
+        nodes[i].x=center.x+Math.cos(a)*r;nodes[i].y=center.y+Math.sin(a)*r;
       });
-      const scale=Math.min(.35,(8*Math.pow(.99,step)+.6)/maxForce);
-      nodes.forEach((n,i)=>{n.x+=fx[i]*scale;n.y+=fy[i]*scale;});
+    });
+    const chosen=[],seen=new Set();
+    // Sparse network: each tag contributes its strongest local and bridge
+    // edges. Full co-occurrence counts remain available on selection.
+    for(let i=0;i<nodes.length;i++){
+      const nearby=adj[i].slice().sort((a,b)=>b[1]-a[1]||a[0]-b[0]);
+      const local=nearby.filter(([j])=>group[j]===group[i]).slice(0,5);
+      const bridges=nearby.filter(([j])=>group[j]!==group[i]).slice(0,2);
+      for(const [j] of [...local,...bridges])seen.add(Math.min(i,j)+":"+Math.max(i,j));
     }
-    for(let step=0;step<28;step++)for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
-      const a=nodes[i],b=nodes[j],dx=a.x-b.x,dy=a.y-b.y,d=Math.max(1,Math.hypot(dx,dy));
-      const minimum=radius(a.links)+radius(b.links)+14;
-      if(d>=minimum)continue;
-      const k=(minimum-d)/2/d;a.x+=dx*k;a.y+=dy*k;b.x-=dx*k;b.y-=dy*k;
+    const springs=weighted.filter(e=>seen.has(Math.min(e.i,e.j)+":"+Math.max(e.i,e.j)));
+    for(const e of springs)chosen.push({a:e.a,b:e.b,w:e.w,weight:e.weight,bridge:group[e.i]!==group[e.j]});
+    const alike=[]; // no artificial semantic links: every visible strand is measured
+    for(let step=0;step<180;step++){
+      const fx=new Float64Array(nodes.length),fy=new Float64Array(nodes.length);
+      for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
+        const a=nodes[i],b=nodes[j],dx=a.x-b.x,dy=a.y-b.y;
+        const d=Math.max(.5,Math.hypot(dx,dy)),min=networkRadius(a.count,maxCount)+networkRadius(b.count,maxCount)+7;
+        const repulse=100/(d*d)+Math.max(0,min-d)*.13/d;
+        fx[i]+=dx*repulse;fy[i]+=dy*repulse;fx[j]-=dx*repulse;fy[j]-=dy*repulse;
+      }
+      for(const e of springs){
+        const a=nodes[e.i],b=nodes[e.j],dx=b.x-a.x,dy=b.y-a.y,d=Math.max(.5,Math.hypot(dx,dy));
+        const same=a.group===b.group,target=same?22:90;
+        const force=(d-target)*(.012+Math.min(1,e.weight)*.055)*(same?1:.45)/d;
+        fx[e.i]+=dx*force;fy[e.i]+=dy*force;fx[e.j]-=dx*force;fy[e.j]-=dy*force;
+      }
+      const cooling=.8*(1-step/180)+.12;
+      nodes.forEach((n,i)=>{
+        const c=centers.get(n.group);
+        fx[i]+=(c.x-n.x)*.018;fy[i]+=(c.y-n.y)*.018;
+        const norm=Math.max(1,Math.hypot(fx[i],fy[i])/7);
+        n.x+=fx[i]*cooling/norm;n.y+=fy[i]*cooling/norm;
+      });
+    }
+    // Separate small hit targets without making giant empty spaces.
+    for(let step=0;step<20;step++)for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
+      const a=nodes[i],b=nodes[j],dx=a.x-b.x,dy=a.y-b.y,d=Math.max(.5,Math.hypot(dx,dy));
+      const min=networkRadius(a.count,maxCount)+networkRadius(b.count,maxCount)+8;
+      if(d<min){const k=(min-d)/2/d;a.x+=dx*k;a.y+=dy*k;b.x-=dx*k;b.y-=dy*k;}
     }
     const colors=new Map();
     nodes.forEach(n=>{
@@ -609,18 +537,18 @@ const CaptionStudioViz = (() => {
     const gradient=make("linearGradient",{id:"tb-sunlight",x1:"0%",y1:"0%",x2:"100%",y2:"100%"},defs);
     for(const [offset,color] of [["0%","#fffbe5"],["45%","#fff0b3"],["100%","#e4be72"]])
       make("stop",{offset,"stop-color":color},gradient);
-    const baseLayer=make("g"),focusLayer=make("g"),hoverLayer=make("g"),nodeLayer=make("g"),labelLayer=make("g");
+    const baseLayer=make("g"),focusLayer=make("g"),nodeLayer=make("g"),labelLayer=make("g");
     const nodes=model.nodes.map(n=>({...n,ox:0,oy:0}));
     const at=new Map(nodes.map(n=>[n.tag,n])),all=new Map(model.all.map(n=>[n.tag,n]));
     const adjacency=new Map(nodes.map(n=>[n.tag,new Map()]));
     for(const e of model.edges){adjacency.get(e.a)?.set(e.b,e.w);adjacency.get(e.b)?.set(e.a,e.w);}
-    const vals=nodes.map(n=>n.links),lo=Math.min(...vals),hi=Math.max(...vals);
-    const visual=new Map(),baseEdges=[],focusEdges=[],hoverEdges=[];
-    let prefs=constellationPrefs(options.preferences),zoom=1,pan={x:0,y:0},picked=null,hover=null,drag=null,rare=null;
+    const maxCount=Math.max(1,...nodes.map(n=>n.count));
+    const visual=new Map(),baseEdges=[],focusEdges=[];
+    let prefs=constellationPrefs(options.preferences),zoom=1,pan={x:0,y:0},picked=null,drag=null,rare=null;
     let serial=0,shared=new Map(),frame=null,settling=null,camera=null,pulse=null,disposed=false,dirty=new Set(),lastClick=null;
     const media=typeof matchMedia==="function"?matchMedia("(prefers-reduced-motion: reduce)"):null;
     const reduced=()=>!!media?.matches;
-    const radius=n=>(4+(hi===lo?1:Math.max(0,Math.min(1,(n.links-lo)/(hi-lo))))*22)*(zoom>1?1/Math.pow(zoom,.22):1)/zoom;
+    const radius=n=>networkRadius(n.count,maxCount)/Math.pow(zoom,.38);
     const position=n=>({x:n.x+n.ox,y:n.y+n.oy});
     const view=()=>svg.setAttribute("viewBox",[500-500/zoom+pan.x,350-350/zoom+pan.y,1000/zoom,700/zoom].join(" "));
     const search=html("div","studio-tb-search"),input=html("input","",undefined,search),matches=html("div","studio-tb-suggest",undefined,search);
@@ -635,23 +563,24 @@ const CaptionStudioViz = (() => {
       const a=at.get(edge.a),b=at.get(edge.b);if(!a||!b)return;
       const p=position(a),q=position(b),dx=q.x-p.x,dy=q.y-p.y,len=Math.hypot(dx,dy)||1;
       const start=Math.min(len/2,radius(a)),end=Math.min(len/2,radius(b));
-      edge.el.setAttribute("x1",p.x+dx/len*start);edge.el.setAttribute("y1",p.y+dy/len*start);
-      edge.el.setAttribute("x2",q.x-dx/len*end);edge.el.setAttribute("y2",q.y-dy/len*end);
+      const x1=p.x+dx/len*start,y1=p.y+dy/len*start,x2=q.x-dx/len*end,y2=q.y-dy/len*end;
+      const bend=Math.min(28,len*.16)*(edge.a<edge.b?1:-1);
+      const cx=(x1+x2)/2-dy/len*bend,cy=(y1+y2)/2+dx/len*bend;
+      edge.el.setAttribute("d",`M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`);
     };
     const addEdge=(e,layer,kind)=>{
-      const line=make("line",{"vector-effect":"non-scaling-stroke","pointer-events":"none",class:"studio-tb-edge "+kind},layer);
+      const line=make("path",{fill:"none","vector-effect":"non-scaling-stroke","pointer-events":"none",class:"studio-tb-edge "+kind},layer);
       const rec={...e,el:line};edgeGeometry(rec);return rec;
     };
     for(const e of model.chosen)if(at.has(e.a)&&at.has(e.b))baseEdges.push(addEdge(e,baseLayer,"is-base"));
     for(const e of model.alike)if(at.has(e.a)&&at.has(e.b))baseEdges.push(addEdge(e,baseLayer,"is-alike"));
     const nodeGeometry=n=>{
       const v=visual.get(n.tag);if(!v)return;
-      const p=position(n),r=radius(n),sz=12*(zoom>1?1/Math.pow(zoom,.22):1)/zoom;
+      const p=position(n),r=radius(n),sz=(n.count===maxCount?13:11)/Math.pow(zoom,.65);
       v.g.setAttribute("transform","translate("+p.x+" "+p.y+")");
-      v.core.setAttribute("r",r);v.halo.setAttribute("r",r*1.34);
+      v.core.setAttribute("r",r);v.halo.setAttribute("r",r*1.55);v.hit.setAttribute("r",Math.max(r,9/scalePixels()));
       v.ring.setAttribute("r",r+4/zoom);
       v.star.setAttribute("transform","translate("+(r*.78+4/zoom)+" "+(-r*.78-4/zoom)+") scale("+1/zoom+")");
-      v.number.setAttribute("font-size",Math.max(4/zoom,r*(v.number.textContent.length>=3?.50:.70)));
       v.label.setAttribute("x",p.x+r+5/zoom);v.label.setAttribute("y",p.y+sz*.32);
       v.label.setAttribute("font-size",sz);v.label.setAttribute("stroke-width",Math.max(sz*.24,1.5/zoom));
       v.ripple.setAttribute("r",r+4/zoom+(pulse?.tag===n.tag?pulse.amount*13/zoom:0));
@@ -659,7 +588,7 @@ const CaptionStudioViz = (() => {
     const updateGeometry=(changed=null)=>{
       if(!changed){for(const n of at.values())nodeGeometry(n);}
       else for(const tag of changed){const n=at.get(tag);if(n)nodeGeometry(n);}
-      for(const e of [...baseEdges,...focusEdges,...hoverEdges])if(!changed||changed.has(e.a)||changed.has(e.b))edgeGeometry(e);
+      for(const e of [...baseEdges,...focusEdges])if(!changed||changed.has(e.a)||changed.has(e.b))edgeGeometry(e);
     };
     function createNode(n){
       const id="tb-orb-"+serial++;
@@ -667,17 +596,14 @@ const CaptionStudioViz = (() => {
       for(const [offset,color,opacity] of [["0%","#ffffff",".62"],["35%",n.color,"1"],["100%",n.color,".72"]])
         make("stop",{offset,"stop-color":color,"stop-opacity":opacity},grad);
       const g=make("g",{"data-tag":n.tag,role:"button",tabindex:"0",class:"studio-tb-orb"},nodeLayer);
-      make("title",{},g).textContent=n.tag+" · "+n.count+" images";
-      const halo=make("circle",{fill:n.color,opacity:0,class:"studio-tb-orb-halo"},g);
+      const hit=make("circle",{fill:"transparent",class:"studio-tb-hit","pointer-events":"all"},g);
+      const halo=make("circle",{fill:n.color,class:"studio-tb-orb-halo","pointer-events":"none"},g);
       const ripple=make("circle",{fill:"none",stroke:"url(#tb-sunlight)","vector-effect":"non-scaling-stroke","stroke-width":"1.2",opacity:0,"pointer-events":"none"},g);
       const ring=make("circle",{fill:"none",stroke:"url(#tb-sunlight)","vector-effect":"non-scaling-stroke","stroke-width":"2",opacity:0,"pointer-events":"none"},g);
       const core=make("circle",{fill:n.color,class:"studio-tb-orb-core"},g);
-      const number=make("text",{"text-anchor":"middle","dominant-baseline":"central",fill:"var(--text-on-light)","font-weight":700,"pointer-events":"none"},g);
       const star=make("path",{d:"M0 -7Q1 -1 7 0Q1 1 0 7Q-1 1 -7 0Q-1 -1 0 -7Z",fill:"url(#tb-sunlight)",stroke:"#141416","stroke-width":"1",opacity:0,"pointer-events":"none"},g);
       const label=make("text",{fill:n.color,"font-weight":650,stroke:"var(--bg-deep)","paint-order":"stroke","pointer-events":"none"},labelLayer);label.textContent=n.tag;
-      visual.set(n.tag,{g,core,halo,ripple,ring,number,star,label,grad,id});
-      g.addEventListener("pointerenter",()=>{if(drag)return;hover=n.tag;hoverConnections();updateAppearance();});
-      g.addEventListener("pointerleave",()=>{if(hover===n.tag){hover=null;hoverConnections();updateAppearance();}});
+      visual.set(n.tag,{g,core,halo,hit,ripple,ring,star,label,grad,id});
       g.addEventListener("pointerdown",e=>{
         if(e.button!==0)return;e.stopPropagation();dismissMenu();cancelMotion();
         const p=point(e);drag={kind:"node",tag:n.tag,dx:p.x-n.x,dy:p.y-n.y,x:e.clientX,y:e.clientY,moved:false};
@@ -719,40 +645,35 @@ const CaptionStudioViz = (() => {
         e.el.setAttribute("stroke-width",.7+strength*2.5);focusEdges.push(e);
       }
     }
-    function hoverConnections(){
-      hoverLayer.replaceChildren();hoverEdges.length=0;
-      if(!hover||hover===picked||!at.has(hover))return;
-      for(const [tag,w] of relationMap(hover))if(at.has(tag)){
-        const e=addEdge({a:hover,b:tag,w},hoverLayer,"is-hovered");
-        const strength=Math.min(1,w/Math.max(1,at.get(hover).count));
-        e.el.setAttribute("stroke",at.get(tag).color);e.el.setAttribute("stroke-opacity",.16+strength*.54);
-        e.el.setAttribute("stroke-width",.7+strength*1.4);hoverEdges.push(e);
-      }
-    }
     function updateAppearance(){
-      const focused=hover||picked,neighbors=focused?relationMap(focused):null;
-      const rankLimit=zoom<.7?15:zoom<1.1?45:zoom<1.6?85:120;
+      const focused=picked,neighbors=focused?relationMap(focused):null;
+      const rankLimit=zoom<.8?10:zoom<1.25?22:zoom<2?45:zoom<3?80:120;
       for(const e of baseEdges){
         const touches=focused&&(e.a===focused||e.b===focused);
-        e.el.setAttribute("stroke",e.el.classList.contains("is-alike")?"var(--text-secondary)":at.get(e.a)?.color||"var(--text-muted)");
-        e.el.setAttribute("stroke-opacity",focused?(touches?.42:.045):e.el.classList.contains("is-alike")?.65:.23);
-        e.el.setAttribute("stroke-width",touches?1.3:.7);
-        if(e.el.classList.contains("is-alike"))e.el.setAttribute("stroke-dasharray","4 4");
+        e.el.setAttribute("stroke",at.get(e.a)?.color||"var(--text-muted)");
+        e.el.setAttribute("stroke-opacity",focused?(touches?.3:.035):e.bridge?.15:.27);
+        e.el.setAttribute("stroke-width",touches?.85:e.bridge?.48:.65);
       }
-      focusLayer.setAttribute("opacity",hover&&hover!==picked?".22":"1");
-      let rank=0;
-      for(const n of at.values()){
-        const v=visual.get(n.tag),selected=n.tag===picked,related=!focused||n.tag===focused||neighbors?.has(n.tag);
-        v.g.setAttribute("opacity",related||selected?1:.15);
+      // Labels are prioritized by selection, then cluster representatives,
+      // then frequency. Collision rejection keeps the full map readable.
+      const ordered=[...at.values()].sort((a,b)=>(b.tag===picked)-(a.tag===picked)||
+        ((neighbors?.has(b.tag)?1:0)-(neighbors?.has(a.tag)?1:0))||b.count-a.count);
+      const placed=[],represented=new Set();
+      let labels=0;
+      for(const n of ordered){
+        const v=visual.get(n.tag),selected=n.tag===picked,related=!focused||selected||neighbors?.has(n.tag);
+        v.g.setAttribute("opacity",related?1:.19);
         v.g.setAttribute("aria-pressed",String(selected));
         v.g.setAttribute("aria-label",n.tag+", "+n.count+" images"+(selected?", selected":""));
         v.core.setAttribute("fill",prefs.glass?"url(#"+v.id+")":n.color);
-        v.halo.setAttribute("opacity",hover===n.tag?".18":"0");
         v.ring.setAttribute("opacity",selected?"1":"0");v.star.setAttribute("opacity",selected?"1":"0");
-        v.number.textContent=String(picked&&n.tag!==picked&&shared.has(n.tag)?shared.get(n.tag):n.count);
-        v.label.setAttribute("opacity",related||selected?"1":".14");
-        v.label.setAttribute("visibility",selected||n.tag===hover||(focused&&related)||rank<rankLimit?"visible":"hidden");
-        rank++;
+        const p=position(n),sz=(n.count===maxCount?13:11)/Math.pow(zoom,.65),r=radius(n);
+        const box={x:p.x+r+5/zoom,y:p.y-sz*.8,w:n.tag.length*sz*.56,h:sz*1.25};
+        const collision=placed.some(b=>box.x<b.x+b.w&&box.x+box.w>b.x&&box.y<b.y+b.h&&box.y+box.h>b.y);
+        const leader=!represented.has(n.group);
+        const show=selected||(!collision&&related&&(labels<rankLimit||leader));
+        v.label.setAttribute("visibility",show?"visible":"hidden");
+        if(show){placed.push(box);represented.add(n.group);labels++;}
       }
       updateGeometry();
     }
@@ -783,7 +704,7 @@ const CaptionStudioViz = (() => {
       if(tag&&!ensureTag(tag))return;
       if(rare&&rare.tag!==tag)removeRare();
       if(pulse){visual.get(pulse.tag)?.ripple.setAttribute("opacity","0");pulse=null;}
-      picked=tag;hover=null;hoverConnections();focusConnections();renderPanel();updateAppearance();
+      picked=tag;focusConnections();renderPanel();updateAppearance();
       onPick?.(picked);
       if(picked&&!reduced()&&prefs.elasticity>0){pulse={tag:picked,start:performance.now(),amount:0};wake();}
     }

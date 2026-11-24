@@ -13115,7 +13115,7 @@ function captionWorkbenchSettingsOpen(advanced=false,initializeOnly=false){
     fields.append(el("label",{class:"caption-settings-field caption-elasticity-field"},
       el("span",{class:"caption-elasticity-title"},el("span",{text:"Elasticity"}),elasticityValue),elasticity,
       el("small",{text:"Subtle movement of connected tags. Double-click to reset; 0% disables motion."})));
-    for(const [key,label,hint] of [["glass","Glass nodes","Soft dimensional highlights"],["celestial","Celestial background","Static stars and atmospheric shading"]]){
+    for(const [key,label,hint] of [["glass","Node highlights","Subtle dimensional highlights on network points"],["celestial","Celestial background","Static stars and atmospheric shading"]]){
       const toggle=el("input",{type:"checkbox"});toggle.checked=constellation[key];
       toggle.addEventListener("change",()=>{constellation[key]=toggle.checked;applyConstellation();});
       row(label,toggle,hint);

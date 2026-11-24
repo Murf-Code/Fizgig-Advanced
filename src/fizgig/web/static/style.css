@@ -6951,3 +6951,15 @@ body.caption-glass-ui .studio-image-context-menu .studio-danger-action:not(:disa
 :root[data-theme="high-contrast"] #tab-captions.caption-theme-glass,:root[data-theme="high-contrast"] .caption-settings-modal,:root[data-theme="high-contrast"] #tab-prep .me-dialog-window{background:var(--bg-surface);color:var(--text-primary)}
 :root[data-theme="high-contrast"] #tab-captions .studio-tb-constellation::before{display:none}
 :root[data-theme="high-contrast"] #tab-captions :is(input,select,textarea,button):focus-visible{outline:3px solid var(--accent)!important}
+
+/* Constellation network map: lightweight points and unobtrusive map controls. */
+#tab-captions .studio-tb-constellation{background:radial-gradient(ellipse at 20% 80%,color-mix(in srgb,var(--accent) 6%,transparent),transparent 68%),var(--bg-deep)}
+#tab-captions .studio-tb-constellation::before{opacity:.13}
+#tab-captions .studio-tb-orb-halo{opacity:0;transition:opacity .12s ease}
+#tab-captions .studio-tb-orb:hover .studio-tb-orb-halo{opacity:.22}
+#tab-captions .studio-tb-orb:hover .studio-tb-orb-core{filter:brightness(1.2)}
+#tab-captions .studio-tb-orb-core{stroke:none}
+#tab-captions .studio-tb-search,#tab-captions .studio-tb-zoom,#tab-captions .studio-tb-cluster{background:color-mix(in srgb,var(--bg-surface) 94%,transparent);border-color:var(--border);box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;border-radius:8px}
+#tab-captions .studio-tb-search{width:min(230px,45%)}
+#tab-captions .studio-tb-search input{padding:8px 10px;font-size:13px}
+#tab-captions .studio-tb-zoom button{min-width:32px;min-height:32px;font-size:18px}
