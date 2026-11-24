@@ -13702,7 +13702,35 @@ function captionTagRemovalConfirmation(tags,captions) {
   if(rows.length===1)return {title:captionTagRemovalTitle(tags,rows[0].count)};
   return {title:"Remove selected tags?",tagCounts:rows};
 }
-function captionConfirmRemoval({title,detail,items=[],tagCounts=[],confirmLabel="Remove",informational=false,compact=false}) {
+function captionTagRenameTitle(old,next,count){
+  return "Rename “"+old+"” to “"+next+"” in "+count+" image"+(count===1?"":"s")+"?";
+}
+// Never normalize or deduplicate an unrelated caption just because a
+// dataset-wide rename is running. Count only captions that actually change.
+function captionBulkTagChanges(affected,mode,old,newTag,drafts,reviewed){
+  const changes=[];
+  let blockedDraft=false,locked=0;
+  const key=old.trim().toLowerCase();
+  for(const it of affected){
+    if(studioCaptionMode(it)==="prose")continue;
+    const source=studioTokens(it.caption,"tags");
+    const matches=source.some(t=>t.toLowerCase()===key);
+    const draft=drafts.get(it.path);
+    const draftMatches=draft!==undefined&&studioTokens(draft,"tags").some(t=>t.toLowerCase()===key);
+    if(mode!=="add"&&!matches&&!draftMatches)continue;
+    if(reviewed?.has(it.path)){if(matches)locked++;continue;}
+    if(drafts.has(it.path)&&draft!==it.caption){blockedDraft=true;continue;}
+    if(mode!=="add"&&!matches)continue;
+    if(mode==="add"&&matches)continue;
+    const target=mode==="remove"?source.filter(t=>t.toLowerCase()!==key):
+      mode==="rename"?source.map(t=>t.toLowerCase()===key?newTag.trim():t):[...source,old.trim()];
+    if(mode==="rename"&&target.every((t,i)=>t===source[i]))continue;
+    const after=studioCompose(it.caption,studioUnique(target),"tags");
+    if(after!==it.caption)changes.push({folder:capItemFolder(it),name:it.name,path:it.path,before:it.caption,after});
+  }
+  return {changes,blockedDraft,locked};
+}
+function captionConfirmRemoval({title,detail,items=[],tagCounts=[],confirmLabel="Remove",informational=false,compact=false,destructive=true}) {
   if(document.querySelector(".caption-removal-backdrop"))return Promise.resolve(false);
   return new Promise(resolve=>{
     const lastFocus=document.activeElement;
@@ -13752,7 +13780,7 @@ function captionConfirmRemoval({title,detail,items=[],tagCounts=[],confirmLabel=
       resolve(confirmed);
     };
     const cancel=el("button",{class:"btn",type:"button",text:"Cancel",onclick:()=>close(false)});
-    const proceed=el("button",{class:informational?"btn btn-primary":"btn btn-danger",type:"button",
+    const proceed=el("button",{class:informational||!destructive?"btn btn-primary":"btn btn-danger",type:"button",
       text:confirmLabel,onclick:()=>close(true)});
     const footer=el("div",{class:"caption-removal-actions"},...(informational?[proceed]:[cancel,proceed]));
     modal.append(el("header",{class:"caption-removal-heading"},heading),body,footer);
@@ -15408,7 +15436,7 @@ function renderCaptionStudio(host,items,ext){
       // Tags index. Do not rebuild a detached index after the API resolves.
     };
     entry.addEventListener("keydown",e=>{
-      if(e.key==="Enter"){e.preventDefault();e.stopPropagation();entry.blur();}
+      if(e.key==="Enter"&&!e.isComposing){e.preventDefault();e.stopPropagation();if(!e.repeat)entry.blur();}
       if(e.key==="Escape"){
         canceled=true;e.preventDefault();e.stopPropagation();entry.blur();
       }
@@ -15599,25 +15627,31 @@ function renderCaptionStudio(host,items,ext){
     if(mode==="rename"&&(!newTag||!newTag.trim()))return false;
     const affected=scope==="all"?S.cap.items:scope==="image"?[current]:
       selection.size?S.cap.items.filter(it=>selection.has(it.path)):[current];
-    if(affected.some(it=>drafts.has(it.path)&&drafts.get(it.path)!==it.caption)){
-      alert("Save your unsaved caption drafts before a bulk tag operation.");return;
+    const {changes,blockedDraft,locked:lockedCount}=captionBulkTagChanges(
+      affected,mode,old,newTag,drafts,S.cap.studioReviewed);
+    const notice=(title,detail)=>captionConfirmRemoval({title,detail,confirmLabel:"Done",informational:true});
+    if(blockedDraft){
+      await notice("Unsaved caption changes","Save the affected caption drafts before editing these tags.");
+      return false;
     }
-    if(mode!=="remove"&&!confirm("Apply "+mode+" tag to "+affected.length+" caption(s)?"))return false;
-    const changes=[];
-    for(const it of affected){
-      if(S.cap.studioReviewed?.has(it.path)||studioCaptionMode(it)==="prose")continue;
-      const source=studioTokens(it.caption,"tags");
-      const target=mode==="remove"?source.filter(t=>t.toLowerCase()!==old.trim().toLowerCase()):
-        mode==="rename"?source.map(t=>t.toLowerCase()===old.trim().toLowerCase()?newTag.trim():t):[...source,old.trim()];
-      const after=studioCompose(it.caption,studioUnique(target),"tags");
-      if(after!==it.caption)changes.push({folder:capItemFolder(it),name:it.name,path:it.path,
-        before:it.caption,after});
+    if(!changes.length){
+      await notice("No editable captions match",lockedCount?
+        lockedCount+" reviewed image"+(lockedCount===1?" is":"s are")+" locked and will not be changed.":
+        "No images require this tag change.");
+      return false;
     }
-    if(!changes.length){say("No editable captions match.");return false;}
-    if(changes.length>1000){say("Too many changes for one atomic batch. Limit the selection to 1000 images.");return false;}
-    if(mode==="remove"&&!(await captionConfirmRemoval({
-      title:captionTagRemovalTitle([old.trim()],changes.length),
-      detail:"This can be undone.",compact:true,confirmLabel:"Remove"
+    if(changes.length>1000){
+      await notice("Too many affected images",changes.length+" images match. One atomic tag edit supports up to 1000 images.");
+      return false;
+    }
+    const title=mode==="rename"?captionTagRenameTitle(old.trim(),newTag.trim(),changes.length):
+      mode==="remove"?captionTagRemovalTitle([old.trim()],changes.length):
+      "Add “"+old.trim()+"” to "+changes.length+" image"+(changes.length===1?"":"s")+"?";
+    const detail="This can be undone."+(lockedCount?
+      " "+lockedCount+" reviewed image"+(lockedCount===1?" will":"s will")+" be skipped.":"");
+    if(!(await captionConfirmRemoval({
+      title,detail,compact:true,confirmLabel:mode==="rename"?"Rename":mode==="remove"?"Remove":"Add",
+      destructive:mode==="remove"
     })))return false;
     try{
       await api("/api/captions/batch_edit",{ext,edits:changes.map(c=>({
@@ -15630,7 +15664,7 @@ function renderCaptionStudio(host,items,ext){
       const n=$("captionsGrid").querySelector(".studio-bulk-note");
       if(n)n.textContent=changes.length+" captions updated · one undo restores the group";
       return true;
-    }catch(e){say(e.message);alert("Tag edit failed: "+e.message);return false;}
+    }catch(e){say(e.message);await notice("Tag edit failed",e.message);return false;}
   };
   // Undo/Redo remain beside Edit image/crop and on Ctrl+Z/Ctrl+Y.
   // The Edit Tags dropdown is reserved for the four TagBench editing actions.
