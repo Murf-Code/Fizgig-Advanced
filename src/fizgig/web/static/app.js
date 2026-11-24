@@ -16447,9 +16447,11 @@ function renderCaptionStudio(host,items,ext){
             lossDisposed=true;lossSerial++;lossWork?.cancel?.();oldDispose?.();
           };
           network.refreshLearning=async()=>{
+            if(lossDisposed||!network.setLearning)return;
             const enabled=!!S.cap.studioLearningColors;
             const snapshot=S.cap.learningMap;
             if(!enabled){
+              if(lossSnapshot===null&&!lossWork)return;
               lossSerial++;lossWork?.cancel?.();lossWork=null;lossSnapshot=null;lossResult=null;
               network.setLearning(null,false);return;
             }

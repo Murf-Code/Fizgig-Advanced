@@ -937,11 +937,11 @@ const CaptionStudioViz = (() => {
         fill:"color-mix(in srgb, "+c.color+" 80%, var(--bg-deep))",
         stroke:c.color,"stroke-width":1.2,role:"button",tabindex:0,
         "aria-label":desc,style:"cursor:pointer"},g);
-      make("title",{},background).textContent=desc;
+      const groupTitle=make("title",{},background);groupTitle.textContent=desc;
       activatePacked(background,()=>enterPacked(c));
       const groupRing=make("circle",{r:Math.max(1,c.r-2),fill:"none","stroke-width":3,
         "vector-effect":"non-scaling-stroke","pointer-events":"none",opacity:0},g);
-      packedLoss.push({ring:groupRing,id:c.id,total:c.imageCount??c.count,community:true});
+      packedLoss.push({ring:groupRing,id:c.id,total:c.imageCount??c.count,community:true,title:groupTitle,base:desc});
       for(const child of c.children){
         const title=child.more?child.more.length+" additional tags, "+child.count+" occurrences":
           child.tag+", "+child.count+" images";
@@ -949,11 +949,11 @@ const CaptionStudioViz = (() => {
           fill:"color-mix(in srgb, "+c.color+" "+(child.more?48:58)+"%, var(--text-primary))",
           stroke:c.color,"stroke-width":.75,"fill-opacity":child.more?.72:.87,
           role:"button",tabindex:0,"aria-label":title,style:"cursor:pointer"},g);
-        make("title",{},disk).textContent=title;
+        const diskTitle=make("title",{},disk);diskTitle.textContent=title;
         if(child.tag){
           const ring=make("circle",{cx:child.x,cy:child.y,r:Math.max(1,child.r-1),fill:"none",
             "stroke-width":2,"vector-effect":"non-scaling-stroke","pointer-events":"none",opacity:0},g);
-          packedLoss.push({ring,id:child.tag,total:child.count});
+          packedLoss.push({ring,id:child.tag,total:child.count,title:diskTitle,base:title});
           if(model.warnings?.has(child.tag)&&child.r>=6){
             const flag=make("text",{x:child.x+child.r*.58,y:child.y-child.r*.38,fill:"var(--warning)",
               "font-size":Math.min(13,child.r),"font-weight":900,"pointer-events":"none",opacity:0},g);
@@ -1081,7 +1081,7 @@ const CaptionStudioViz = (() => {
       for(const [offset,color,opacity] of [["0%","#ffffff",".62"],["35%",n.color,"1"],["100%",n.color,".72"]])
         make("stop",{offset,"stop-color":color,"stop-opacity":opacity},grad);
       const g=make("g",{"data-tag":n.tag,role:"button",tabindex:"0",class:"studio-tb-orb"},nodeLayer);
-      make("title",{},g).textContent=n.tag+" · "+n.count+" images";
+      const title=make("title",{},g);title.textContent=n.tag+" · "+n.count+" images";
       const halo=make("circle",{fill:n.color,opacity:0,class:"studio-tb-orb-halo"},g);
       const ripple=make("circle",{fill:"none",stroke:"url(#tb-sunlight)","vector-effect":"non-scaling-stroke","stroke-width":"1.2",opacity:0,"pointer-events":"none"},g);
       const ring=make("circle",{fill:"none",stroke:"#efd16e","vector-effect":"non-scaling-stroke","stroke-width":"1.5",opacity:0,"pointer-events":"none"},g);
@@ -1098,7 +1098,7 @@ const CaptionStudioViz = (() => {
       const hit=make("circle",{fill:"transparent"},g);
       const label=make("text",{fill:"var(--text-primary)","font-family":"system-ui, sans-serif","font-weight":650,stroke:"var(--bg-deep)","paint-order":"stroke","pointer-events":"none"},labelLayer);
       label.textContent=n.tag;
-      visual.set(n.tag,{g,core,halo,ripple,ring,lossRing,warning,hit,artwork,number,label,grad,id});
+      visual.set(n.tag,{g,core,halo,ripple,ring,lossRing,warning,hit,artwork,number,label,grad,id,title});
       g.addEventListener("pointerdown",e=>{
         if(e.button!==0)return;e.stopPropagation();dismissMenu();cancelMotion();
         const p=point(e);drag={kind:"node",tag:n.tag,dx:p.x-n.x,dy:p.y-n.y,x:e.clientX,y:e.clientY,moved:false};
@@ -1251,15 +1251,24 @@ const CaptionStudioViz = (() => {
       ring.setAttribute("stroke",lossTone(row,lossData?.baseline));
       ring.setAttribute("stroke-dasharray",row?.measured<3?"3 3":"none");
     }
+    function lossDescription(row,total){
+      if(!lossEnabled)return "";
+      return row?.measured?" · mean relative loss "+row.mean.toFixed(3)+" · "+row.measured+"/"+total+" measured":
+        " · no measured loss";
+    }
     function paintTagDiagnostics(n){
       const v=visual.get(n.tag);if(!v)return;
-      paintLoss(v.lossRing,lossData?.tags.get(n.tag),n.count);
+      const row=lossData?.tags.get(n.tag);
+      paintLoss(v.lossRing,row,n.count);
+      v.title.textContent=n.tag+" · "+n.count+" images"+lossDescription(row,n.count);
       v.warning.setAttribute("opacity",qualityEnabled&&model.warnings?.has(n.tag)?1:0);
     }
     function paintDiagnostics(){
       for(const n of at.values())paintTagDiagnostics(n);
-      for(const {ring,id,total,community} of packedLoss)
-        paintLoss(ring,(community?lossData?.communities:lossData?.tags)?.get(id),total);
+      for(const {ring,id,total,community,title,base} of packedLoss){
+        const row=(community?lossData?.communities:lossData?.tags)?.get(id);
+        paintLoss(ring,row,total);title.textContent=base+lossDescription(row,total);
+      }
       for(const flag of packedWarnings)flag.setAttribute("opacity",qualityEnabled?1:0);
       lossLegend.hidden=!lossEnabled;
       const baseline=lossData?.baseline;
@@ -1574,7 +1583,7 @@ const CaptionStudioViz = (() => {
     const lossLegend=html("div","studio-tb-loss-legend");
     lossLegend.hidden=true;
     Object.assign(lossLegend.style,{position:"absolute",left:"12px",bottom:"12px",maxWidth:"min(440px,65%)",
-      background:"var(--bg-surface)",color:"var(--text-primary)",border:"1px solid var(--border)",
+      background:"var(--bg-surface)",color:"var(--text-primary)",border:"1px solid var(--accent-border)",zIndex:"2",
       padding:"6px 9px",borderRadius:"6px",fontSize:"11px",pointerEvents:"none"});
     const searchMatches=()=>{
       matches.replaceChildren();const q=input.value.toLowerCase().trim();if(!q)return;
@@ -1720,7 +1729,10 @@ const CaptionStudioViz = (() => {
     stage.append(canvas,svg,search,zoomCtl,spotlight,menu,lossLegend);
     stage.setLearning=(data,enabled,pending=false)=>{
       if(disposed)return;
+      if(lossData===data&&lossEnabled===!!enabled&&lossPending===!!pending)return;
+      const scroll=spotlight.scrollTop;
       lossData=data;lossEnabled=!!enabled;lossPending=!!pending;paintDiagnostics();renderPanel();
+      spotlight.scrollTop=scroll;
     };
     stage.setPreferences(prefs);view();
     if(nodes.length)fit(false);

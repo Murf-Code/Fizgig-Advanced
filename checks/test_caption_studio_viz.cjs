@@ -251,6 +251,29 @@ try {
   assert.ok(many.all.every(n=>many.colors.has(n.tag)));
   manyMap.dispose();
 
+  // Both graph and packed circles expose actual measured loss; toggling
+  // never changes topology or the selected tag.
+  const diagnosticModel=Viz.tagbenchModel([
+    {tags:["lion","lion","mane"]},{tags:["lion","mane"]},{tags:["lion","mane"]},
+    {tags:["fox","tail"]},{tags:["fox","tail"]},{tags:["fox","tail"]}
+  ]);
+  const diag=Viz.tagbenchConstellation(diagnosticModel,()=>{},"lion");
+  const lossSummary=Viz.summarizeAtlasLoss([
+    ...Array.from({length:3},()=>({tags:["lion","mane"],recent:2,verdict:"stuck"})),
+    ...Array.from({length:3},()=>({tags:["fox","tail"],recent:-1}))
+  ],diagnosticModel.atlas.clusters);
+  diag.setLearning(lossSummary,true);
+  const lionNode=allIn(diag).find(n=>n.attrs["data-tag"]==="lion");
+  assert.ok(allIn(lionNode).some(n=>n.attrs.stroke==="var(--danger)"&&n.attrs.opacity==="1"));
+  assert.ok(allIn(diag).some(n=>n.textContent==="Mean relative loss 2.000 · 3/3 measured"));
+  assert.ok(allIn(diag).some(n=>n.textContent==="3 stuck · 0 suspect (Loss Watch)"));
+  assert.ok(allIn(diag).some(n=>String(n.textContent||"").includes("mean relative loss 2.000 · 3/3 measured")));
+  byLabel(diag,"Toggle caption quality warnings").handlers.click();
+  assert.ok(allIn(diag).some(n=>n.textContent==="Repeated tag in 1 captions"));
+  diag.setLearning(null,false);
+  assert.ok(!allIn(diag).some(n=>n.textContent==="Mean relative loss 2.000 · 3/3 measured"));
+  diag.dispose();
+
   // One shared timer, actual href advancement, pause while Waterfall
   // is open, and cleanup when the map is disposed.
   const oldInterval=global.setInterval,oldClear=global.clearInterval,oldMatch=global.matchMedia;
