@@ -3635,6 +3635,8 @@ label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; 
 #tab-captions .caption-bench-header {
   display:flex; flex-wrap:wrap; align-items:center; gap:14px 22px;
   justify-content:space-between; min-width:0;
+  /* The header is chrome, not a shrinkable workspace pane. */
+  flex:0 0 auto; min-height:min-content; overflow:visible;
 }
 #tab-captions .caption-bench-heading {
   display:flex; align-items:center; gap:14px; min-width:180px; flex:1 1 330px;
@@ -5468,8 +5470,13 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
   #tab-captions.active[data-caption-load="ready"] #captionsGrid.studio-host {
     display:flex!important;
     flex:1 1 auto;
-    min-height:0;
+    /* Keep the toolbar plus the stage minimum in the page's scroll extent. */
+    min-height:min-content;
     flex-direction:column;
+  }
+  #tab-captions.active #captionsGrid.studio-host > .studio-main-actions {
+    flex:0 0 auto;
+    min-height:min-content;
   }
   #tab-captions.active #captionsGrid.studio-host > .studio-layout {
     flex:1 1 auto;

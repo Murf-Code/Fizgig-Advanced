@@ -1,0 +1,13 @@
+"use strict";
+const fs=require("node:fs"),assert=require("node:assert/strict");
+const css=fs.readFileSync("src/fizgig/web/static/style.css","utf8");
+const header=css.match(/#tab-captions \.caption-bench-header\s*\{([^}]+)\}/)[1];
+assert.match(header,/flex:\s*0 0 auto/);
+assert.match(header,/min-height:\s*min-content/);
+assert.match(header,/overflow:\s*visible/);
+const host=css.match(/#tab-captions\.active\[data-caption-load="ready"\] #captionsGrid\.studio-host\s*\{([^}]+)\}/)[1];
+assert.match(host,/min-height:\s*min-content/);
+const toolbar=css.match(/#tab-captions\.active #captionsGrid\.studio-host > \.studio-main-actions\s*\{([^}]+)\}/)[1];
+assert.match(toolbar,/flex:\s*0 0 auto/);
+assert.match(css,/#tab-captions:not\(\[data-caption-load="ready"\]\)>\.caption-bench-header,/);
+console.log("Caption header and toolbar keep intrinsic height; loading visibility remains guarded");
