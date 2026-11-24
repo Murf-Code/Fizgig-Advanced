@@ -6584,9 +6584,10 @@ function captionStageMediaFor(it) {
   const size=it.size||[];
   const ext=String(it.name||"").split(".").pop().toLowerCase();
   const supported=["png","jpg","jpeg","webp","bmp","tif","tiff","avif"].includes(ext);
+  const editRevision=S.cap.studioThumbRevisions?.get(it.path);
   if(!supported||Math.max(Number(size[0])||0,Number(size[1])||0)<=1600)
-    return mediaFor(it,true);
-  const revision=S.cap.studioThumbRevisions?.get(it.path)||it.time||0;
+    return mediaFor(editRevision?{...it,time:String(it.time||0)+"-"+editRevision}:it,true);
+  const revision=String(it.time||0)+"-"+(editRevision||0);
   const url="/api/preview?path="+encodeURIComponent(it.path)+
     "&t="+encodeURIComponent(TOKEN)+"&v="+encodeURIComponent(revision);
   return el("img",{loading:"eager",decoding:"async",src:url,alt:it.name});
@@ -7178,6 +7179,7 @@ async function meGo(i, force) {
   if (m.dirty && (!(await meSave()) || m.dirty)) return;           // moving on saves the one you were on
   if (!(await meRmSave(false))) return;               // and its red Remove edits
   m.at = i; m.name = shown[i].name;
+  m.ver=Math.max(Date.now(),(m.ver||0)+1);
   $("meCount").textContent = `${i + 1} of ${shown.length}`;
   $("meName").textContent = m.name;
   $("meState").textContent = "Loading…";
@@ -7211,6 +7213,7 @@ function meFresh() {
   meStopRemoveWorker();
   m.rm = null; m.rmBase = null; m.rmDirty = false; m.cropDrag = null; m.showBefore = false;
   m.strokeHistory=null;
+  m.rmStrokeHistory=null; m.pendingCropRedo=null; m.rmHandEdited=false; m.rmFromWm=false;
   // A new image must not briefly display the previous image's red marks
   // while its picture/watermark data is still loading.
   if(m.rmTint)m.rmTint.hidden=true;
@@ -7221,7 +7224,7 @@ function meFresh() {
 async function meReload() {
   // the same picture again after Crop, Remove or their undo: its new file and mask, the history kept
   const m = meState(), name = m.name;
-  m.ver = Date.now();
+  m.ver = Math.max(Date.now(),(m.ver||0)+1);
   const q = `folder=${encodeURIComponent(m.folder || S.imageFolder)}&name=${encodeURIComponent(name)}&t=${encodeURIComponent(TOKEN)}`;
   const pic = await meImage("/api/masks/edit/picture?" + q + "&v=" + m.ver).catch(() => null);
   if (!pic || m.name !== name) return false;
@@ -7538,10 +7541,8 @@ function meStopRemoveWorker(){
 function meDrainRemoveWorker(){
   return meState().removeBridge?.drain()||Promise.resolve();
 }
-function meRawRemoveSegment(segment){
-  const m=meState();
-  if(!m.rm)return;
-  const c=m.rm.getContext("2d");
+function mePaintRemoveSegment(canvas,segment){
+  const c=canvas.getContext("2d");
   c.globalCompositeOperation=segment.erase?"destination-out":"source-over";
   c.strokeStyle="#fff";c.fillStyle="#fff";c.lineCap="round";c.lineJoin="round";
   c.lineWidth=segment.width;c.beginPath();
@@ -7551,6 +7552,11 @@ function meRawRemoveSegment(segment){
     c.moveTo(segment.ax,segment.ay);c.lineTo(segment.bx,segment.by);c.stroke();
   }
   c.globalCompositeOperation="source-over";
+}
+function meRawRemoveSegment(segment){
+  const m=meState();
+  if(!m.rm)return;
+  mePaintRemoveSegment(m.rm,segment);
   const radius=segment.width/2;
   m.rmDirtyRect=meDirtyRect(m.rmDirtyRect,segment.ax,segment.ay,radius,m.rm.width,m.rm.height);
   m.rmDirtyRect=meDirtyRect(m.rmDirtyRect,segment.bx,segment.by,radius,m.rm.width,m.rm.height);
@@ -7584,6 +7590,7 @@ function meRmLine(a,b){
   if(!m.rm)m.rm=el("canvas",{width:m.mask.width,height:m.mask.height});
   const segment={ax:a.x,ay:a.y,bx:b.x,by:b.y,
     width:Math.max(1,Number($("meSize").value)/m.zoom),erase:!!m.flip};
+  if(m.rmStrokeHistory?.current)m.rmStrokeHistory.current.push(segment);
   // While the worker is starting, the old immediate path remains usable.
   // Terminate a not-yet-ready worker before changing its source canvas.
   if(!m.removeBridge||m.removeBridge.mask!==m.rm||
@@ -7592,6 +7599,66 @@ function meRmLine(a,b){
     meRawRemoveSegment(segment);
   }
   m.rmDirty=true;
+}
+// Record brush gestures as vector segments, not full-resolution images per
+// stroke. Only the initial overlay is copied; ordinary painting still uses
+// the worker. Replaying a gesture on Undo/Redo never touches the photo.
+function meBeginRemoveHistory(){
+  const m=meState();
+  if(!m.rm)m.rm=el("canvas",{width:m.mask.width,height:m.mask.height});
+  let h=m.rmStrokeHistory;
+  if(!h)h=m.rmStrokeHistory={base:meCopy(m.rm),baseDirty:m.rmDirty,
+    baseHandEdited:!!m.rmHandEdited,baseWatermark:!!m.rmFromWm,
+    past:[],future:[],current:null};
+  h.current=[];
+  h.past.push(h.current);h.future=[];
+  if(h.past.length>ME_UNDO){
+    for(const segment of h.past.shift())mePaintRemoveSegment(h.base,segment);
+    h.baseDirty=true;h.baseHandEdited=true;
+  }
+}
+async function mePendingTravel(direction){
+  const m=meState(),back=direction==="undo";
+  if(m.stepBusy||m.applyPreparing||m.saveTask)return true;
+  const h=m.rmStrokeHistory,from=h&&(back?h.past:h.future);
+  if(m.tool==="remove"&&from?.length){
+    if(h.current)return true; // finish the pointer gesture before replaying
+    m.stepBusy=true;
+    try{
+      await meDrainRemoveWorker();
+      if(m.rmSaving)await m.rmSaving;
+      meStopRemoveWorker();
+      (back?h.future:h.past).push(from.pop());
+      m.rm=meCopy(h.base);
+      for(const stroke of h.past)
+        for(const segment of stroke)mePaintRemoveSegment(m.rm,segment);
+      m.rmDirty=h.baseDirty||h.past.length>0;
+      m.rmHandEdited=h.baseHandEdited||h.past.length>0;
+      m.rmDirtyRect={l:0,t:0,r:m.rm.width,b:m.rm.height};
+      // Existing watermark sidecars are autosaved on pointerup. Reconcile
+      // them too; a new, unapplied erase selection remains purely in memory.
+      if(h.baseWatermark&&!(await meRmSave(false)))
+        throw new Error($("meState").textContent||"Couldn't restore the erase area.");
+      meDrawRemove();
+    }finally{
+      m.stepBusy=false;meImgBar();meDraw();
+      if(m.tool==="remove")mePrepareRemoveWorker();
+    }
+    return true;
+  }
+  if(m.tool==="crop"&&m.crop&&m.mask){
+    if(back&&!meCropWhole()){
+      m.pendingCropRedo={...m.crop};
+      m.crop={l:0,t:0,r:m.mask.width,b:m.mask.height};
+      meCropFit();meImgBar();meDraw();return true;
+    }
+    if(!back&&m.pendingCropRedo){
+      m.crop=m.pendingCropRedo;m.pendingCropRedo=null;
+      meImgBar();meDraw();return true;
+    }
+  }
+  if(back&&!h&&meDropPending())return true;
+  return false;
 }
 function meRatio() {
   const m = meState(), v = m.ratio;
@@ -7786,7 +7853,7 @@ async function meApply() {
   } else if (m.tool === "remove" || (m.rmDirty && m.tool !== "crop")) {
     if (!m.rmDirty) { $("meState").textContent = "Paint over what to remove first."; return; }
     await meDrainRemoveWorker();
-    await meRmSave(true);                              // the watermark mask as you edited it, before it's filled
+    if(!(await meRmSave(true)))return;                  // the watermark mask as you edited it, before it's filled
     const old = m.pic, fromWm = m.rmFromWm;
     const r = await mePicStep("/api/masks/edit/remove", {
       png: await MaskEditorPerf.pngDataURL(m.rm),backup:!!fromWm},
@@ -7813,6 +7880,7 @@ function meCancel() {
   if (m.tool === "crop") meTool(m.prevTool || "brush");  // Esc leaves crop mode, the picture as it was
   else if (m.tool === "remove" || m.rmDirty) {
     meStopRemoveWorker();m.rm=null;m.rmDirty=false;m.rmFromWm=false;
+    m.rmStrokeHistory=null;
     meImgBar();meDraw();
   }
 }
@@ -8172,9 +8240,10 @@ function meWire() {
     pointerRect=cv.getBoundingClientRect();
     const p=meAt(e,pointerRect);
     if (e.button === 1 || space) { pan = {sx: p.sx, sy: p.sy, ox: m.ox, oy: m.oy}; m.panning = true; cursor.hidden=true; e.preventDefault(); return; }
-    if (m.stepBusy) return;
+    if (m.stepBusy||m.applyPreparing||(S.cap?.imageEditing?.inline&&studioHistory().busy)) return;
     if (m.tool === "crop") {                           // grab a handle, the box, or draw a new one
       if (e.button !== 0 || !m.crop) return;
+      m.pendingCropRedo=null;
       const mode = meCropHit(p);
       m.cropDrag = {mode, x: p.x, y: p.y, box: {...m.crop},
         ax: Math.max(0, Math.min(m.mask.width, p.x)), ay: Math.max(0, Math.min(m.mask.height, p.y))};
@@ -8182,6 +8251,7 @@ function meWire() {
     }
     if (m.tool === "remove") {                         // paint what to take out; right-drag rubs it out
       if (e.button !== 0 && e.button !== 2) return;
+      if(S.cap?.imageEditing?.inline)meBeginRemoveHistory();
       m.flip = e.button === 2; meRmLine(p, p); last = p; m.rmHandEdited = true; meImgBar(); meDrawRemove(); return;
     }
     if (m.tool === "sam") {                            // a click adds; right-click or Alt+click takes away
@@ -8204,6 +8274,7 @@ function meWire() {
     else if(pan||m.cropDrag||last)meDraw();
   });
   const up = () => {
+    if(m.rmStrokeHistory)m.rmStrokeHistory.current=null;
     if (last && m.tool === "remove")
       void meDrainRemoveWorker().then(()=>meRmSave(true)).finally(()=>{
         if(m.tool==="remove"&&m.mask&&!m.removeBridge?.active)
@@ -8230,7 +8301,7 @@ function meWire() {
     meDraw();
   }, {passive: false});
   document.addEventListener("keydown", (e) => {
-    if (!$("maskEdit").open || !($("tab-prep").classList.contains("active") ||
+    if (e.defaultPrevented || !$("maskEdit").open || !($("tab-prep").classList.contains("active") ||
         (S.cap?.imageEditing && $("tab-captions").classList.contains("active")))) return;
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement && document.activeElement.tagName) &&
         document.activeElement.type !== "range") return;
@@ -8238,11 +8309,15 @@ function meWire() {
     if (k === " ") { space = true; e.preventDefault(); }
     else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === "z") {
       e.preventDefault();
-      if(S.cap?.imageEditing?.inline)document.querySelector("#captionsGrid .studio-image-undo")?.click();
+      if(e.repeat)return;
+      if(S.cap?.imageEditing?.inline)document.querySelector(e.shiftKey?
+        "#captionsGrid .studio-image-redo":"#captionsGrid .studio-image-undo")?.click();
+      else if(e.shiftKey)meRestore(m.redo,m.undo);
       else meRestore(m.undo,m.redo);
     }
     else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === "y") {
       e.preventDefault();
+      if(e.repeat)return;
       if(S.cap?.imageEditing?.inline)document.querySelector("#captionsGrid .studio-image-redo")?.click();
       else meRestore(m.redo,m.undo);
     }
@@ -8319,6 +8394,7 @@ function meTool(t) {
   const m = meState(), was = m.tool;
   if (t === was && t !== "crop") return meImgBar();
   if (t === "crop" && was === "crop") t = m.prevTool || "brush";   // C again leaves crop mode
+  if(t!==was)m.pendingCropRedo=null;
   if (t === "crop") m.prevTool = was;
   // Crop and Remove should show the actual photo, never a dark training-mask
   // overlay. Restore the user's previous mask view on returning to mask tools.
@@ -8336,7 +8412,7 @@ function meTool(t) {
       b.classList.toggle("active",b.dataset.view===m.view));
   }
   m.tool = t;
-  if (was === "remove" && t !== "remove" && !m.rmFromWm && !meLoadWmOn()) { m.rm = null; m.rmDirty = false; }   // a hand stroke not applied is dropped; a preloaded watermark stays
+  if (was === "remove" && t !== "remove" && !m.rmFromWm && !meLoadWmOn()) { m.rm = null; m.rmDirty = false; m.rmStrokeHistory=null; }   // a hand stroke not applied is dropped; a preloaded watermark stays
   m.cropDrag = null;
   m.crop = t === "crop" && m.mask ? {l: 0, t: 0, r: m.mask.width, b: m.mask.height} : null;
   if (m.crop) meCropFit();
@@ -12605,16 +12681,16 @@ async function captionImageClose(){
     return true;
   }finally{S.cap.imageClosing=false;}
 }
-function captionImageChanged(){
-  if(!S.cap?.imageEditing)return;
-  // Bust only the changed thumbnail's browser URL; the server already keys
-  // decoded bytes by filesystem mtime, but the browser caches by URL.
-  const path=S.cap.imageEditing.path;
+function captionImageChanged(path=S.cap?.imageEditing?.path,refresh=true){
+  if(!path)return;
+  // Bust the changed thumbnail's browser URL even if its editor is closed
+  // or the selected picture is different from the history entry.
+
   const versions=S.cap.studioThumbRevisions||
     (S.cap.studioThumbRevisions=new Map());
   versions.set(path,(versions.get(path)||0)+1);
   S.cap.studioThumbPreloader?.forget(path);
-  loadCaptions().catch(e=>console.warn("Caption Studio image refresh:",e));
+  if(refresh)loadCaptions().catch(e=>console.warn("Caption Studio image refresh:",e));
 }
 function studioCategories(){
   const key="fizgig_caption_categories:"+String(S.imageFolder||"");
@@ -13065,10 +13141,12 @@ async function studioTravel(direction){
   }
   if(op.entry.kind==="image" && S.cap.imageEditing){
     const m=meState();
-    if(m.dirty || m.rmDirty || m.stepBusy)
+    if(m.dirty||m.stepBusy||m.applyPreparing||m.saveTask||
+        (m.rmDirty&&(!m.rmFromWm||m.rmHandEdited||m.rmStrokeHistory?.past.length)))
       throw new Error("Save or finish pending picture/mask edits before undo/redo.");
   }
   history.busy=true;
+  let refreshImage=null;
   try{
     if(op.entry.kind==="captions"){
       const rows=op.entry.rows;
@@ -13086,13 +13164,33 @@ async function studioTravel(direction){
     }else if(op.entry.kind==="image"){
       const entry=op.entry;
       await api("/api/masks/edit/image_step",{step:entry.step,redo:!backward});
+      captionImageChanged(entry.path,false);
       const m=meState();
-      if(S.cap.imageEditing?.path===entry.path && m.name===entry.name){
-        const src=backward?m.undo:m.redo,dst=backward?m.redo:m.undo;
-        const index=src.findLastIndex(x=>x.step===entry.step);
-        if(index>=0){dst.push(...src.splice(index,1));}
-        await meRefreshFlags(entry.name);
-        await meReload();meImgBar();meDraw();
+      // The shared editor can retain a cached picture even after Crop closes
+      // its inline workspace. Invalidate it if that file was restored.
+      if(m.folder===entry.folder&&m.name===entry.name){
+        if(S.cap.imageEditing?.path===entry.path){
+          const src=backward?m.undo:m.redo,dst=backward?m.redo:m.undo;
+          const index=src.findLastIndex(x=>x.step===entry.step);
+          if(index>=0)dst.push(...src.splice(index,1));
+          refreshImage=async()=>{
+            m.stepBusy=true;
+            try{
+              m.before=null;
+              await meRefreshFlags(entry.name);
+              if(!(await meReload()))throw new Error("Couldn't reload the restored image.");
+              meImgBar();meDraw();
+            }finally{m.stepBusy=false;}
+          };
+        }else{
+          meStopRemoveWorker();
+          m.pic=null;m.mask=null;m.before=null;m.rm=null;m.rmBase=null;
+          m.rmDirty=false;m.rmStrokeHistory=null;m.undo=[];m.redo=[];m.list=[];
+        }
+      }else if(m.folder===entry.folder){
+        // A different cached image may have changed mask/watermark flags.
+        if(S.cap.imageEditing)refreshImage=()=>meRefreshFlags(entry.name);
+        else m.list=[];
       }
     }else if(op.entry.kind==="remove"){
       const entry=op.entry;
@@ -13103,8 +13201,12 @@ async function studioTravel(direction){
         entry.moved=result.moved;
       }
     }
+    // Move the history entry as soon as its disk transaction succeeded.
+    // A failed preview refresh must not replay the same committed edit.
     from.pop();to.push(op);
     S.cap.studioRevision=(S.cap.studioRevision||0)+1;
+    if(refreshImage)try{await refreshImage();}
+    catch(e){console.warn("Image was restored on disk; preview refresh failed:",e);}
   }finally{history.busy=false;}
   // Render after clearing the busy state so Undo/Redo buttons do not stay
   // permanently disabled following the first successful history operation.
@@ -14927,7 +15029,7 @@ function renderCaptionStudio(host,items,ext){
   const applyImage=btn("Apply",async()=>{
     if(!S.cap.imageEditing?.inline||S.cap.imageEditing.path!==current.path)return;
     const m=meState(),was=m.tool;
-    if(m.stepBusy)return;
+    if(m.stepBusy||studioHistory().busy)return;
     if(was==="remove"&&!m.rmDirty){say("Paint the area to remove first.");return;}
     if(was==="crop"&&meCropWhole()){say("Drag a crop box before applying.");return;}
     try{
@@ -14945,35 +15047,25 @@ function renderCaptionStudio(host,items,ext){
   applyImage.hidden=true;
   applyImage.classList.add("studio-image-apply","btn-primary");
   applyImage.title="Apply the current Erase or Crop operation (Enter)";
-  const goBack=btn("Undo",async()=>{
+  const travelPictureHistory=async(direction)=>{
+    const backward=direction==="undo";
     try{
-      const latest=studioHistory().past.at(-1);
-      if(latest?.entry.kind==="image"){
-        if(S.cap.imageEditing?.inline&&meState().undo.length)
-          await meRestore(meState().undo,meState().redo);
-        else await studioTravel("undo");
-      }else if(S.cap.imageEditing?.inline&&meState().undo.length){
-        await meRestore(meState().undo,meState().redo);
-      }else if(latest&&!hist.past.length){
-        await studioTravel("undo");
-      }else historyStep("undo");
-    }catch(e){say("Undo failed: "+e.message);}
-  });
+      if(studioHistory().busy)return;
+      if(S.cap.imageEditing?.inline&&await mePendingTravel(direction))return;
+      const latest=(backward?studioHistory().past:studioHistory().future).at(-1);
+      // Unsaved caption drafts are local. Once a caption or picture has
+      // committed, the chronological dataset history is authoritative.
+      if(!S.cap.imageEditing?.inline&&drafts.has(current.path)&&
+          (backward?hist.past:hist.future).length){
+        historyStep(direction);return;
+      }
+      if(latest){await studioTravel(direction);return;}
+      if(!S.cap.imageEditing?.inline)historyStep(direction);
+    }catch(e){say((backward?"Undo":"Redo")+" failed: "+e.message);}
+  };
+  const goBack=btn("Undo",()=>void travelPictureHistory("undo"));
   goBack.classList.add("studio-image-undo");
-  const goForward=btn("Redo",async()=>{
-    try{
-      const latest=studioHistory().future.at(-1);
-      if(latest?.entry.kind==="image"){
-        if(S.cap.imageEditing?.inline&&meState().redo.length)
-          await meRestore(meState().redo,meState().undo);
-        else await studioTravel("redo");
-      }else if(S.cap.imageEditing?.inline&&meState().redo.length){
-        await meRestore(meState().redo,meState().undo);
-      }else if(latest&&!hist.future.length){
-        await studioTravel("redo");
-      }else historyStep("redo");
-    }catch(e){say("Redo failed: "+e.message);}
-  });
+  const goForward=btn("Redo",()=>void travelPictureHistory("redo"));
   goForward.classList.add("studio-image-redo");
   const refreshInlineButtons=()=>{
     if(!pictureActions.isConnected)return;
@@ -14992,7 +15084,7 @@ function renderCaptionStudio(host,items,ext){
     }else if(tool==="crop")applyImage.disabled=!!meState().stepBusy;
   };
   const selectInlineTool=async(tool)=>{
-    if(meState().stepBusy||meState().samBusy){
+    if(meState().stepBusy||meState().samBusy||studioHistory().busy){
       say("Finish the current image operation first.");return;
     }
     if(!canEditPicture){say(locked?"Unlock this reviewed image to edit it.":"Select a still image to edit.");return;}
@@ -16780,7 +16872,7 @@ function renderCaptionStudio(host,items,ext){
   if(S.cap.studioKeyHandler)document.removeEventListener("keydown",S.cap.studioKeyHandler);
   S.cap.studioKeyHandler=e=>{
     if(e.defaultPrevented||e.repeat||!$("tab-captions").classList.contains("active")||
-      $("capView").value!=="studio"||S.cap.imageEditing)return;
+      $("capView").value!=="studio")return;
     const target=e.target;
     if(target?.closest?.("[role=dialog],[contenteditable=true]"))return;
     const typing=!!target?.closest?.("input,textarea,select,[contenteditable]");
@@ -16792,7 +16884,18 @@ function renderCaptionStudio(host,items,ext){
       if(e.key==="Escape"){handled();closeImageMenu();}
       return;
     }
-    if(typing)return;
+    if(typing&&target?.type!=="range")return;
+    // The same actions back the toolbar and keyboard, whether the inline
+    // editor is open or closed. Do not fall through to a second handler.
+    if(cmd&&!e.altKey&&(key==="z"||key==="y")){
+      handled();
+      const direction=key==="y"||e.shiftKey?"redo":"undo";
+      const button=document.querySelector("#captionsGrid .studio-image-"+direction);
+      if(button)button.click();
+      else void studioTravel(direction).catch(err=>say("Undo/Redo failed: "+err.message));
+      return;
+    }
+    if(S.cap.imageEditing||typing)return;
     if(cmd&&e.altKey&&key==="s"){
       handled();settingsBtn.click();return;
     }
@@ -16813,12 +16916,6 @@ function renderCaptionStudio(host,items,ext){
         else focus[key].focus();
         return;
       }
-    }
-    if(cmd&&!e.altKey&&(key==="z"||key==="y")){
-      handled();
-      void studioTravel(key==="y"||e.shiftKey?"redo":"undo")
-        .catch(err=>say("Undo/Redo failed: "+err.message));
-      return;
     }
     if(cmd&&!e.altKey&&key==="k"){handled();void toggleImageReview();return;}
     if((e.key==="Delete"||e.key==="Backspace")&&!cmd&&!e.altKey&&
