@@ -302,6 +302,33 @@ try {
   assert.ok(!allIn(branch).some(n=>n.textContent==="20 images matching the entire branch"));
   branch.dispose();
 
+  // No overview connection paths, even with many observed pairs.
+  const oldCreate=global.document.createElement,oldCreateNS=global.document.createElementNS,oldStyle=global.getComputedStyle;
+  let curveCalls=0,clearCalls=0;
+  const ctx={setTransform(){},clearRect(){clearCalls++;},beginPath(){},moveTo(){},
+    quadraticCurveTo(){curveCalls++;},lineTo(){},closePath(){},stroke(){},fill(){}};
+  try{
+    global.getComputedStyle=()=>({color:"#888",fill:"#888"});
+    global.document.createElement=tag=>{
+      const el=oldCreate(tag);if(tag==="canvas")el.getContext=()=>ctx;return el;
+    };
+    global.document.createElementNS=(ns,tag)=>{
+      const el=oldCreateNS(ns,tag);if(tag==="svg"){el.clientWidth=800;el.clientHeight=600;}return el;
+    };
+    const quietModel=Viz.tagbenchModel(Array.from({length:20},()=>({tags:["lion","mane","fur","feline"]})));
+    const quiet=Viz.tagbenchConstellation(quietModel,()=>{},null,{preferences:{celestial:false,elasticity:0}});
+    const edgeCount=()=>allIn(quiet).filter(n=>n.attrs.class==="studio-tb-pair-edge").length;
+    assert.ok(clearCalls>0);assert.equal(curveCalls,0);assert.equal(edgeCount(),0);
+    const lion=allIn(quiet).find(n=>n.attrs["data-tag"]==="lion");
+    lion.handlers.keydown({key:"Enter",preventDefault(){},stopPropagation(){}});
+    assert.equal(edgeCount(),3);assert.equal(curveCalls,0);
+    lion.handlers.keydown({key:"Enter",preventDefault(){},stopPropagation(){}});
+    assert.equal(edgeCount(),0);quiet.dispose();
+  }finally{
+    global.document.createElement=oldCreate;global.document.createElementNS=oldCreateNS;
+    global.getComputedStyle=oldStyle;
+  }
+
   // One shared timer, actual href advancement, pause while Waterfall
   // is open, and cleanup when the map is disposed.
   const oldInterval=global.setInterval,oldClear=global.clearInterval,oldMatch=global.matchMedia;

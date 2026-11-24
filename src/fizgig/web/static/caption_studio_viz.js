@@ -976,28 +976,8 @@ const CaptionStudioViz = (() => {
     const packedLoss=[],packedWarnings=[];
     const labelSize=n=>(n.tag===picked?22:13+8*Math.sqrt(n.count/maxCount))*typeScale/zoom;
 
-    // Group strokes by color and width so each batch shares a Canvas path.
-    const strandBatches=new Map();
-    // All observed relationships between visible primary nodes are kept.
-    // Canvas batches them; only the layout solver uses the sparse backbone.
-    const backbone=new Set(model.chosen.map(e=>e.a+"\0"+e.b));
-    const overviewEdges=model.edges.filter(e=>at.has(e.a)&&at.has(e.b)).map(edge=>({
-      ...edge,strength:tagAffinity(edge.w,at.get(edge.a).count,at.get(edge.b).count),
-      direction:tagDirection(edge.w,at.get(edge.a).count,at.get(edge.b).count),
-      backbone:backbone.has(edge.a+"\0"+edge.b)
-    })).sort((a,b)=>b.strength-a.strength);
-    const strongest=overviewEdges[0]?.strength||1;
-    for(const edge of overviewEdges){
-      const a=at.get(edge.a),b=at.get(edge.b);
-      const tag=a.group===b.group&&a.color===b.color?a.tag:null;
-      const color=tag?a.color:null;
-      const band=Math.min(4,Math.floor(5*Math.sqrt(edge.strength/strongest)));
-      const key=band+"|"+color+"|"+edge.backbone;
-      if(!strandBatches.has(key))strandBatches.set(key,{color,tag,band,backbone:edge.backbone,edges:[]});
-      strandBatches.get(key).edges.push(edge);
-    }
-    // Resolve theme-dependent SVG colors after mount, then reuse them during motion.
-    const strandColors=new Map();
+    // Link-free overview. Co-occurrence data remains available for the
+    // layout and focused SVG relationships, not per-frame canvas drawing.
     let prefs=constellationPrefs(options.preferences),zoom=1,pan={x:0,y:0},picked=null,drag=null;
     let serial=0,shared=new Map(),frame=null,settling=null,camera=null,pulse=null,disposed=false,dirty=new Set(),lastClick=null;
     const media=typeof matchMedia==="function"?matchMedia("(prefers-reduced-motion: reduce)"):null;
@@ -1194,38 +1174,6 @@ const CaptionStudioViz = (() => {
             ctx.stroke();
           }
         });
-      }
-      const curve=(a,b)=>{
-        const p=position(at.get(a)),q=position(at.get(b));
-        ctx.moveTo(p.x,p.y);
-        ctx.quadraticCurveTo((p.x+q.x)/2-(q.y-p.y)*.09,(p.y+q.y)/2+(q.x-p.x)*.09,q.x,q.y);
-      };
-      const neutral=getComputedStyle(canvas).color;
-      if(picked)return; // Focused nodes use their actual clickable SVG edges.
-      for(const {color,tag,band,backbone,edges} of strandBatches.values()){
-        if(color&&!strandColors.has(color)){
-          strandColors.set(color,getComputedStyle(visual.get(tag).halo).fill);
-        }
-        ctx.strokeStyle=strandColors.get(color)||neutral;
-        ctx.lineWidth=(.65+band*.6)*ratio/scale;
-        ctx.globalAlpha=backbone?(color?.18:.13)+band*.055:(.025+band*.026);
-        ctx.beginPath();
-        for(const e of edges)curve(e.a,e.b);
-        ctx.stroke();
-        // Keep all lines; arrows on the sparse backbone prevent clutter.
-        if(backbone){
-          ctx.fillStyle=ctx.strokeStyle;ctx.globalAlpha=.56+band*.08;ctx.beginPath();
-          for(const e of edges){
-            if(!e.direction)continue;
-            const from=at.get(e.direction===1?e.a:e.b),to=at.get(e.direction===1?e.b:e.a);
-            const points=tagArrow(position(from),position(to),radius(to)+3*ratio/scale,
-              (6+band)*ratio/scale,(3+band*.4)*ratio/scale,e.direction);
-            if(!points)continue;
-            ctx.moveTo(points[0].x,points[0].y);ctx.lineTo(points[1].x,points[1].y);
-            ctx.lineTo(points[2].x,points[2].y);ctx.closePath();
-          }
-          ctx.fill();
-        }
       }
     }
     function updateFocusEdges(){
@@ -1969,7 +1917,7 @@ const CaptionStudioViz = (() => {
       if(scale>0){typeScale=Math.max(.8,Math.min(1.7,1/scale));updateGeometry();}
     });
     resize.observe(stage);
-    const theme=new MutationObserver(()=>{strandColors.clear();for(const state of auraStates.values())state.color=null;drawStrands();});
+    const theme=new MutationObserver(()=>{for(const state of auraStates.values())state.color=null;drawStrands();});
     theme.observe(document.documentElement,{attributes:true,attributeFilter:["class","data-theme","style"]});
     stage.dispose=()=>{disposed=true;stopCoverTimer();document.removeEventListener?.("visibilitychange",visibilityChanged);
       media?.removeEventListener?.("change",visibilityChanged);removeCollection(false);resize.disconnect();theme.disconnect();
