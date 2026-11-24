@@ -196,8 +196,10 @@ class MOSSImageDiT(nn.Module):
         self.offloader = None
         if self._send_only:
             from fizgig.krea2.offloading import BlockSwapConfig, create_offloader
-            self.offloader = create_offloader("moss_image", list(self.layers), n, num_blocks, BlockSwapConfig(
-                torch.device(device), supports_backward=supports_backward, h2d_only=True))
+            from fizgig.krea2.stream_strategy import apply_stream_strategy
+            config = BlockSwapConfig(torch.device(device), supports_backward=supports_backward, h2d_only=True)
+            config = apply_stream_strategy(config, getattr(self, "_stream_strategy", "default"))
+            self.offloader = create_offloader("moss_image", list(self.layers), n, num_blocks, config)
         if self.offloader is None or not hasattr(self.offloader, "copier"):     # classic, or send-only fell back
             self.offloader = ModelOffloader("moss_image", list(self.layers), n, num_blocks, supports_backward,
                                             torch.device(device))
