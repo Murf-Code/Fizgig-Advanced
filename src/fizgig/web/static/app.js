@@ -11875,9 +11875,22 @@ function captionModelsChanged() {
 
 // Keep the modern workspace hidden until its first complete mount. Loading
 // another dataset cannot expose a previous dataset's interactive controls.
+function captionStarStatus(state,label,detail=""){
+  const star=$("captionStatusStar"),panel=$("captionStatusDetail");
+  if(!star||!panel)return;
+  if(star.dataset.state!==state)star.dataset.state=state;
+  star.title=label+(detail?" — "+detail:"");
+  star.setAttribute("aria-label","Workspace status: "+label+". View details");
+  panel.textContent=label+(detail?" — "+detail:"");
+}
 function captionInitialState(state,detail=""){
   const tab=$("tab-captions");
   tab.dataset.captionLoad=state;
+  if(state!=="ready"){
+    S.cap.studioStatusRefresh=null;
+    captionStarStatus(state==="error"?"attention":state==="empty"?"idle":"loading",
+      state==="error"?"Load failed":state==="empty"?"No dataset":"Loading",detail);
+  }
   const loading=state==="initial"||state==="loading";
   $("captionInitialTitle").textContent=state==="error"?"Couldn't load Caption Workbench":
     state==="empty"?"Choose a dataset":"Loading Caption Workbench";
@@ -13406,6 +13419,8 @@ function renderCaptionStudio(host,items,ext){
   // pagination. The active image must remain valid even on a later batch.
   const current=items.find(i=>i.path===S.cap.studioPath)||items[0];
   if(!current){
+    S.cap.studioStatusRefresh=null;
+    captionStarStatus("idle","No matching images","Clear the filters to see the dataset.");
     if(S.cap.imageEditing?.inline)
       void captionImageClose().catch(e=>console.warn("Closing image tool:",e));
     host.append(el("div",{class:"studio-empty-captions"},
@@ -15076,16 +15091,9 @@ function renderCaptionStudio(host,items,ext){
   // Menu items are appended below, once the Find & Replace dialog exists.
   // One compact status, with detailed diagnostics available on demand.
   // Keep the long live-update explanation out of the image workspace.
-  const liveStatus=el("details",{class:"studio-live-status studio-workspace-status",
-    id:"studioLiveStatus"});
-  const liveLabel=el("span",{class:"studio-status-label",text:"Saved"});
-  const liveSummary=el("summary",{"aria-label":"Dataset save and training status"},
-    el("span",{class:"studio-status-dot","aria-hidden":"true"}),liveLabel);
-  const liveDetail=el("div",{class:"studio-status-detail"});
-  liveStatus.append(liveSummary,liveDetail);
   const datasetPaths=new Set(S.cap.items.map(it=>it.path));
   const refreshStatus=()=>{
-    if(!liveStatus.isConnected)return;
+    if(!host.contains(layout))return;
     const status=S.cap.liveStatus;
     const pending=(Number(status?.pending_image_count)||0)+
       (Number(status?.pending_caption_count)||0);
@@ -15109,17 +15117,11 @@ function renderCaptionStudio(host,items,ext){
     }else if(pending){
       state="pending";label="Pending next epoch";
     }
-    liveStatus.dataset.state=state;
-    liveLabel.textContent=label;
-    // Saved occupies only a green indicator. Keep the full label available
-    // to screen readers; saving, queued and problem states retain clear text.
-    liveSummary.setAttribute("aria-label","Dataset status: "+label+". View details");
     const details=studioLiveSummary(status);
-    liveDetail.textContent=failedTask?
+    captionStarStatus(state,label,failedTask?
       "Caption save failed for "+failedTask.name+
       "; the local draft is preserved and will retry. "+
-      failedTask.lastError.message+" "+details:details;
-    liveSummary.title=details;
+      failedTask.lastError.message+" "+details:details);
   };
   S.cap.studioStatusRefresh=refreshStatus;
   // Refresh once mounted; autosave and live-status polling use this callback.
@@ -15898,12 +15900,12 @@ function renderCaptionStudio(host,items,ext){
     }
   });
   const learningToggle=el("label",{class:"studio-learning-toggle",
-    title:"Show Loss Watch status rings and enable filtering images by their training verdict. Selected-image rings remain unchanged."},
-    learningCheck,el("span",{text:"Loss"}));
+    title:"Visualize per-image training loss and Loss Watch verdicts, including per-image adaptive LR. This only changes the display, not training or adaptive LR."},
+    learningCheck,el("span",{text:"Per-image Loss"}));
   const learningFilter=el("label",{class:"studio-learning-filter-label",
     hidden:!learningCheck.checked,title:"Filter images by loss status"},
     createLearningFilterSelect());
-  actionBar.append(learningToggle,learningFilter,viewButtons,liveStatus);
+  actionBar.append(learningToggle,learningFilter,viewButtons);
   // TagBench shortcut parity. Only active inside Caption Workbench, and never
   // steals native typing shortcuts or Image Prep's own canvas bindings.
   const selectedForEdit=()=>imageTargets().filter(it=>!S.cap.studioReviewed?.has(it.path)&&
@@ -16243,6 +16245,18 @@ async function findReplace(apply) {
 }
 
 function wireCaptions() {
+  const statusStar=$("captionStatusStar"),statusPanel=$("captionStatusDetail");
+  const closeStar=()=>{statusPanel.hidden=true;statusStar.setAttribute("aria-expanded","false");};
+  statusStar.addEventListener("click",()=>{
+    statusPanel.hidden=!statusPanel.hidden;
+    statusStar.setAttribute("aria-expanded",String(!statusPanel.hidden));
+  });
+  document.addEventListener("pointerdown",event=>{
+    if(!statusPanel.hidden&&!event.target.closest(".caption-status-anchor"))closeStar();
+  });
+  document.addEventListener("keydown",event=>{
+    if(event.key==="Escape"&&!statusPanel.hidden){closeStar();statusStar.focus({preventScroll:true});}
+  });
   $("captionInitialRetry").addEventListener("click",()=>void loadCaptions().catch(console.warn));
   $("captionsReload").addEventListener("click", loadCaptions);
   // the box is the Training tab's Caption Extension (one setting, as in the desktop app): a change here is that

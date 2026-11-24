@@ -708,7 +708,10 @@
         <section id="tab-captions" class="tab-panel" data-caption-load="initial">
           <header class="tab-banner caption-bench-header">
             <div class="caption-bench-heading">
-              <span class="caption-bench-monogram" aria-hidden="true">✦</span>
+              <div class="caption-status-anchor">
+                <button type="button" id="captionStatusStar" class="caption-bench-monogram" data-state="idle" aria-label="Workspace status" aria-expanded="false" aria-controls="captionStatusDetail" title="Workspace status"><span aria-hidden="true">✦</span></button>
+                <div id="captionStatusDetail" class="caption-star-detail" role="region" aria-label="Workspace status details" hidden></div>
+              </div>
               <div class="caption-bench-title-wrap">
                 <span class="caption-bench-eyebrow">FIZGIG ADVANCED  /  DATASET TOOLS</span>
                 <h1>Caption Workbench</h1>
@@ -913,7 +916,7 @@
           </section>
           <section id="captionInitialState" class="caption-initial-state" aria-label="Caption Workbench status">
             <div class="caption-initial-heading" role="status">
-              <span class="caption-initial-spinner" aria-hidden="true"></span>
+              <span class="caption-bench-monogram caption-loading-star" data-state="loading" aria-hidden="true"><span>✦</span></span>
               <div><strong id="captionInitialTitle">Loading Caption Workbench</strong>
                 <div class="field-hint" id="captionInitialDetail">Preparing dataset and captions…</div></div>
               <button type="button" class="btn btn-sm" id="captionInitialRetry" hidden>Retry</button>

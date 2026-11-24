@@ -6699,3 +6699,72 @@ body:has(.caption-removal-backdrop){overflow:hidden}
 @media(prefers-reduced-motion:reduce){
   #tab-captions .caption-initial-spinner{animation:none}
 }
+
+/* The original monogram tile is unchanged: only the star conveys status. */
+#tab-captions .caption-status-anchor{position:relative;flex:none;z-index:12}
+#tab-captions .caption-status-anchor>.caption-bench-monogram{
+  padding:0;cursor:pointer;font-family:inherit;line-height:1;appearance:none;
+}
+#tab-captions .caption-bench-monogram>span{
+  display:block;transform-origin:center;transition:color .22s ease,transform .18s ease;
+}
+#tab-captions .caption-status-anchor>.caption-bench-monogram:hover>span{transform:scale(1.10)}
+#tab-captions .caption-status-anchor>.caption-bench-monogram:focus-visible{
+  outline:2px solid var(--accent);outline-offset:3px;
+}
+#tab-captions .caption-bench-monogram[data-state="saved"]>span{
+  color:var(--success,#5ce8aa);animation:caption-star-saved .65s ease-out both;
+}
+#tab-captions .caption-bench-monogram[data-state="saving"]>span{
+  color:var(--warning,#f5cd70);animation:caption-star-pulse 1.4s ease-in-out infinite;
+}
+#tab-captions .caption-bench-monogram:is([data-state="pending"],[data-state="editing"])>span{
+  color:var(--warning,#f5cd70);
+}
+#tab-captions .caption-bench-monogram[data-state="attention"]>span{
+  color:var(--danger,#ff667c);filter:drop-shadow(0 0 4px currentColor);
+}
+#tab-captions .caption-bench-monogram[data-state="loading"]>span{
+  animation:caption-star-load 2.8s ease-in-out infinite;
+}
+@keyframes caption-star-saved{
+  0%{filter:drop-shadow(0 0 0 transparent)}
+  45%{filter:drop-shadow(0 0 7px currentColor)}
+  100%{filter:drop-shadow(0 0 1px transparent)}
+}
+@keyframes caption-star-pulse{
+  0%,100%{transform:scale(.88);opacity:.68}
+  50%{transform:scale(1.10);opacity:1}
+}
+@keyframes caption-star-load{
+  0%{transform:rotate(0deg);opacity:.65}
+  50%{opacity:1}
+  100%{transform:rotate(90deg);opacity:.65}
+}
+#tab-captions .caption-star-detail{
+  position:absolute;left:0;top:calc(100% + 8px);z-index:30;
+  width:min(350px,75vw);padding:12px;border:1px solid var(--border);
+  border-radius:10px;background:var(--bg-surface);color:var(--text-primary);
+  box-shadow:0 12px 28px #0005;font-size:12px;line-height:1.5;
+  overflow-wrap:anywhere;
+}
+#tab-captions .caption-star-detail[hidden]{display:none!important}
+#tab-captions .caption-loading-star{flex:none}
+#tab-captions:is([data-caption-load="error"],[data-caption-load="empty"]) .caption-loading-star{display:none}
+#tab-captions .studio-top-actions>.studio-learning-toggle>span{display:inline;font-size:12px}
+#tab-captions .studio-top-actions>.studio-learning-filter-label::after{transition:transform .18s ease}
+#tab-captions .studio-top-actions>.studio-learning-filter-label:has(>select:open)::after{
+  transform:translateY(-30%) rotate(225deg);
+}
+@container caption-toolbar (max-width:900px){
+  #tab-captions .studio-top-actions>.studio-learning-toggle>span{display:inline}
+}
+@container caption-toolbar (max-width:740px){
+  #tab-captions .studio-top-actions>.studio-learning-toggle{margin-left:auto}
+}
+@container caption-toolbar (max-width:480px){
+  #tab-captions .studio-top-actions>.studio-learning-toggle{margin-left:0}
+}
+@media(prefers-reduced-motion:reduce){
+  #tab-captions .caption-bench-monogram>span{animation:none!important;transition:none}
+}
