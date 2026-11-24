@@ -6921,3 +6921,30 @@ body.caption-glass-ui .studio-image-context-menu .studio-danger-action:not(:disa
   }
 }
 #tab-captions .studio-tb-flow-tile{min-height:0}
+
+/* Constellation: quiet celestial surface, gold selection, compact glass inspector. */
+.caption-settings-section-title{grid-column:1/-1;margin:3px 0 0;padding-top:12px;border-top:1px solid var(--settings-line);font-size:14px}
+.caption-elasticity-title{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.caption-elasticity-value{color:#f4d88c;font-variant-numeric:tabular-nums}
+.caption-settings-field.caption-elasticity-field>input[type=range]{min-height:24px;height:24px;padding:0;border:0;background:transparent;accent-color:var(--accent);cursor:pointer}
+#tab-captions .studio-tb-constellation.no-celestial{background:var(--bg-inset)}
+#tab-captions .studio-tb-constellation.no-celestial::before{display:none}
+#tab-captions .studio-tb-orb{outline:none}
+#tab-captions .studio-tb-orb:focus-visible .studio-tb-orb-core{stroke:#fff0b3;stroke-width:2;vector-effect:non-scaling-stroke}
+#tab-captions .studio-tb-orb-core{transition:none}
+#tab-captions .studio-tb-cluster{max-height:48%;width:min(310px,44%);padding:10px 12px}
+#tab-captions .studio-tb-cluster p>button{border:0;background:transparent;color:var(--text-secondary);font-size:20px;cursor:pointer;padding:0 3px;line-height:1}
+#tab-captions .studio-tb-panel-caption{color:var(--text-secondary);font-size:11px;margin-bottom:9px}
+#tab-captions .studio-tb-cluster li{display:block;margin:6px 0}
+#tab-captions .studio-tb-related-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+#tab-captions .studio-tb-related-row>button{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tab-captions .studio-tb-related-row>span{font-size:11px;white-space:nowrap;font-variant-numeric:tabular-nums}
+#tab-captions .studio-tb-related-track{height:3px;background:var(--border);border-radius:3px;overflow:hidden}
+#tab-captions .studio-tb-related-track>div{height:100%;border-radius:3px;opacity:.85}
+#tab-captions .studio-tb-panel-actions{display:flex;gap:6px;position:sticky;bottom:-10px;padding:8px 0 2px;background:var(--bg-surface)}
+#tab-captions .studio-tb-panel-actions>button,#tab-captions .studio-tb-node-menu>button{border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);border-radius:7px;padding:6px 8px;font:inherit;font-size:12px;cursor:pointer}
+#tab-captions .studio-tb-panel-actions>button{flex:1 1 0}
+#tab-captions .studio-tb-panel-actions>button:hover,#tab-captions .studio-tb-node-menu>button:hover{background:var(--accent-subtle)}
+#tab-captions .studio-tb-node-menu{position:absolute;z-index:4;display:grid;gap:4px;padding:6px;width:174px;box-sizing:border-box;border:1px solid var(--accent-border);border-radius:10px;background:var(--bg-surface);box-shadow:0 5px 18px #0005}
+#tab-captions .studio-tb-node-menu[hidden]{display:none}
+#tab-captions .studio-tb-node-menu>button{text-align:left}

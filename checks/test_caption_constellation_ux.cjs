@@ -1,0 +1,15 @@
+const assert=require("node:assert/strict"),fs=require("node:fs");
+const app=fs.readFileSync("src/fizgig/web/static/app.js","utf8");
+const css=fs.readFileSync("src/fizgig/web/static/style.css","utf8");
+const viz=fs.readFileSync("src/fizgig/web/static/caption_studio_viz.js","utf8");
+const graph=viz.slice(viz.indexOf("  function tagbenchConstellation("));
+assert.doesNotMatch(graph,/svg\.replaceChildren/);
+assert.match(graph,/if\(camera\|\|settling\|\|pulse\)wake\(\)/);
+assert.match(graph,/cancelAnimationFrame\(frame\)/);
+assert.match(graph,/model\.all\.filter/);
+assert.match(graph,/options\.relationsForTag/);
+assert.match(app,/savePref\("constellation",constellation\)/);
+assert.match(app,/elasticity\.value="20"/);
+assert.match(app,/setPreferences\?\.\(constellation\)/);
+assert.match(css,/studio-tb-constellation\.no-celestial::before/);
+console.log("Constellation UX integration checks passed");

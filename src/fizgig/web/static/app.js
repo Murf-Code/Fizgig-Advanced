@@ -13050,6 +13050,30 @@ function captionWorkbenchSettingsOpen(advanced=false,initializeOnly=false){
       renderCaptions();
     });
     row("Show tag autocomplete suggestions",autocomplete,"Uses known tags in the active dataset");
+    const constellation=CaptionStudioViz.constellationPrefs(prefs.constellation);
+    S.cap.studioConstellationPrefs=constellation;
+    const applyConstellation=()=>{
+      savePref("constellation",constellation);
+      document.querySelector("#captionsGrid .studio-tb-constellation")?.setPreferences?.(constellation);
+    };
+    fields.append(el("h3",{class:"caption-settings-section-title",text:"Constellation"}));
+    const elasticity=el("input",{type:"range",min:"0",max:"100",step:"5",value:String(constellation.elasticity),"aria-label":"Constellation elasticity"});
+    const elasticityValue=el("span",{class:"caption-elasticity-value"});
+    const syncElasticity=()=>{
+      elasticityValue.textContent=constellation.elasticity?constellation.elasticity+"%":"Off";
+      elasticity.setAttribute("aria-valuetext",elasticityValue.textContent);
+    };
+    syncElasticity();
+    elasticity.addEventListener("input",()=>{constellation.elasticity=Number(elasticity.value);syncElasticity();applyConstellation();});
+    elasticity.addEventListener("dblclick",()=>{elasticity.value="20";constellation.elasticity=20;syncElasticity();applyConstellation();});
+    fields.append(el("label",{class:"caption-settings-field caption-elasticity-field"},
+      el("span",{class:"caption-elasticity-title"},el("span",{text:"Elasticity"}),elasticityValue),elasticity,
+      el("small",{text:"Subtle movement of connected tags. Double-click to reset; 0% disables motion."})));
+    for(const [key,label,hint] of [["glass","Glass nodes","Soft dimensional highlights"],["celestial","Celestial background","Static stars and atmospheric shading"]]){
+      const toggle=el("input",{type:"checkbox"});toggle.checked=constellation[key];
+      toggle.addEventListener("change",()=>{constellation[key]=toggle.checked;applyConstellation();});
+      row(label,toggle,hint);
+    }
     const advancedPanel=el("details",{class:"caption-settings-advanced"});
     const advancedSummary=el("summary",{},
       el("span",{class:"caption-settings-advanced-label"},
@@ -16062,7 +16086,28 @@ function renderCaptionStudio(host,items,ext){
               S.cap.studioJumpToPath=first.path;
             }
           }
-          },S.cap.studioExplorePickedTag||null);
+          },S.cap.studioExplorePickedTag||null,{
+            preferences:S.cap.studioConstellationPrefs,
+            relationsForTag:tag=>{
+              // Rare tags are searched on demand. Keep the worker's main
+              // graph bounded at 120 nodes rather than storing all pairs.
+              const related=new Map(),visible=new Set(model.nodes.map(n=>n.tag));
+              for(const it of datasetItems){
+                if(studioCaptionMode(it)!=="tags")continue;
+                const tags=new Set(studioTokens(it.caption,"tags").map(t=>t.toLocaleLowerCase()));
+                if(!tags.has(tag))continue;
+                for(const t of tags)if(t!==tag&&visible.has(t))related.set(t,(related.get(t)||0)+1);
+              }
+              return related;
+            },
+            onNavigate:(mode,tag)=>{
+              S.cap.studioQuery=JSON.stringify(tag);
+              S.cap.studioExploreMode=mode;
+              S.cap.studioExploreNeedRedraw=true;
+              S.cap.studioThumbScrollTop=0;S.cap.page=0;
+              renderCaptions();
+            }
+          });
           fullStage.replaceChildren(network);
         };
         if(cache?.key===datasetKey&&cache.items===datasetItems&&cache.revision===revision){

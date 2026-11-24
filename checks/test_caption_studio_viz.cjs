@@ -10,6 +10,11 @@ assert.equal(Viz.waterfallScale(500),150);
 assert.ok(Viz.waterfallColumns(1200,50)>Viz.waterfallColumns(1200,100));
 assert.ok(Viz.waterfallColumns(1200,100)>Viz.waterfallColumns(1200,150));
 assert.equal(Viz.waterfallColumns(250,150),1);
+assert.deepEqual(Viz.constellationPrefs(),{elasticity:20,glass:true,celestial:true});
+assert.deepEqual(Viz.constellationPrefs({elasticity:0,glass:false,celestial:false}),{elasticity:0,glass:false,celestial:false});
+assert.deepEqual(Viz.elasticOffset(1000,0,1,20),{x:5,y:0});
+assert.deepEqual(Viz.elasticOffset(1000,0,.2,20),{x:1,y:0});
+assert.deepEqual(Viz.elasticOffset(1000,0,1,0),{x:0,y:0});
 const index = [["lion", 4], ["blue", 3], ["red", 2]];
 const captions = [["Lion", "blue"], ["lion", "blue", "red"], ["lion", "blue"],
   ["lion", "red"], ["red"]];
