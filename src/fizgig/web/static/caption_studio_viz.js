@@ -529,7 +529,8 @@ const CaptionStudioViz = (() => {
     let serial=0,shared=new Map(),frame=null,settling=null,camera=null,pulse=null,disposed=false,dirty=new Set(),lastClick=null;
     const media=typeof matchMedia==="function"?matchMedia("(prefers-reduced-motion: reduce)"):null;
     const reduced=()=>!!media?.matches;
-    const radius=n=>(2.3+5.5*Math.sqrt(n.count/maxCount))/zoom;
+    // Reserve room for the full total even when selection shows a shorter shared count.
+    const radius=n=>(6+2.6*String(n.count).length+3*Math.sqrt(n.count/maxCount))/zoom;
     const position=n=>({x:n.x+n.ox,y:n.y+n.oy});
     const view=()=>svg.setAttribute("viewBox",[500-500/zoom+pan.x,350-350/zoom+pan.y,1000/zoom,700/zoom].join(" "));
     const search=html("div","studio-tb-search"),input=html("input","",undefined,search),matches=html("div","studio-tb-suggest",undefined,search);
@@ -580,7 +581,9 @@ const CaptionStudioViz = (() => {
       const p=position(n),r=radius(n),sz=12*(zoom>1?1/Math.pow(zoom,.22):1)/zoom;
       v.g.setAttribute("transform","translate("+p.x+" "+p.y+")");
       v.hit.setAttribute("r",Math.max(9/zoom,r));v.core.setAttribute("r",r);v.halo.setAttribute("r",r*1.34);
-      v.ring.setAttribute("r",r+6/zoom);
+      v.ring.setAttribute("r",r+3/zoom);
+      v.number.setAttribute("font-size",10/zoom);
+      v.number.setAttribute("stroke-width",1.2/zoom);
       v.label.setAttribute("x",p.x+r+6/zoom);v.label.setAttribute("y",p.y+sz*.32);
       v.label.setAttribute("font-size",sz);v.label.setAttribute("stroke-width",Math.max(sz*.28,2/zoom));
       v.ripple.setAttribute("r",r+4/zoom+(pulse?.tag===n.tag?pulse.amount*13/zoom:0));
@@ -602,10 +605,13 @@ const CaptionStudioViz = (() => {
       const ripple=make("circle",{fill:"none",stroke:"url(#tb-sunlight)","vector-effect":"non-scaling-stroke","stroke-width":"1.2",opacity:0,"pointer-events":"none"},g);
       const ring=make("circle",{fill:"none",stroke:"#efd16e","vector-effect":"non-scaling-stroke","stroke-width":"1.5",opacity:0,"pointer-events":"none"},g);
       const core=make("circle",{fill:n.color,class:"studio-tb-orb-core"},g);
+      const number=make("text",{"text-anchor":"middle","dominant-baseline":"central",
+        "font-family":"monospace","font-weight":700,fill:"#161823",stroke:"#fff",
+        "stroke-opacity":.75,"paint-order":"stroke","pointer-events":"none","aria-hidden":"true"},g);
       const hit=make("circle",{fill:"transparent"},g);
       const label=make("text",{fill:"var(--text-primary)","font-weight":600,stroke:"var(--bg-deep)","paint-order":"stroke","pointer-events":"none"},labelLayer);
       label.textContent=n.tag;
-      visual.set(n.tag,{g,core,halo,ripple,ring,hit,label,grad,id});
+      visual.set(n.tag,{g,core,halo,ripple,ring,hit,number,label,grad,id});
       g.addEventListener("pointerdown",e=>{
         if(e.button!==0)return;e.stopPropagation();dismissMenu();cancelMotion();
         const p=point(e);drag={kind:"node",tag:n.tag,dx:p.x-n.x,dy:p.y-n.y,x:e.clientX,y:e.clientY,moved:false};
@@ -659,7 +665,10 @@ const CaptionStudioViz = (() => {
         const v=visual.get(n.tag),selected=n.tag===picked,related=!focus||n.tag===focus||neighbors.has(n.tag);
         v.g.setAttribute("opacity",related?1:.22);
         v.g.setAttribute("aria-pressed",String(selected));
-        v.g.setAttribute("aria-label",n.tag+", "+n.count+" images"+(selected?", selected":""));
+        const sharedCount=neighbors.get(n.tag);
+        v.number.textContent=String(sharedCount??n.count);
+        v.g.setAttribute("aria-label",n.tag+", "+n.count+" images"+
+          (selected?", selected":sharedCount!==undefined?", "+sharedCount+" shared with "+picked:""));
         v.core.setAttribute("fill",selected?"#efd16e":prefs.glassNodes?"url(#"+v.id+")":n.color);
         v.ring.setAttribute("opacity",selected?"1":"0");
         v.halo.setAttribute("opacity",n.tag===focus?".24":"0");
