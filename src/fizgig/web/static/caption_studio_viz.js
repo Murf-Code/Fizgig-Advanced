@@ -325,6 +325,20 @@ const CaptionStudioViz = (() => {
         n.x+=dx*scale;n.y+=dy*scale;
       });
     }
+    // Make room for count discs after the community forces have settled.
+    const radii=nodes.map(n=>countRadius(n.count,top[0].count));
+    for(let pass=0;pass<48;pass++){
+      let worst=0;
+      for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
+        const a=nodes[i],b=nodes[j],dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy);
+        const overlap=radii[i]+radii[j]+4-d;
+        if(overlap<=0)continue;
+        const x=d?dx/d:1,y=d?dy/d:0;
+        a.x-=x*overlap/2;a.y-=y*overlap/2;b.x+=x*overlap/2;b.y+=y*overlap/2;
+        worst=Math.max(worst,overlap);
+      }
+      if(worst<.5)break;
+    }
     const colors=new Map();
     nodes.forEach(n=>{
       n.x+=500;n.y+=360;
@@ -490,6 +504,9 @@ const CaptionStudioViz = (() => {
     const amount=Math.min(cap,length*.12)*strength;
     return length?{x:dx/length*amount,y:dy/length*amount}:{x:0,y:0};
   }
+  function countRadius(count,maxCount){
+    return 4+3.8*String(count).length+10*Math.sqrt(count/maxCount);
+  }
   function tagbenchConstellation(model,onPick,pickedTag=null,options={}){
     const stage=document.createElement("div");stage.className="studio-tb-constellation";
     if(!model.nodes.length){stage.textContent="No tagged images in this dataset.";return stage;}
@@ -525,7 +542,8 @@ const CaptionStudioViz = (() => {
     const leaders=new Map();
     // The model is frequency-ranked; give each community a named landmark.
     for(const n of nodes)if(!leaders.has(n.group))leaders.set(n.group,n);
-    let labelOrder=nodes;
+    let labelOrder=nodes,overviewCamera=null;
+    const focusPositions=new Map();
     let typeScale=1;
     const labelSize=n=>(n.tag===picked?22:leaders.get(n.group)===n?19:15)*typeScale/zoom;
 
@@ -543,8 +561,9 @@ const CaptionStudioViz = (() => {
     const media=typeof matchMedia==="function"?matchMedia("(prefers-reduced-motion: reduce)"):null;
     const reduced=()=>!!media?.matches;
     // Reserve room for the full total even when selection shows a shorter shared count.
-    const radius=n=>(4+3.8*String(n.count).length+10*Math.sqrt(n.count/maxCount))*typeScale/zoom;
-    const position=n=>({x:n.x+n.ox,y:n.y+n.oy});
+    const radius=n=>countRadius(n.count,maxCount)*typeScale/zoom;
+    const location=n=>focusPositions.get(n.tag)||n;
+    const position=n=>({x:location(n).x+n.ox,y:location(n).y+n.oy});
     const view=()=>svg.setAttribute("viewBox",[500-500/zoom+pan.x,350-350/zoom+pan.y,1000/zoom,700/zoom].join(" "));
     const search=html("div","studio-tb-search"),input=html("input","",undefined,search),matches=html("div","studio-tb-suggest",undefined,search);
     input.placeholder="Search Tags";input.setAttribute("aria-label","Search all dataset tags");
@@ -575,16 +594,19 @@ const CaptionStudioViz = (() => {
         for(const e of edges)curve(e.a,e.b);
         ctx.stroke();
       };
-      stroke(bridges,getComputedStyle(canvas).color,picked?.045:.14);
-      for(const [color,edges] of communityStrands){
-        if(!strandColors.has(color)){
-          strandColors.set(color,getComputedStyle(visual.get(edges[0].a).halo).fill);
+      if(!picked){
+        stroke(bridges,getComputedStyle(canvas).color,picked?.045:.14);
+        for(const [color,edges] of communityStrands){
+          if(!strandColors.has(color)){
+            strandColors.set(color,getComputedStyle(visual.get(edges[0].a).halo).fill);
+          }
+          stroke(edges,strandColors.get(color),picked?.11:.48);
         }
-        stroke(edges,strandColors.get(color),picked?.11:.48);
-      }
-      if(picked){
+      }else{
         ctx.strokeStyle="#e2b84e";
-        for(const [tag,count] of shared){
+        for(const tag of focusPositions.keys()){
+          if(tag===picked)continue;
+          const count=shared.get(tag);
           const strength=Math.sqrt(count/at.get(picked).count);
           ctx.lineWidth=(.6+6*strength)*ratio/scale;
           ctx.globalAlpha=.24+.66*strength;
@@ -630,7 +652,7 @@ const CaptionStudioViz = (() => {
       visual.set(n.tag,{g,core,halo,ripple,ring,hit,number,label,grad,id});
       g.addEventListener("pointerdown",e=>{
         if(e.button!==0)return;e.stopPropagation();dismissMenu();cancelMotion();
-        const p=point(e);drag={kind:"node",tag:n.tag,dx:p.x-n.x,dy:p.y-n.y,x:e.clientX,y:e.clientY,moved:false};
+        const p=point(e);drag={kind:"node",tag:n.tag,dx:p.x-location(n).x,dy:p.y-location(n).y,x:e.clientX,y:e.clientY,moved:false};
         svg.setPointerCapture(e.pointerId);
       });
       g.addEventListener("keydown",e=>{
@@ -661,7 +683,7 @@ const CaptionStudioViz = (() => {
     }
     function placeLabels(){
       const boxes=[];
-      const discs=[...at.values()].map(n=>({...position(n),r:radius(n),tag:n.tag}));
+      const discs=labelOrder.map(n=>({...position(n),r:radius(n),tag:n.tag}));
       for(const n of labelOrder){
         const v=visual.get(n.tag),p=position(n),sz=labelSize(n);
         const width=(n.tag.length*.60+.5)*sz,gap=radius(n)+3/zoom;
@@ -676,7 +698,7 @@ const CaptionStudioViz = (() => {
           if(score<bestScore){best={box,left,y};bestScore=score;}
           if(!score)break;
         }
-        const show=bestScore===0||n===labelOrder[0];
+        const show=!!picked||bestScore===0||n===labelOrder[0];
         if(show){
           v.label.setAttribute("x",best.left);v.label.setAttribute("y",best.y+sz*.32);
           boxes.push(best.box);
@@ -686,10 +708,10 @@ const CaptionStudioViz = (() => {
     }
     function updateAppearance(){
       const focus=picked,neighbors=relationMap(focus);
-      labelOrder=picked?[at.get(picked),...[...neighbors].sort((a,b)=>b[1]-a[1]).map(([tag])=>at.get(tag)),
-        ...nodes.filter(n=>n.tag!==picked&&!neighbors.has(n.tag))]:nodes;
+      labelOrder=picked?[...focusPositions.keys()].map(tag=>at.get(tag)):nodes;
       for(const n of at.values()){
-        const v=visual.get(n.tag),selected=n.tag===picked,related=!focus||n.tag===focus||neighbors.has(n.tag);
+        const v=visual.get(n.tag),selected=n.tag===picked,related=!focus||focusPositions.has(n.tag);
+        v.g.style.display=v.label.style.display=related?"":"none";
         v.g.setAttribute("opacity",related?1:.22);
         v.g.setAttribute("aria-pressed",String(selected));
         const sharedCount=neighbors.get(n.tag);
@@ -712,18 +734,31 @@ const CaptionStudioViz = (() => {
       html("strong","",n.tag,head);
       html("span","",String(n.count),head);
       const list=html("ul","",undefined,spotlight);
-      for(const [tag,w] of [...shared].sort((a,b)=>b[1]-a[1])){
+      for(const [tag,w] of shared){
         const item=html("li","",undefined,list);
         const b=button(item,tag,"Focus "+tag,()=>choose(tag));b.style.color=at.get(tag)?.color||"";
         html("span","",String(w),item);
       }
+    }
+    function selectNeighborhood(tag){
+      if(!picked&&tag)overviewCamera={zoom,pan:{...pan}};
+      camera=null;focusPositions.clear();picked=tag;shared=new Map([...relationMap(tag)].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0])));
+      if(tag){
+        const peers=[...shared].slice(0,8);
+        focusPositions.set(tag,{x:360,y:300});
+        peers.forEach(([peer],i)=>focusPositions.set(peer,{x:590,y:350+(i-(peers.length-1)/2)*70}));
+        zoom=1;pan={x:0,y:0};
+      }else if(overviewCamera){
+        zoom=overviewCamera.zoom;pan=overviewCamera.pan;overviewCamera=null;
+      }
+      view();renderPanel();updateAppearance();
     }
     function choose(tag,toggle=true){
       if(tag&&toggle&&tag===picked)tag=null;
       if(tag&&!ensureTag(tag))return;
       if(rare&&rare.tag!==tag)removeRare();
       if(pulse){visual.get(pulse.tag)?.ripple.setAttribute("opacity","0");pulse=null;}
-      picked=tag;shared=relationMap(picked);renderPanel();updateAppearance();
+      selectNeighborhood(tag);
       onPick?.(picked);
       if(picked&&!reduced()&&prefs.elasticity>0){pulse={tag:picked,start:performance.now(),amount:0};wake();}
     }
@@ -742,7 +777,7 @@ const CaptionStudioViz = (() => {
       if(reduced()||!animate){camera=null;zoom=nextZoom;pan=nextPan;view();updateAppearance();return;}
       camera={start:performance.now(),fromZoom:zoom,fromPan:{...pan},toZoom:nextZoom,toPan:nextPan};wake();
     }
-    function center(tag){const n=at.get(tag);if(n)cameraTo(Math.max(zoom,1.45),{x:n.x-500,y:n.y-350});}
+    function center(tag){if(picked){cameraTo(1,{x:0,y:0});return;}const n=at.get(tag);if(n)cameraTo(Math.max(zoom,1.45),{x:n.x-500,y:n.y-350});}
     function fit(animate=true){
       const values=[...at.values()],minX=Math.min(...values.map(n=>n.x))-80,maxX=Math.max(...values.map(n=>n.x))+130;
       const minY=Math.min(...values.map(n=>n.y))-80,maxY=Math.max(...values.map(n=>n.y))+80;
@@ -757,7 +792,7 @@ const CaptionStudioViz = (() => {
       cameraTo(next,target,!e);
     }
     button(zoomCtl,"+","Zoom in",()=>zoomBy(1.2));button(zoomCtl,"−","Zoom out",()=>zoomBy(1/1.2));
-    button(zoomCtl,"⛶","Fit full graph",()=>fit());
+    button(zoomCtl,"⛶","Fit full graph",()=>{if(picked)choose(null);fit();});
     const searchMatches=()=>{
       matches.replaceChildren();const q=input.value.toLowerCase().trim();if(!q)return;
       const found=model.all.filter(n=>n.tag.includes(q)).sort((a,b)=>(b.tag===q)-(a.tag===q)||b.count-a.count).slice(0,8);
@@ -807,7 +842,7 @@ const CaptionStudioViz = (() => {
       if(!drag.moved&&Math.hypot(dx,dy)<4)return;drag.moved=true;
       if(drag.kind==="node"){
         const n=at.get(drag.tag),p=point(e);if(!n)return;
-        n.x=p.x-drag.dx;n.y=p.y-drag.dy;dirty.add(n.tag);
+        location(n).x=p.x-drag.dx;location(n).y=p.y-drag.dy;dirty.add(n.tag);
         const scale=scalePixels();
         if(!reduced()&&prefs.elasticity>0)for(const [tag,w] of relationMap(n.tag)){
           const peer=at.get(tag);if(!peer)continue;
@@ -852,8 +887,8 @@ const CaptionStudioViz = (() => {
     stage.dispose=()=>{resize.disconnect();theme.disconnect();disposed=true;if(frame!==null)cancelAnimationFrame(frame);frame=null;camera=null;settling=null;pulse=null;};
     stage.append(canvas,svg,search,zoomCtl,spotlight,menu);
     stage.setPreferences(prefs);view();
-    if(pickedTag&&ensureTag(pickedTag)){picked=pickedTag;shared=relationMap(picked);renderPanel();updateAppearance();}
     fit(false);
+    if(pickedTag&&ensureTag(pickedTag))selectNeighborhood(pickedTag);
     return stage;
   }
 
