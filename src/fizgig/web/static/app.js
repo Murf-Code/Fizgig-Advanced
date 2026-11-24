@@ -13223,7 +13223,17 @@ function captionTagRemovalTitle(tags,count) {
   const names=tags.length<=2?tags.map(tag=>'“'+tag+'”').join(" and "):tags.length+" selected tags";
   return "Remove "+names+" from "+count+" image"+(count===1?"":"s")+"?";
 }
-function captionConfirmRemoval({title,detail,items=[],confirmLabel="Remove",informational=false,compact=false}) {
+function captionTagRemovalConfirmation(tags,captions) {
+  const counts=new Map();
+  for(const caption of captions){
+    const present=new Set(studioTokens(caption,"tags").map(tag=>tag.toLowerCase()));
+    for(const tag of present)counts.set(tag,(counts.get(tag)||0)+1);
+  }
+  const rows=tags.map(tag=>({tag,count:counts.get(tag.toLowerCase())||0}));
+  if(rows.length===1)return {title:captionTagRemovalTitle(tags,rows[0].count)};
+  return {title:"Remove selected tags?",tagCounts:rows};
+}
+function captionConfirmRemoval({title,detail,items=[],tagCounts=[],confirmLabel="Remove",informational=false,compact=false}) {
   if(document.querySelector(".caption-removal-backdrop"))return Promise.resolve(false);
   return new Promise(resolve=>{
     const lastFocus=document.activeElement;
@@ -13234,6 +13244,12 @@ function captionConfirmRemoval({title,detail,items=[],confirmLabel="Remove",info
     const heading=el("h2",{id:"captionRemovalTitle",text:title});
     const description=el("p",{class:"caption-removal-description",id:"captionRemovalDetails",text:detail});
     const body=el("div",{class:"caption-removal-body"},description);
+    if(tagCounts.length){
+      const breakdown=el("div",{class:"caption-removal-tag-counts","aria-label":"Affected images per tag",tabindex:"0"});
+      for(const {tag,count} of tagCounts)breakdown.append(el("div",{class:"caption-removal-tag-row"},
+        el("span",{text:tag}),el("span",{text:count+" image"+(count===1?"":"s")})));
+      body.append(breakdown);
+    }
     const list=items.filter(Boolean).map(name=>String(name));
     if(list.length){
       const names=el("ul",{class:"caption-removal-list","aria-label":"Affected items"});
@@ -13284,7 +13300,7 @@ function captionConfirmRemoval({title,detail,items=[],confirmLabel="Remove",info
         close(true);return;
       }
       if(e.key!=="Tab")return;
-      const focusable=[...modal.querySelectorAll("button")],first=focusable[0],last=focusable[focusable.length-1];
+      const focusable=[...modal.querySelectorAll("button, .caption-removal-tag-counts")],first=focusable[0],last=focusable[focusable.length-1];
       if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
       else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
     });
@@ -14369,7 +14385,7 @@ function renderCaptionStudio(host,items,ext){
     const removing=parts.filter(tag=>picked.has(tag.toLowerCase()));
     if(!removing.length)return;
     if(!(await captionConfirmRemoval({
-      title:captionTagRemovalTitle(removing,1),
+      ...captionTagRemovalConfirmation(removing,[ta.value]),
       detail:"This can be undone.",compact:true,confirmLabel:"Remove"
     })))return;
     ta.value=studioCompose(ta.value,parts.filter(t=>!picked.has(t.toLowerCase())),"tags");
@@ -16050,7 +16066,7 @@ function renderCaptionStudio(host,items,ext){
     })).filter(row=>row.after!==(row.before||""));
     if(!changes.length){say("None of the selected images contain those tags.");return true;}
     if(!(await captionConfirmRemoval({
-      title:captionTagRemovalTitle(picked,changes.length),
+      ...captionTagRemovalConfirmation(picked,changes.map(row=>row.before)),
       detail:"This can be undone.",compact:true,confirmLabel:"Remove"
     })))return true;
     try{
