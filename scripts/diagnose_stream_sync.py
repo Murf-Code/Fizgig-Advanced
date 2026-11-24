@@ -9,6 +9,7 @@ for the full checkpoint. CPU-only mode is for harness smoke tests, not GPU proof
 import argparse
 import gc
 import json
+import math
 import os
 from pathlib import Path
 import random
@@ -320,8 +321,10 @@ def main():
     print("Compare both classic repeats, fast repeats and serialized fast. "
           "Exact matches are strongest; compare numerical drift to the classic repeat, not just training loss.",
           flush=True)
-    return int(bool(report["errors"]) or any(not row[key]["finite"]
-               for run in report["runs"] for row in run["steps"] for key in ("gradients", "updates")))
+    return int(bool(report["errors"]) or any(
+        not math.isfinite(row["loss"]) or not math.isfinite(row["validation"])
+        or any(not row[key]["finite"] for key in ("gradients", "updates"))
+        for run in report["runs"] for row in run["steps"]))
 
 
 if __name__ == "__main__":

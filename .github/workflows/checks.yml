@@ -36,6 +36,8 @@ jobs:
           python -m pytest checks/test_krea2_calibration_lifecycle.py -k "auto_target_budget_is_four_percent or fresh_calibration_reads_family_options" -q
       - name: Send-only stream synchronization, ring sizing and replay regression checks
         run: python -m pytest checks/test_send_only_swap.py checks/test_krea2_global_replay.py -q
+      - name: Stream diagnostic CPU smoke (not CUDA verification)
+        run: python scripts/diagnose_stream_sync.py --cpu --steps 1 --rank 4 --width 128 --latent-size 8 --optimizer adamw --report /tmp/stream-sync-report.json
       - name: Mask weights in Global Replay and H3 reference distillation
         run: |
           python -m pytest checks/test_krea2_global_replay.py -k "masked_global_replay" -q

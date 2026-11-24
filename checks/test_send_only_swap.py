@@ -558,8 +558,9 @@ def test_swap_preference_changes_in_same_process():
     from fizgig.families.train import setup_parser
     prefs = dict(launch.RECLAIM_PREF_DEFAULTS)
     parser = setup_parser()
+    req = ["--family", "krea2", "--dit", "x", "--output_dir", "o", "--output_name", "n"]
     for enabled in (False, True, False, True):
         prefs.update(launch.clean_reclaim_prefs({"send_only_block_swap": enabled, "send_only_force": True}))
-        args, _ = parser.parse_known_args(launch.send_only_flags(prefs))
+        args, _ = parser.parse_known_args(req + launch.send_only_flags(prefs))
         assert args.send_only_swap is enabled
         assert args.send_only_force is enabled
