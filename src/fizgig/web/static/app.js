@@ -13987,7 +13987,8 @@ function renderCaptionStudio(host,items,ext){
         "",()=>toggleValidationImages(it.path),!pictures.length);
       action(inSamples?"Remove "+plural+" from Sample Images":"Add "+plural+" to Sample Images",
         "",()=>toggleSampleImages(it.path),!pictures.length);
-      action("Clear Selection","",()=>{selection.clear();renderCaptions();});
+      if(S.cap.studioExploreMode==="list")
+        action("Clear Selection","",()=>{selection.clear();renderCaptions();});
       separator();
     }
     action(count===1?"Remove Image":"Remove Selected Images",preview?"":"Ctrl+Del",

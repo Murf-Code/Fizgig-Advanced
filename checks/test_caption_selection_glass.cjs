@@ -8,4 +8,5 @@ assert.match(css,/studio-star-reveal 140ms/);
 assert.match(css,/data-learning-status="stuck"\]\[data-learning-visible="true"\]/);
 assert.match(css,/prefers-reduced-motion:reduce/);
 assert.doesNotMatch(app,/selection\.has\(image\)\|\|image===S\.cap\.studioPath/);
+assert.match(menu,/if\(S\.cap\.studioExploreMode==="list"\)\s*action\("Clear Selection"/);
 console.log("Glass selection and Waterfall menu checks passed");
