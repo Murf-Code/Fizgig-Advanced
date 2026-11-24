@@ -430,6 +430,25 @@ const CaptionStudioViz = (() => {
   }
   // A compact Gaussian stamp per node instead of checking every node at
   // every grid cell. The worker and live aura use the same geometry.
+  function auraContours({left,top,step,nx,ny,grid},levels){
+    return levels.map(level=>{
+        const segments=[],threshold=level;
+        for(let j=0;j<ny-1;j++)for(let i=0;i<nx-1;i++){
+          const v=[grid[j*nx+i],grid[j*nx+i+1],grid[(j+1)*nx+i+1],grid[(j+1)*nx+i]];
+          const p=[[left+i*step,top+j*step],[left+(i+1)*step,top+j*step],
+            [left+(i+1)*step,top+(j+1)*step],[left+i*step,top+(j+1)*step]];
+          const crossings=[];
+          for(let k=0;k<4;k++){
+            const next=(k+1)%4;
+            if((v[k]>=threshold)===(v[next]>=threshold))continue;
+            const t=(threshold-v[k])/(v[next]-v[k]);
+            crossings.push([p[k][0]+t*(p[next][0]-p[k][0]),p[k][1]+t*(p[next][1]-p[k][1])]);
+          }
+          for(let k=0;k+1<crossings.length;k+=2)segments.push([...crossings[k],...crossings[k+1]]);
+        }
+        return segments;
+      });
+  }
   function auraDensity(rows,maxCount){
     if(!rows.length)return {x:0,y:0,spread:0,contours:[[],[],[]]};
     const x=rows.reduce((sum,n)=>sum+n.x,0)/rows.length;
@@ -459,23 +478,7 @@ const CaptionStudioViz = (() => {
         }
       }
     }
-      const contours=[.16,.34,.60].map(level=>{
-        const segments=[],threshold=peak*level;
-        for(let j=0;j<ny-1;j++)for(let i=0;i<nx-1;i++){
-          const v=[grid[j*nx+i],grid[j*nx+i+1],grid[(j+1)*nx+i+1],grid[(j+1)*nx+i]];
-          const p=[[left+i*step,top+j*step],[left+(i+1)*step,top+j*step],
-            [left+(i+1)*step,top+(j+1)*step],[left+i*step,top+(j+1)*step]];
-          const crossings=[];
-          for(let k=0;k<4;k++){
-            const next=(k+1)%4;
-            if((v[k]>=threshold)===(v[next]>=threshold))continue;
-            const t=(threshold-v[k])/(v[next]-v[k]);
-            crossings.push([p[k][0]+t*(p[next][0]-p[k][0]),p[k][1]+t*(p[next][1]-p[k][1])]);
-          }
-          for(let k=0;k+1<crossings.length;k+=2)segments.push([...crossings[k],...crossings[k+1]]);
-        }
-        return segments;
-      });
+    const contours=auraContours({left,top,step,nx,ny,grid},[.16,.34,.60].map(level=>peak*level));
     return {x,y,spread:Math.max(45,...rows.map(n=>Math.hypot(n.x-x,n.y-y)+45)),contours,
       density:{left,top,step,nx,ny,grid,peak}};
   }
@@ -488,6 +491,61 @@ const CaptionStudioViz = (() => {
     if(!(peak>0)||!(value>0))return 0;
     const t=Math.min(1,value/peak);
     return Math.round(255*Math.pow(t,.70));
+  }
+  // Merge neighbouring fields into one liquid surface: sum density,
+  // average pigment. Separate distant components to preserve resolution.
+  function mergeAuraFields(regions){
+    const usable=regions.filter(r=>r.density?.peak>0).sort((a,b)=>
+      a.density.left-b.density.left||a.density.top-b.density.top||
+      a.density.nx-b.density.nx||a.density.ny-b.density.ny||
+      a.rgb[0]-b.rgb[0]||a.rgb[1]-b.rgb[1]||a.rgb[2]-b.rgb[2]);
+    const boxes=usable.map(({density:d})=>({left:d.left,top:d.top,right:d.left+(d.nx-1)*d.step,bottom:d.top+(d.ny-1)*d.step}));
+    const parents=usable.map((_,i)=>i);
+    const root=i=>{while(parents[i]!==i){parents[i]=parents[parents[i]];i=parents[i];}return i;};
+    for(let i=0;i<boxes.length;i++)for(let j=0;j<i;j++){
+      const a=boxes[i],b=boxes[j];
+      if(a.left<=b.right&&a.right>=b.left&&a.top<=b.bottom&&a.bottom>=b.top)parents[root(i)]=root(j);
+    }
+    const groups=new Map();
+    for(let i=0;i<usable.length;i++){
+      const k=root(i);if(!groups.has(k))groups.set(k,[]);groups.get(k).push(i);
+    }
+    const sample=(d,x,y)=>{
+      const u=(x-d.left)/d.step,v=(y-d.top)/d.step;
+      if(u<0||v<0||u>d.nx-1||v>d.ny-1)return 0;
+      const i=Math.min(d.nx-2,Math.floor(u)),j=Math.min(d.ny-2,Math.floor(v));
+      const fx=u-i,fy=v-j,k=j*d.nx+i;
+      return ((d.grid[k]*(1-fx)+d.grid[k+1]*fx)*(1-fy)+
+        (d.grid[k+d.nx]*(1-fx)+d.grid[k+d.nx+1]*fx)*fy)/d.peak;
+    };
+    const surfaces=[];
+    for(const ids of groups.values()){
+      const left=Math.min(...ids.map(i=>boxes[i].left)),top=Math.min(...ids.map(i=>boxes[i].top));
+      const right=Math.max(...ids.map(i=>boxes[i].right)),bottom=Math.max(...ids.map(i=>boxes[i].bottom));
+      const step=Math.max(7,(right-left)/159,(bottom-top)/159);
+      const nx=Math.min(160,Math.ceil((right-left)/step)+1),ny=Math.min(160,Math.ceil((bottom-top)/step)+1);
+      const grid=new Float32Array(nx*ny),pigment=new Float32Array(nx*ny*3);
+      for(const id of ids){
+        const {density:d,rgb}=usable[id],box=boxes[id];
+        const i0=Math.max(0,Math.ceil((box.left-left)/step)),i1=Math.min(nx-1,Math.floor((box.right-left)/step));
+        const j0=Math.max(0,Math.ceil((box.top-top)/step)),j1=Math.min(ny-1,Math.floor((box.bottom-top)/step));
+        for(let j=j0;j<=j1;j++)for(let i=i0;i<=i1;i++){
+          const w=sample(d,left+i*step,top+j*step);if(w<=0)continue;
+          const k=j*nx+i;grid[k]+=w;
+          for(let c=0;c<3;c++)pigment[3*k+c]+=w*rgb[c];
+        }
+      }
+      const rgba=new Uint8ClampedArray(nx*ny*4);
+      for(let k=0;k<grid.length;k++){
+        const w=grid[k];if(!w)continue;
+        for(let c=0;c<3;c++)rgba[4*k+c]=pigment[3*k+c]/w;
+        rgba[4*k+3]=auraPaintAlpha(w,1);
+      }
+      const surface={left,top,step,nx,ny,grid,rgba};
+      surface.contours=auraContours(surface,[.16,.34,.60]);
+      surfaces.push(surface);
+    }
+    return surfaces;
   }
   function auraCache(initial,rows,maxCount,interval=500){
     const capture=nodes=>nodes.map(n=>({tag:n.tag,count:n.count,x:n.x,y:n.y}));
@@ -1039,40 +1097,61 @@ const CaptionStudioViz = (() => {
       if(c.r>=25)packedLabel(g,c.memberCount+" tags",0,font*.96,
         Math.max(7,font*.62),c.r*1.6,600);
     }
-    const makeContourPaths=field=>typeof Path2D==="function"?field.contours.map(segments=>{
-      const path=new Path2D();
-      for(const [x1,y1,x2,y2] of segments){path.moveTo(x1,y1);path.lineTo(x2,y2);}
-      return path;
-    }):null;
     const auraStates=new Map();
     for(const c of atlas.clusters){
       if(c.unmapped)continue;
       const original=c.tags.map(tag=>at.get(tag)).filter(Boolean);
-      // Seed with the worker result; only moved communities rebuild.
       const field=original.length===c.tags.length?c:auraDensity(original,maxCount);
-      auraStates.set(c.id,{nodes:original,field,paths:makeContourPaths(field),
-        paint:null,paintField:null,paintColor:null,update:auraCache(field,original,maxCount)});
+      auraStates.set(c.id,{nodes:original,field,update:auraCache(field,original,maxCount)});
     }
-    // Tiny reusable world-space textures (at most 100x100 per community).
-    // No pixel reads, fullscreen blur, extra animation loop or GPU dependency.
-    function auraPaint(state,color){
-      const field=state.field,d=field.density;
-      if(!d||!d.peak)return null;
-      if(state.paint&&state.paintField===field&&state.paintColor===color)return state.paint;
-      const paint=state.paint||document.createElement("canvas");
-      if(paint.width!==d.nx)paint.width=d.nx;
-      if(paint.height!==d.ny)paint.height=d.ny;
-      const layer=paint.getContext("2d");
-      if(!layer)return null;
-      const mask=layer.createImageData(d.nx,d.ny);
-      for(let i=0;i<d.grid.length;i++)mask.data[i*4+3]=auraPaintAlpha(d.grid[i],d.peak);
-      layer.globalCompositeOperation="source-over";
-      layer.putImageData(mask,0,0);
-      layer.globalCompositeOperation="source-in";
-      layer.fillStyle=color;layer.fillRect(0,0,d.nx,d.ny);
-      layer.globalCompositeOperation="source-over";
-      state.paint=paint;state.paintField=field;state.paintColor=color;
-      return paint;
+    let mergedPaint=null,mergedInputs=null,colorProbe=null,mergedAt=-Infinity;
+    function pigmentRGB(color){
+      if(!colorProbe){
+        const probe=document.createElement("canvas");probe.width=probe.height=1;
+        colorProbe=probe.getContext("2d");
+      }
+      if(!colorProbe)return [128,128,128];
+      colorProbe.clearRect(0,0,1,1);colorProbe.fillStyle=color;
+      colorProbe.fillRect(0,0,1,1);
+      return Array.from(colorProbe.getImageData(0,0,1,1).data.slice(0,3));
+    }
+    function mergedAuraPaint(regions,now,moving){
+      if(mergedInputs&&regions.length===mergedInputs.length&&regions.every((r,i)=>
+        r.field===mergedInputs[i].field&&r.color===mergedInputs[i].color))return mergedPaint;
+      if(mergedPaint&&moving&&now-mergedAt<500)return mergedPaint;
+      mergedAt=now;
+      mergedInputs=regions.map(({field,color})=>({field,color}));
+      mergedPaint=mergeAuraFields(regions.map(({state,field,color})=>{
+        if(state.rgbColor!==color){state.rgbColor=color;state.rgb=pigmentRGB(color);}
+        return {density:field.density,rgb:state.rgb};
+      })).map(surface=>{
+        const texture=document.createElement("canvas");
+        texture.width=surface.nx;texture.height=surface.ny;
+        const layer=texture.getContext("2d");
+        if(!layer)return null;
+        const pixels=layer.createImageData(surface.nx,surface.ny);
+        pixels.data.set(surface.rgba);layer.putImageData(pixels,0,0);
+        // Shared contours follow the local mixed pigment. Batch quantized
+        // colors to avoid a separate stroke for every segment.
+        const strokes=surface.contours.map(segments=>{
+          const batches=new Map();
+          for(const seg of segments){
+            const [x1,y1,x2,y2]=seg;
+            const x=Math.max(0,Math.min(surface.nx-1,Math.round(((x1+x2)/2-surface.left)/surface.step)));
+            const y=Math.max(0,Math.min(surface.ny-1,Math.round(((y1+y2)/2-surface.top)/surface.step)));
+            const k=4*(y*surface.nx+x);
+            const rgb=[0,1,2].map(c=>Math.min(255,Math.round(surface.rgba[k+c]/32)*32));
+            const color="rgb("+rgb.join(",")+")";
+            if(!batches.has(color))batches.set(color,{color,segments:[],path:typeof Path2D==="function"?new Path2D():null});
+            const batch=batches.get(color);
+            if(batch.path){batch.path.moveTo(x1,y1);batch.path.lineTo(x2,y2);}
+            else batch.segments.push(seg);
+          }
+          return [...batches.values()];
+        });
+        return {surface,texture,strokes};
+      }).filter(Boolean);
+      return mergedPaint;
     }
     function drawStrands(){
       const width=svg.clientWidth,height=svg.clientHeight;
@@ -1084,10 +1163,7 @@ const CaptionStudioViz = (() => {
       const scale=Math.min(width/1000,height/700)*zoom*ratio;
       ctx.setTransform(scale,0,0,scale,w/2-(500+pan.x)*scale,h/2-(350+pan.y)*scale);
       if(packed)return;
-      // Paint all translucent density fields before drawing their contours.
-      // Additive premultiplied color is order-independent: blue and pink
-      // produce violet, yellow and cyan produce greenish mixtures, etc.
-      // The low opacity prevents overlapping fields from blowing out.
+      // Auras join into a single density body, like liquid droplets.
       if(!picked&&prefs.celestial){
         const moving=!!((drag?.kind==="node"&&drag.moved)||settling);
         const now=performance.now(),regions=[];
@@ -1096,43 +1172,28 @@ const CaptionStudioViz = (() => {
           const anchor=visual.get(c.tags[0]),state=auraStates.get(c.id);
           if(!anchor||!state)continue;
           const rows=state.nodes.map(n=>({tag:n.tag,count:n.count,...position(n)}));
-          const field=state.update(rows,now,moving);
-          if(field!==state.field){
-            state.field=field;state.paths=makeContourPaths(field);
-          }
+          state.field=state.update(rows,now,moving);
           if(!state.color)state.color=getComputedStyle(anchor.halo).fill;
-          regions.push({state,field,color:state.color});
+          regions.push({state,field:state.field,color:state.color});
         }
+        const surfaces=mergedAuraPaint(regions,now,moving);
         ctx.save();
-        ctx.globalCompositeOperation="lighter";
-        ctx.globalAlpha=.26;
-        ctx.imageSmoothingEnabled=true;
-        ctx.imageSmoothingQuality="medium";
-        for(const {state,field,color} of regions){
-          const paint=auraPaint(state,color),d=field.density;
-          if(paint&&d){
-            // The raster samples are centered on the density grid points.
-            ctx.drawImage(paint,d.left-d.step/2,d.top-d.step/2,d.nx*d.step,d.ny*d.step);
-          }else{
-            const gradient=ctx.createRadialGradient(field.x,field.y,0,field.x,field.y,field.spread);
-            gradient.addColorStop(0,color);gradient.addColorStop(1,"transparent");
-            ctx.fillStyle=gradient;ctx.beginPath();ctx.arc(field.x,field.y,field.spread,0,Math.PI*2);ctx.fill();
-          }
-        }
+        ctx.globalCompositeOperation="source-over";
+        ctx.globalAlpha=.30;ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality="medium";
+        for(const {surface:d,texture} of surfaces)
+          ctx.drawImage(texture,d.left-d.step/2,d.top-d.step/2,d.nx*d.step,d.ny*d.step);
         ctx.restore();
-        // Crisp community-colored topography and graph strands must not be
-        // included in the paint blend. The effect is purely decorative.
-        for(const {state,field,color} of regions){
-          ctx.strokeStyle=color;ctx.lineWidth=ratio/scale;
-          field.contours.forEach((segments,i)=>{
-            ctx.globalAlpha=.16+i*.075;
-            const path=state.paths?.[i];
-            if(path){ctx.stroke(path);return;}
+        ctx.lineWidth=ratio/scale;
+        for(const {strokes} of surfaces)strokes.forEach((batches,i)=>{
+          ctx.globalAlpha=.19+i*.085;
+          for(const batch of batches){
+            ctx.strokeStyle=batch.color;
+            if(batch.path){ctx.stroke(batch.path);continue;}
             ctx.beginPath();
-            for(const [x1,y1,x2,y2] of segments){ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);}
+            for(const [x1,y1,x2,y2] of batch.segments){ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);}
             ctx.stroke();
-          });
-        }
+          }
+        });
       }
       const curve=(a,b)=>{
         const p=position(at.get(a)),q=position(at.get(b));
@@ -1947,7 +2008,7 @@ const CaptionStudioViz = (() => {
     return stage;
   }
 
-  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings,tagDirection,tagArrow,auraDensity,auraCache,auraPaintAlpha});
+  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings,tagDirection,tagArrow,auraDensity,auraCache,auraPaintAlpha,mergeAuraFields});
 })();
 // A classic WebWorker can import this existing pure graph implementation
 // without maintaining a second constellation algorithm.
