@@ -140,3 +140,9 @@ assert.equal(T.search(["lion"],T.naturalSearch("cute or lion",vocab)),true);
 
 assert.equal(T.kind("cat, blue eyes\nA cat sits. It looks left."),"tags");
 assert.deepEqual(T.tags("cat, blue eyes\nA cat sits. It looks left."),["cat","blue eyes"]);
+
+const indexed=T.datasetIndex(";");
+indexed.add([["lion; blue; LION","tags"],["Lion; blue","auto"]]);
+indexed.add([["First sentence. Second sentence.","auto"],["ignored; tags","prose"],["fox; watercolor","tags"]]);
+assert.deepEqual(indexed.finish(),{sorted:[["lion",2],["blue",2],["fox",1],["watercolor",1]],vocabulary:["lion","blue","fox","watercolor"]});
+console.log("Background dataset index uses exact existing tag parsing and per-image deduplication");

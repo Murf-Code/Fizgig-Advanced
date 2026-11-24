@@ -15240,7 +15240,7 @@ function renderCaptionStudio(host,items,ext){
   // TagBench All Tags is a compact, searchable vertical list; categories do not
   // occupy an extra select control on every row. Keep category assignment via
   // context menus and the existing category manager.
-  const index=el("ul",{class:"studio-tag-index studio-tag-list",role:"list","aria-label":"All Tags"});
+  const index=el("ul",{class:"studio-tag-index studio-tag-list is-windowed",role:"list","aria-label":"All Tags"});
   const indexSearch=el("input",{type:"search",class:"studio-tag-search w-path",
     placeholder:"Search Tags","aria-label":"Search Tags"});
   indexSearch.value=S.cap.studioIndexSearch||"";
@@ -15263,7 +15263,7 @@ function renderCaptionStudio(host,items,ext){
       "aria-label":"Edit tag "+tag+" throughout the dataset",
       title:"Enter or click away to save · Escape or empty input to cancel"});
     row.replaceChildren(entry);
-    tagEditing={old:tag,entry};
+    tagEditing={old:tag,entry,row};
     let canceled=false,finished=false;
     const restore=()=>{
       // Keep the existing row, its listeners, selection, and the user's scroll
@@ -15331,91 +15331,121 @@ function renderCaptionStudio(host,items,ext){
     studioTagColorMenu(menu,tag,categoryState,renderCaptions);
     studioMountContextMenu(menu,e);
   };
-  // Keep All Tags fully browsable without mounting thousands of rows on each
-  // image selection. Only rows near the scroll position cost DOM memory.
-  let matchedTagRows=[],renderedTagRows=0;
-  const tagBatchSize=80;
-  const appendTagRows=()=>{
-    if(renderedTagRows>=matchedTagRows.length)return;
-    const fragment=document.createDocumentFragment();
-    const end=Math.min(matchedTagRows.length,renderedTagRows+tagBatchSize);
-    for(const [tag,n] of matchedTagRows.slice(renderedTagRows,end)){
-      const category=categoryState.tags[tag]||"";
-      const row=el("li",{class:"studio-tag-list-item"});
-      const selected=selectionState.has(tag);
-      const tagBtn=el("button",{class:"studio-index-tag"+(selected?" is-picked":""),
-        type:"button",text:tag+" ("+n+")",title:"Click to filter images · Ctrl-click to select · Double-click to edit spelling · Right-click for tag actions",
-        "data-tag":tag,
-        "aria-pressed":selected?"true":"false"});
-      tagBtn.style.setProperty("--studio-tag-color",CaptionStudioViz.colorForTag(tag,categoryState));
-      tagBtn.addEventListener("click",e=>{
-        S.cap.studioTagFocus="all";
-        if(e.detail>1)return;
-        if(e.ctrlKey||e.metaKey){
-          selectionState.has(tag)?selectionState.delete(tag):selectionState.add(tag);
-          tagBtn.classList.toggle("is-picked",selectionState.has(tag));
-          tagBtn.setAttribute("aria-pressed",String(selectionState.has(tag)));
-          return;
-        }
-        // Plain clicks filter; only Ctrl/Cmd-click is a tag selection.
-        selectionState.clear();
-        syncAllTagSelection();
-        S.cap.studioTagFocus=null;
-        if(pendingTagClick)clearTimeout(pendingTagClick);
-        pendingTagClick=setTimeout(()=>{
-          pendingTagClick=null;
-          const exact=JSON.stringify(tag);
-          S.cap.studioQuery=S.cap.studioQuery===exact?"":exact;
-          S.cap.page=0;renderCaptions();
-        },260);
-      });
-      tagBtn.addEventListener("dblclick",e=>{
-        e.preventDefault();
-        if(pendingTagClick){clearTimeout(pendingTagClick);pendingTagClick=null;}
-        beginTagRename(row,tag);
-      });
-      tagBtn.addEventListener("contextmenu",e=>openTagActions(e,tag,row));
-      row.append(tagBtn);fragment.append(row);
-    }
-    index.append(fragment);
-    renderedTagRows=end;
+  // True virtualization: preserve the complete scroll extent using two
+  // size-contained spacers, recycling only rows near the visible viewport.
+  let matchedTagRows=[],tagRowHeight=29,tagWindowFrame=0,tagQueryFrame=0,tagResizeObserver=null;
+  let displayedTagQuery=null;
+  const mountedTags=new Map();
+  const tagTop=el("li",{class:"studio-tag-spacer",role:"presentation","aria-hidden":"true"});
+  const tagBottom=el("li",{class:"studio-tag-spacer",role:"presentation","aria-hidden":"true"});
+  index.append(tagTop,tagBottom);
+  const createTagRow=position=>{
+    const [tag,n]=matchedTagRows[position];
+    const row=el("li",{class:"studio-tag-list-item",role:"listitem",
+      "aria-setsize":String(matchedTagRows.length),"aria-posinset":String(position+1)});
+    row.style.height=tagRowHeight+"px";
+    const selected=selectionState.has(tag);
+    const tagBtn=el("button",{class:"studio-index-tag"+(selected?" is-picked":""),
+      type:"button",text:tag+" ("+n+")",title:"Click to filter images · Ctrl-click to select · Double-click to edit spelling · Right-click for tag actions",
+      "data-tag":tag,
+      "aria-pressed":selected?"true":"false"});
+    tagBtn.style.setProperty("--studio-tag-color",CaptionStudioViz.colorForTag(tag,categoryState));
+    tagBtn.addEventListener("click",e=>{
+      S.cap.studioTagFocus="all";
+      if(e.detail>1)return;
+      if(e.ctrlKey||e.metaKey){
+        selectionState.has(tag)?selectionState.delete(tag):selectionState.add(tag);
+        tagBtn.classList.toggle("is-picked",selectionState.has(tag));
+        tagBtn.setAttribute("aria-pressed",String(selectionState.has(tag)));
+        return;
+      }
+      // Plain clicks filter; only Ctrl/Cmd-click is a tag selection.
+      selectionState.clear();
+      syncAllTagSelection();
+      S.cap.studioTagFocus=null;
+      if(pendingTagClick)clearTimeout(pendingTagClick);
+      pendingTagClick=setTimeout(()=>{
+        pendingTagClick=null;
+        const exact=JSON.stringify(tag);
+        S.cap.studioQuery=S.cap.studioQuery===exact?"":exact;
+        S.cap.page=0;renderCaptions();
+      },260);
+    });
+    tagBtn.addEventListener("dblclick",e=>{
+      e.preventDefault();
+      if(pendingTagClick){clearTimeout(pendingTagClick);pendingTagClick=null;}
+      beginTagRename(row,tag);
+    });
+    tagBtn.addEventListener("contextmenu",e=>openTagActions(e,tag,row));
+    row.append(tagBtn);
+    return row;
   };
-  let displayedTagQuery=null,tagQueryFrame=0;
+  const paintTagWindow=()=>{
+    // Before attachment, seed a small first window. Once visible, its actual
+    // height drives the range; never let spacer height become viewport height.
+    if(index.isConnected&&(!index.clientWidth||!index.clientHeight))return;
+    if(index.isConnected){
+      const font=parseFloat(getComputedStyle(index).getPropertyValue("--caption-settings-font"))||13;
+      const height=Math.max(20,Math.ceil(font*1.4+10));
+      if(height!==tagRowHeight){
+        const anchor=index.scrollTop/tagRowHeight;
+        tagRowHeight=height;
+        for(const row of mountedTags.values())row.style.height=height+"px";
+        tagBottom.style.height=matchedTagRows.length*height+"px";
+        index.scrollTop=anchor*height;
+      }
+    }
+    const viewport=index.isConnected?Math.min(index.clientHeight,window.innerHeight||index.clientHeight):450;
+    const [start,end]=CaptionThumbRail.fixedWindow(matchedTagRows.length,index.scrollTop,viewport,tagRowHeight,8);
+    if(tagEditing){
+      const position=Number(tagEditing.row.getAttribute("aria-posinset"))-1;
+      if(position<start||position>=end){
+        // Inline rename retains the same click-away/blur save behavior.
+        tagEditing.entry.blur();
+        if(tagEditing)return;
+      }
+    }
+    CaptionThumbRail.reconcile(index,mountedTags,start,end,createTagRow,tagBottom);
+    tagTop.style.height=start*tagRowHeight+"px";
+    tagBottom.style.height=(matchedTagRows.length-end)*tagRowHeight+"px";
+    index.dataset.rendered=String(mountedTags.size);
+  };
+  const queueTagWindow=()=>{
+    if(tagWindowFrame)return;
+    tagWindowFrame=requestAnimationFrame(()=>{
+      tagWindowFrame=0;if(index.isConnected)paintTagWindow();
+    });
+  };
   const tagRows=()=>{
     if(!index.isConnected&&displayedTagQuery!==null)return;
     const search=indexSearch.value.trim().toLocaleLowerCase();
     if(search===displayedTagQuery)return;
+    if(tagEditing){tagEditing.entry.blur();if(tagEditing)return;}
     displayedTagQuery=search;
     S.cap.studioIndexSearch=indexSearch.value;
     matchedTagRows=CaptionStudioTags.findTagMatches(searchableSorted,search);
-    renderedTagRows=0;
-    index.replaceChildren();
+    for(const row of mountedTags.values())row.remove();
+    mountedTags.clear();
     index.scrollTop=0;
-    appendTagRows();
+    paintTagWindow();
     tagCount.textContent=matchedTagRows.length+" / "+sorted.length+" Tags";
   };
   const scheduleTagRows=()=>{
     S.cap.studioIndexSearch=indexSearch.value;
     if(tagQueryFrame)return;
     tagQueryFrame=requestAnimationFrame(()=>{
-      tagQueryFrame=0;
-      tagRows();
+      tagQueryFrame=0;tagRows();
     });
   };
   stabilizeTagScroll(index);
-  let tagScrollLoadPending=false;
-  index.addEventListener("scroll",()=>{
-    if(tagScrollLoadPending)return;
-    tagScrollLoadPending=true;
-    requestAnimationFrame(()=>{
-      tagScrollLoadPending=false;
-      if(!index.isConnected)return;
-      if(index.scrollTop+index.clientHeight>=index.scrollHeight-520)
-        appendTagRows();
-    });
-  },{passive:true});
+  index.addEventListener("scroll",queueTagWindow,{passive:true});
+  if(typeof ResizeObserver!=="undefined"){
+    tagResizeObserver=new ResizeObserver(queueTagWindow);
+    tagResizeObserver.observe(index);
+  }
   indexSearch.addEventListener("input",scheduleTagRows);
   tagRows();
+  queueTagWindow();
   const indexMode=el("select",{class:"w-combo",title:"Explore tag frequencies and co-occurrences"});
   [["list","Tag list"],["waterfall","Frequency waterfall"],["constellation","Tag constellation"]]
     .forEach(([value,label])=>indexMode.append(el("option",{value,text:label})));
@@ -16203,6 +16233,10 @@ function renderCaptionStudio(host,items,ext){
     clearExploreStage();
     clearTimeout(prefetchTimer);
     S.cap.studioThumbObserver?.disconnect();
+    tagResizeObserver?.disconnect();
+    if(tagWindowFrame)cancelAnimationFrame(tagWindowFrame);
+    if(tagQueryFrame)cancelAnimationFrame(tagQueryFrame);
+    if(pendingTagClick)clearTimeout(pendingTagClick);
     S.cap.studioStageDispose=null;
   };
   const openView=(mode)=>{

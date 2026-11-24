@@ -2,13 +2,13 @@
 // Keep the Caption Workbench image rail cheap while Chromium performs native
 // scrolling. Pure reconciliation is also exercised by Node regression checks.
 const CaptionThumbRail=(()=>{
-  function reconcile(host,mounted,start,end,create){
+  function reconcile(host,mounted,start,end,create,endAnchor=null){
     for(const [index,row] of mounted){
       if(index<start||index>=end){row.remove();mounted.delete(index);}
     }
     // Work backwards so survivors stay attached (and keep their decoded img).
     // Only rows entering the window are inserted into the DOM.
-    let next=null;
+    let next=endAnchor;
     for(let index=end-1;index>=start;index--){
       let row=mounted.get(index);
       if(!row){
@@ -18,6 +18,15 @@ const CaptionThumbRail=(()=>{
       }
       next=row;
     }
+  }
+  // Fixed-height text lists use the same bounded reconciliation as images.
+  function fixedWindow(total,scrollTop,viewportHeight,rowHeight,overscan=8){
+    total=Math.max(0,Math.floor(total)||0);
+    rowHeight=Math.max(1,Number(rowHeight)||1);
+    const viewport=Math.max(1,Number(viewportHeight)||1);
+    const top=Math.max(0,Math.min(Number(scrollTop)||0,Math.max(0,total*rowHeight-viewport)));
+    return [Math.max(0,Math.floor(top/rowHeight)-overscan),
+      Math.min(total,Math.ceil((top+viewport)/rowHeight)+overscan)];
   }
   // Pixel budget is derived from the actual displayed row dimensions.
   // Portraits can reach the saved max-height setting even in a narrow rail;
@@ -66,6 +75,6 @@ const CaptionThumbRail=(()=>{
         this.images.delete(this.images.keys().next().value);
     }
   }
-  return {reconcile,prefetchRange,imageSizeForRow,ThumbPreloader};
+  return {reconcile,fixedWindow,prefetchRange,imageSizeForRow,ThumbPreloader};
 })();
 if(typeof module!=="undefined"&&module.exports)module.exports=CaptionThumbRail;

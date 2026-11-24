@@ -101,3 +101,20 @@ assert.match(app,/geometry=studioThumbGeometry\(items,width,14,previewHeight\)/)
   console.log("Native thumbnail scrolling, retained DOM rows, lookahead cache and image invalidation checks passed");
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});
+
+const tagsHost=fakeHost(),tagMounted=new Map();
+const bottom={spacer:true};tagsHost.children.push(bottom);
+const makeTag=i=>({index:i,remove(){tagsHost.children.splice(tagsHost.children.indexOf(this),1);}});
+let peak=0;
+for(const scroll of [0,150,2000,100000,2900000,400,0]){
+  const [start,end]=rail.fixedWindow(100000,scroll,600,29);
+  rail.reconcile(tagsHost,tagMounted,start,end,makeTag,bottom);
+  assert.equal(tagsHost.children.at(-1),bottom);
+  assert.deepEqual(tagsHost.children.slice(0,-1).map(row=>row.index),Array.from({length:end-start},(_,i)=>start+i));
+  assert.equal(tagMounted.size,end-start);
+  assert.ok(tagMounted.size<=38);
+  peak=Math.max(peak,tagMounted.size);
+}
+assert.deepEqual(rail.fixedWindow(0,100,600,29),[0,0]);
+assert.deepEqual(rail.fixedWindow(3,0,600,29),[0,3]);
+console.log("100,000-tag virtual range checks passed, peak mounted rows: "+peak);
