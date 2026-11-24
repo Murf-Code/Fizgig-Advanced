@@ -6830,30 +6830,34 @@ body.caption-glass-ui .studio-image-context-menu .studio-danger-action:not(:disa
 #tab-captions .studio-tb-flow-tile img{border-radius:7px}
 #tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)::before{
   content:"";position:absolute;inset:3px;border-radius:inherit;
-  pointer-events:none;z-index:2;border:1px solid rgba(255,255,255,.68);
+  pointer-events:none;z-index:2;border:1px solid rgba(255,255,255,.82);
+  box-shadow:0 0 0 1px rgba(0,0,0,.72),inset 0 0 0 1px rgba(0,0,0,.55);
   opacity:0;transition:opacity 100ms ease-out;
 }
 #tab-captions.caption-theme-glass :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)::before{
-  border:0;padding:2px;
-  background:linear-gradient(135deg,rgba(255,255,255,.86),rgba(226,214,255,.46) 40%,rgba(155,128,207,.14));
+  /* A one-pixel dark edge is part of the masked ring, not an image overlay. */
+  border:1px solid rgba(0,0,0,.72);padding:2px;box-shadow:none;
+  background:linear-gradient(135deg,rgba(255,255,255,.92),rgba(226,214,255,.66) 40%,rgba(155,128,207,.32)) padding-box;
   -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
   -webkit-mask-composite:xor;mask-composite:exclude;
 }
 #tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)::after{
   content:"✦";position:absolute;right:9px;top:7px;
   color:#fff;font-size:21px;line-height:1;font-weight:normal;
-  text-shadow:0 1px 3px rgba(0,0,0,.88),0 0 2px rgba(0,0,0,.7);
+  -webkit-text-stroke:1px rgba(0,0,0,.9);
+  paint-order:stroke fill;
+  text-shadow:0 1px 2px rgba(0,0,0,.85);
   pointer-events:none;z-index:3;opacity:0;transform:scale(.65);
   transition:opacity 100ms ease-out,transform 100ms ease-out;
 }
 #tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile).is-picked::before{opacity:1}
 #tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile).is-picked::after{
-  opacity:.9;transform:scale(1);
+  opacity:1;transform:scale(1);
 }
 #tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile).is-picked.studio-star-enter::after{
   animation:studio-star-reveal 140ms ease-out both;
 }
-@keyframes studio-star-reveal{from{opacity:0;transform:scale(.65)}to{opacity:.9;transform:scale(1)}}
+@keyframes studio-star-reveal{from{opacity:0;transform:scale(.65)}to{opacity:1;transform:scale(1)}}
 #tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile):focus-visible{
   outline:2px dashed var(--text-primary);outline-offset:2px;
 }
