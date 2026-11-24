@@ -13125,20 +13125,23 @@ function captionWorkbenchSettingsOpen(advanced=false,initializeOnly=false){
       el("span",{class:"caption-settings-advanced-label"},
         el("strong",{text:"Caption generation & batch tools"}),
         el("small",{text:"AI captioning models, trigger words, and batch caption actions"})));
-    original.open=false;
+    // The original drawer's summary is hidden in Settings. Only the outer
+    // disclosure may collapse; otherwise the nested details hides every tool.
+    original.open=true;
     advancedPanel.append(advancedSummary,original);
     const actions=el("footer",{class:"caption-settings-footer"},
       el("span",{class:"field-hint",text:"Changes apply to this Caption Workbench."}),
       el("button",{class:"btn btn-primary",type:"button",text:"Close",onclick:()=>hide()}));
-    dialog.append(heading,fields,advancedPanel,actions);
+    const settingsBody=el("div",{class:"caption-settings-body"},fields,advancedPanel);
+    dialog.append(heading,settingsBody,actions);
     overlay.append(dialog);
     document.body.append(overlay);
     let lastFocus=null;
     const hide=()=>{
       if(overlay.hidden)return;
       overlay.hidden=true;
-      original.open=false;
       advancedPanel.open=false;
+      original.open=true;
       document.body.classList.remove("caption-settings-open");
       if(lastFocus?.isConnected)lastFocus.focus({preventScroll:true});
     };
@@ -13162,7 +13165,7 @@ function captionWorkbenchSettingsOpen(advanced=false,initializeOnly=false){
         overlay.hidden=false;
         document.body.classList.add("caption-settings-open");
         advancedPanel.open=!!openAdvanced;
-        original.open=!!openAdvanced;
+        original.open=true;
         close.focus({preventScroll:true});
       }};
   }
