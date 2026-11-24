@@ -230,7 +230,7 @@ const CaptionStudioViz = (() => {
     }
     const all=[...counts].map(([tag,count])=>({tag,count}))
       .sort((a,b)=>b.count-a.count||a.tag.localeCompare(b.tag));
-    const top=all.slice(0,320),keep=new Set(top.map(x=>x.tag)),pairs=new Map();
+    const top=all.slice(0,120),keep=new Set(top.map(x=>x.tag)),pairs=new Map();
     for(const it of items){
       const tags=[...new Set((it.tags||[]).map(lower).filter(tag=>keep.has(tag)))];
       for(let i=0;i<tags.length;i++)for(let j=i+1;j<tags.length;j++){
@@ -295,7 +295,7 @@ const CaptionStudioViz = (() => {
     neighbors.forEach((list,i)=>{
       list.sort((a,b)=>b.weight-a.weight||a.peer-b.peer);
       const bridge=list.find(n=>group[n.peer]!==group[i]);
-      for(const n of [...list.slice(0,5),...(bridge?[bridge]:[])]){
+      for(const n of [...list.slice(0,3),...(bridge?[bridge]:[])]){
         strands.set(n.edge,{i,j:n.peer,weight:n.weight});
       }
     });
@@ -525,7 +525,7 @@ const CaptionStudioViz = (() => {
     const leaders=new Map();
     // The model is frequency-ranked; give each community a named landmark.
     for(const n of nodes)if(!leaders.has(n.group))leaders.set(n.group,n);
-    const labelOrder=[...leaders.values(),...nodes.filter(n=>leaders.get(n.group)!==n)];
+    let labelOrder=nodes;
     let typeScale=1;
     const labelSize=n=>(n.tag===picked?22:leaders.get(n.group)===n?19:15)*typeScale/zoom;
 
@@ -543,7 +543,7 @@ const CaptionStudioViz = (() => {
     const media=typeof matchMedia==="function"?matchMedia("(prefers-reduced-motion: reduce)"):null;
     const reduced=()=>!!media?.matches;
     // Reserve room for the full total even when selection shows a shorter shared count.
-    const radius=n=>(4+3.8*String(n.count).length+3*Math.sqrt(n.count/maxCount))*typeScale/zoom;
+    const radius=n=>(4+3.8*String(n.count).length+10*Math.sqrt(n.count/maxCount))*typeScale/zoom;
     const position=n=>({x:n.x+n.ox,y:n.y+n.oy});
     const view=()=>svg.setAttribute("viewBox",[500-500/zoom+pan.x,350-350/zoom+pan.y,1000/zoom,700/zoom].join(" "));
     const search=html("div","studio-tb-search"),input=html("input","",undefined,search),matches=html("div","studio-tb-suggest",undefined,search);
@@ -584,9 +584,12 @@ const CaptionStudioViz = (() => {
       }
       if(picked){
         ctx.strokeStyle="#e2b84e";
-        ctx.globalAlpha=.74;ctx.lineWidth=1.15*ratio/scale;ctx.beginPath();
-        for(const tag of relationMap(picked).keys())if(at.has(tag))curve(picked,tag);
-        ctx.stroke();
+        for(const [tag,count] of shared){
+          const strength=Math.sqrt(count/at.get(picked).count);
+          ctx.lineWidth=(.6+6*strength)*ratio/scale;
+          ctx.globalAlpha=.24+.66*strength;
+          ctx.beginPath();curve(picked,tag);ctx.stroke();
+        }
       }
     }
     const nodeGeometry=n=>{
@@ -657,25 +660,34 @@ const CaptionStudioViz = (() => {
       at.set(tag,rare);adjacency.set(tag,links);createNode(rare);return rare;
     }
     function placeLabels(){
-      const boxes=[],budget=Math.max(7,Math.ceil(17*zoom*zoom));
-      const order=picked?[at.get(picked),...labelOrder.filter(n=>n.tag!==picked)]:labelOrder;
+      const boxes=[];
       const discs=[...at.values()].map(n=>({...position(n),r:radius(n),tag:n.tag}));
-      for(const n of order){
+      for(const n of labelOrder){
         const v=visual.get(n.tag),p=position(n),sz=labelSize(n);
         const width=(n.tag.length*.60+.5)*sz,gap=radius(n)+3/zoom;
-        const candidates=[p.x+gap,p.x-gap-width];
-        let show=false;
-        if(boxes.length<budget)for(const left of candidates){
-          const box={left,right:left+width,top:p.y-sz*.6,bottom:p.y+sz*.6};
-          if(n.tag!==picked&&(boxes.some(b=>b.left<box.right&&box.left<b.right&&b.top<box.bottom&&box.top<b.bottom)
-            ||discs.some(d=>d.tag!==n.tag&&d.x+d.r>box.left&&d.x-d.r<box.right&&d.y+d.r>box.top&&d.y-d.r<box.bottom)))continue;
-          v.label.setAttribute("x",left);boxes.push(box);show=true;break;
+        const candidates=[[p.x+gap,p.y],[p.x-gap-width,p.y],
+          [p.x-width/2,p.y-gap-sz*.6],[p.x-width/2,p.y+gap+sz*.6]];
+        let best=null,bestScore=Infinity;
+        for(const [left,y] of candidates){
+          const box={left,right:left+width,top:y-sz*.6,bottom:y+sz*.6};
+          const overlaps=b=>b.left<box.right&&box.left<b.right&&b.top<box.bottom&&box.top<b.bottom;
+          const score=boxes.filter(overlaps).length*4+discs.filter(d=>d.tag!==n.tag&&
+            d.x+d.r>box.left&&d.x-d.r<box.right&&d.y+d.r>box.top&&d.y-d.r<box.bottom).length;
+          if(score<bestScore){best={box,left,y};bestScore=score;}
+          if(!score)break;
+        }
+        const show=bestScore===0||n===labelOrder[0];
+        if(show){
+          v.label.setAttribute("x",best.left);v.label.setAttribute("y",best.y+sz*.32);
+          boxes.push(best.box);
         }
         v.label.setAttribute("visibility",show?"visible":"hidden");
       }
     }
     function updateAppearance(){
       const focus=picked,neighbors=relationMap(focus);
+      labelOrder=picked?[at.get(picked),...[...neighbors].sort((a,b)=>b[1]-a[1]).map(([tag])=>at.get(tag)),
+        ...nodes.filter(n=>n.tag!==picked&&!neighbors.has(n.tag))]:nodes;
       for(const n of at.values()){
         const v=visual.get(n.tag),selected=n.tag===picked,related=!focus||n.tag===focus||neighbors.has(n.tag);
         v.g.setAttribute("opacity",related?1:.22);

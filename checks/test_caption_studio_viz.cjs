@@ -42,14 +42,14 @@ assert.equal(model.edges.find(e=>e.a==="blue"&&e.b==="sunset").w,2);
 assert.equal(model.nodes.length,4);
 assert.ok(model.nodes.every(n=>Number.isFinite(n.x)&&Number.isFinite(n.y)));
 
-// Large sparse tag vocabularies must not increase the constellation's 320-node
+// Large sparse tag vocabularies must not increase the constellation's 120-node
 // graph limit or create edges outside that set.
 const sparse=Array.from({length:260},(_,i)=>({tags:["common","label_"+i,"rare_"+i]}));
 const sparseModel=Viz.tagbenchModel(sparse);
 const known=new Set(sparseModel.top.map(t=>t.tag));
-assert.equal(sparseModel.top.length,320);
+assert.equal(sparseModel.top.length,120);
 assert.ok(sparseModel.edges.every(e=>known.has(e.a)&&known.has(e.b)));
-assert.ok(sparseModel.edges.length<=320*319/2);
+assert.ok(sparseModel.edges.length<=120*119/2);
 
 // Waterfall tiles preserve ordinary single-click selection. Double-click is
 // a distinct action that opens the exact tile in the Tags editor.
