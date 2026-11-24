@@ -33,7 +33,7 @@ def _clean_memory_on_device(device: torch.device):
 
 def _synchronize_device(device: torch.device):
     if device.type == "cuda":
-        torch.cuda.synchronize()
+        torch.cuda.synchronize(device)
     elif device.type == "xpu":
         torch.xpu.synchronize()
     elif device.type == "mps":
@@ -1112,6 +1112,8 @@ class LoRAStreamOffloader:
         block at a time, so a replacement's budget does not include old pins.
         Never leave a model Parameter bound to a retired GPU ring.
         """
+        if self.copier is None:
+            return  # already retired
         self.remove_hooks()
         _synchronize_device(self.device)
         for i, master in self.cpu_master.items():
