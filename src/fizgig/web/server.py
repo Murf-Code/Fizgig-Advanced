@@ -2406,7 +2406,7 @@ def _run_stages(stages, out_dir):
             with _lock:
                 _run.update(state="failed", proc=None, ended_at=time.time())
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
-            if kind and not (_run.get("values") or {}).get("__stream_sync") and _oom_recover(kind, stage.name, mem.plan):
+            if kind and not any((_run.get("values") or {}).get(k) for k in ("__stream_sync", "__replay_compare")) and _oom_recover(kind, stage.name, mem.plan):
                 return                           # it carries on by itself: the queue waits for that run
             webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
             return
