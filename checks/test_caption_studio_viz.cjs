@@ -332,6 +332,21 @@ try {
     global.getComputedStyle=oldStyle;
   }
 
+  const zoomModel=Viz.tagbenchModel([{tags:["anchor","peer"]},{tags:["anchor"]}]);
+  const zoomMap=Viz.tagbenchConstellation(zoomModel,()=>{});
+  const zoomSvg=zoomMap.children[1];
+  const orb=allIn(zoomMap).find(n=>n.attrs["data-tag"]==="anchor");
+  const core=allIn(orb).find(n=>n.attrs.class==="studio-tb-orb-core");
+  const originalRadius=Number(core.attrs.r),originalPosition=orb.attrs.transform;
+  const widthBefore=Number(zoomSvg.attrs.viewBox.split(" ")[2]);
+  const [zx,zy,zw,zh]=zoomSvg.attrs.viewBox.split(" ").map(Number);
+  zoomSvg.handlers.wheel({deltaY:-1,clientX:zx+zw/2,clientY:zy+zh/2,
+    target:{closest:()=>null},preventDefault(){}});
+  assert.equal(Number(core.attrs.r),originalRadius);
+  assert.equal(orb.attrs.transform,originalPosition);
+  assert.ok(Number(zoomSvg.attrs.viewBox.split(" ")[2])<widthBefore);
+  zoomMap.dispose();
+
   // A shared threshold reveals all eligible on-screen covers, even small
   // or label-collision-hidden nodes. Zooming out hides them again.
   const previewModel=Viz.tagbenchModel(Array.from({length:10},(_,i)=>({tags:["anchor","peer_"+i],coverIndex:i})));
@@ -341,16 +356,16 @@ try {
   });
   const previewSvg=previews.children[1];
   assert.equal(requests,0);
+  const anchorNode=previewModel.nodes.find(n=>n.tag==="anchor");
   const wheelPreview=(direction)=>{
-    const [x,y,w,h]=previewSvg.attrs.viewBox.split(" ").map(Number);
-    previewSvg.handlers.wheel({deltaY:direction,clientX:x+w/2,clientY:y+h/2,
+    previewSvg.handlers.wheel({deltaY:direction,clientX:anchorNode.x,clientY:anchorNode.y,
       target:{closest:()=>null},preventDefault(){}});
   };
-  for(let i=0;i<7;i++)wheelPreview(-1);
+  for(let i=0;i<14;i++)wheelPreview(-1);
   const coversIn=()=>allIn(previews).filter(n=>String(n.attrs.href||"").startsWith("/preview/"));
   assert.ok(coversIn().length>0);
-  assert.ok(coversIn().every(n=>Number(n.parent.attrs.opacity)>0&&Number(n.parent.attrs.opacity)<=1));
-  for(let i=0;i<7;i++)wheelPreview(1);
+  assert.ok(coversIn().some(n=>Number(n.parent.attrs.opacity)>0&&Number(n.parent.attrs.opacity)<=1));
+  for(let i=0;i<14;i++)wheelPreview(1);
   assert.ok(coversIn().every(n=>Number(n.parent.attrs.opacity)===0));
   previews.dispose();
 

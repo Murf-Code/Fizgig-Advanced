@@ -110,3 +110,16 @@ assert.equal(Viz.mergeAuraFields([{density:red,rgb:[255,0,0]},{density:far,rgb:[
 const centerX=22.5;
 assert.ok(surface.contours[0].every(([x1,y1,x2,y2])=>!(Math.min(x1,x2)<=centerX&&Math.max(x1,x2)>=centerX&&Math.abs((y1+y2)/2)<10)));
 console.log("Shared liquid contours, reciprocal pigment mixing and separated fields passed");
+
+const previousRadius=(count,max)=>5+3.8*String(count).length+20*Math.sqrt(count/max);
+for(const max of [10,100,10000]){
+  assert.equal(Viz.countRadius(1,max),previousRadius(1,max)*1.5);
+  assert.equal(Viz.countRadius(max,max),previousRadius(max,max)*3);
+  assert.ok(Viz.countRadius(2,max)>Viz.countRadius(1,max));
+}
+const enlarged=Viz.tagbenchModel(Array.from({length:240},(_,i)=>({tags:["common","group_"+(i%8),"peer_"+(i%119)]})));
+for(const [i,a] of enlarged.nodes.entries())for(const b of enlarged.nodes.slice(i+1)){
+  const sum=Viz.countRadius(a.count,240)+Viz.countRadius(b.count,240);
+  assert.ok(Math.hypot(a.x-b.x,a.y-b.y)+1e-6>=sum,"Enlarged node disks must not overlap at rest");
+}
+console.log("Node size bounds and expanded layout passed");

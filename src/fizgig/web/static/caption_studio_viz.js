@@ -721,7 +721,7 @@ const CaptionStudioViz = (() => {
     }
     // Make room for count discs after the community forces have settled.
     const radii=nodes.map(n=>countRadius(n.count,top[0].count));
-    for(let pass=0;pass<48;pass++){
+    for(let pass=0;pass<96;pass++){
       let worst=0;
       for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
         const a=nodes[i],b=nodes[j],dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy);
@@ -733,6 +733,13 @@ const CaptionStudioViz = (() => {
       }
       if(worst<.5)break;
     }
+    // Complete collision separation once in the layout, never on selection.
+    let expansion=1;
+    for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
+      const a=nodes[i],b=nodes[j],d=Math.hypot(a.x-b.x,a.y-b.y);
+      if(d>0)expansion=Math.max(expansion,(radii[i]+radii[j]+4)/d);
+    }
+    if(expansion>1)for(const n of nodes){n.x*=expansion;n.y*=expansion;}
     const colors=new Map();
     nodes.forEach(n=>{
       n.x+=500;n.y+=360;
@@ -936,7 +943,13 @@ const CaptionStudioViz = (() => {
     return t*t*(3-2*t);
   }
   function countRadius(count,maxCount){
-    return 5+3.8*String(count).length+20*Math.sqrt(count/Math.max(1,maxCount));
+    const max=Math.max(1,maxCount),value=Math.max(1,Math.min(max,count));
+    const oldRadius=n=>5+3.8*String(n).length+20*Math.sqrt(n/max);
+    const min=1.5*oldRadius(1),largest=3*oldRadius(max);
+    if(max===1)return min;
+    if(value===max)return largest;
+    const t=(Math.sqrt(value)-1)/(Math.sqrt(max)-1);
+    return min+(largest-min)*t;
   }
   function tagbenchConstellation(model,onPick,pickedTag=null,options={}){
     const stage=document.createElement("div");stage.className="studio-tb-constellation";
@@ -977,6 +990,7 @@ const CaptionStudioViz = (() => {
     let branchTrail=[],globalShared=new Map();
     const rarePageSize=16,primaryTags=new Set(nodes.map(n=>n.tag));
     const extraPositions=new Map(),maxZoom=8;
+    const minZoom=()=>Math.min(.35,overviewZoom*.65);
     const wheelPause=180,wheelExitDistance=40;
     let closingWheel=null;
     const temporaryTags=new Set(),focusEdges=new Map();
@@ -995,7 +1009,8 @@ const CaptionStudioViz = (() => {
     const media=typeof matchMedia==="function"?matchMedia("(prefers-reduced-motion: reduce)"):null;
     const reduced=()=>!!media?.matches;
     // Reserve room for the full total even when selection shows a shorter shared count.
-    const radius=n=>countRadius(n.count,maxCount)*typeScale/zoom;
+    // World-space radius: camera zoom magnifies the nodes naturally.
+    const radius=n=>countRadius(n.count,maxCount);
     const position=n=>({x:n.x+n.ox,y:n.y+n.oy});
     const view=()=>{
       packed=!picked&&model.all.length>1&&zoom<overviewZoom*.82;
@@ -1299,7 +1314,7 @@ const CaptionStudioViz = (() => {
     // Explicitly opened long-tail tags get a stable map coordinate. Use
     // overview-scale spacing, never the current close-up zoom radius.
     function freeTagPosition(n,anchor,peers){
-      const fixedRadius=other=>countRadius(other.count,maxCount)*typeScale/Math.max(.35,overviewZoom);
+      const fixedRadius=radius;
       const x=anchor?.x??500,y=anchor?.y??350;
       const spacing=Math.max(12,fixedRadius(n)+12);
       const phase=[...n.tag].reduce((h,c)=>(Math.imul(h,31)+c.codePointAt(0))|0,0);
@@ -1761,7 +1776,7 @@ const CaptionStudioViz = (() => {
       menu.querySelector("button")?.focus({preventScroll:true});
     }
     function cameraTo(nextZoom,nextPan,animate=true){
-      nextZoom=Math.max(.35,Math.min(maxZoom,nextZoom));
+      nextZoom=Math.max(minZoom(),Math.min(maxZoom,nextZoom));
       if(reduced()||!animate){camera=null;zoom=nextZoom;pan=nextPan;view();updateAppearance();return;}
       camera={start:performance.now(),fromZoom:zoom,fromPan:{...pan},toZoom:nextZoom,toPan:nextPan};wake();
     }
@@ -1769,13 +1784,13 @@ const CaptionStudioViz = (() => {
     function fit(animate=true){
       const values=picked?[...focusedTags].map(tag=>at.get(tag)):[...at.values()];
       if(!values.length)return;
-      const minX=Math.min(...values.map(n=>n.x))-80,maxX=Math.max(...values.map(n=>n.x))+130;
-      const minY=Math.min(...values.map(n=>n.y))-80,maxY=Math.max(...values.map(n=>n.y))+80;
+      const minX=Math.min(...values.map(n=>n.x-radius(n)))-45,maxX=Math.max(...values.map(n=>n.x+radius(n)))+85;
+      const minY=Math.min(...values.map(n=>n.y-radius(n)))-45,maxY=Math.max(...values.map(n=>n.y+radius(n)))+45;
       overviewZoom=Math.min(1.6,1000/(maxX-minX),700/(maxY-minY));
       cameraTo(overviewZoom,{x:(minX+maxX)/2-500,y:(minY+maxY)/2-350},animate);
     }
     function zoomBy(factor,e=null){
-      const next=Math.min(maxZoom,Math.max(.35,zoom*factor));
+      const next=Math.min(maxZoom,Math.max(minZoom(),zoom*factor));
       if(factor<1&&branchTrail.length>1&&next<=overviewZoom*.95){backBranch();return;}
       if(next===zoom)return;
       let target={...pan};
@@ -1984,7 +1999,7 @@ const CaptionStudioViz = (() => {
     return stage;
   }
 
-  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings,tagDirection,tagArrow,auraDensity,auraCache,auraPaintAlpha,mergeAuraFields,coverZoomLevels,coverZoomOpacity});
+  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings,tagDirection,tagArrow,auraDensity,auraCache,auraPaintAlpha,mergeAuraFields,coverZoomLevels,coverZoomOpacity,countRadius});
 })();
 // A classic WebWorker can import this existing pure graph implementation
 // without maintaining a second constellation algorithm.
