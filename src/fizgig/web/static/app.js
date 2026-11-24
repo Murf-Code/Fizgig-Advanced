@@ -11511,7 +11511,7 @@ function capSettings() {
     tagMin: S.cap.tagMin, tagChar: S.cap.tagChar, tagMax: $("capTagMax").value, tagStyle: $("capTagStyle").value,
     tagRatings: $("capTagRatings").checked,
     threshold: $("capThreshold").value, leaveOut: $("capLeaveOut").value, underscores: $("capUnderscores").checked,
-    extras: (S.capSaved || {}).extras || {}};
+    extras: (S.capSaved || {}).extras || {}, studioAi: S.cap.studioAi || (S.capSaved || {}).studioAi || {}};
 }
 const saveCapSoon = debounce(() => { S.capSaved = capSettings(); api("/api/state", {captions: S.capSaved}).catch(() => {}); }, 600);
 // the chosen captioner's description (fizgig/captioners/registry.py), and whether it follows an instruction
@@ -11583,6 +11583,7 @@ async function loadCaptionOptions() {
     "Florence-2 downloads itself the first time.";
   if (S.trigger !== undefined) $("capTrigger").value = S.trigger;      // the training folder's word
   if (saved.overwrite !== undefined) $("capOverwrite").checked = saved.overwrite;
+  S.cap.studioAi ||= saved.studioAi || {};
   if (saved.skipCjk !== undefined) $("capSkipCjk").checked = saved.skipCjk;
   if (saved.perPage) { $("capPerPage").value = saved.perPage; CAP_PAGE = Number(saved.perPage) || 12; }
   fillTasks(saved.task);
@@ -13094,6 +13095,7 @@ function captionAiControlsRestore(){
   const slot=S.cap?.studioAiControlMount;
   if(!slot)return;
   const {home,panels,anchor}=slot;
+  S.cap.studioAiControlMount=null;
   if(!home?.isConnected)return;
   const generation=panels.find(panel=>panel?.querySelector("#capAll"));
   if(generation){
@@ -13108,11 +13110,61 @@ function captionAiControlsRestore(){
     // Workbench-only adapters are removed when restoring the original
     // Controls/Settings drawer. All original DOM controls keep their IDs and
     // event handlers, so there is only one source of truth.
+    panel?.classList.remove("studio-ai-instruction-model","studio-ai-tag-format");
     panel?.querySelector(".studio-ai-quick-settings")?.remove();
+    panel?.querySelector(".studio-ai-preset-settings")?.remove();
+    panel?.querySelector(".studio-ai-prompt-settings")?.remove();
     panel?.querySelector(".studio-ai-selected-count")?.remove();
     if(panel?.parentNode!==home)
       home.insertBefore(panel,anchor?.parentNode===home?anchor:null);
   }
+}
+const STUDIO_AI_FOCUS={
+  character:{label:"Character / Person",tasks:{short:"short",balanced:"training",detailed:"detailed",full:"exhaustive"},tags:"Prioritize visible species or subject, anatomy, pose, expression, clothing, viewpoint and surroundings."},
+  object:{label:"Object / Product",tasks:{short:"object_short",balanced:"object",detailed:"object_detailed",full:"object_exhaustive"},tags:"Prioritize visible object types, shapes, materials, colors, placement and setting."},
+  concept:{label:"Concept / Action",tasks:{balanced:"concept"},tags:"Prioritize the visible concept, pose, action or effect and the other visible contents. Include this concept when visible: {concept}."},
+  style:{label:"Style — contents only",tasks:{balanced:"style"},tags:"Tag visible subjects, actions, objects and setting; do not tag the artistic style or quality."},
+  custom:{label:"Custom",tasks:{balanced:"custom"},tags:"Identify the visible subjects, attributes, actions and surroundings."}
+};
+function studioAiPreset(key){
+  for(const [focus,config] of Object.entries(STUDIO_AI_FOCUS))
+    for(const [detail,task] of Object.entries(config.tasks))
+      if(task===key)return {focus,detail};
+  return {focus:"custom",detail:"balanced"};
+}
+function studioAiState(){
+  const state=S.cap.studioAi ||= (S.capSaved||{}).studioAi||{};
+  state.system ||= {};state.user ||= {};
+  return state;
+}
+function studioAiFormat(){
+  return qwenOn()?(studioAiState().format==="tags"?"tags":"natural"):
+    (capTagger()||capDesc()?.kind==="tags"?"tags":"natural");
+}
+function studioAiWriteMode(){
+  const state=studioAiState();
+  return state.write==="append"?"append":$("capOverwrite").checked?"replace":"missing";
+}
+function studioAiPrompt(){
+  const state=studioAiState(),format=studioAiFormat(),task=qwenTask(),ty=capType();
+  const key=task?.key||ty?.[0]||"custom",preset=studioAiPreset(key);
+  const userKey=format+":"+key;
+  const natural=ty?capTypeText(ty,$("capLength").value):task?.instruction||"Describe the visible contents of this image.";
+  const tagDefault="Return only a comma-separated list of accurate visual tags, without duplicates or explanations. "+STUDIO_AI_FOCUS[preset.focus].tags;
+  const system=state.system[format]??(format==="tags"?"You are an image tagger. Return only accurate comma-separated visual tags.":"You are a helpful image captioner. Write factual captions suitable for model training.");
+  const user=state.user[userKey]??(format==="tags"?tagDefault:natural);
+  return {format,userKey,system,user};
+}
+function studioAiJobOptions(){
+  const format=studioAiFormat(),write=studioAiWriteMode();
+  const result={output_format:format,append:write==="append",overwrite:write==="replace"};
+  if(qwenOn()){
+    const prompt=studioAiPrompt();
+    const user=prompt.user.split("{concept}").join($("capConcept").value.trim()||"the same concept");
+    result.system_prompt=prompt.system;
+    result.instruction=[user,format==="natural"?capExtrasText():""].filter(Boolean).join(" ");
+  }
+  return result;
 }
 function captionAiControlsMount(target){
   captionAiControlsRestore();
@@ -13126,42 +13178,84 @@ function captionAiControlsMount(target){
   if(!model||!generation)return false;
   const anchor=home.querySelector("#capTranslate")?.closest(".section-card");
   S.cap.studioAiControlMount={home,panels,anchor};
-  // The model panel, generation buttons and progress bar are the original
-  // wired Fizgig controls. This compact adapter only reflects the existing
-  // capOverwrite checkbox and the captioner's output kind.
-  const overwrite=model.querySelector("#capOverwrite");
-  const writeMode=el("select",{class:"studio-ai-write-mode",
-    "aria-label":"How to write captions"});
-  writeMode.append(el("option",{value:"replace",text:"Replace existing"}),
-    el("option",{value:"missing",text:"Only missing"}));
-  writeMode.value=overwrite?.checked?"replace":"missing";
+  const state=studioAiState(),overwrite=model.querySelector("#capOverwrite");
+  const writeMode=el("select",{class:"studio-ai-write-mode","aria-label":"How to write captions"});
+  for(const [value,text] of [["replace","Replace existing"],["append","Append"],["missing","Only missing"]])
+    writeMode.append(el("option",{value,text}));
+  writeMode.value=studioAiWriteMode();
   writeMode.addEventListener("change",()=>{
-    if(!overwrite)return;
+    state.write=writeMode.value;
     overwrite.checked=writeMode.value==="replace";
     overwrite.dispatchEvent(new Event("change",{bubbles:true}));
   });
-  const destination=el("div",{class:"studio-ai-output-value",
-    title:"Output format comes from the selected model, not a separate conversion."});
-  const syncDestination=()=>{
-    destination.textContent=capTagger()||capDesc()?.kind==="tags"?"Tags":"Natural language";
-  };
-  syncDestination();
+  const destination=el("button",{type:"button",class:"btn studio-ai-output-value","aria-label":"Switch caption output format"});
   const quickSettings=el("div",{class:"studio-ai-quick-settings"},
     el("label",{class:"studio-ai-field"},el("span",{text:"Write"}),writeMode),
-    el("div",{class:"studio-ai-field"},el("span",{text:"Put it in"}),destination));
+    el("div",{class:"studio-ai-field"},el("span",{text:"Format"}),destination));
+  const focus=el("select",{"aria-label":"Caption focus"});
+  const detail=el("div",{class:"studio-ai-detail-options",role:"group","aria-label":"Caption detail"});
+  const detailField=el("div",{class:"studio-ai-field"},el("span",{text:"Caption detail"}),detail);
+  const presets=el("div",{class:"studio-ai-preset-settings"},
+    el("label",{class:"studio-ai-field"},el("span",{text:"Caption focus"}),focus),detailField);
+  const systemInput=el("textarea",{rows:3,"aria-label":"System prompt"});
+  const userInput=el("textarea",{rows:5,"aria-label":"User prompt"});
+  const promptSettings=el("details",{class:"studio-ai-prompt-settings"},
+    el("summary",{text:"Prompt settings"}),
+    el("label",{class:"studio-ai-field"},el("span",{text:"System prompt"}),systemInput),
+    el("label",{class:"studio-ai-field"},el("span",{text:"User prompt"}),userInput),
+    el("button",{type:"button",class:"btn btn-sm",text:"Reset prompts",onclick:()=>{
+      const p=studioAiPrompt();delete state.system[p.format];delete state.user[p.userKey];sync();saveCapSoon();
+    }}));
+  promptSettings.open=!!state.promptsOpen;
+  promptSettings.addEventListener("toggle",()=>{state.promptsOpen=promptSettings.open;saveCapSoon();});
+  systemInput.addEventListener("input",()=>{state.system[studioAiPrompt().format]=systemInput.value;saveCapSoon();});
+  userInput.addEventListener("input",()=>{state.user[studioAiPrompt().userKey]=userInput.value;saveCapSoon();});
+  const applyTask=(focusKey,detailKey)=>{
+    const key=STUDIO_AI_FOCUS[focusKey]?.tasks[detailKey]||STUDIO_AI_FOCUS[focusKey]?.tasks.balanced;
+    const task=S.cap.opts.instruction_tasks.find(t=>t.key===key);
+    if(task){$("capTask").value=task.label;$("capTask").dispatchEvent(new Event("change",{bubbles:true}));}
+  };
+  focus.addEventListener("change",()=>{
+    if(focus.value.startsWith("own:")){
+      $("capTask").value=focus.value.slice(4);$("capTask").dispatchEvent(new Event("change",{bubbles:true}));
+    }else applyTask(focus.value,studioAiPreset(qwenTask()?.key).detail);
+  });
+  const sync=()=>{
+    const format=studioAiFormat(),instruction=qwenOn(),preset=studioAiPreset(qwenTask()?.key);
+    model.classList.toggle("studio-ai-instruction-model",instruction);
+    model.classList.toggle("studio-ai-tag-format",format==="tags");
+    destination.textContent=(format==="tags"?"Tags":"Natural language")+(instruction?"  ⇄":"");
+    destination.disabled=!instruction;
+    destination.title=instruction?"Click to switch caption format":"This model supports only this format";
+    destination.setAttribute("aria-pressed",String(format==="tags"));
+    presets.hidden=!instruction;promptSettings.hidden=!instruction;
+    if(!instruction)return;
+    focus.replaceChildren(...Object.entries(STUDIO_AI_FOCUS).map(([value,c])=>el("option",{value,text:c.label})),
+      ...(capDesc()?.prompt_types||[]).map(t=>el("option",{value:"own:"+t[0],text:t[0]})));
+    focus.value=capType()?"own:"+capType()[0]:preset.focus;
+    detailField.hidden=format==="tags"||!!capType()||!["character","object"].includes(preset.focus);
+    detail.replaceChildren(...[["short","Short"],["balanced","Balanced"],["detailed","Detailed"],["full","Full"]].map(([value,text])=>
+      el("button",{type:"button",class:"btn btn-sm","aria-pressed":String(preset.detail===value),text,
+        onclick:()=>applyTask(preset.focus,value)})));
+    const prompt=studioAiPrompt();systemInput.value=prompt.system;userInput.value=prompt.user;
+  };
+  destination.addEventListener("click",()=>{
+    if(!qwenOn())return;
+    state.format=studioAiFormat()==="tags"?"natural":"tags";
+    sync();saveCapSoon();
+  });
   const modelContent=model.querySelector(".card-content");
   const hint=model.querySelector("#capModelHint");
   const modelRow=model.querySelector("#capModel")?.closest(".field-row");
-  modelContent?.insertBefore(quickSettings,
-    hint?.nextSibling||modelRow?.nextSibling||modelContent.firstChild);
-  const header=el("header",{class:"studio-ai-card-header"},
-    el("h3",{text:"Auto caption"}),
-    el("p",{text:"Generate captions for selected images with Fizgig's local captioning models. Choose whether to replace existing captions or fill in missing ones."}));
+  modelContent?.insertBefore(quickSettings,hint?.nextSibling||modelRow?.nextSibling||modelContent.firstChild);
+  modelContent?.insertBefore(presets,$("capTask").closest(".field-row"));
+  modelContent?.append(promptSettings);
+  const header=el("header",{class:"studio-ai-card-header"},el("h3",{text:"Auto caption"}));
   const group=el("div",{class:"studio-ai-model-panels"});
   group.addEventListener("change",event=>{
-    if(event.target?.id==="capModel"||event.target?.id==="capTask")
-      syncDestination();
+    if(["capModel","capTask","capLength"].includes(event.target?.id))sync();
   });
+  sync();
   for(const panel of panels){
     if(panel===model){
       const title=panel.querySelector(".card-title");
@@ -15152,20 +15246,20 @@ function renderCaptionStudio(host,items,ext){
   // The standard Overwrite checkbox remains the single source of truth.
   const captionSelected=async()=>{
     if(!selection.size)return say("Select images to caption. Ctrl+A selects all images.");
-    const overwrite=$("capOverwrite").checked;
+    const options=studioAiJobOptions(),overwrite=options.overwrite||options.append;
     const targets=CaptionStudioSelection.captionTargets(
       S.cap.items,selection,S.cap.studioReviewed,overwrite);
     if(!targets.length)return say(overwrite?
       "No editable images selected. Reviewed images are protected.":
-      "No selected images need captions. Enable Overwrite to replace existing captions.");
+      "No selected images need captions. Choose Replace existing or Append to caption them again.");
     if(targets.some(it=>drafts.has(it.path)&&drafts.get(it.path)!==it.caption))
       return say("Save unsaved caption drafts before starting batch AI.");
     if(!confirm("AI caption "+targets.length+" selected image(s) using the current model and task? "+
-      (overwrite?"Existing captions will be replaced.":"Existing captions will be kept.")))return;
+      (options.append?"New captions will be appended to existing captions.":overwrite?"Existing captions will be replaced.":"Existing captions will be kept.")))return;
     say("AI captioning "+targets.length+" selected images…");
     try{
       const result=await capRun("/api/captions/ai",capJobBody({
-        only:targets.map(it=>it.path),overwrite
+        only:targets.map(it=>it.path),...options
       }));
       if(result?.files)say("AI queued "+result.files+" selected images · progress appears in Captions tools.");
       else if(result?.error)say(result.error);

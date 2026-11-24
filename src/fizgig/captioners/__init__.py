@@ -68,6 +68,7 @@ class CaptionRequest:
     task: str = ""                   # one of the description's tasks, when it has them
     instruction: str = ""            # the instruction, for a captioner that follows one
     max_new_tokens: int = 120
+    system_prompt: str = ""           # optional captioning-only system message
 
 
 @dataclass

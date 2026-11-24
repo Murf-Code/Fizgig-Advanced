@@ -14,7 +14,8 @@ class Qwen3VLCaptioner(Captioner):
     def caption(self, image, request: CaptionRequest) -> CaptionResult:
         from fizgig.krea2.embedder import generate_caption
         return CaptionResult(text=generate_caption(self.encoder, image, max_new_tokens=request.max_new_tokens,
-                                                   instruction=request.instruction or None))
+                                                   instruction=request.instruction or None,
+                                                   system_prompt=request.system_prompt or None))
 
     def unload(self):
         self.encoder = None

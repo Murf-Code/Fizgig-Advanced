@@ -410,7 +410,7 @@ def _strip_caption_preamble(text: str) -> str:
 def generate_caption(conditioner: "Qwen3VLConditioner", image_path, *,
                      max_new_tokens: int = 120, megapixels: float = 1.0,
                      detailed: bool = False, seed: int = None,
-                     instruction: str = None) -> str:
+                     instruction: str = None, system_prompt: str = None) -> str:
     """Caption an image with the SAME Qwen3-VL the trainer conditions on (its LM head is
     legitimately tied to the embeddings — unlike Klein's stripped Qwen3-8B — so generation is
     real). Used by auto-recaption to rewrite a stuck image's caption from what's actually in it,
@@ -438,8 +438,11 @@ def generate_caption(conditioner: "Qwen3VLConditioner", image_path, *,
         instruction = DETAILED_CAPTION_INSTRUCTION if detailed else CAPTION_INSTRUCTION
     if detailed:
         max_new_tokens = max(max_new_tokens, 240)
-    messages = [{"role": "user", "content": [{"type": "image"},
-                                             {"type": "text", "text": instruction}]}]
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": [{"type": "text", "text": system_prompt}]})
+    messages.append({"role": "user", "content": [{"type": "image"},
+                                             {"type": "text", "text": instruction}]})
     prompt = proc.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
     inputs = proc(text=[prompt], images=[im], return_tensors="pt").to(conditioner.qwen.device)
 

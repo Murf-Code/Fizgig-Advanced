@@ -5310,7 +5310,8 @@ class Handler(BaseHTTPRequestHandler):
                     ext=captions.caption_ext(b.get("ext")), tags=b.get("tags"),
                     threshold=float(b.get("threshold") or 0.35),
                     leave_out=str(b.get("leave_out") or ""), underscores=bool(b.get("underscores")),
-                    append=bool(b.get("append"))))
+                    append=bool(b.get("append")), output_format=str(b.get("output_format") or ""),
+                    system_prompt=str(b.get("system_prompt") or "")))
             if path.startswith("/api/studio/"):
                 try:
                     return self.json(_studio_post(path[len("/api/studio/"):], b))

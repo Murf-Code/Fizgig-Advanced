@@ -92,7 +92,34 @@ def _load_image_list(list_file: str) -> list[str]:
     return out
 
 
-def _write_caption(path: str, caption: str, ext: str = ".txt", append=False) -> None:
+def merge_caption(old: str, new: str, output_format: str, trigger: str = "") -> str:
+    """Append without rewriting existing text or repeating the generated trigger prefix."""
+    old, new, trigger = old.strip(), new.strip(), trigger.strip()
+    if not old:
+        return new
+    if trigger and new.casefold().startswith((trigger + ", ").casefold()):
+        new = new[len(trigger) + 2:].strip()
+    if not new:
+        return old
+    if output_format == "tags":
+        def key(tag):
+            return " ".join(tag.casefold().replace("_", " ").split())
+        seen = {key(tag) for tag in old.replace("\n", ",").split(",") if tag.strip()}
+        added = []
+        for tag in new.replace("\n", ",").split(","):
+            tag = tag.strip()
+            k = key(tag)
+            if tag and k not in seen:
+                added.append(tag)
+                seen.add(k)
+        return old.rstrip(", ") + ", " + ", ".join(added) if added else old
+    if new in old.splitlines() or old == new:
+        return old
+    return old + "\n" + new
+
+
+def _write_caption(path: str, caption: str, ext: str = ".txt", append=False,
+                   output_format="", trigger="") -> None:
     from fizgig.web import caption_review
     from fizgig.web.image_edit import write_atomic
     target = os.path.splitext(path)[0] + (ext or ".txt")
@@ -103,10 +130,7 @@ def _write_caption(path: str, caption: str, ext: str = ".txt", append=False) -> 
         if append and os.path.isfile(target):
             from fizgig.dataset.caption_file import read_caption
             old = read_caption(target).strip()
-            if old and caption.strip() not in old.splitlines():
-                caption = old + "\n" + caption.strip()
-            elif old:
-                caption = old
+            caption = merge_caption(old, caption, output_format, trigger)
         write_atomic(target, caption.encode("utf-8"))
 
 
@@ -184,7 +208,8 @@ def request_for(desc, job: dict):
         if not instruction:
             return None, "no instruction"
     return CaptionRequest(task=job.get("task") or desc.default_task, instruction=instruction,
-                          max_new_tokens=int(job.get("max_new_tokens") or 120)), ""
+                          max_new_tokens=int(job.get("max_new_tokens") or 120),
+                          system_prompt=str(job.get("system_prompt") or "")), ""
 
 
 def caption_file(state: CaptionState, path: str, request, job: dict) -> str:
@@ -205,6 +230,10 @@ def caption_file(state: CaptionState, path: str, request, job: dict) -> str:
     instr = getattr(request, "instruction", "") or ""
     if job.get("clean") == "e621" or captioners.is_e621_instruction(instr):
         text = captioners.clean_e621_tags(text)
+    elif job.get("output_format") == "tags":
+        # Preserve tag spelling; normalize delimiters and remove repetitions.
+        text = merge_caption("", text, "tags") if not text else ", ".join(dict.fromkeys(
+            t.strip() for t in text.replace("\n", ",").split(",") if t.strip()))
     return captioners.with_trigger(text, job.get("trigger") or "")
 
 
@@ -238,7 +267,8 @@ def _run_job(state: CaptionState, job: dict) -> bool:
                 print(f"FAIL: {base} (empty caption)", flush=True)
                 continue
             _write_caption(path, caption, job.get("caption_ext") or ".txt",
-                           append=bool(job.get("append")))
+                           append=bool(job.get("append")), output_format=job.get("output_format") or "",
+                           trigger=job.get("trigger") or "")
             print(f"OK: {base}", flush=True)
         except Exception as exc:
             print(f"FAIL: {base} ({exc})", flush=True)

@@ -6846,3 +6846,25 @@ body.caption-glass-ui .studio-image-context-menu .studio-danger-action:not(:disa
 #tab-captions>.caption-initial-state[hidden]{
   display:none!important;
 }
+
+/* Auto-Captioner: reuse Workbench field frames, compact buttons and theme tokens. */
+#tab-captions .studio-ai-trigger-row .field-label{display:flex!important;align-items:center;gap:6px}
+#tab-captions .studio-ai-help{font-size:13px;color:var(--text-secondary);cursor:help}
+#tab-captions .studio-ai-trigger-field{width:100%;min-width:0;box-sizing:border-box}
+#tab-captions .studio-ai-trigger-field>input.w-path{padding:9px 12px}
+#tab-captions .studio-ai-instruction-model .field-row:has(>#capTask),
+#tab-captions .studio-ai-instruction-model :is(#capTaskHint,#capInstrBox),
+#tab-captions .studio-ai-tag-format #capExtrasBox{display:none!important}
+#tab-captions .studio-ai-preset-settings,#tab-captions .studio-ai-prompt-settings{display:flex;flex-direction:column;gap:10px;min-width:0}
+#tab-captions :is(.studio-ai-preset-settings,.studio-ai-prompt-settings,.studio-ai-field)[hidden]{display:none!important}
+#tab-captions .studio-ai-detail-options{display:flex;gap:2px;border:1px solid var(--border);border-radius:9px;padding:2px;background:var(--bg-inset)}
+#tab-captions .studio-ai-detail-options .btn{flex:1;min-width:0;padding:5px 2px;font-size:11px;border-radius:6px}
+#tab-captions .studio-ai-detail-options .btn[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent-border);color:var(--text-primary)}
+#tab-captions .studio-ai-prompt-settings{border-top:1px solid var(--border);padding-top:8px}
+#tab-captions .studio-ai-prompt-settings summary{cursor:pointer;color:var(--text-secondary);font-size:12px;padding:5px 0}
+#tab-captions .studio-ai-prompt-settings[open]>:not(summary){margin-top:8px}
+#tab-captions .studio-host .studio-ai-field .studio-ai-output-value{justify-content:center;opacity:1;white-space:normal;transition:background .18s,border-color .18s}
+#tab-captions .studio-host .studio-ai-field .studio-ai-output-value[aria-pressed="true"]{border-color:var(--accent-border)}
+#tab-captions .studio-host .studio-ai-field .studio-ai-output-value:disabled{opacity:.65}
+#tab-captions .studio-ai-caption-card #capModelHint{display:none!important}
+@media(prefers-reduced-motion:reduce){#tab-captions .studio-ai-output-value{transition:none!important}}

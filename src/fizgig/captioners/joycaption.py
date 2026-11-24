@@ -32,7 +32,7 @@ class JoyCaption(Captioner):
 
     @torch.no_grad()
     def caption(self, image, request: CaptionRequest) -> CaptionResult:
-        convo = [{"role": "system", "content": SYSTEM},
+        convo = [{"role": "system", "content": request.system_prompt or SYSTEM},
                  {"role": "user", "content": request.instruction or "Write a descriptive caption for this image."}]
         text = self.processor.apply_chat_template(convo, tokenize=False, add_generation_prompt=True)
         inputs = self.processor(text=[text], images=[image], return_tensors="pt").to(self.model.device)

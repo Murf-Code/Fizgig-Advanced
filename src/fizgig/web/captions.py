@@ -550,7 +550,7 @@ def _popen(cmd, prefs, stdin=False):
 
 def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_tokens, trigger, overwrite, clips,
                 only=None, photos=True, ext=".txt", threshold=0.35, leave_out="", underscores=False,
-                tags=None, models_dir=None, append=False):
+                tags=None, models_dir=None, append=False, output_format="", system_prompt=""):
     """Caption the folder's pictures (and clips) with a captioner from the registry (`model` is its label or key), or
     just `only` (a re-caption). The worker loads once and stays loaded for the next batch. A registry tagger keeps the
     tags scoring `threshold` or more, minus `leave_out` (comma-separated), underscores as spaces unless `underscores`.
@@ -582,7 +582,7 @@ def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_to
                          "No pictures or clips in the training folder.")
     if not overwrite and not append:
         images = [p for p in images if not os.path.exists(os.path.splitext(p)[0] + ext)]
-    images, roots = _crop_images(images, overwrite or bool(only), ext)    # detail crops: at each size they have
+    images, roots = _crop_images(images, overwrite or append or bool(only), ext)    # detail crops: at each size they have
     if not images:
         raise ValueError("Every file already has a caption. Tick Overwrite to caption them again."
                          if not only else "That file isn't there any more.")
@@ -613,8 +613,13 @@ def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_to
         os.remove(stop_file)
     except OSError:
         pass
+    actual_format = "tags" if tid or (desc is not None and desc.kind == "tags") else "natural"
+    if desc is not None and desc.instruction and output_format in ("tags", "natural"):
+        actual_format = output_format
     job = {"list_file": list_file, "max_new_tokens": int(max_tokens or 120), "trigger": trigger.strip(),
-           "stop_file": stop_file, "caption_ext": ext, "append": bool(append)}
+           "stop_file": stop_file, "caption_ext": ext, "append": bool(append),
+           "output_format": actual_format if output_format or append else "",
+           "system_prompt": str(system_prompt or "") if desc is not None and desc.instruction else ""}
     if tid:
         job["tags"] = tags
     elif desc.instruction:
