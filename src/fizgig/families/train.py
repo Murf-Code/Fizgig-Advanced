@@ -3379,7 +3379,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                                        extra=(ema.shadow,) if ema is not None else (), device=device)
             say(logger, vram_reclaim.describe(res))
             logger.debug(f"[vram] reclaim ({why}) at step {global_step}: {res}")
-        except Exception as _e:              # never the end of a run: it trains on where it was
+        except vram_reclaim.ReclaimRestoreError:
+            # The run may contain CPU tensors that could not be restored. Do
+            # not attempt another optimizer step on partially restored state.
+            logger.exception("[vram] Reclaim could not restore training state; stopping safely")
+            raise
+        except Exception as _e:              # staging failed, but all moved tensors were restored
             say(logger, f"[vram] Reclaim failed ({_e}); training goes on as it was.", logging.WARNING)
             step_clock["reclaim_failed"] = True
         else:
