@@ -17,3 +17,13 @@ assert.match(css,/\.studio-tb-flow\{\s*display:flex;align-items:flex-start;gap:9
 assert.match(css,/\.studio-tb-flow-column\{\s*flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:9px/);
 assert.match(css,/linear-gradient\(135deg,#fffbe5,#fff0b3 45%,#e4be72\)/);
 console.log("Glass selection and Waterfall menu checks passed");
+
+const styles=css.slice(css.indexOf("/* Independent selection and verdict layers."),css.indexOf("/* Waterfall zoom"));
+assert.match(styles,/\.studio-thumb-rail \.studio-file\.active:not\(\.is-picked\)/);
+assert.match(styles,/\.studio-thumb-rail \.studio-file\.is-picked\{\s*border-color:var\(--accent\)/);
+assert.match(styles,/\.studio-tb-flow-tile::after\{\s*content:"✦"/);
+assert.doesNotMatch(styles,/\.studio-thumb-rail[^{}]*::(?:before|after)/);
+assert.match(styles,/\.studio-tb-flow-tile\.is-picked\.studio-star-enter::after/);
+const rail=app.slice(app.indexOf("const syncMountedSelection="),app.indexOf("const topSpace=",app.indexOf("const syncMountedSelection=")));
+assert.doesNotMatch(rail,/studio-star-enter/);
+console.log("Tags uses theme selection; Waterfall alone uses sunlight stars");

@@ -14108,8 +14108,6 @@ function renderCaptionStudio(host,items,ext){
       const it=items[index],tile=row.querySelector(".studio-file");
       if(!tile)continue;
       const chosen=selection.has(it.path);
-      if(chosen&&!tile.classList.contains("is-picked"))tile.classList.add("studio-star-enter");
-      if(!chosen)tile.classList.remove("studio-star-enter");
       tile.classList.toggle("is-picked",chosen);
       tile.classList.toggle("active",it.path===S.cap.studioPath);
       tile.setAttribute("aria-pressed",String(chosen));
@@ -14142,10 +14140,6 @@ function renderCaptionStudio(host,items,ext){
         if(S.cap.studioPath===previous)syncMountedSelection();
         else renderCaptions();
       }},thumb);
-    const reveal=S.cap.studioStarReveal;
-    if(isPicked&&reveal?.paths.has(it.path)&&performance.now()<reveal.until){
-      tile.classList.add("studio-star-enter");reveal.paths.delete(it.path);
-    }
     captionLearningDecorate(tile,it);
     const row=el("div",{class:"studio-browser-row",role:"listitem"},tile);
     row.style.height=height+"px";

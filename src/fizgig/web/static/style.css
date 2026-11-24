@@ -6844,25 +6844,42 @@ body.caption-glass-ui .studio-image-context-menu .studio-danger-action:not(:disa
   position:relative;isolation:isolate;overflow:visible;
   border-color:transparent;box-shadow:none;filter:none;animation:none;
 }
-#tab-captions .studio-thumb-rail .studio-file.active:not(:hover),
-#tab-captions.caption-theme-glass .studio-thumb-rail .studio-file.active:not(:hover){
-  background:transparent;border-color:transparent;
+/* Tags: the current image and bulk selection have separate, theme-aware
+   highlights. Keep the learning verdict as an independent outer outline. */
+#tab-captions .studio-thumb-rail .studio-file.active:not(.is-picked),
+#tab-captions.caption-theme-glass .studio-thumb-rail .studio-file.active:not(.is-picked){
+  border-color:var(--accent-border);background:var(--accent-subtle);
 }
+#tab-captions .studio-thumb-rail .studio-file.is-picked{
+  border-color:var(--accent);background:var(--accent-subtle);
+  box-shadow:0 0 0 1px var(--accent-border);
+}
+#tab-captions.caption-theme-glass .studio-thumb-rail .studio-file:is(.is-picked,.active){
+  border:2px solid transparent;
+  background:linear-gradient(var(--bg-inset),var(--bg-inset)) padding-box,
+    var(--caption-glass-gradient) border-box;
+  box-shadow:0 0 0 1px var(--accent-border),0 0 9px var(--caption-glass-tint);
+}
+#tab-captions.caption-theme-glass .studio-thumb-rail .studio-file.is-picked{
+  box-shadow:0 0 0 1px var(--accent-border),0 0 13px var(--caption-glass-tint),
+    inset 0 0 0 1px var(--accent-border);
+}
+/* Waterfall alone uses the sunlight gradient and star. */
 #tab-captions .studio-tb-flow-tile img{border-radius:7px}
-#tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)::before{
+#tab-captions .studio-tb-flow-tile::before{
   content:"";position:absolute;inset:3px;border-radius:inherit;
   pointer-events:none;z-index:2;border:3px solid #f5d888;
   box-shadow:0 0 0 1px rgba(0,0,0,.72),inset 0 0 0 1px rgba(0,0,0,.55);
   opacity:0;transition:opacity 100ms ease-out;
 }
-#tab-captions.caption-theme-glass :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)::before{
+#tab-captions.caption-theme-glass .studio-tb-flow-tile::before{
   /* A one-pixel dark edge is part of the masked ring, not an image overlay. */
   border:1px solid rgba(0,0,0,.72);padding:3px;box-shadow:none;
   background:linear-gradient(135deg,#fff5c9,#f5d888 45%,#d3ac58) padding-box;
   -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
   -webkit-mask-composite:xor;mask-composite:exclude;
 }
-#tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)::after{
+#tab-captions .studio-tb-flow-tile::after{
   content:"✦";position:absolute;right:9px;top:7px;
   color:#fff0b3;font-size:21px;line-height:1;font-weight:normal;
   -webkit-text-stroke:1px rgba(0,0,0,.9);
@@ -6872,17 +6889,17 @@ body.caption-glass-ui .studio-image-context-menu .studio-danger-action:not(:disa
   transition:opacity 100ms ease-out,transform 100ms ease-out;
 }
 @supports ((background-clip:text) or (-webkit-background-clip:text)){
-  #tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)::after{
+  #tab-captions .studio-tb-flow-tile::after{
     background:linear-gradient(135deg,#fffbe5,#fff0b3 45%,#e4be72);
     -webkit-background-clip:text;background-clip:text;
     -webkit-text-fill-color:transparent;text-shadow:none;
   }
 }
-#tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile).is-picked::before{opacity:1}
-#tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile).is-picked::after{
+#tab-captions .studio-tb-flow-tile.is-picked::before{opacity:1}
+#tab-captions .studio-tb-flow-tile.is-picked::after{
   opacity:1;transform:scale(1);
 }
-#tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile).is-picked.studio-star-enter::after{
+#tab-captions .studio-tb-flow-tile.is-picked.studio-star-enter::after{
   animation:studio-star-reveal 140ms ease-out both;
 }
 @keyframes studio-star-reveal{from{opacity:0;transform:scale(.65)}to{opacity:1;transform:scale(1)}}
@@ -6904,8 +6921,8 @@ body.caption-glass-ui .studio-image-context-menu .studio-danger-action:not(:disa
 }
 @keyframes studio-stuck-breathe{0%,100%{opacity:.25}50%{opacity:.88}}
 @media(prefers-reduced-motion:reduce){
-  #tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)::before,
-  #tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)::after{
+  #tab-captions .studio-tb-flow-tile::before,
+  #tab-captions .studio-tb-flow-tile::after{
     animation:none!important;transition:none!important;
   }
   #tab-captions .studio-stuck-halo{animation:none!important}
