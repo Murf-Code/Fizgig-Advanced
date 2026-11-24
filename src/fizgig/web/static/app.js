@@ -7736,15 +7736,15 @@ function meImgBar() {
   $("meRatioWrap").style.display = t === "crop" ? "" : "none";
   $("meCropSize").style.display = t === "crop" ? "" : "none";
   $("meApply").style.display = $("meCancel").style.display = (on || showRm) ? "" : "none";
-  $("meApply").textContent = t === "crop" ? "Crop" : "Remove it";
+  $("meApply").textContent = t === "crop" ? "Crop" : "Erase";
   $("meApply").disabled = m.stepBusy || m.applyPreparing ||
     (t === "crop" ? meCropWhole() : !m.rmDirty);
   $("meBefore").style.display = m.before ? "" : "none";
   $("meImgWhat").textContent = t === "crop" ? "Crop Image: drag the corners or edges, or drag inside to move the box." :
     showRm ? (m.rmFromWm && !m.rmHandEdited ?
-      "Remove Tool: press Enter (or Remove it) to fill in the red area in this picture's file. The original is saved first. Add or erase with the mouse if you want." :
-      (m.rmDirty ? "Remove Tool: press Enter (or Remove it) to take out what's red." :
-        "Remove Tool: paint over what to take out. Right-click rubs the stroke out.")) : "Last Remove Tool:";
+      "Erase Tool: press Enter (or Erase) to fill in the red area in this picture's file. The original is saved first. Add or erase with the mouse if you want." :
+      (m.rmDirty ? "Erase Tool: press Enter (or Erase) to take out what's red." :
+        "Erase Tool: paint over what to take out. Right-click rubs the stroke out.")) : "Last Erase Tool:";
   if(S.cap?.imageEditing?.inline&&!m.cropDrag)S.cap.studioStatusRefresh?.();
 }
 async function mePicStep(path, body, what, busy) {
@@ -12404,9 +12404,9 @@ function studioSaveCategories(state){
 // Shared icon vocabulary for image and tag menus and the inline image tools.
 function studioActionIcon(label){
   const name=String(label).toLowerCase();
-  const paths=name==="remove tool"||name==="remove"?["M7 21h14","m5 16-2-2a2 2 0 0 1 0-3l9-9a2 2 0 0 1 3 0l6 6a2 2 0 0 1 0 3l-10 10H9z","m7 7 10 10"]:
+  const paths=name==="erase"?["M7 21h14","m5 16-2-2a2 2 0 0 1 0-3l9-9a2 2 0 0 1 3 0l6 6a2 2 0 0 1 0 3l-10 10H9z","m7 7 10 10"]:
     name.startsWith("crop")?["M6 2v14a2 2 0 0 0 2 2h14","M2 6h14a2 2 0 0 1 2 2v14"]:
-    name.startsWith("delete")||name.startsWith('remove "')?["M3 6h18","M8 6V3h8v3","m19 6-1 15H6L5 6","M10 10v7","M14 10v7"]:
+    name.startsWith("delete")||(/^remove (?:selected )?(?:image|tag)/.test(name))||name.startsWith('remove "')?["M3 6h18","M8 6V3h8v3","m19 6-1 15H6L5 6","M10 10v7","M14 10v7"]:
     name.includes("file location")?["M3 7V5h6l3 3h8a1 1 0 0 1 1 1v2","M3 7v13h16l3-10H6L3 20"]:
     name.includes("new tab")?["M13 5h6v6","m19 5-9 9","M19 13v6H5V5h6"]:
     name.startsWith("copy")?["M8 8h12v12H8z","M16 4H4v12"]:
@@ -12430,7 +12430,7 @@ function studioActionLabel(button,label){
   button.replaceChildren();
   if(icon)button.append(icon);
   button.append(el("span",{class:"studio-action-label",text:label}));
-  if(/^Delete/.test(label))button.classList.add("studio-danger-action");
+  if(/^(Delete|Remove (?:Selected )?(?:Image|Tag))/.test(label)&&!label.includes(" from "))button.classList.add("studio-danger-action");
   return button;
 }
 function studioMountContextMenu(menu,event){
@@ -12746,7 +12746,7 @@ function captionDuplicatePanel(ext){
         if(!(await captionConfirmRemoval({
           title:"Remove "+donors.length+" duplicate image"+(donors.length===1?"":"s")+"?",
           detail:"Move the unkept images, captions and masks into removed/. Tag merging is separate: merge first if you want to keep their unique tags. Nothing is permanently deleted.",
-          items:donors.map(pic=>pic.name),confirmLabel:"Move to removed/"
+          items:donors.map(pic=>pic.name),confirmLabel:"Remove "+donors.length+" Image"+(donors.length===1?"":"s")
         })))return;
         removeBtn.disabled=true;
         let completed=0;
@@ -13233,10 +13233,26 @@ function captionConfirmRemoval({title,detail,items=[],confirmLabel="Remove"}) {
     const list=items.filter(Boolean).map(name=>String(name));
     if(list.length){
       const names=el("ul",{class:"caption-removal-list","aria-label":"Affected items"});
-      for(const name of list.slice(0,6))names.append(el("li",{text:name}));
-      if(list.length>6)names.append(el("li",{class:"caption-removal-more",
-        text:"… and "+(list.length-6)+" more"}));
+      const previewCount=list.length<=5?list.length:3;
+      for(const name of list.slice(0,previewCount))names.append(el("li",{text:name}));
       body.append(names);
+      if(list.length>previewCount){
+        let expanded=false;
+        const extra=[];
+        const toggle=el("button",{class:"btn btn-sm caption-removal-toggle",type:"button",
+          "aria-expanded":"false",text:"View all "+list.length+" items ("+(list.length-previewCount)+" more)"});
+        toggle.onclick=()=>{
+          expanded=!expanded;
+          if(expanded){
+            for(const name of list.slice(previewCount)){
+              const item=el("li",{text:name});extra.push(item);names.append(item);
+            }
+          }else{for(const item of extra)item.remove();extra.length=0;}
+          toggle.setAttribute("aria-expanded",String(expanded));
+          toggle.textContent=expanded?"Show fewer items":"View all "+list.length+" items ("+(list.length-previewCount)+" more)";
+        };
+        body.append(toggle);
+      }
     }
     let closed=false;
     const close=confirmed=>{
@@ -13256,7 +13272,7 @@ function captionConfirmRemoval({title,detail,items=[],confirmLabel="Remove"}) {
     backdrop.addEventListener("keydown",e=>{
       if(e.key==="Escape"){e.preventDefault();e.stopPropagation();close(false);return;}
       if(e.key!=="Tab")return;
-      const focusable=[cancel,proceed],first=focusable[0],last=focusable[focusable.length-1];
+      const focusable=[...modal.querySelectorAll("button")],first=focusable[0],last=focusable[focusable.length-1];
       if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
       else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
     });
@@ -13603,7 +13619,7 @@ function renderCaptionStudio(host,items,ext){
     if(!(await captionConfirmRemoval({
       title:"Remove "+chosen.length+" selected image"+(chosen.length===1?"":"s")+"?",
       detail:"Move the selected images and their paired captions and masks into removed/. You can restore them later.",
-      items:chosen.map(it=>it.name),confirmLabel:"Move to removed/"
+      items:chosen.map(it=>it.name),confirmLabel:"Remove "+chosen.length+" Image"+(chosen.length===1?"":"s")
     })))return;
     if(S.cap.imageEditing?.path && chosen.some(it=>it.path===S.cap.imageEditing.path)){
       if(!(await captionImageClose()))return;
@@ -13818,8 +13834,8 @@ function renderCaptionStudio(host,items,ext){
       await captionImageOpen(it,tool);
       S.cap.inlineRefreshControls?.();
     };
-    action("Remove Tool","",()=>editTarget("remove"),!canEditTarget||(!preview&&count!==1));
-    action("Crop Tool","",()=>editTarget("crop"),!canEditTarget||(!preview&&count!==1));
+    action("Erase","",()=>editTarget("remove"),!canEditTarget||(!preview&&count!==1));
+    action("Crop","",()=>editTarget("crop"),!canEditTarget||(!preview&&count!==1));
     separator();
     if(!preview){
       action(complete?"Mark Incomplete":"Mark Complete","Ctrl+K",()=>toggleImageReview(it.path),!count);
@@ -13836,7 +13852,7 @@ function renderCaptionStudio(host,items,ext){
       action("Clear Selection","",()=>{selection.clear();renderCaptions();});
       separator();
     }
-    action("Delete "+(count===1?"Image":"Images"),preview?"":"Ctrl+Del",
+    action(count===1?"Remove Image":"Remove Selected Images",preview?"":"Ctrl+Del",
       ()=>removeSelectedImages(it.path,preview),!count||targets.some(x=>x.crop||S.cap.studioReviewed?.has(x.path)));
     studioMountContextMenu(menu,e);
   };
@@ -14381,7 +14397,7 @@ function renderCaptionStudio(host,items,ext){
     menuAction('Remove "'+tag+'"',()=>void removePickedTags(tag),!editable);
     // Delete Tag operates on highlighted Image Tags only; selecting every
     // tag clears this image's tag line, not any other image's captions.
-    menuAction("Delete Tag",removePickedTags,!editable);
+    menuAction(imageTagPicked.size>1?"Remove Selected Tags":"Remove Tag",()=>void removePickedTags(),!editable);
     separator();
     studioTagColorMenu(menu,tag,categoryState,renderCaptions);
     studioMountContextMenu(menu,event);
@@ -14489,13 +14505,13 @@ function renderCaptionStudio(host,items,ext){
   const canEditPicture=!locked&&!!current.size&&
     /\.(png|jpe?g|webp|bmp|avif|jxl)$/i.test(current.name);
   const pictureActions=el("div",{class:"studio-image-toolbar","aria-label":"Image tools"});
-  const removeButton=btn("Remove",()=>void selectInlineTool("remove"));
+  const removeButton=btn("Erase",()=>void selectInlineTool("remove"));
   const cropButton=btn("Crop",()=>void selectInlineTool("crop"));
   removeButton.title="Paint over the area to remove · click again to exit (J)";
   cropButton.title="Drag a crop rectangle · click again to exit (C)";
   removeButton.disabled=cropButton.disabled=!canEditPicture;
   const sizeInput=el("input",{type:"range",min:"2",max:"400",step:"1",
-    "aria-label":"Remove brush size",title:"Remove brush size ([ / ])"});
+    "aria-label":"Erase brush size",title:"Erase brush size ([ / ])"});
   sizeInput.value=$("meSize").value;
   const sizeValue=el("span",{class:"studio-image-size-value",text:sizeInput.value+" px"});
   const sizeLabel=el("label",{class:"studio-image-brush-size"},
@@ -14527,7 +14543,7 @@ function renderCaptionStudio(host,items,ext){
   });
   applyImage.hidden=true;
   applyImage.classList.add("studio-image-apply","btn-primary");
-  applyImage.title="Apply the current Remove or Crop operation (Enter)";
+  applyImage.title="Apply the current Erase or Crop operation (Enter)";
   const goBack=btn("Undo",async()=>{
     try{
       const latest=studioHistory().past.at(-1);
@@ -14581,7 +14597,7 @@ function renderCaptionStudio(host,items,ext){
     if(!canEditPicture){say(locked?"Unlock this reviewed image to edit it.":"Select a still image to edit.");return;}
     if(S.cap.imageEditing?.inline&&S.cap.imageEditing.path===current.path&&meState().tool===tool){
       if(tool==="remove"&&meState().rmDirty){
-        if(!confirm("Leave Remove mode? Your red removal area will be saved as a watermark mask, not applied to the picture."))return;
+        if(!confirm("Leave Erase mode? Your red removal area will be saved as a watermark mask, not applied to the picture."))return;
       }
       await captionImageClose();
       return;
@@ -14589,7 +14605,7 @@ function renderCaptionStudio(host,items,ext){
     try{await captionImageOpen(current,tool);refreshInlineButtons();}
     catch(e){say(e.message);}
   };
-  for(const [button,label] of [[removeButton,"Remove"],[cropButton,"Crop"],[goBack,"Undo"],[goForward,"Redo"]])studioActionLabel(button,label);
+  for(const [button,label] of [[removeButton,"Erase"],[cropButton,"Crop"],[goBack,"Undo"],[goForward,"Redo"]])studioActionLabel(button,label);
   pictureActions.append(removeButton,cropButton,goBack,goForward,sizeLabel,applyImage);
   S.cap.inlineRefreshControls=refreshInlineButtons;
   // When an image is re-rendered after saving, the tool strip keeps the same
@@ -14913,7 +14929,7 @@ function renderCaptionStudio(host,items,ext){
     addAction("Add to Filter (OR)",()=>filterByTag(tag,"or"));
     separator();
     addAction('Remove "'+tag+'"',()=>void apply("remove",tag,selection.size?"selection":"image"));
-    addAction("Delete Tag",()=>void deletePickedTags(tag));
+    addAction(selectionState.size>1?"Remove Selected Tags":"Remove Tag",()=>void deletePickedTags(tag));
     separator();
     studioTagColorMenu(menu,tag,categoryState,renderCaptions);
     studioMountContextMenu(menu,e);
@@ -15994,19 +16010,19 @@ function renderCaptionStudio(host,items,ext){
     const wanted=new Set(picked.map(tag=>tag.toLowerCase()));
     if(!wanted.size)return false;
     const chosen=imageTargets();
-    if(!chosen.length)return say("Select an image before deleting its tags.");
+    if(!chosen.length)return say("Select an image before removing its tags.");
     if(chosen.length>1000){
-      say("Select at most 1000 images for one tag deletion.");return true;
+      say("Select at most 1000 images for one tag removal.");return true;
     }
     if(chosen.some(it=>S.cap.studioReviewed?.has(it.path))){
-      say("Unlock reviewed images before deleting their tags.");return true;
+      say("Unlock reviewed images before removing their tags.");return true;
     }
     if(chosen.some(it=>studioCaptionMode(it)==="prose")){
-      say("Selected prose captions are protected from tag deletion.");return true;
+      say("Selected prose captions are protected from tag removal.");return true;
     }
     const drafts=S.cap.studioDrafts;
     if(chosen.some(it=>drafts?.has(it.path)&&drafts.get(it.path)!==(it.caption??""))){
-      say("Save caption drafts before deleting selected tags.");return true;
+      say("Save caption drafts before removing selected tags.");return true;
     }
     const changes=chosen.map(it=>({
       folder:capItemFolder(it),name:it.name,path:it.path,before:it.caption,
@@ -16015,16 +16031,16 @@ function renderCaptionStudio(host,items,ext){
     })).filter(row=>row.after!==(row.before||""));
     if(!changes.length){say("None of the selected images contain those tags.");return true;}
     if(!(await captionConfirmRemoval({
-      title:"Delete "+wanted.size+" selected tag"+(wanted.size===1?"":"s")+"?",
+      title:"Remove "+wanted.size+" selected tag"+(wanted.size===1?"":"s")+"?",
       detail:"Remove the selected tags from "+changes.length+" affected image"+
         (changes.length===1?"":"s")+". This can be undone.",
-      items:picked,confirmLabel:"Delete "+(wanted.size===1?"tag":"tags")
+      items:picked,confirmLabel:"Remove "+(wanted.size===1?"tag":"tags")
     })))return true;
     try{
       await api("/api/captions/batch_edit",{ext,edits:changes.map(row=>({
         folder:row.folder,name:row.name,expected:row.before,text:row.after
       }))});
-      studioRecord("Delete selected tags",{kind:"captions",ext,rows:changes});
+      studioRecord("Remove selected tags",{kind:"captions",ext,rows:changes});
       for(const row of changes){
         const item=S.cap.items.find(it=>it.path===row.path);
         if(item)item.caption=row.after;
@@ -16032,7 +16048,7 @@ function renderCaptionStudio(host,items,ext){
       selectionState.clear();
       S.cap.studioRevision=(S.cap.studioRevision||0)+1;
       renderCaptions();
-    }catch(error){say("Delete selected tags: "+error.message);}
+    }catch(error){say("Remove selected tags: "+error.message);}
     return true;
   };
   if(S.cap.studioKeyHandler)document.removeEventListener("keydown",S.cap.studioKeyHandler);
@@ -16251,7 +16267,7 @@ async function capRemove(it, card, status) {
   if(!(await captionConfirmRemoval({
     title:"Remove image?",
     detail:"Move this image and its paired caption and masks to removed/. You can restore them later.",
-    items:[it.name],confirmLabel:"Move to removed/"
+    items:[it.name],confirmLabel:"Remove Image"
   })))return false;
   const folder = capItemFolder(it);
   try {
