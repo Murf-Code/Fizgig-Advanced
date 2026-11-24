@@ -564,3 +564,92 @@ def test_swap_preference_changes_in_same_process():
         args, _ = parser.parse_known_args(req + launch.send_only_flags(prefs))
         assert args.send_only_swap is enabled
         assert args.send_only_force is enabled
+
+
+# ---- Host pinning budget and allocation fallback (no CUDA required) -------------
+_GIB = 2**30
+
+
+@pytest.mark.parametrize("direct,available,expected", [
+    (True, 40, (True, 0, 20)),
+    (True, 20, (False, 4, 4)),
+    (False, 20, (False, 4, 4)),
+    (False, 12, (False, 1, 1)),
+    (True, 10, (False, 0, 0)),
+])
+def test_stream_host_budget(direct, available, expected):
+    # 64 GiB host => reserve 9.6 GiB, plus a one-block transient.
+    plan = offloading.plan_stream_host_memory(_GIB, 20, 4, direct,
+                                               available * _GIB, 64 * _GIB)
+    assert (plan.direct, plan.staging_slots, plan.pinned_bytes // _GIB) == expected
+    assert plan.reserve_bytes >= 9 * _GIB
+
+
+def test_host_budget_unknown_and_invalid():
+    plan = offloading.plan_stream_host_memory(_GIB, 20, 4, True, None, None)
+    assert not plan.direct and plan.staging_slots == 1
+    assert "unavailable" in plan.reason
+    with pytest.raises(ValueError):
+        offloading.plan_stream_host_memory(0, 20, 4, False, 20 * _GIB, 64 * _GIB)
+
+
+def _fake_host_preflight(monkeypatch, direct, available=40, fail_direct=False, fail_slots=()):
+    """Exercise the actual allocation policy without initializing a CUDA stream."""
+    blocks = [nn.Sequential(nn.Linear(8, 8, bias=False)).requires_grad_(False) for _ in range(6)]
+    off = offloading.LoRAStreamOffloader("test", blocks, 6, 4, False, CPU,
+                                         ring_size=3, use_pinned_memory=direct)
+    off.cuda_available = True
+    off.device = torch.device("cuda")
+    original = [b[0].weight for b in blocks]
+    allocations = []
+    class Pool:
+        def shutdown(self, wait=True):
+            pass
+    class Staged:
+        def __init__(self, device, num_staging, debug):
+            self.slots = num_staging
+            self._pool = Pool()
+        def _ensure_staging(self, nbytes):
+            allocations.append(("staged", self.slots))
+            if self.slots in fail_slots:
+                raise RuntimeError("simulated pin failure")
+    def pinned(nbytes, device):
+        allocations.append(("direct", nbytes))
+        if fail_direct:
+            raise RuntimeError("simulated direct pin failure")
+        return torch.empty(nbytes, dtype=torch.uint8)
+    monkeypatch.setattr(offloading, "_stream_host_memory", lambda: (available * _GIB, 64 * _GIB))
+    monkeypatch.setattr(offloading, "_StagedCopier", Staged)
+    monkeypatch.setattr(offloading, "_allocate_pinned_flat", pinned)
+    return off, blocks, original, allocations
+
+
+def test_direct_preallocation_preserves_weights(monkeypatch):
+    off, blocks, original, allocations = _fake_host_preflight(monkeypatch, True)
+    flats = off._preallocate_host_buffers()
+    assert set(flats) == set(off.stream_idx)
+    assert off.host_memory_plan.direct and off.use_pinned_memory
+    assert len(allocations) == off.S
+    assert off.B == 3
+    assert all(b[0].weight is p for b, p in zip(blocks, original))
+
+
+def test_direct_pin_failure_falls_back_before_placement(monkeypatch):
+    off, blocks, original, allocations = _fake_host_preflight(monkeypatch, True, fail_direct=True,
+                                                                fail_slots=(3, 2))
+    assert off._preallocate_host_buffers() == {}
+    assert not off.use_pinned_memory and not off.host_memory_plan.direct
+    assert off.host_memory_plan.staging_slots == 1
+    assert off.B == 3  # GPU ring unchanged
+    assert allocations[-3:] == [("staged", 3), ("staged", 2), ("staged", 1)]
+    assert all(b[0].weight is p for b, p in zip(blocks, original))
+
+
+@pytest.mark.parametrize("available,fail_slots", [(5, ()), (40, (3, 2, 1))])
+def test_host_exhaustion_stops_before_placement(monkeypatch, available, fail_slots):
+    off, blocks, original, allocations = _fake_host_preflight(monkeypatch, False,
+                                                                available=available, fail_slots=fail_slots)
+    with pytest.raises(RuntimeError, match="no block weights were moved"):
+        off.prepare_block_devices_before_forward(blocks)
+    assert not off.cpu_master and off.ring_flat is None
+    assert all(b[0].weight is p and p.device.type == "cpu" for b, p in zip(blocks, original))
