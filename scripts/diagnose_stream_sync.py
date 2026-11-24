@@ -13,7 +13,10 @@ import math
 import os
 from pathlib import Path
 import random
+import subprocess
 import sys
+import threading
+import contextlib
 import tempfile
 import time
 import traceback
@@ -25,7 +28,7 @@ from fizgig.families import quant
 from fizgig.families.lora import FamilyLoRA
 from fizgig.families.krea2 import KREA2
 from fizgig.krea2.model import SingleMMDiTConfig, SingleStreamDiT
-from fizgig.krea2.offloading import LoRAStreamOffloader
+from fizgig.krea2.offloading import LoRAStreamOffloader, BlockSwapConfig
 from fizgig.training.optimizers import create_optimizer
 
 
@@ -68,8 +71,42 @@ def inputs(args, config):
     return out
 
 
-def build(args, device, mode):
+class UnsafePinning(RuntimeError):
+    """Skip a high-pinning case, rather than exhaust system RAM."""
+
+
+def configure_swap(driver, model, count, device, backward=True, send_only=False, *, case):
+    import psutil
+    pinned = case["pinned"]
+    ring = min(case["ring"], 28 - count)
+    if pinned and device.type == "cuda":
+        # Classic's rotating pin buffers eventually cover the offloaded blocks.
+        # Direct streaming pins every master. Allow room for one additional
+        # block and keep substantial unpinned system RAM for the OS.
+        block_bytes = sum(m.weight.numel() * m.weight.element_size()
+                          for m in model.blocks[0].modules()
+                          if isinstance(m, torch.nn.Linear))
+        estimate = block_bytes * (min(28, count + ring) if send_only else count + 1)
+        vm = psutil.virtual_memory()
+        reserve = max(6 * 2**30, int(vm.total * 0.15))
+        print(f"  pinned allocation estimate={estimate/2**30:.2f} GiB; available RAM={vm.available/2**30:.2f} GiB; reserve={reserve/2**30:.2f} GiB", flush=True)
+        if vm.available < estimate + reserve:
+            raise UnsafePinning("Insufficient available system RAM for conservative pinning budget")
+    model.enable_block_swap(count, BlockSwapConfig(torch.device(device), supports_backward=backward,
+                                                   h2d_only=send_only, use_pinned_memory=pinned,
+                                                   ring_size=ring, match_classic_vram=True))
+    model.move_to_device_except_swap_blocks(torch.device(device))
+    model.switch_block_swap_for_training()
+
+
+def build(args, device, case):
+    mode = case["mode"]
     driver = KREA2.load_driver()
+    # Override the driver's allocation configuration only inside this worker;
+    # keep the production quantized loading path (including short-RAM loading).
+    driver.enable_block_swap = lambda model, count, dev, supports_backward=True, send_only=False: configure_swap(
+        driver, model, count, dev, supports_backward, send_only, case=case)
+    os.environ["FIZGIG_EXPERIMENTAL_STREAM_RING"] = str(case["ring"])
     torch.manual_seed(args.seed)
     random.seed(args.seed)
     if args.model:
@@ -90,10 +127,14 @@ def build(args, device, mode):
         else:
             driver.enable_block_swap(model, args.swap, device, True, send_only=mode.startswith("fast"))
     if mode.startswith("fast"):
-        if not isinstance(model.offloader, LoRAStreamOffloader) or model.offloader.B != 2:
-            raise RuntimeError("Fast mode must actually use the two-slot send-only offloader")
+        if not isinstance(model.offloader, LoRAStreamOffloader) or model.offloader.B != case["ring"]:
+            raise RuntimeError("Requested send-only ring was not actually allocated")
+        if model.offloader.num_blocks - model.offloader.S + model.offloader.B != 28 - args.swap:
+            raise RuntimeError("Ring does not preserve the classic block-weight capacity")
     elif mode != "resident" and isinstance(model.offloader, LoRAStreamOffloader):
         raise RuntimeError("Classic mode unexpectedly uses send-only")
+    if mode != "resident" and model.offloader.use_pinned_memory != case["pinned"]:
+        raise RuntimeError("Requested pinning strategy was not applied")
     model.enable_gradient_checkpointing()
     model.train()
     # Reset AFTER all model-loading/quantization/offloader allocations. FamilyLoRA
@@ -177,9 +218,24 @@ def forward(driver, model, batch, device):
     return driver.loss_at(model, latent.to(device), noise, t, cond)
 
 
-def execute(args, device, mode, label, batches, reference_dir, record):
-    print(f"\n=== {label} ({mode}) ===", flush=True)
-    driver, model, params, opt = build(args, device, mode)
+def execute(args, device, case, batches, reference_dir, record):
+    mode, label = case["mode"], case["label"]
+    print(f"\n=== {label} ({mode}, pinned={case['pinned']}, ring={case['ring']}, attention={case['attention']}) ===", flush=True)
+    driver, model, params, opt = build(args, device, case)
+    off = getattr(model, "offloader", None) if mode != "resident" else None
+    waits = {"calls": 0, "host_seconds": 0.0}
+    if off is not None:
+        original_wait = off.wait_for_block
+
+        def timed_wait(*a, **kw):
+            t = time.perf_counter()
+            try:
+                return original_wait(*a, **kw)
+            finally:
+                waits["calls"] += 1
+                waits["host_seconds"] += time.perf_counter() - t
+
+        off.wait_for_block = timed_wait
     if device.type == "cuda":
         torch.cuda.synchronize(device)
         torch.cuda.reset_peak_memory_stats(device)
@@ -194,6 +250,8 @@ def execute(args, device, mode, label, batches, reference_dir, record):
             raise RuntimeError(f"Initial LoRA tensors do not match reference: {init}")
     for i in range(args.steps):
         opt.zero_grad(set_to_none=True)
+        waits.update(calls=0, host_seconds=0.0)
+        transfer_start = dict(off.transfers) if off is not None else {}
         start = time.perf_counter()
         loss = forward(driver, model, batches[i], device)
         loss.backward()
@@ -203,6 +261,8 @@ def execute(args, device, mode, label, batches, reference_dir, record):
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         elapsed = time.perf_counter() - start
+        step_wait = dict(waits)
+        step_transfers = {k: v - transfer_start[k] for k, v in off.transfers.items()} if off is not None else {}
         if any(p.grad is None for p in params.values()):
             missing = [n for n, p in params.items() if p.grad is None]
             raise RuntimeError(f"Missing adapter gradients: {missing[:5]}")
@@ -221,7 +281,9 @@ def execute(args, device, mode, label, batches, reference_dir, record):
         if mode != "resident":
             driver.block_swap_mode(model, inference=False)
         row = dict(step=i + 1, image=batches[i][0], loss=float(loss.detach()), validation=val,
-                   seconds=elapsed, gradient_norm=sum(float(torch.linalg.vector_norm(g.float())) ** 2
+                   seconds=elapsed, host_wait_ms=step_wait["host_seconds"] * 1000,
+                   wait_calls=step_wait["calls"], transfers=step_transfers,
+                   gradient_norm=sum(float(torch.linalg.vector_norm(g.float())) ** 2
                                                        for g in grads.values()) ** 0.5)
         path = reference_dir / f"step-{i}.pt"
         if record:
@@ -240,16 +302,165 @@ def execute(args, device, mode, label, batches, reference_dir, record):
               f"gradient_rel_L2={row['gradients']['relative_l2']:.6g} "
               f"update_rel_L2={row['updates']['relative_l2']:.6g} "
               f"exact gradients={row['gradients']['exact']}/{len(grads)} "
-              f"seconds={elapsed:.3f}", flush=True)
+              f"seconds={elapsed:.3f} host_wait_ms={row['host_wait_ms']:.1f} "
+              f"H2D={step_transfers.get('h2d_bytes', 0)/2**30:.2f} GiB "
+              f"D2H={step_transfers.get('d2h_bytes', 0)/2**30:.2f} GiB", flush=True)
         rows.append(row)
         del grads, updates, after, loss
     peak = torch.cuda.max_memory_allocated(device) / 2**30 if device.type == "cuda" else None
-    if mode != "resident":
-        model.offloader.remove_hooks()
-        # Drop diagnostic closures that reference the offloader itself.
+    reserved = torch.cuda.max_memory_reserved(device) / 2**30 if device.type == "cuda" else None
+    pinned_bytes = pinned_storage(model, off) if off is not None else 0
+    shared = windows_gpu_memory() if device.type == "cuda" else {}
+    if off is not None:
+        off.remove_hooks()
+        del off.wait_for_block
         if mode == "fast_sync" and device.type == "cuda":
-            del model.offloader._load, model.offloader.wait_for_block
-    return {"mode": mode, "label": label, "steps": rows, "peak_allocated_gib": peak}
+            del off._load
+    measured = rows[args.warmup:] or rows
+    import statistics
+    summary = {"median_step_seconds": statistics.median(r["seconds"] for r in measured),
+               "mean_step_seconds": statistics.mean(r["seconds"] for r in measured),
+               "mean_host_wait_ms": statistics.mean(r["host_wait_ms"] for r in measured),
+               "mean_h2d_gib": statistics.mean(r["transfers"].get("h2d_bytes", 0) / 2**30 for r in measured),
+               "mean_d2h_gib": statistics.mean(r["transfers"].get("d2h_bytes", 0) / 2**30 for r in measured)}
+    print(f"  measured mean={summary['mean_step_seconds']:.3f}s, median={summary['median_step_seconds']:.3f}s, "
+          f"pinned storage={pinned_bytes/2**30:.3f} GiB, allocated peak={peak} GiB", flush=True)
+    return {**case, "steps": rows, "summary": summary, "peak_allocated_gib": peak,
+            "peak_reserved_gib": reserved, "pinned_storage_gib": pinned_bytes/2**30,
+            "windows_process_gpu_memory_end": shared}
+
+
+def pinned_storage(model, off):
+    """Unique live pinned storage, not WDDM's shared-memory counter."""
+    seen = {}
+    def add(x):
+        if isinstance(x, torch.Tensor) and x.device.type == "cpu" and x.is_pinned():
+            storage = x.untyped_storage()
+            seen[storage.data_ptr()] = storage.nbytes()
+        elif isinstance(x, dict):
+            for y in x.values():
+                add(y)
+        elif isinstance(x, (list, tuple)):
+            for y in x:
+                add(y)
+    for p in model.parameters():
+        add(p)
+    for name in ("cpu_flat", "pinned_buffer", "staging_buffer_a", "staging_buffer_b"):
+        add(getattr(off, name, None))
+    add(getattr(getattr(off, "copier", None), "_staging", None))
+    return sum(seen.values())
+
+
+def windows_gpu_memory():
+    """Point sample of WDDM process counters, if available. Never infer shared from pinned."""
+    if os.name != "nt":
+        return {}
+    try:
+        cmd = ("$p=" + str(os.getpid()) + "; "
+               "$x=Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory "
+               "| Where-Object {$_.Name -like ('pid_'+$p+'_*')}; "
+               "if($x){@{dedicated=($x|Measure-Object DedicatedUsage -Sum).Sum;"
+               "shared=($x|Measure-Object SharedUsage -Sum).Sum}|ConvertTo-Json -Compress}")
+        out = subprocess.check_output(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", cmd],
+                                      timeout=8, stderr=subprocess.DEVNULL, creationflags=0x08000000)
+        data = json.loads(out)
+        return {k+"_gib": float(v)/2**30 for k,v in data.items() if v is not None}
+    except Exception:
+        return {}
+
+
+class MemorySampler:
+    """Sample system RAM / process RSS / NVML device memory, independently of timing."""
+    def __init__(self, device):
+        self.device = device
+        self.stop = threading.Event()
+        self.data = {}
+
+    def sample(self):
+        import psutil
+        proc = psutil.Process()
+        vm = psutil.virtual_memory()
+        nv, handle = None, None
+        if self.device.type == "cuda":
+            from fizgig.training.perf_watch import _gpu_handle
+            nv, handle = _gpu_handle(torch.cuda.current_device())
+        def peak(k, v):
+            self.data[k] = max(v, self.data.get(k, 0))
+        while not self.stop.is_set():
+            vm = psutil.virtual_memory()
+            peak("system_used_peak_gib", vm.used/2**30)
+            self.data["system_available_min_gib"] = min(vm.available/2**30,
+                                                        self.data.get("system_available_min_gib", float("inf")))
+            peak("process_rss_peak_gib", proc.memory_info().rss/2**30)
+            if handle is not None:
+                try:
+                    peak("nvml_device_used_peak_gib", nv.nvmlDeviceGetMemoryInfo(handle).used/2**30)
+                except Exception:
+                    pass
+            self.stop.wait(0.25)
+
+    def __enter__(self):
+        self.thread = threading.Thread(target=self.sample, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stop.set()
+        self.thread.join()
+
+
+def cases(args):
+    def c(label, mode, pinned=False, ring=2, attention="auto", reference="auto", record=False):
+        return dict(label=label, mode=mode, pinned=pinned, ring=ring, attention=attention,
+                    reference=reference, record=record)
+    result = [c("A_classic_pageable", "classic", record=True), c("D_classic_repeat", "classic"),
+              c("B_fast_staged_ring2", "fast"), c("C_fast_staged_repeat", "fast"),
+              c("E_fast_serialized", "fast_sync")]
+    if args.suite == "expanded":
+        if not args.cpu:
+            result += [c("G_classic_pinned", "classic", True), c("I_fast_fully_pinned", "fast", True)]
+        result += [c("J_fast_staged_ring3", "fast", ring=3), c("K_fast_staged_ring4", "fast", ring=4)]
+        result += [c("L_classic_math", "classic", attention="math", reference="math", record=True),
+                   c("M_classic_math_repeat", "classic", attention="math", reference="math"),
+                   c("N_fast_math", "fast", attention="math", reference="math"),
+                   c("O_fast_math_repeat", "fast", attention="math", reference="math")]
+    if not args.model:
+        result.append(c("F_no_swap", "resident"))
+    return result
+
+
+def worker(config_path):
+    config = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    args = argparse.Namespace(**config["args"])
+    case = config["case"]
+    device = torch.device("cpu" if args.cpu else "cuda")
+    torch.set_num_threads(1)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    os.environ["MUSUBI_TUNER_OFFLOADER_DEBUG"] = "0"
+    # Force math SDPA through both forward and checkpoint recomputation; the
+    # internal Fizgig attention context must not override this outer context.
+    os.environ["FIZGIG_SDPA_BACKEND"] = "default" if case["attention"] == "math" else "auto"
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+    ctx = sdpa_kernel(SDPBackend.MATH) if case["attention"] == "math" else contextlib.nullcontext()
+    if case["attention"] == "math":
+        torch.use_deterministic_algorithms(True)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    result = {}
+    try:
+        batches = torch.load(config["batches"], weights_only=True)
+        with MemorySampler(device) as mem, ctx:
+            result = execute(args, device, case, batches, Path(config["reference_dir"]), case["record"])
+        result["memory_samples"] = mem.data
+        result["status"] = "completed"
+    except UnsafePinning as e:
+        result = {**case, "status": "skipped", "reason": str(e)}
+        print("SKIPPED: " + str(e), flush=True)
+    except Exception as e:
+        result = {**case, "status": "failed", "error": str(e), "traceback": traceback.format_exc()}
+        traceback.print_exc()
+    Path(config["result"]).write_text(json.dumps(result, indent=2, allow_nan=True), encoding="utf-8")
+    return int(result["status"] == "failed")
 
 
 def main():
@@ -257,6 +468,8 @@ def main():
     p.add_argument("--model", help="Optional real Krea 2 safetensors checkpoint")
     p.add_argument("--cache", help="Optional real Krea 2 cache directory (requires --model)")
     p.add_argument("--steps", type=int, default=3)
+    p.add_argument("--warmup", type=int, default=1)
+    p.add_argument("--suite", choices=("basic", "expanded"), default="basic")
     p.add_argument("--swap", type=int, default=22)
     p.add_argument("--rank", type=int, default=8)
     p.add_argument("--precision", choices=("int8", "bf16"), default="int8")
@@ -271,6 +484,10 @@ def main():
     args = p.parse_args()
     if args.steps < 1 or not 1 <= args.swap <= 26 or args.rank < 1 or args.width < 128 or args.width % 128:
         p.error("Require positive steps/rank, swap 1..26 and width a multiple of 128")
+    if args.warmup < 0 or args.warmup >= args.steps:
+        args.warmup = min(max(0, args.warmup), args.steps - 1)
+    if args.suite == "expanded" and args.swap > 24:
+        p.error("Expanded suite requires room for a four-slot ring within the same VRAM budget (swap <= 24)")
     if args.latent_size < 2 or args.latent_size % 2:
         p.error("latent-size must be positive and divisible by 2")
     if args.cache and not args.model:
@@ -298,26 +515,49 @@ def main():
     print(json.dumps({k: v for k, v in report.items() if k not in ("runs", "errors")}, indent=2), flush=True)
     report_path = Path(args.report)
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    modes = [("classic", "A_classic_reference"), ("classic", "D_classic_repeat"),
-             ("fast", "B_fast"), ("fast", "C_fast_repeat"), ("fast_sync", "E_fast_serialized")]
-    if not args.model:
-        modes.append(("resident", "F_no_swap"))
+    report["skipped"] = []
+    report["measurement_notes"] = [
+        "Host wait time is wall time inside wait_for_block, not actual GPU-side stall time.",
+        "WDDM shared/dedicated counters are optional end-of-case samples, not peaks.",
+        "Peak allocated/reserved are PyTorch CUDA allocator metrics; NVML is device-wide.",
+        "Math attention cases use their own reference and strict deterministic algorithms.",
+        "Each case runs in its own process; reference tensors and cached batches are shared on disk."]
     with tempfile.TemporaryDirectory(prefix="fizgig-stream-sync-", dir=args.scratch) as tmp:
-        for idx, (mode, label) in enumerate(modes):
-            try:
-                run = execute(args, device, mode, label, batches, Path(tmp), idx == 0)
-                report["runs"].append(run)
-            except Exception as e:
-                report["errors"].append({"label": label, "error": str(e), "traceback": traceback.format_exc()})
-                traceback.print_exc()
-                # Without the reference, subsequent comparisons are meaningless.
-                if idx == 0:
-                    break
-            finally:
-                gc.collect()
-                if device.type == "cuda":
-                    torch.cuda.empty_cache()
-                report_path.write_text(json.dumps(report, indent=2, allow_nan=True), encoding="utf-8")
+        tmp = Path(tmp)
+        batch_path = tmp / "batches.pt"
+        torch.save(batches, batch_path)
+        ready = set()
+        for case in cases(args):
+            group = case["reference"]
+            if not case["record"] and group not in ready:
+                report["skipped"].append({**case, "reason": "Reference case unavailable"})
+                continue
+            refdir = tmp / group
+            refdir.mkdir(exist_ok=True)
+            result_path = tmp / (case["label"] + ".json")
+            config_path = tmp / "worker.json"
+            config_path.write_text(json.dumps(dict(args=vars(args), case=case, batches=str(batch_path),
+                                                  reference_dir=str(refdir), result=str(result_path))), encoding="utf-8")
+            env = dict(os.environ, CUBLAS_WORKSPACE_CONFIG=":4096:8", PYTHONUNBUFFERED="1")
+            proc = subprocess.run([sys.executable, "-u", __file__, "--worker", str(config_path)], env=env)
+            result = json.loads(result_path.read_text(encoding="utf-8")) if result_path.is_file() else {
+                **case, "status": "failed", "error": f"Worker exited {proc.returncode} without a report"}
+            if result["status"] == "completed" and proc.returncode == 0:
+                report["runs"].append(result)
+                if case["record"]:
+                    ready.add(group)
+            elif result["status"] == "skipped":
+                report["skipped"].append(result)
+            else:
+                report["errors"].append(result)
+            report_path.write_text(json.dumps(report, indent=2, allow_nan=True), encoding="utf-8")
+    print("\n=== Summary (excluding warmup) ===", flush=True)
+    for run in report["runs"]:
+        print(f"{run['label']}: {run['summary']['mean_step_seconds']:.3f}s/step "
+              f"pinned={run['pinned_storage_gib']:.3f} GiB "
+              f"peak allocated={run['peak_allocated_gib']} GiB", flush=True)
+    for item in report["skipped"] + report["errors"]:
+        print(f"{item['label']}: {item.get('status', 'skipped')} - {item.get('reason', item.get('error'))}", flush=True)
     print(f"\nReport saved: {report_path.resolve()}", flush=True)
     print("Compare both classic repeats, fast repeats and serialized fast. "
           "Exact matches are strongest; compare numerical drift to the classic repeat, not just training loss.",
@@ -329,4 +569,4 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(worker(sys.argv[2]) if len(sys.argv) == 3 and sys.argv[1] == "--worker" else main())

@@ -1245,7 +1245,7 @@ def _stream_sync_plan(values, image_folder):
         plan.problems.append("This diagnostic already has a report. Queue a new Test Mode run.")
     if not plan.problems:
         cmd = [sys.executable, "-u", os.path.join(BASE_DIR, "scripts", "diagnose_stream_sync.py"),
-               "--model", model, "--cache", cache, "--steps", "3", "--rank", "32", "--swap", "22",
+               "--model", model, "--cache", cache, "--suite", "expanded", "--steps", "6", "--warmup", "3", "--rank", "32", "--swap", "22",
                "--precision", "int8", "--optimizer", "muon", "--seed", "42", "--lr", "0.00025",
                "--report", report, "--scratch", out]
         # Fresh per-suite cache using the production cache stages.
@@ -1266,7 +1266,8 @@ def _stream_sync_plan(values, image_folder):
         plan.stages.append(launch.Stage("GPU correctness diagnostic", cmd))
         plan.console.extend(["[test mode] Fresh isolated cache at 0.25 MP, shared by all comparisons: " + cache,
                              "[test mode] INT8 / rank 32 / Muon / 22 swaps / seed 42.",
-                             "[test mode] Classic twice, fast twice, fast serialized; three steps each.",
+                             "[test mode] 13 cases: pageable/pinned, staged/direct, 2/3/4 rings, serialized and math SDPA controls.",
+                              "[test mode] Six steps per case; first three excluded from performance averages. Pinned cases may skip for RAM safety.",
                              "[test mode] Report: " + report])
     return desc, inputs, plan
 

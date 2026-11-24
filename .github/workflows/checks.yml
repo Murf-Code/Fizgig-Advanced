@@ -37,7 +37,7 @@ jobs:
       - name: Send-only stream synchronization, ring sizing and replay regression checks
         run: python -m pytest checks/test_send_only_swap.py checks/test_krea2_global_replay.py -q
       - name: Stream diagnostic CPU smoke (not CUDA verification)
-        run: python scripts/diagnose_stream_sync.py --cpu --steps 1 --rank 4 --width 128 --latent-size 8 --optimizer adamw --report /tmp/stream-sync-report.json
+        run: python scripts/diagnose_stream_sync.py --cpu --suite expanded --steps 1 --warmup 0 --rank 4 --width 128 --latent-size 8 --optimizer adamw --report /tmp/stream-sync-report.json
       - name: Mask weights in Global Replay and H3 reference distillation
         run: |
           python -m pytest checks/test_krea2_global_replay.py -k "masked_global_replay" -q
