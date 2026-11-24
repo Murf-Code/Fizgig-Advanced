@@ -598,7 +598,7 @@
                   <div class="me-bar me-primary-toolbar" id="mePrimaryToolbar" aria-label="Image editing tools">
                     <span class="seg" id="meTool"><button class="btn btn-sm active" data-tool="brush" title="Brush: left-click paints learned regions; right-click erases (B)" aria-pressed="true">Brush</button><button
                       class="btn btn-sm" data-tool="sam" title="Click a subject to add it to the mask; right-click or Alt+click takes it away (S)" aria-pressed="false">SAM click</button></span>
-                    <span class="seg" id="mePicTool"><button class="btn btn-sm" data-tool="remove" title="Remove objects from the image with LaMa; right-click clears the red selection (J)" aria-pressed="false">Remove</button><button
+                    <span class="seg" id="mePicTool"><button class="btn btn-sm" data-tool="remove" title="Remove objects from the image with LaMa; right-click clears the red selection (J)" aria-pressed="false">Erase</button><button
                       class="btn btn-sm" data-tool="crop" title="Crop image and associated mask (C)" aria-pressed="false">Crop</button></span>
                     <span class="me-brush-controls" id="meBrushControls">
                       <label class="me-slider me-size-control" title="Brush size ([ and ])">Size <input type="range" id="meSize" min="2" max="400" value="40"></label>
@@ -627,7 +627,7 @@
                     <summary>Mask, view &amp; watermark options</summary>
                     <div class="me-advanced-content">
                       <div class="me-bar me-wmbar" id="meWmBar">
-                        <label class="checkbox-label me-wmload" title="Load the saved watermark selection into the Remove tool"><input type="checkbox" id="meLoadWm" checked> Load watermark masks into Remove</label>
+                        <label class="checkbox-label me-wmload" title="Load the saved watermark selection into the Erase tool"><input type="checkbox" id="meLoadWm" checked> Load watermark masks into Erase</label>
                         <label class="me-slider" id="meWmPadWrap" title="Extra pixels around the watermark">Pad <input type="range" id="meWmPad" min="2" max="5" value="3"><span id="meWmPadVal">3</span> px</label>
                         <button class="btn btn-sm" id="meWmAll" title="Remove every detected watermark with LaMa after confirmation">Remove all watermarks</button>
                         <button class="btn btn-sm" id="meWmStop" style="display:none">Stop</button>
