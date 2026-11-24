@@ -114,7 +114,7 @@ console.log("Shared liquid contours, reciprocal pigment mixing and separated fie
 const previousRadius=(count,max)=>5+3.8*String(count).length+20*Math.sqrt(count/max);
 for(const max of [10,100,10000]){
   assert.equal(Viz.countRadius(1,max),previousRadius(1,max)*1.5);
-  assert.equal(Viz.countRadius(max,max),previousRadius(max,max)*3);
+  assert.equal(Viz.countRadius(max,max),previousRadius(max,max)*2.4);
   assert.ok(Viz.countRadius(2,max)>Viz.countRadius(1,max));
 }
 const enlarged=Viz.tagbenchModel(Array.from({length:240},(_,i)=>({tags:["common","group_"+(i%8),"peer_"+(i%119)]})));

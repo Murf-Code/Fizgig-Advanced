@@ -976,7 +976,7 @@ const CaptionStudioViz = (() => {
   function countRadius(count,maxCount){
     const max=Math.max(1,maxCount),value=Math.max(1,Math.min(max,count));
     const oldRadius=n=>5+3.8*String(n).length+20*Math.sqrt(n/max);
-    const min=1.5*oldRadius(1),largest=3*oldRadius(max);
+    const min=1.5*oldRadius(1),largest=2.4*oldRadius(max);
     if(max===1)return min;
     if(value===max)return largest;
     const t=(Math.sqrt(value)-1)/(Math.sqrt(max)-1);
