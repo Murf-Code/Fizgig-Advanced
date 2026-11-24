@@ -30,6 +30,8 @@ class Element {
     if(this.parentNode){this.parentNode.children=this.parentNode.children.filter(c=>c!==this);this.parentNode=null;}
     this.connectChild(this,false);
   }
+  setAttribute(key,value){this.props[key]=value;}
+  querySelectorAll(tag){return this.children.flatMap(c=>c instanceof Element?[...(c.tag===tag?[c]:[]),...c.querySelectorAll(tag)]:[]);}
   focus(){document.activeElement=this;}
   addEventListener(type,fn){this.listeners[type]=fn;}
 }
@@ -79,12 +81,24 @@ const buttons=()=>{
   o=overlay();o.listeners.pointerdown(event("",o));
   assert.equal(await reply,false);
 
-  reply=confirmRemoval({title:"Delete tags?",detail:"Selected images",items:["tag1","tag2"]});
+  reply=confirmRemoval({title:"Remove tags?",detail:"Selected images",items:["tag1","tag2"]});
   assert.equal(document.activeElement,buttons().cancel);
   buttons().confirm.onclick();
   assert.equal(await reply,true);
   assert.equal(overlay(),null);
   assert.equal(document.activeElement,opener);
+
+  reply=confirmRemoval({title:"Remove 100 images?",detail:"Undoable",items:Array.from({length:100},(_,i)=>"image"+i+".png")});
+  const bulk=buttons().modal.children[1],names=bulk.children[1],toggle=bulk.children[2];
+  assert.equal(names.children.length,3);
+  assert.match(toggle.textContent,/97 more/);
+  toggle.onclick();
+  assert.equal(names.children.length,100);
+  assert.equal(toggle.props["aria-expanded"],"true");
+  toggle.onclick();
+  assert.equal(names.children.length,3);
+  buttons().cancel.onclick();
+  assert.equal(await reply,false);
 
   assert.match(css,/\.caption-removal-backdrop\{/);
   assert.match(css,/\.caption-removal-modal\{/);
