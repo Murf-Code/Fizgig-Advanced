@@ -13492,13 +13492,13 @@ function captionConfirmRemoval({title,detail,items=[],tagCounts=[],confirmLabel=
 // Constellation layout is O(nodes²) over many iterations. Keep those
 // computations off the browser UI thread so typing, scrolling and navigation
 // remain responsive while the exact same TagBench graph is calculated.
-function captionGraphModelAsync(items,categories) {
+function captionGraphModelAsync(items,categories,triggerWord) {
   // Off-main-thread TagBench layout; cancellation ends the worker when the
   // user switches away. In older browsers, retain a safe synchronous fallback.
   if(typeof Worker==="undefined"){
     let canceled=false;
     const task=Promise.resolve().then(()=>
-      canceled?null:CaptionStudioViz.tagbenchModel(items,categories));
+      canceled?null:CaptionStudioViz.tagbenchModel(items,categories,triggerWord));
     task.cancel=()=>{canceled=true;};
     return task;
   }
@@ -13520,7 +13520,7 @@ function captionGraphModelAsync(items,categories) {
       else finish(event.data?.model);
     };
     worker.onerror=event=>finish(null,new Error(event.message||"Constellation worker failed"));
-    try{worker.postMessage({items,categories});}
+    try{worker.postMessage({items,categories,triggerWord});}
     catch(error){finish(null,error);}
   });
   task.cancel=()=>cancel?.();
@@ -16103,7 +16103,8 @@ function renderCaptionStudio(host,items,ext){
       }else{
         const revision=S.cap.studioRevision||0;
         const cache=S.cap.studioTagbenchGraph;
-        const datasetKey=String(S.imageFolder||"")+"|"+ext;
+        const triggerWord=S.trigger||"";
+        const datasetKey=JSON.stringify([S.imageFolder,ext,triggerWord]);
         const datasetItems=S.cap.items;
         const generation=exploreGeneration;
         const showGraph=model=>{
@@ -16111,13 +16112,14 @@ function renderCaptionStudio(host,items,ext){
              S.cap.studioExploreMode!=="constellation"||
              S.cap.items!==datasetItems||(S.cap.studioRevision||0)!==revision)return;
           CaptionStudioViz.setTagbenchPalette(model.colors);
-          S.cap.studioTagbenchPalette={key:datasetKey,revision,colors:model.colors};
+          S.cap.studioTagbenchPalette={key:colorScope,revision,colors:model.colors};
           categoryState.generatedColors=model.colors;
           // The Image Tags palette is derived from this same model on return.
           S.cap.studioExploreNeedRedraw=true;
+          const views=S.cap.studioConstellationViews??=new Map();
+          const savedView=views.get(colorScope);
           const network=CaptionStudioViz.tagbenchConstellation(model,tag=>{
 
-          S.cap.studioExplorePickedTag=tag;
           const exact=tag?JSON.stringify(tag):"";
           S.cap.studioQuery=exact;
           S.cap.page=0;
@@ -16138,7 +16140,8 @@ function renderCaptionStudio(host,items,ext){
               S.cap.studioJumpToPath=first.path;
             }
           }
-          },S.cap.studioExplorePickedTag||null,{
+          },savedView?.picked||null,{
+            savedView,saveView:state=>views.set(colorScope,state),
             preferences:S.cap.studioConstellationPrefs,
             relationsForTag:tag=>{
               // Rare tags are searched on demand. Keep the worker's main
@@ -16174,7 +16177,7 @@ function renderCaptionStudio(host,items,ext){
           else{
             const allTags=datasetItems.filter(it=>studioCaptionMode(it)==="tags")
               .map(it=>({tags:studioTokens(it.caption,"tags")}));
-            work=captionGraphModelAsync(allTags,categoryState);
+            work=captionGraphModelAsync(allTags,categoryState,triggerWord);
             S.cap.studioGraphPending={key:datasetKey,items:datasetItems,revision,promise:work,
               cancel:()=>work.cancel?.()};
           }

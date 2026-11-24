@@ -221,12 +221,12 @@ const CaptionStudioViz = (() => {
       "hsl("+Math.round(id*137.508%360)+" 72% 62%)";
     return "color-mix(in srgb, "+hue+" 72%, var(--text-primary))";
   };
-  function tagbenchGraph(items) {
+  function tagbenchGraph(items,trigger) {
     // First count tags, then collect co-occurrences only for the top 120
     // that Constellation displays. The old one-pass implementation built
     // pairwise combinations of *every* dataset tag before discarding most.
-    // This retains the exact same visible nodes and edge weights, but caps
-    // the pair map at 7,140 entries even on very large datasets.
+    // Reserve one slot for a configured trigger if it falls below the cutoff.
+    // Numeric indices bound pair storage and avoid strings in the inner loop.
     const counts=new Map();
     for(const it of items){
       const unique=new Set((it.tags||[]).map(lower).filter(Boolean));
@@ -234,17 +234,32 @@ const CaptionStudioViz = (() => {
     }
     const all=[...counts].map(([tag,count])=>({tag,count}))
       .sort((a,b)=>b.count-a.count||a.tag.localeCompare(b.tag));
-    const top=all.slice(0,120),keep=new Set(top.map(x=>x.tag)),pairs=new Map();
+    const top=all.slice(0,120);
+    const explicit=all.find(t=>t.tag===trigger);
+    if(explicit&&!top.includes(explicit))top[top.length-1]=explicit;
+    const indices=new Map(top.map((t,i)=>[t.tag,i])),n=top.length;
+    const pairs=new Float64Array(n*n);
     for(const it of items){
-      const tags=[...new Set((it.tags||[]).map(lower).filter(tag=>keep.has(tag)))];
-      for(let i=0;i<tags.length;i++)for(let j=i+1;j<tags.length;j++){
-        const a=tags[i],b=tags[j],key=a<b?a+"\0"+b:b+"\0"+a;
-        pairs.set(key,(pairs.get(key)||0)+1);
+      const tags=new Set();
+      for(const tag of it.tags||[]){
+        const index=indices.get(lower(tag));
+        if(index!==undefined)tags.add(index);
+      }
+      const present=[...tags];
+      for(let i=0;i<present.length;i++)for(let j=i+1;j<present.length;j++){
+        const a=present[i],b=present[j];
+        pairs[Math.min(a,b)*n+Math.max(a,b)]++;
       }
     }
-    const edges=[...pairs].map(([key,w])=>{
-      const [a,b]=key.split("\0");return {a,b,w};
-    }).sort((a,b)=>b.w-a.w);
+    const edges=[];
+    for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){
+      const w=pairs[i*n+j];
+      if(w){
+        const [a,b]=[top[i].tag,top[j].tag].sort();
+        edges.push({a,b,w});
+      }
+    }
+    edges.sort((a,b)=>b.w-a.w);
     const linkCounts=new Map();
     for(const edge of edges){
       linkCounts.set(edge.a,(linkCounts.get(edge.a)||0)+1);
@@ -252,17 +267,23 @@ const CaptionStudioViz = (() => {
     }
     return {all,top,edges,linkCounts};
   }
+  function association(count,a,b,total){
+    const expected=a*b/Math.max(1,total);
+    return Math.max(0,count-expected)/Math.sqrt(a*b)*count/(count+3);
+  }
   // Cluster by normalized co-occurrence rather than predefined tag families.
   // The local modularity pass is deterministic and runs in the existing worker.
-  function networkCommunities(top,edges,total){
+  function networkCommunities(top,edges,total,trigger){
     const n=top.length,at=new Map(top.map((t,i)=>[t.tag,i]));
     const adj=Array.from({length:n},()=>[]),degree=new Float64Array(n);
     const weighted=edges.map(e=>{
       const i=at.get(e.a),j=at.get(e.b),a=top[i].count,b=top[j].count;
-      const expected=a*b/Math.max(1,total);
-      const weight=e.w/Math.sqrt(a*b)*Math.max(.06,Math.min(1.5,Math.log1p(e.w/Math.max(expected,.01))-.5));
+      // Excess cosine similarity is zero under independence. Shrink
+      // single-caption coincidences while retaining their exact raw counts.
+      const weight=e.a===trigger||e.b===trigger?0:
+        association(e.w,a,b,total);
       return {...e,i,j,weight};
-    }).sort((a,b)=>b.weight-a.weight||b.w-a.w||a.i-b.i||a.j-b.j);
+    }).filter(e=>e.weight>0).sort((a,b)=>b.weight-a.weight||b.w-a.w||a.i-b.i||a.j-b.j);
     for(const e of weighted){
       adj[e.i].push([e.j,e.weight]);adj[e.j].push([e.i,e.weight]);
       degree[e.i]+=e.weight;degree[e.j]+=e.weight;
@@ -291,25 +312,62 @@ const CaptionStudioViz = (() => {
   function networkRadius(count,maxCount){
     return 2.5+7.5*Math.sqrt(Math.max(0,count)/Math.max(1,maxCount));
   }
-  function tagbenchModel(items,categories) {
-    const graph=tagbenchGraph(items),{all,top,edges,linkCounts}=graph;
-    const {weighted,adj,group}=networkCommunities(top,edges,items.length);
-    const nodes=top.map((t,i)=>({tag:t.tag,count:t.count,links:linkCounts.get(t.tag)||0,
-      group:group[i],x:0,y:0,color:null}));
-    const maxCount=top[0]?.count||1,centers=new Map();
-    const groups=new Map();
-    nodes.forEach((node,i)=>{if(!groups.has(node.group))groups.set(node.group,[]);groups.get(node.group).push(i);});
-    const clusters=[...groups].sort((a,b)=>b[1].length-a[1].length||a[0]-b[0]);
-    // Seed the largest community at the center, then pack the others around
-    // it on a compact spiral instead of leaving a hollow middle.
-    clusters.forEach(([id,members],rank)=>{
-      const a=rank*2.39996323,r=rank===0?0:31*Math.sqrt(rank);
-      const center={x:Math.cos(a)*r,y:Math.sin(a)*r};centers.set(id,center);
-      members.forEach((i,k)=>{
-        const a=k*2.39996323,r=k?16*Math.sqrt(k):0;
-        nodes[i].x=center.x+Math.cos(a)*r;nodes[i].y=center.y+Math.sin(a)*r;
+  // Stable seeds are starting positions only. The coarse graph settles
+  // according to aggregate association between its communities.
+  function seedOffset(tag,radius){
+    let hash=2166136261;
+    for(const ch of tag)hash=Math.imul(hash^ch.codePointAt(0),16777619);
+    const angle=(hash>>>0)*2.3999632297;
+    return {x:radius*Math.cos(angle),y:radius*Math.sin(angle)};
+  }
+  function communityCenters(nodes,group,weighted){
+    const centers=[];
+    for(const [i,id] of group.entries()){
+      if(!centers[id])centers[id]={...seedOffset(nodes[i].tag,55),size:0,anchor:0};
+      centers[id].size++;
+      centers[id].anchor=Math.max(centers[id].anchor,nodes[i].anchor);
+    }
+    const weights=new Map();
+    for(const e of weighted){
+      const a=group[e.i],b=group[e.j];
+      if(a===b)continue;
+      const key=Math.min(a,b)*centers.length+Math.max(a,b);
+      weights.set(key,(weights.get(key)||0)+e.weight);
+    }
+    for(let step=0;step<65;step++){
+      const forces=centers.map(c=>({x:-c.x*(.025+c.anchor*.17),y:-c.y*(.025+c.anchor*.17)}));
+      for(let i=0;i<centers.length;i++)for(let j=i+1;j<centers.length;j++){
+        const a=centers[i],b=centers[j],dx=b.x-a.x,dy=b.y-a.y,d=Math.max(.01,Math.hypot(dx,dy));
+        const gap=14*(Math.sqrt(a.size)+Math.sqrt(b.size));
+        const weight=weights.get(i*centers.length+j)||0;
+        const pull=.12*Math.min(2,weight/Math.sqrt(a.size*b.size));
+        const f=(Math.min(0,d-gap)*.24+(d-gap)*pull)/d;
+        forces[i].x+=dx*f;forces[i].y+=dy*f;forces[j].x-=dx*f;forces[j].y-=dy*f;
+      }
+      centers.forEach((c,i)=>{
+        const f=forces[i],scale=Math.max(1,Math.hypot(f.x,f.y)/6);
+        c.x+=f.x/scale;c.y+=f.y/scale;
       });
+    }
+    return centers;
+  }
+  function tagbenchModel(items,categories,triggerWord="") {
+    const trigger=lower(triggerWord);
+    const graph=tagbenchGraph(items,trigger),{all,top,edges,linkCounts}=graph;
+    const {weighted,adj,group}=networkCommunities(top,edges,items.length,trigger);
+    const primary=top.find(t=>t.tag===trigger)||top[0];
+    const nodes=top.map((t,i)=>{
+      const coverage=t.count/items.length;
+      const groups=new Set(adj[i].map(([j])=>group[j]));
+      const breadth=1-1/Math.max(1,groups.size);
+      const anchor=t===primary?1:coverage*coverage*(coverage+breadth)/2;
+      return {...t,links:linkCounts.get(t.tag)||0,group:group[i],primary:t===primary,isTrigger:t.tag===trigger,anchor,x:0,y:0,color:null};
     });
+    const maxCount=top[0]?.count||1,centers=communityCenters(nodes,group,weighted);
+    for(const n of nodes){
+      const c=centers[n.group],offset=seedOffset(n.tag,8*Math.sqrt(c.size));
+      n.x=c.x+offset.x;n.y=c.y+offset.y;
+    }
     const chosen=[],seen=new Set();
     // Sparse network: each tag contributes its strongest local and bridge
     // edges. Full co-occurrence counts remain available on selection.
@@ -321,26 +379,69 @@ const CaptionStudioViz = (() => {
     }
     const springs=weighted.filter(e=>seen.has(Math.min(e.i,e.j)+":"+Math.max(e.i,e.j)));
     for(const e of springs)chosen.push({a:e.a,b:e.b,w:e.w,weight:e.weight,bridge:group[e.i]!==group[e.j]});
+    // Display-only nucleus links use measured raw co-occurrence, never
+    // modularity weights or layout springs. Prefer prevalent anchors and
+    // representatives of distinct communities; keep the star uncluttered.
+    const anchorEdges=[],represented=new Set(),byTag=new Map(nodes.map(n=>[n.tag,n]));
+    if(primary){
+      const candidates=edges.filter(e=>e.a===primary.tag||e.b===primary.tag)
+        .map(e=>({e,node:byTag.get(e.a===primary.tag?e.b:e.a)}))
+        .filter(({e})=>!chosen.some(c=>c.a===e.a&&c.b===e.b))
+        .sort((a,b)=>b.node.anchor-a.node.anchor||b.e.w-a.e.w||a.node.tag.localeCompare(b.node.tag));
+      for(const {e,node} of candidates){
+        if(anchorEdges.length>=6)break;
+        if(represented.has(node.group))continue;
+        represented.add(node.group);anchorEdges.push({...e,anchorLink:true});
+      }
+      for(const {e} of candidates){
+        if(anchorEdges.length>=6)break;
+        if(!anchorEdges.some(a=>a.a===e.a&&a.b===e.b))anchorEdges.push({...e,anchorLink:true});
+      }
+    }
     const alike=[]; // no artificial semantic links: every visible strand is measured
-    for(let step=0;step<180;step++){
+    // A tag shared across strong communities should lie near their
+    // weighted barycenter, even when the color assignment breaks a tie.
+    const bridges=adj.map(neighbors=>{
+      const weights=new Map();
+      let total=0;
+      for(const [j,w] of neighbors){
+        weights.set(group[j],(weights.get(group[j])||0)+w);
+        total+=w;
+      }
+      const shares=[...weights].map(([id,w])=>[id,w/total]);
+      const diversity=1-shares.reduce((sum,[,share])=>sum+share*share,0);
+      return {shares,pull:4*diversity*diversity};
+    });
+    for(let step=0;step<115;step++){
       const fx=new Float64Array(nodes.length),fy=new Float64Array(nodes.length);
       for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
         const a=nodes[i],b=nodes[j],dx=a.x-b.x,dy=a.y-b.y;
         const d=Math.max(.5,Math.hypot(dx,dy)),min=networkRadius(a.count,maxCount)+networkRadius(b.count,maxCount)+7;
-        const repulse=55/(d*d)+Math.max(0,min-d)*.13/d;
+        const repulse=25/(d*d)+Math.max(0,min-d)*.13/d;
         fx[i]+=dx*repulse;fy[i]+=dy*repulse;fx[j]-=dx*repulse;fy[j]-=dy*repulse;
       }
       for(const e of springs){
         const a=nodes[e.i],b=nodes[e.j],dx=b.x-a.x,dy=b.y-a.y,d=Math.max(.5,Math.hypot(dx,dy));
         const same=a.group===b.group,target=same?22:52;
-        const force=(d-target)*(.012+Math.min(1,e.weight)*.055)*(same?1:.45)/d;
+        const force=(d-target)*(.012+e.weight*.14)/d;
         fx[e.i]+=dx*force;fy[e.i]+=dy*force;fx[e.j]-=dx*force;fy[e.j]-=dy*force;
       }
-      const cooling=.8*(1-step/180)+.12;
+      const means=centers.map(()=>({x:0,y:0}));
+      for(const n of nodes){
+        means[n.group].x+=n.x/centers[n.group].size;
+        means[n.group].y+=n.y/centers[n.group].size;
+      }
+      const cooling=.8*(1-step/115)+.12;
       nodes.forEach((n,i)=>{
-        const c=centers.get(n.group);
+        const c=centers[n.group];
         // Gentle gravity closes the middle without changing community identity.
-        fx[i]+=(c.x-n.x)*.018-n.x*.012;fy[i]+=(c.y-n.y)*.018-n.y*.012;
+        const gravity=.012+.8*n.anchor*n.anchor;
+        fx[i]+=(c.x-n.x)*.024-n.x*gravity;fy[i]+=(c.y-n.y)*.024-n.y*gravity;
+        const bridge=bridges[i];
+        if(bridge.pull>.01)for(const [id,share] of bridge.shares){
+          fx[i]+=(means[id].x-n.x)*share*bridge.pull;
+          fy[i]+=(means[id].y-n.y)*share*bridge.pull;
+        }
         const norm=Math.max(1,Math.hypot(fx[i],fy[i])/7);
         n.x+=fx[i]*cooling/norm;n.y+=fy[i]*cooling/norm;
       });
@@ -373,7 +474,7 @@ const CaptionStudioViz = (() => {
       const manual=categories?.tagColors?.[tag.tag]||(category&&categories.colors?.[category]);
       if(manual||friendColor)colors.set(tag.tag,manual||friendColor);
     }
-    return {...graph,nodes,chosen,alike,colors};
+    return {...graph,nodes,chosen,anchorEdges,alike,colors,total:items.length};
   }
   const waterfallScale=value=>{
     const n=Number(value);
@@ -538,6 +639,9 @@ const CaptionStudioViz = (() => {
     const gradient=make("linearGradient",{id:"tb-sunlight",x1:"0%",y1:"0%",x2:"100%",y2:"100%"},defs);
     for(const [offset,color] of [["0%","#fffbe5"],["45%","#fff0b3"],["100%","#e4be72"]])
       make("stop",{offset,"stop-color":color},gradient);
+    const backing=make("filter",{id:"tb-label-backing",x:"-4%",y:"-15%",width:"108%",height:"130%"},defs);
+    make("feFlood",{"flood-color":"var(--bg-surface)",result:"plate"},backing);
+    make("feComposite",{in:"SourceGraphic",in2:"plate",operator:"over"},backing);
     const baseLayer=make("g"),focusLayer=make("g"),nodeLayer=make("g"),labelLayer=make("g");
     const nodes=model.nodes.map(n=>({...n,ox:0,oy:0}));
     const at=new Map(nodes.map(n=>[n.tag,n])),all=new Map(model.all.map(n=>[n.tag,n]));
@@ -574,14 +678,15 @@ const CaptionStudioViz = (() => {
       const rec={...e,el:line};edgeGeometry(rec);return rec;
     };
     for(const e of model.chosen)if(at.has(e.a)&&at.has(e.b))baseEdges.push(addEdge(e,baseLayer,"is-base"));
+    for(const e of model.anchorEdges||[])if(at.has(e.a)&&at.has(e.b))baseEdges.push(addEdge(e,baseLayer,"is-anchor"));
     for(const e of model.alike)if(at.has(e.a)&&at.has(e.b))baseEdges.push(addEdge(e,baseLayer,"is-alike"));
     const nodeGeometry=n=>{
       const v=visual.get(n.tag);if(!v)return;
-      const p=position(n),r=radius(n),sz=(n.count===maxCount?13:11)/Math.pow(zoom,.65);
+      const p=position(n),r=radius(n),sz=(n.primary||n.count===maxCount?13:11)/Math.pow(zoom,.65);
       v.g.setAttribute("transform","translate("+p.x+" "+p.y+")");
       v.core.setAttribute("r",r);v.halo.setAttribute("r",r*1.55);v.hit.setAttribute("r",Math.max(r,9/scalePixels()));
       v.ring.setAttribute("r",r+4/zoom);
-      v.star.setAttribute("transform","translate("+(r*.78+4/zoom)+" "+(-r*.78-4/zoom)+") scale("+1/zoom+")");
+      v.star?.setAttribute("transform","scale("+r*.1+")");
       v.label.setAttribute("x",p.x+r+5/zoom);v.label.setAttribute("y",p.y+sz*.32);
       v.label.setAttribute("font-size",sz);v.label.setAttribute("stroke-width",Math.max(sz*.24,1.5/zoom));
       v.ripple.setAttribute("r",r+4/zoom+(pulse?.tag===n.tag?pulse.amount*13/zoom:0));
@@ -602,8 +707,8 @@ const CaptionStudioViz = (() => {
       const ripple=make("circle",{fill:"none",stroke:"url(#tb-sunlight)","vector-effect":"non-scaling-stroke","stroke-width":"1.2",opacity:0,"pointer-events":"none"},g);
       const ring=make("circle",{fill:"none",stroke:"url(#tb-sunlight)","vector-effect":"non-scaling-stroke","stroke-width":"2",opacity:0,"pointer-events":"none"},g);
       const core=make("circle",{fill:n.color,class:"studio-tb-orb-core"},g);
-      const star=make("path",{d:"M0 -7Q1 -1 7 0Q1 1 0 7Q-1 1 -7 0Q-1 -1 0 -7Z",fill:"url(#tb-sunlight)",stroke:"#141416","stroke-width":"1",opacity:0,"pointer-events":"none"},g);
-      const label=make("text",{fill:n.color,"font-weight":650,stroke:"var(--bg-deep)","paint-order":"stroke","pointer-events":"none"},labelLayer);label.textContent=n.tag;
+      const star=n.isTrigger?make("path",{d:"M0 -7Q1 -1 7 0Q1 1 0 7Q-1 1 -7 0Q-1 -1 0 -7Z",fill:"url(#tb-sunlight)",stroke:"#141416","stroke-width":"1","pointer-events":"none"},g):null;
+      const label=make("text",{fill:"var(--text-primary)","font-weight":650,stroke:"var(--bg-deep)","paint-order":"stroke","pointer-events":"none"},labelLayer);label.textContent=n.tag;
       visual.set(n.tag,{g,core,halo,hit,ripple,ring,star,label,grad,id});
       g.addEventListener("pointerdown",e=>{
         if(e.button!==0)return;e.stopPropagation();dismissMenu();cancelMotion();
@@ -638,10 +743,14 @@ const CaptionStudioViz = (() => {
     }
     function focusConnections(){
       focusLayer.replaceChildren();focusEdges.length=0;
-      shared=picked?relationMap(picked):new Map();
-      if(picked&&at.has(picked))for(const [tag,w] of shared)if(at.has(tag)){
+      const selected=at.get(picked);
+      const ranked=[...relationMap(picked)].map(([tag,count])=>({
+        tag,count,score:association(count,selected.count,at.get(tag).count,model.total)
+      })).sort((a,b)=>b.score-a.score||b.count-a.count||a.tag.localeCompare(b.tag));
+      shared=new Map(ranked.map(row=>[row.tag,row.count]));
+      for(const {tag,count:w,score} of ranked){
         const e=addEdge({a:picked,b:tag,w},focusLayer,"is-focused");
-        const strength=Math.min(1,w/Math.max(1,at.get(picked).count));
+        const strength=score/(ranked[0].score||1);
         e.el.setAttribute("stroke",at.get(tag).color);e.el.setAttribute("stroke-opacity",.22+strength*.73);
         e.el.setAttribute("stroke-width",.7+strength*2.5);focusEdges.push(e);
       }
@@ -652,44 +761,49 @@ const CaptionStudioViz = (() => {
       for(const e of baseEdges){
         const touches=focused&&(e.a===focused||e.b===focused);
         e.el.setAttribute("stroke",at.get(e.a)?.color||"var(--text-muted)");
-        e.el.setAttribute("stroke-opacity",focused?(touches?.3:.035):e.bridge?.15:.27);
-        e.el.setAttribute("stroke-width",touches?.85:e.bridge?.48:.65);
+        e.el.setAttribute("stroke-opacity",focused?(touches?.3:.035):e.anchorLink?.13:e.bridge?.15:.27);
+        e.el.setAttribute("stroke-width",touches?.85:e.anchorLink?.5:e.bridge?.48:.65);
       }
       // Labels are prioritized by selection, then cluster representatives,
       // then frequency. Collision rejection keeps the full map readable.
-      const ordered=[...at.values()].sort((a,b)=>(b.tag===picked)-(a.tag===picked)||
-        ((neighbors?.has(b.tag)?1:0)-(neighbors?.has(a.tag)?1:0))||b.count-a.count);
-      const placed=[],represented=new Set();
+      const byPriority=[...at.values()].sort((a,b)=>(b.tag===picked)-(a.tag===picked)||
+        ((neighbors?.has(b.tag)?1:0)-(neighbors?.has(a.tag)?1:0))||Number(!!b.primary)-Number(!!a.primary)||b.count-a.count);
+      const representatives=[],remaining=[],groups=new Set();
+      for(const n of byPriority){
+        if(groups.has(n.group))remaining.push(n);
+        else{representatives.push(n);groups.add(n.group);}
+      }
+      const ordered=[...representatives,...remaining];
+      const placed=[];
       let labels=0;
       for(const n of ordered){
         const v=visual.get(n.tag),selected=n.tag===picked,related=!focused||selected||neighbors?.has(n.tag);
-        v.g.setAttribute("opacity",related?1:.19);
+        v.g.setAttribute("opacity",related||n.isTrigger?1:.19);
         v.g.setAttribute("aria-pressed",String(selected));
-        v.g.setAttribute("aria-label",n.tag+", "+n.count+" images"+(selected?", selected":""));
+        v.g.setAttribute("aria-label",n.tag+", "+n.count+" images"+(n.isTrigger?", dataset trigger":"")+(selected?", selected":""));
         v.core.setAttribute("fill",prefs.glass?"url(#"+v.id+")":n.color);
-        v.ring.setAttribute("opacity",selected?"1":"0");v.star.setAttribute("opacity",selected?"1":"0");
-        const p=position(n),sz=(n.count===maxCount?13:11)/Math.pow(zoom,.65),r=radius(n);
+        v.ring.setAttribute("opacity",selected?"1":"0");v.label.setAttribute("filter",selected?"url(#tb-label-backing)":"none");
+        const p=position(n),sz=(n.primary||n.count===maxCount?13:11)/Math.pow(zoom,.65),r=radius(n);
         const box={x:p.x+r+5/zoom,y:p.y-sz*.8,w:n.tag.length*sz*.56,h:sz*1.25};
         const collision=placed.some(b=>box.x<b.x+b.w&&box.x+box.w>b.x&&box.y<b.y+b.h&&box.y+box.h>b.y);
-        const leader=!represented.has(n.group);
-        const show=selected||(!collision&&related&&(labels<rankLimit||leader));
+        const show=selected||(!collision&&related&&labels<rankLimit);
         v.label.setAttribute("visibility",show?"visible":"hidden");
-        if(show){placed.push(box);represented.add(n.group);labels++;}
+        if(show){placed.push(box);labels++;}
       }
       updateGeometry();
     }
     function renderPanel(){
       spotlight.replaceChildren();spotlight.hidden=!picked||!at.has(picked);if(spotlight.hidden)return;
       const n=at.get(picked),head=html("p","",undefined,spotlight);
-      const name=html("strong","",n.tag,head);name.style.color=n.color;
+      const name=html("strong","",n.tag,head);name.style.color="var(--text-primary)";
       button(head,"×","Clear selected tag",()=>choose(null));
-      html("div","studio-tb-panel-caption",n.count+" images · Related displayed tags",spotlight);
+      html("div","studio-tb-panel-caption",n.count+" images · Ranked by association",spotlight);
       const list=html("ul","",undefined,spotlight);
-      for(const [tag,w] of [...shared].sort((a,b)=>b[1]-a[1])){
+      for(const [tag,w] of shared){
         const item=html("li","",undefined,list),row=html("div","studio-tb-related-row",undefined,item);
         const b=button(row,tag,"Focus "+tag,()=>choose(tag));b.style.color=at.get(tag)?.color||"";
         const percent=Math.round(w/Math.max(1,n.count)*100);
-        html("span","",w+" · "+percent+"%",row);
+        html("span","",w+" of "+n.count+" images",row);
         const track=html("div","studio-tb-related-track",undefined,item);
         const bar=html("div","",undefined,track);bar.style.width=Math.min(100,percent)+"%";bar.style.background=at.get(tag)?.color||"var(--accent)";
       }
@@ -824,11 +938,22 @@ const CaptionStudioViz = (() => {
       }
       updateAppearance();
     };
-    stage.dispose=()=>{disposed=true;if(frame!==null)cancelAnimationFrame(frame);frame=null;camera=null;settling=null;pulse=null;};
+    stage.dispose=()=>{
+      if(disposed)return;
+      options.saveView?.({zoom,pan:{...pan},picked});
+      disposed=true;
+      if(frame!==null)cancelAnimationFrame(frame);
+      frame=null;camera=null;settling=null;pulse=null;
+    };
     stage.append(svg,search,zoomCtl,spotlight,menu);
     stage.setPreferences(prefs);view();
-    if(pickedTag&&ensureTag(pickedTag)){picked=pickedTag;focusConnections();renderPanel();updateAppearance();}
-    fit(false);
+    const saved=options.savedView;
+    if(saved&&Number.isFinite(saved.zoom)&&Number.isFinite(saved.pan?.x)&&Number.isFinite(saved.pan?.y))
+      cameraTo(saved.zoom,{...saved.pan},false);
+    else fit(false);
+    if(pickedTag&&ensureTag(pickedTag)){
+      picked=pickedTag;focusConnections();renderPanel();updateAppearance();
+    }
     return stage;
   }
 
