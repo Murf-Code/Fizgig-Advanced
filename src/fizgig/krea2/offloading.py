@@ -647,6 +647,62 @@ class ModelOffloader(Offloader):
         self._submit_move_blocks(blocks, block_idx_to_cpu, block_idx_to_cuda)
 
 
+@dataclass(frozen=True)
+class StreamHostPlan:
+    """Initial allocation policy, not a guarantee against later OS memory pressure."""
+    direct: bool
+    staging_slots: int
+    pinned_bytes: int
+    reserve_bytes: int
+    reason: str
+
+
+def plan_stream_host_memory(block_bytes, streaming_blocks, ring_slots, direct_requested,
+                            available_bytes, total_bytes):
+    """Budget pinned allocations independently of the GPU ring.
+
+    Reserve RAM for the OS and one temporary pageable block. Direct allocation
+    preallocates all pinned masters before changing block residency. Staged
+    allocation only pins the pool; the pageable masters replace existing model
+    storage over time. This is a conservative pinning budget, not a prediction
+    of total process RSS or Windows shared GPU memory.
+    """
+    if min(block_bytes, streaming_blocks, ring_slots) <= 0:
+        raise ValueError("Streaming memory plan requires positive block size and counts")
+    if available_bytes is None or total_bytes is None:
+        return StreamHostPlan(False, 1, block_bytes, 0,
+                              "host memory information unavailable; minimum staged pool")
+    if min(available_bytes, total_bytes) < 0:
+        raise ValueError("Host memory counters must be nonnegative")
+    reserve = max(6 * 2**30, int(total_bytes * 0.15))
+    budget = max(0, min(available_bytes, total_bytes) - reserve - block_bytes)
+    if direct_requested and block_bytes * streaming_blocks <= budget:
+        return StreamHostPlan(True, 0, block_bytes * streaming_blocks, reserve,
+                              "requested direct masters fit host pinning budget")
+    slots = min(ring_slots, budget // block_bytes)
+    if slots < 1:
+        return StreamHostPlan(False, 0, 0, reserve,
+                              "insufficient available RAM for even one pinned staging block")
+    reason = ("direct masters exceed host pinning budget; using staged transfer"
+              if direct_requested else "staged transfer")
+    if slots < ring_slots:
+        reason += "; reduced pinned pool independently of GPU ring"
+    return StreamHostPlan(False, slots, slots * block_bytes, reserve, reason)
+
+
+def _stream_host_memory():
+    try:
+        import psutil
+        vm = psutil.virtual_memory()
+        return vm.available, vm.total
+    except (ImportError, OSError, RuntimeError, AttributeError):
+        return None, None
+
+
+def _allocate_pinned_flat(nbytes, device):
+    return torch.empty(nbytes, dtype=torch.uint8, device="cpu").pin_memory(device=device)
+
+
 class _DirectCopier:
     """
     Transfer engine for ``LoRAStreamOffloader`` when the masters are *pinned*: copies a flat pinned host
@@ -732,7 +788,7 @@ class _StagedCopier:
 
     def _ensure_staging(self, nbytes: int):
         if self._staging is None:
-            self._staging = [torch.empty(nbytes, dtype=torch.uint8).pin_memory(device=self.device) for _ in range(self.num_staging)]
+            self._staging = [_allocate_pinned_flat(nbytes, self.device) for _ in range(self.num_staging)]
             self._staging_free = [None] * self.num_staging
 
     def _run(self, dst_flat: torch.Tensor, src_flat: torch.Tensor, gate_event):
@@ -935,6 +991,7 @@ class LoRAStreamOffloader:
         self.in_slot = [None] * self.B  # slot -> block_idx currently bound to this slot (or None)
         self.free_event = [None] * self.B  # slot -> cuda.Event recording when compute finished using the slot
         self._module_cache = {}  # block_idx -> [modules with swap weights]
+        self.host_memory_plan = None  # effective policy after first prepare
 
         self._wait_ctx = "fwd"  # context tag for wait/load timing ("fwd" while in the forward loop, "bwd" in hooks)
         if self.debug:
@@ -1052,6 +1109,69 @@ class LoRAStreamOffloader:
             for handle in getattr(self, "remove_handles", []):
                 handle.remove()
 
+    def _preallocate_host_buffers(self):
+        """Allocate pinned storage before touching any block weights.
+
+        A direct allocation failure can safely fall back to staged; a staged
+        allocation failure can retry with fewer buffers. Never retry after
+        partial model placement, and never silently switch to classic swap
+        (which has a different host-memory footprint).
+        """
+        weights = [m.weight.data for m in self._modules(self.stream_idx[0])]
+        self._layout = self._compute_layout(weights)
+        nbytes = self._layout[1]
+        available, total = _stream_host_memory()
+        plan = plan_stream_host_memory(nbytes, self.S, self.B, self.use_pinned_memory,
+                                      available, total)
+        direct_error = False
+        if plan.direct:
+            buffers = {}
+            try:
+                for i in self.stream_idx:
+                    buffers[i] = _allocate_pinned_flat(nbytes, self.device)
+            except (RuntimeError, MemoryError):
+                buffers.clear()
+                direct_error = True
+            else:
+                self.host_memory_plan = plan
+                logger.info("[block swap] %s: %s; pinned bytes=%d", self.block_type,
+                            plan.reason, plan.pinned_bytes)
+                return buffers
+        if direct_error:
+            available, total = _stream_host_memory()
+            plan = plan_stream_host_memory(nbytes, self.S, self.B, False, available, total)
+            logger.warning("[block swap] %s: direct pin allocation failed; trying staged", self.block_type)
+
+        self.use_pinned_memory = False
+        if plan.staging_slots == 0:
+            self.host_memory_plan = plan
+            raise RuntimeError(
+                f"{self.block_type} H2D-only block swap: {plan.reason}. "
+                "Free system RAM or reduce model precision/block size; no block weights were moved."
+            )
+        for slots in range(plan.staging_slots, 0, -1):
+            copier = _StagedCopier(self.device, num_staging=slots, debug=self.debug)
+            try:
+                copier._ensure_staging(nbytes)
+            except (RuntimeError, MemoryError):
+                # No work was submitted: it is safe to destroy this pool.
+                copier._pool.shutdown(wait=True)
+                logger.warning("[block swap] %s: could not pin %d staging slot(s)", self.block_type, slots)
+                continue
+            reason = plan.reason if not direct_error else "direct pin allocation failed; staged fallback"
+            if slots != plan.staging_slots:
+                reason += "; reduced staging pool after allocation failure"
+            self.host_memory_plan = StreamHostPlan(False, slots, slots * nbytes,
+                                                    plan.reserve_bytes, reason)
+            self.copier = copier
+            logger.info("[block swap] %s: %s; pinned bytes=%d, staging=%d, GPU ring=%d",
+                        self.block_type, reason, slots * nbytes, slots, self.B)
+            return {}
+        raise RuntimeError(
+            f"{self.block_type} H2D-only block swap: cannot allocate one pinned staging block "
+            f"({nbytes / 2**20:.1f} MiB). Free system RAM and retry; no block weights were moved."
+        )
+
     def prepare_block_devices_before_forward(self, blocks: list[nn.Module]):
         if self.S == 0:
             return
@@ -1060,6 +1180,7 @@ class LoRAStreamOffloader:
             print(f"[{self.block_type}] Prepare block devices before forward (H2D-only)")
 
         first_time = not self.cpu_master  # device placement is only needed on the very first call
+        pinned_flats = self._preallocate_host_buffers() if first_time and self.cuda_available else {}
         cpu_device = torch.device("cpu")
         for i, b in enumerate(blocks):
             if not self.is_stream[i]:
@@ -1076,9 +1197,8 @@ class LoRAStreamOffloader:
                 weights = [m.weight.data for m in mods]
                 if self._layout is None:
                     self._layout = self._compute_layout(weights)  # first streaming block defines the shared layout
-                flat = torch.empty(self._layout[1], dtype=torch.uint8, device=cpu_device)
-                if self.use_pinned_memory and self.cuda_available:
-                    flat = flat.pin_memory(device=self.device)
+                flat = pinned_flats.pop(i) if i in pinned_flats else torch.empty(
+                    self._layout[1], dtype=torch.uint8, device=cpu_device)
                 master = []
                 for m, view in zip(mods, self._flat_views(flat, weights)):
                     view.copy_(m.weight.data)  # one-time D2H into the flat master
