@@ -12125,6 +12125,7 @@ async function loadCaptions() {
     S.cap.studioSelectionAnchor=null;
     S.cap.studioPath=null;
     S.cap.studioQuery="";
+    S.cap.studioConstellationReturn=null;
     S.cap.studioLearningFilter="all";
     // Chronological history is scoped to one dataset/extension, never write to
     // another dataset when the Start tab's folder changes.
@@ -16219,6 +16220,10 @@ function renderCaptionStudio(host,items,ext){
     "aria-label":"Caption Workbench visual explorer"});
   let mountedExploreView=null;
   let exploreGeneration=0;
+  const returnToCollection=btn("← Back to tag images",()=>openView("constellation"));
+  returnToCollection.classList.add("studio-tb-collection-return");
+  returnToCollection.hidden=true;
+  actionBar.prepend(returnToCollection);
   const clearExploreStage=()=>{
     ++exploreGeneration; // prevents stale worker results from mounting
     S.cap.studioGraphPending?.cancel?.();
@@ -16335,6 +16340,10 @@ function renderCaptionStudio(host,items,ext){
             }
             return matchingRows;
           };
+          const resume=S.cap.studioConstellationReturn?.key===datasetKey?
+            S.cap.studioConstellationReturn:null;
+          const collectionItems=(tag,peer)=>rowsForTag(tag)
+            .filter(({it,tags})=>it.size&&(!peer||tags.has(peer))).map(({it})=>it);
           const network=CaptionStudioViz.tagbenchConstellation(model,tag=>{
 
           S.cap.studioExplorePickedTag=tag;
@@ -16358,8 +16367,30 @@ function renderCaptionStudio(host,items,ext){
               S.cap.studioJumpToPath=first.path;
             }
           }
-          },S.cap.studioExplorePickedTag||null,{
+          },resume?resume.picked:S.cap.studioExplorePickedTag||null,{
             preferences:S.cap.studioConstellationPrefs,
+            resume,
+            thumbToken:TOKEN,
+            coverForTag:tag=>{
+              const index=model.covers?.get(tag);
+              if(index===undefined)return null;
+              const it=datasetItems[index];
+              return "/api/thumb?path="+encodeURIComponent(it.path)+"&size=128&t="+
+                encodeURIComponent(TOKEN)+"&v="+(S.cap.studioThumbRevisions?.get(it.path)||0);
+            },
+            collectionItems,
+            editCollectionImage:(it,state)=>{
+              if(!pickImage(it,null,datasetItems))return;
+              S.cap.studioConstellationReturn={...state,key:datasetKey,revision};
+              // Keep the edited image in the editor even if its tag is removed.
+              $("capSearch").value="";
+              $("capFilter").value="all";
+              S.cap.studioLearningFilter="all";
+              S.cap.studioQuery="";
+              S.cap.studioJumpToPath=it.path;
+              S.cap.studioExploreNeedRedraw=true;
+              openView("list");
+            },
             relationsForTag:tag=>{
               const related=new Map();
               for(const {tags} of rowsForTag(tag))
@@ -16389,6 +16420,10 @@ function renderCaptionStudio(host,items,ext){
             }
           });
           fullStage.replaceChildren(network);
+          if(resume&&network.resumeCollection){
+            S.cap.studioConstellationReturn=null;
+            network.resumeCollection({...resume,positions:resume.revision===revision?resume.positions:[]});
+          }
         };
         if(cache?.key===datasetKey&&cache.items===datasetItems&&cache.revision===revision){
           showGraph(cache.model);
@@ -16400,8 +16435,8 @@ function renderCaptionStudio(host,items,ext){
           if(pending?.key===datasetKey&&pending.items===datasetItems&&pending.revision===revision)
             work=pending.promise;
           else{
-            const allTags=datasetItems.filter(it=>studioCaptionMode(it)==="tags")
-              .map(it=>({tags:studioTokens(it.caption,"tags")}));
+            const allTags=datasetItems.flatMap((it,index)=>studioCaptionMode(it)==="tags"?
+              [{tags:studioTokens(it.caption,"tags"),coverIndex:it.size?index:undefined}]:[]);
             work=captionGraphModelAsync(allTags,categoryState);
             S.cap.studioGraphPending={key:datasetKey,items:datasetItems,revision,promise:work,
               cancel:()=>work.cancel?.()};
@@ -16422,6 +16457,7 @@ function renderCaptionStudio(host,items,ext){
         }
       }
     }
+    returnToCollection.hidden=view!=="list"||!S.cap.studioConstellationReturn;
     waterfallScaleControl.hidden=view!=="waterfall";
     actionBar.classList.toggle("has-waterfall-scale",view==="waterfall");
     learningToggle.hidden=view==="constellation";
