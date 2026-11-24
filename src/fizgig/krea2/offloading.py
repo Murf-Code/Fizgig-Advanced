@@ -1091,7 +1091,7 @@ class LoRAStreamOffloader:
 
     def _record(self):
         """The compute stream's 'done with this slot' event (None off CUDA: copies there are synchronous)."""
-        return torch.cuda.current_stream().record_event() if self.cuda_available else None
+        return torch.cuda.current_stream(self.device).record_event() if self.cuda_available else None
 
     def remove_hooks(self):
         """Detach backward hooks NOW, not at GC (see ModelOffloader.remove_hooks). Fizgig: also lets any copy still in
@@ -1103,6 +1103,41 @@ class LoRAStreamOffloader:
             for handle in getattr(self, "remove_handles", []):
                 handle.remove()
             self.remove_handles = []
+
+    def retire(self):
+        """Release this offloader at a between-step replacement/disable boundary.
+
+        Restore every streamed block to its own immutable master before dropping
+        ring storage. A pinned master must be copied to pageable memory, one
+        block at a time, so a replacement's budget does not include old pins.
+        Never leave a model Parameter bound to a retired GPU ring.
+        """
+        self.remove_hooks()
+        _synchronize_device(self.device)
+        for i, master in self.cpu_master.items():
+            self._bind(i, master)
+            flat = self.cpu_flat[i]
+            if flat.is_pinned():
+                pageable = torch.empty(flat.shape, dtype=flat.dtype, device="cpu")
+                pageable.copy_(flat)
+                for p, view in zip(master, self._flat_views(pageable, [p.data for p in master])):
+                    p.data = view
+                self.cpu_flat[i] = pageable
+        self.cpu_master.clear()
+        self.cpu_flat.clear()
+        self.ring_param = None
+        self.ring_flat = None
+        self.in_slot = [None] * self.B
+        self.free_event = [None] * self.B
+        self._module_cache.clear()
+        cop = self.copier
+        cop.reset()
+        if isinstance(cop, _StagedCopier):
+            cop._pool.shutdown(wait=True)
+            cop._staging = None
+            cop._staging_free = None
+        self.copier = None
+        _clean_memory_on_device(self.device)
 
     def __del__(self):
         if getattr(self, "supports_backward", False):
@@ -1180,6 +1215,12 @@ class LoRAStreamOffloader:
             print(f"[{self.block_type}] Prepare block devices before forward (H2D-only)")
 
         first_time = not self.cpu_master  # device placement is only needed on the very first call
+        if not first_time:
+            # Re-prepare is a phase boundary, not a normal step. All compute
+            # must have finished before clearing slot reuse events (including
+            # the tail slot which may have no subsequent H2D to gate on).
+            self.copier.sync()
+            _synchronize_device(self.device)
         pinned_flats = self._preallocate_host_buffers() if first_time and self.cuda_available else {}
         cpu_device = torch.device("cpu")
         for i, b in enumerate(blocks):
@@ -1273,10 +1314,10 @@ class LoRAStreamOffloader:
                 torch.cuda.current_stream(self.device).wait_stream(self.copier.copy_stream)
             return
         if not self.debug:
-            torch.cuda.current_stream().wait_event(ev)  # compute waits for H2D (GPU-side, does not block CPU)
+            torch.cuda.current_stream(self.device).wait_event(ev)  # compute waits for H2D (GPU-side, does not block CPU)
             return
         # debug: measure the actual GPU stall (idle time the compute stream spends on wait_event)
-        s = torch.cuda.current_stream()
+        s = torch.cuda.current_stream(self.device)
         c = self._cur[ctx]
         c["waits"] += 1
         if not ev.query():
