@@ -10,7 +10,7 @@ assert.match(css,/prefers-reduced-motion:reduce/);
 assert.doesNotMatch(app,/selection\.has\(image\)\|\|image===S\.cap\.studioPath/);
 assert.match(menu,/if\(S\.cap\.studioExploreMode==="list"\)\s*action\("Clear Selection"/);
 assert.match(menu,/if\(S\.cap\.studioExploreMode==="list"\)\{\s*action\("Copy Tags"[\s\S]*?action\("Paste Tags"/);
-assert.match(css,/border:1px solid rgba\(0,0,0,\.72\);padding:4px/);
+assert.match(css,/border:1px solid rgba\(0,0,0,\.72\);padding:3px/);
 assert.match(css,/linear-gradient\(135deg,#fff5c9,#f5d888 45%,#d3ac58\) padding-box/);
 assert.match(css,/-webkit-text-stroke:1px rgba\(0,0,0,\.9\)/);
 assert.match(css,/\.studio-tb-flow\{\s*display:flex;align-items:flex-start;gap:9px/);
