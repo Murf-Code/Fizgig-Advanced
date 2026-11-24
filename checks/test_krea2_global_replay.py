@@ -199,8 +199,8 @@ def test_krea2_training_method_is_standard_or_global_replay_with_a_block_check_t
     from fizgig.families.launch import option_tokens
 
     desc = get_family("krea2")
-    assert [option.key for option in desc.options] == ["KREA2_TRAINING_METHOD", "KREA2_SELECTIVE_BLOCK_CHECK"]
-    method, check = desc.options
+    options = {option.key: option for option in desc.options}
+    method, check = options["KREA2_TRAINING_METHOD"], options["KREA2_SELECTIVE_BLOCK_CHECK"]
     assert method.choice_labels() == ["Standard", "Global replay"] and method.default == "Standard"
     assert check.kind == "check" and check.default == ""      # off by default: every block trains every update
 

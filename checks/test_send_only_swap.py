@@ -551,3 +551,15 @@ def test_experimental_ring_override_respects_budget(monkeypatch):
     assert tight.offloader.num_blocks - tight.offloader.S + tight.offloader.B == 2
     monkeypatch.setenv("FIZGIG_EXPERIMENTAL_STREAM_RING", "invalid")
     assert _krea("send", swap=2).offloader.B == 2
+
+
+def test_swap_preference_changes_in_same_process():
+    from fizgig.families import launch
+    from fizgig.families.train import setup_parser
+    prefs = dict(launch.RECLAIM_PREF_DEFAULTS)
+    parser = setup_parser()
+    for enabled in (False, True, False, True):
+        prefs.update(launch.clean_reclaim_prefs({"send_only_block_swap": enabled, "send_only_force": True}))
+        args, _ = parser.parse_known_args(launch.send_only_flags(prefs))
+        assert args.send_only_swap is enabled
+        assert args.send_only_force is enabled

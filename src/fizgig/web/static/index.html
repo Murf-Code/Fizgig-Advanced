@@ -1014,6 +1014,9 @@
               <div class="field-row">
                 <button class="btn btn-primary" id="btnStart">Start Training</button>
                 <button class="btn" id="btnQueue" title="Checked like Start, then lined up: it starts when the runs before it finish">Add to queue</button>
+                 <label class="field-hint" title="Temporary Krea 2 correctness diagnostic"><input type="checkbox" id="streamSyncMode"> Test Mode</label>
+                 <button class="btn btn-primary" id="streamSyncQueue" type="button" style="display:none">Queue diagnostic</button>
+                 <span class="field-hint" id="streamSyncNote" role="status"></span>
                 <button class="btn btn-warning" id="btnPause">Pause</button>
                 <button class="btn" id="btnSampleNow" style="display:none" title="Make the previews now, after the current training step, without waiting for the epoch to end">Sample now</button>
                 <button class="btn btn-lilac is-off" id="btnImageLoss" style="display:none" title="Each training image's loss by epoch, against the rest of the dataset: which images are still being learned, which are done, and what the loss watch decided about each">Per-image loss</button>
@@ -2472,5 +2475,33 @@
   <script src="/caption_thumb_rail.js" onerror="fizgigRetry(this)"></script>
   <script src="/caption_remove_bridge.js" onerror="fizgigRetry(this)"></script>
   <script src="/app.js" onerror="fizgigRetry(this)"></script>
+  <style>body:has(#streamSyncMode:checked) #btnStart,body:has(#streamSyncMode:checked) #btnQueue{display:none!important}</style>
+  <script>
+    (function () {
+      const mode = document.getElementById("streamSyncMode"), queue = document.getElementById("streamSyncQueue");
+      const note = document.getElementById("streamSyncNote");
+      mode.addEventListener("change", () => {
+        queue.style.display = mode.checked ? "" : "none";
+        note.textContent = mode.checked ? "Krea 2 · INT8 · rank 32 · Muon · 22 swaps · seed 42" : "";
+      });
+      queue.addEventListener("click", async () => {
+        const folder = document.getElementById("imageFolder").value.trim();
+        if (!folder) { note.textContent = "Select your cached Krea 2 dataset on Start."; return; }
+        queue.disabled = true;
+        try {
+          const response = await fetch("/api/queue/stream-sync", {
+            method:"POST", headers:{"Content-Type":"application/json",
+              "X-Fizgig-Token":document.querySelector('meta[name="fizgig-token"]').content},
+            body:JSON.stringify({image_folder:folder})
+          });
+          const result = await response.json();
+          if (!result.ok) throw new Error(result.error || (result.problems || []).join("; ") || "Could not queue diagnostic");
+          mode.checked = false; mode.dispatchEvent(new Event("change"));
+          note.textContent = "Diagnostic queued. Report: " + result.report;
+        } catch (error) { note.textContent = error.message || String(error); }
+        finally { queue.disabled = false; }
+      });
+    })();
+  </script>
 </body>
 </html>

@@ -1219,8 +1219,49 @@ def _multi_person_notes(vals, image_folder, multi_person=True):
     return notes
 
 
+def _stream_sync_plan(values, image_folder):
+    """Test-branch-only diagnostic; never edits preferences or cache files."""
+    desc = get_family("krea2")
+    prefs = load_prefs()
+    name = str(values.get("LORA_NAME") or "")
+    if not re.fullmatch(r"stream-sync-[0-9]{8}-[0-9]{6}-[a-f0-9]{6}", name):
+        raise ValueError("Queue a new diagnostic using Test Mode.")
+    out = os.path.join(default_output_dir(), "stream_sync_diagnostics", name)
+    inputs = {"LORA_NAME": name, "LORA_OUTPUT_DIR": out}
+    plan = launch.LaunchPlan()
+    model = desc.model_path("dit", lambda k: pref_path(prefs, k))
+    root = pref_path(prefs, "cache_dir")
+    folder = str(image_folder or "").strip()
+    cache = launch.cache_dir_for(root, folder) if root else folder
+    import glob
+    if not os.path.isdir(folder):
+        plan.problems.append("Select the cached Krea 2 dataset on Start.")
+    if not model or not os.path.isfile(model):
+        plan.problems.append("Set the Krea 2 checkpoint in Preferences.")
+    if not cache or not glob.glob(os.path.join(glob.escape(cache), "*_krea2.safetensors")):
+        plan.problems.append("No Krea 2 latents found in " + str(cache) + ". Cache the dataset first.")
+    report = os.path.join(out, "stream-sync-report.json")
+    if os.path.exists(report):
+        plan.problems.append("This diagnostic already has a report. Queue a new Test Mode run.")
+    if not plan.problems:
+        cmd = [sys.executable, "-u", os.path.join(BASE_DIR, "scripts", "diagnose_stream_sync.py"),
+               "--model", model, "--cache", cache, "--steps", "3", "--rank", "32", "--swap", "22",
+               "--precision", "int8", "--optimizer", "muon", "--seed", "42", "--lr", "0.00025",
+               "--report", report, "--scratch", out]
+        plan.dirs.append(out)
+        plan.stages.append(launch.Stage("GPU correctness diagnostic", cmd))
+        plan.console.extend(["[test mode] INT8 / rank 32 / Muon / 22 swaps / seed 42.",
+                             "[test mode] Classic twice, fast twice, fast serialized; three steps each.",
+                             "[test mode] Report: " + report])
+    return desc, inputs, plan
+
+
 def _plan(family_key, values, image_folder, resume="", ft_continue=None, models=None):
     """models: {pref key: path} in place of Preferences' (a run moved here trains on the files it was checked on)."""
+    if (values or {}).get("__stream_sync") is True:
+        if family_key != "krea2" or resume or ft_continue:
+            raise ValueError("Test Mode is a fresh Krea 2 diagnostic, not a resumed run.")
+        return _stream_sync_plan(values, image_folder)
     if family_key == refmod.KEY:
         return _refmod_plan(values, image_folder)
     desc = get_family(family_key)
@@ -2133,8 +2174,8 @@ def _start_one(family_key, values, image_folder, resume, ft_continue, note, mode
                 f.write(text)
     except OSError as e:
         return {"error": _folder_problem(e, out_dir)}
-    helpers.share_cache_plan(                # a training share can make the cache on the helper the same way
-        out_dir, inputs["LORA_NAME"], [s.cmd for s in plan.stages])
+    if not (values or {}).get("__stream_sync"):
+        helpers.share_cache_plan(out_dir, inputs["LORA_NAME"], [s.cmd for s in plan.stages])
     for f in (SLIDER_LIVE, SLIDER_LIVE_APPLIED):     # an earlier run's live slider prompts are not this one's (a resume
         try:                                         # has the latest in its own values); cleared before it launches, so
             os.remove(os.path.join(out_dir, f))      # an Apply while it loads waits for its first epoch, not deleted
@@ -2148,7 +2189,8 @@ def _start_one(family_key, values, image_folder, resume, ft_continue, note, mode
         _run.update(state="starting", stage="", lora=inputs["LORA_NAME"], output_dir=out_dir, family=family_key,
                     values=dict(values), image_folder=image_folder, pause=False, save_stop=False, save_stop_note="", early_stop="",
                     resume="", resume_mode="", recaching=recaching)
-    save_state({"last_run": {"family": family_key, "values": values, "image_folder": image_folder}})
+    if not (values or {}).get("__stream_sync"):
+        save_state({"last_run": {"family": family_key, "values": values, "image_folder": image_folder}})
     if _startup["offer"] or load_state().get("interrupted"):
         _startup_done()                              # a run is starting: the start-up question is answered
     hid = history.start("web", family_key, inputs["LORA_NAME"], out_dir, image_folder,
@@ -2344,7 +2386,7 @@ def _run_stages(stages, out_dir):
             with _lock:
                 _run.update(state="failed", proc=None, ended_at=time.time())
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
-            if kind and _oom_recover(kind, stage.name, mem.plan):
+            if kind and not (_run.get("values") or {}).get("__stream_sync") and _oom_recover(kind, stage.name, mem.plan):
                 return                           # it carries on by itself: the queue waits for that run
             webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
             return
@@ -2383,7 +2425,7 @@ def _run_stages(stages, out_dir):
                 else "\n⏸ Paused. Resume continues from the saved state.\n") if paused else
                f"\n✔ Run complete. {_run['early_stop']}\n" if _run.get("early_stop") else "\n✔ Run complete.\n")
     from fizgig.web import helpers as _h
-    if not paused and not webqueue.status()["items"] and not _h.moved_in_waiting(out_dir):
+    if not paused and not (_run.get("values") or {}).get("__stream_sync") and not webqueue.status()["items"] and not _h.moved_in_waiting(out_dir):
         from fizgig.web import pod_stop                    # the last run done: a pod can stop billing (a run moved
         pod_stop.maybe_start(load_prefs(), append_log)     # here waits until its computer has taken it back)
 
@@ -5042,9 +5084,26 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": f"{name} is already there."}, 400)
                 os.makedirs(new)
                 return self.json({"ok": True, "path": new})
+            if path == "/api/queue/stream-sync":
+                folder = str(b.get("image_folder") or "").strip()
+                name = "stream-sync-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+                vals = {"__stream_sync": True, "LORA_NAME": name, "MAX_TRAIN_EPOCHS": "1"}
+                _, inputs, plan = _stream_sync_plan(vals, folder)
+                if plan.problems:
+                    return self.json({"problems": plan.problems}, 400)
+                item = webqueue.add("krea2", vals, folder, name, inputs["LORA_OUTPUT_DIR"])
+                with _lock:
+                    idle = not (_run["proc"] is not None and _run["proc"].poll() is None) and (
+                        _run["state"] not in ("starting", "running", "paused"))
+                if idle and not webqueue.status()["held"]:
+                    webqueue.start_next(_queue_starter)
+                return self.json({"ok": True, "id": item["id"],
+                                  "report": os.path.join(inputs["LORA_OUTPUT_DIR"], "stream-sync-report.json")})
             if path in ("/api/queue/add", "/api/queue/update"):   # Add to queue (or a queued run edited): checked
                 fam, vals, folder = b.get("family", ""), b.get("values") or {}, b.get("image_folder") or ""  # like Start
                 editing = str(b.get("id") or "") if path == "/api/queue/update" else ""
+                if editing and ((webqueue.get(editing) or {}).get("values") or {}).get("__stream_sync"):
+                    return self.json({"error": "Test Mode uses fixed settings. Remove it and queue a new one."}, 400)
                 if path == "/api/queue/update" and webqueue.get(editing) is None:
                     return self.json({"error": "That run has left the queue (it started, or was removed) - add "
                                                "this as a new one instead."}, 400)
