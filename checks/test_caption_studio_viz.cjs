@@ -230,6 +230,48 @@ try {
   scroll(largeAtlas,newHeader,100,1020);
   assert.equal(gallery(largeAtlas),undefined,"Reverse scroll over the header works even deep in the gallery");
 
+  // One shared timer, actual href advancement, pause while Waterfall
+  // is open, and cleanup when the map is disposed.
+  const oldInterval=global.setInterval,oldClear=global.clearInterval,oldMatch=global.matchMedia;
+  let slideTick=null,starts=0,stops=0,waterfallState=null;
+  try{
+    global.setInterval=(fn,ms)=>{assert.equal(ms,2000);slideTick=fn;starts++;return starts;};
+    global.clearInterval=()=>{slideTick=null;stops++;};
+    global.matchMedia=()=>({matches:false});
+    const rotating=Viz.tagbenchConstellation(graph,()=>{},"paws",{
+      ...options,preferences:{elasticity:0},
+      coverForTag:(tag,frame=0)=>tag==="paws"?"/slide-"+frame:null,
+      coverCountForTag:tag=>tag==="paws"?3:0,
+      waterfallScale:()=>80,
+      openWaterfall:(tag,peer,state)=>{waterfallState={tag,peer,state};}
+    });
+    rotating.isConnected=true;
+    rotating.setPreferences({elasticity:0});
+    assert.equal(starts,1);
+    const cover=allIn(rotating).find(node=>node.attrs.href==="/slide-0");
+    assert.ok(cover);
+    slideTick();assert.equal(cover.attrs.href,"/slide-1");
+    slideTick();assert.equal(cover.attrs.href,"/slide-2");
+    slideTick();assert.equal(cover.attrs.href,"/slide-0");
+    rotating.setPreferences({elasticity:0});
+    assert.equal(starts,1,"Repeated appearance updates must not start another timer");
+    byLabel(rotating,"Open paws in Waterfall").handlers.click();
+    assert.equal(waterfallState.tag,"paws");
+    assert.equal(waterfallState.state.picked,"paws");
+    byLabel(rotating,"View images tagged paws").handlers.click();
+    assert.equal(slideTick,null);
+    assert.equal(stops,1);
+    byLabel(rotating,"Open this collection in Waterfall").handlers.click();
+    assert.equal(waterfallState.state.imageIndex,0);
+    rotating.handlers.keydown({key:"Escape",preventDefault(){},stopPropagation(){}});
+    assert.equal(starts,2);
+    rotating.dispose();
+    assert.equal(stops,2);
+    assert.equal(slideTick,null);
+  } finally {
+    global.setInterval=oldInterval;global.clearInterval=oldClear;global.matchMedia=oldMatch;
+  }
+
 } finally {
   global.document=savedDoc;
   global.window=savedWin;

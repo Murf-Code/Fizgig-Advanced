@@ -1052,8 +1052,9 @@ const CaptionStudioViz = (() => {
       }
       if(options.collectionItems)button(preview,"View shared images","View shared images in Constellation",
         ()=>openCollection(picked,activePair)).className="studio-tb-pair-action";
-      if(options.openPair)button(preview,"Open in Waterfall","Open shared images in Waterfall",
-        ()=>options.openPair(picked,activePair)).className="studio-tb-pair-action";
+      if(options.openWaterfall||options.openPair)button(preview,"Open in Waterfall","Open shared images in Waterfall",
+        ()=>options.openWaterfall?options.openWaterfall(picked,activePair,collectionState(picked,activePair)):
+          options.openPair(picked,activePair)).className="studio-tb-pair-action";
     }
     function inspectPair(tag){
       const fromPanel=spotlight.contains(document.activeElement);
