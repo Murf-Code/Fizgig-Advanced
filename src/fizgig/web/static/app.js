@@ -13614,7 +13614,7 @@ function renderCaptionStudio(host,items,ext){
   const tintTagField=field=>{
     const tag=field.value.trim();
     if(vocabulary.has(tag.toLocaleLowerCase()))
-      field.style.color=CaptionStudioViz.colorForTag(tag,categoryState);
+      field.style.color="color-mix(in srgb, "+CaptionStudioViz.colorForTag(tag,categoryState)+" 40%, var(--text-primary))";
     else field.style.removeProperty("color");
   };
   const createTagFilterBar=()=>{
@@ -13636,7 +13636,10 @@ function renderCaptionStudio(host,items,ext){
       for(const p of CaptionStudioTags.searchParts(field.value,vocabulary)){
         const span=el("span",{text:p.text});
         if(p.operator)span.classList.add("studio-query-operator");
-        else if(p.tag)span.style.color=CaptionStudioViz.colorForTag(p.tag,categoryState);
+        else if(p.tag){
+          span.classList.add("studio-query-tag");
+          span.style.setProperty("--studio-query-tag-color",CaptionStudioViz.colorForTag(p.tag,categoryState));
+        }
         mirror.append(span);
       }
       mirror.append(document.createTextNode("\u200b"));

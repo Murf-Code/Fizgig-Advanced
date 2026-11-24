@@ -1,0 +1,13 @@
+"use strict";
+const assert=require("node:assert/strict"),fs=require("node:fs");
+const css=fs.readFileSync("src/fizgig/web/static/style.css","utf8");
+const app=fs.readFileSync("src/fizgig/web/static/app.js","utf8");
+const rules=css.slice(css.indexOf("/* Search syntax coloring is a paint-only overlay"));
+assert.match(rules,/studio-query-mirror\{[^}]*z-index:2;pointer-events:none/);
+assert.match(rules,/textarea\.studio-tag-query\{[^}]*z-index:1;background:transparent!important/);
+assert.match(rules,/studio-field-clear\{z-index:3\}/);
+assert.match(rules,/studio-query-tag\{[^}]*40%,var\(--text-primary\)/);
+assert.match(rules,/is-composing>\.studio-query-mirror\{visibility:hidden\}/);
+assert.match(app,/span\.style\.setProperty\("--studio-query-tag-color",CaptionStudioViz\.colorForTag/);
+assert.match(app,/field\.style\.color="color-mix\(in srgb, "\+CaptionStudioViz\.colorForTag/);
+console.log("Tag query layering, color contrast, native input and IME rules passed");

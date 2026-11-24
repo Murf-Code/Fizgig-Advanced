@@ -6970,3 +6970,23 @@ body.caption-glass-ui .studio-image-context-menu .studio-danger-action:not(:disa
 #tab-captions .studio-tb-search{width:min(230px,45%)}
 #tab-captions .studio-tb-search input{padding:8px 10px;font-size:13px}
 #tab-captions .studio-tb-zoom button{min-width:32px;min-height:32px;font-size:18px}
+
+/* Search syntax coloring is a paint-only overlay, never behind the native input.
+   Keep selection/caret and IME input native; icons stay above both layers. */
+#tab-captions .studio-accent-field.studio-query-field{isolation:isolate}
+#tab-captions .studio-query-field>.studio-query-mirror{
+  position:relative;z-index:2;pointer-events:none;color:var(--text-primary);
+}
+#tab-captions .studio-query-field>textarea.studio-tag-query,
+#tab-captions.caption-theme-glass .studio-query-field>textarea.studio-tag-query{
+  position:relative;z-index:1;background:transparent!important;
+  backdrop-filter:none!important;-webkit-backdrop-filter:none!important;
+}
+#tab-captions .studio-query-field .studio-query-tag{
+  color:var(--text-primary);
+  color:color-mix(in srgb,var(--studio-query-tag-color,var(--text-primary)) 40%,var(--text-primary));
+}
+#tab-captions .studio-query-field .studio-query-operator{color:var(--text-secondary)}
+#tab-captions .studio-query-field>.studio-field-icon,
+#tab-captions .studio-query-field>.studio-field-clear{z-index:3}
+#tab-captions .studio-query-field.is-composing>.studio-query-mirror{visibility:hidden}
