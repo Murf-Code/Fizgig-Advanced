@@ -13,3 +13,13 @@ assert.match(app,/elasticity\.value="20"/);
 assert.match(app,/setPreferences\?\.\(constellation\)/);
 assert.match(css,/studio-tb-constellation\.no-celestial::before/);
 console.log("Constellation UX integration checks passed");
+
+assert.match(graph,/const e=addEdge\(\{a:picked,b:tag,w,ribbon:true,strength\}/);
+assert.match(graph,/v\.label\.setAttribute\("visibility","visible"\)/);
+assert.match(graph,/v\.number\.textContent=String\(picked/);
+assert.match(graph,/stroke:"var\(--text-primary\)","vector-effect":"non-scaling-stroke","stroke-width":"1.5"/);
+assert.doesNotMatch(graph,/v\.star/);
+assert.match(graph,/prefs\.glassNodes\?/);
+assert.doesNotMatch(graph,/hoverConnections/);
+assert.match(graph,/html\("span","",String\(w\),item\)/);
+console.log("Classic solid nodes, count labels, white selection ring and tapered ribbons restored");

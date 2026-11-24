@@ -6968,10 +6968,10 @@ body.caption-glass-ui .studio-image-context-menu .studio-danger-action:not(:disa
 #tab-captions .studio-tb-orb{outline:none}
 #tab-captions .studio-tb-orb:focus-visible .studio-tb-orb-core{stroke:var(--accent);stroke-width:2;vector-effect:non-scaling-stroke}
 #tab-captions .studio-tb-orb-core{transition:none}
-#tab-captions .studio-tb-cluster{max-height:48%;width:min(310px,44%);padding:10px 12px}
+#tab-captions .studio-tb-cluster{max-height:45%;width:min(190px,40%);padding:10px 12px}
 #tab-captions .studio-tb-cluster p>button{border:0;background:transparent;color:var(--text-secondary);font-size:20px;cursor:pointer;padding:0 3px;line-height:1}
 #tab-captions .studio-tb-panel-caption{color:var(--text-secondary);font-size:11px;margin-bottom:9px}
-#tab-captions .studio-tb-cluster li{display:block;margin:6px 0}
+#tab-captions .studio-tb-cluster li{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:0}
 #tab-captions .studio-tb-related-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
 #tab-captions .studio-tb-related-row>button{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #tab-captions .studio-tb-related-row>span{font-size:11px;white-space:nowrap;font-variant-numeric:tabular-nums}

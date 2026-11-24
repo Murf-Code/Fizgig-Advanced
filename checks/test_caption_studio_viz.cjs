@@ -10,8 +10,8 @@ assert.equal(Viz.waterfallScale(500),150);
 assert.ok(Viz.waterfallColumns(1200,50)>Viz.waterfallColumns(1200,100));
 assert.ok(Viz.waterfallColumns(1200,100)>Viz.waterfallColumns(1200,150));
 assert.equal(Viz.waterfallColumns(250,150),1);
-assert.deepEqual(Viz.constellationPrefs(),{elasticity:20,glass:true,celestial:true});
-assert.deepEqual(Viz.constellationPrefs({elasticity:0,glass:false,celestial:false}),{elasticity:0,glass:false,celestial:false});
+assert.deepEqual(Viz.constellationPrefs(),{elasticity:20,glassNodes:false,celestial:true});
+assert.deepEqual(Viz.constellationPrefs({elasticity:0,glassNodes:true,celestial:false}),{elasticity:0,glassNodes:true,celestial:false});
 assert.deepEqual(Viz.elasticOffset(1000,0,1,20),{x:5,y:0});
 assert.deepEqual(Viz.elasticOffset(1000,0,.2,20),{x:1,y:0});
 assert.deepEqual(Viz.elasticOffset(1000,0,1,0),{x:0,y:0});
@@ -104,3 +104,5 @@ assert.equal(Viz.colorForTag("lion",{tags:{},colors:{}}),
 Viz.setTagbenchPalette(null);
 
 console.log("Caption Studio visualization co-occurrence and double-click checks passed");
+
+assert.equal(Viz.constellationPrefs({glass:true}).glassNodes,false,"old default glass preference must not override restored appearance");

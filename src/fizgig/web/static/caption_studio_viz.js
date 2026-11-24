@@ -576,7 +576,7 @@ const CaptionStudioViz = (() => {
   const constellationPrefs=p=>{
     const n=Number(p?.elasticity??20);
     return {elasticity:Number.isFinite(n)?Math.min(100,Math.max(0,n)):20,
-      glass:p?.glass!==false,celestial:p?.celestial!==false};
+      glassNodes:p?.glassNodes===true,celestial:p?.celestial!==false};
   };
   // Bound the tug in screen pixels. It is a transient visual offset, never a
   // change to the stored graph layout or to the co-occurrence data.
@@ -609,14 +609,14 @@ const CaptionStudioViz = (() => {
     const gradient=make("linearGradient",{id:"tb-sunlight",x1:"0%",y1:"0%",x2:"100%",y2:"100%"},defs);
     for(const [offset,color] of [["0%","#fffbe5"],["45%","#fff0b3"],["100%","#e4be72"]])
       make("stop",{offset,"stop-color":color},gradient);
-    const baseLayer=make("g"),focusLayer=make("g"),hoverLayer=make("g"),nodeLayer=make("g"),labelLayer=make("g");
+    const baseLayer=make("g"),focusLayer=make("g"),nodeLayer=make("g"),labelLayer=make("g");
     const nodes=model.nodes.map(n=>({...n,ox:0,oy:0}));
     const at=new Map(nodes.map(n=>[n.tag,n])),all=new Map(model.all.map(n=>[n.tag,n]));
     const adjacency=new Map(nodes.map(n=>[n.tag,new Map()]));
     for(const e of model.edges){adjacency.get(e.a)?.set(e.b,e.w);adjacency.get(e.b)?.set(e.a,e.w);}
     const vals=nodes.map(n=>n.links),lo=Math.min(...vals),hi=Math.max(...vals);
-    const visual=new Map(),baseEdges=[],focusEdges=[],hoverEdges=[];
-    let prefs=constellationPrefs(options.preferences),zoom=1,pan={x:0,y:0},picked=null,hover=null,drag=null,rare=null;
+    const visual=new Map(),baseEdges=[],focusEdges=[];
+    let prefs=constellationPrefs(options.preferences),zoom=1,pan={x:0,y:0},picked=null,drag=null,rare=null;
     let serial=0,shared=new Map(),frame=null,settling=null,camera=null,pulse=null,disposed=false,dirty=new Set(),lastClick=null;
     const media=typeof matchMedia==="function"?matchMedia("(prefers-reduced-motion: reduce)"):null;
     const reduced=()=>!!media?.matches;
@@ -634,12 +634,20 @@ const CaptionStudioViz = (() => {
     const edgeGeometry=edge=>{
       const a=at.get(edge.a),b=at.get(edge.b);if(!a||!b)return;
       const p=position(a),q=position(b),dx=q.x-p.x,dy=q.y-p.y,len=Math.hypot(dx,dy)||1;
-      const start=Math.min(len/2,radius(a)),end=Math.min(len/2,radius(b));
-      edge.el.setAttribute("x1",p.x+dx/len*start);edge.el.setAttribute("y1",p.y+dy/len*start);
-      edge.el.setAttribute("x2",q.x-dx/len*end);edge.el.setAttribute("y2",q.y-dy/len*end);
+      const ux=dx/len,uy=dy/len;
+      if(edge.ribbon){
+        const begin=radius(a)+1.2/zoom,end=radius(b)+2/zoom;
+        if(len<=begin+end+1){edge.el.setAttribute("d","");return;}
+        const x1=p.x+ux*begin,y1=p.y+uy*begin,x2=q.x-ux*end,y2=q.y-uy*end;
+        const px=-uy,py=ux,wa=.25/zoom,wb=(.45+edge.strength*5.6)/zoom;
+        edge.el.setAttribute("d",`M ${x1+px*wa} ${y1+py*wa} L ${x2+px*wb} ${y2+py*wb} L ${x2-px*wb} ${y2-py*wb} L ${x1-px*wa} ${y1-py*wa} Z`);
+      }else{
+        edge.el.setAttribute("x1",p.x);edge.el.setAttribute("y1",p.y);
+        edge.el.setAttribute("x2",q.x);edge.el.setAttribute("y2",q.y);
+      }
     };
     const addEdge=(e,layer,kind)=>{
-      const line=make("line",{"vector-effect":"non-scaling-stroke","pointer-events":"none",class:"studio-tb-edge "+kind},layer);
+      const line=make(e.ribbon?"path":"line",{"vector-effect":"non-scaling-stroke","pointer-events":"none",class:"studio-tb-edge "+kind},layer);
       const rec={...e,el:line};edgeGeometry(rec);return rec;
     };
     for(const e of model.chosen)if(at.has(e.a)&&at.has(e.b))baseEdges.push(addEdge(e,baseLayer,"is-base"));
@@ -649,17 +657,16 @@ const CaptionStudioViz = (() => {
       const p=position(n),r=radius(n),sz=12*(zoom>1?1/Math.pow(zoom,.22):1)/zoom;
       v.g.setAttribute("transform","translate("+p.x+" "+p.y+")");
       v.core.setAttribute("r",r);v.halo.setAttribute("r",r*1.34);
-      v.ring.setAttribute("r",r+4/zoom);
-      v.star.setAttribute("transform","translate("+(r*.78+4/zoom)+" "+(-r*.78-4/zoom)+") scale("+1/zoom+")");
-      v.number.setAttribute("font-size",Math.max(4/zoom,r*(v.number.textContent.length>=3?.50:.70)));
-      v.label.setAttribute("x",p.x+r+5/zoom);v.label.setAttribute("y",p.y+sz*.32);
-      v.label.setAttribute("font-size",sz);v.label.setAttribute("stroke-width",Math.max(sz*.24,1.5/zoom));
+      v.ring.setAttribute("r",r+6/zoom);
+      v.number.setAttribute("font-size",r*(v.number.textContent.length>=3?.48:v.number.textContent.length>=2?.58:.70));
+      v.label.setAttribute("x",p.x+r+6/zoom);v.label.setAttribute("y",p.y+sz*.32);
+      v.label.setAttribute("font-size",sz);v.label.setAttribute("stroke-width",Math.max(sz*.28,2/zoom));
       v.ripple.setAttribute("r",r+4/zoom+(pulse?.tag===n.tag?pulse.amount*13/zoom:0));
     };
     const updateGeometry=(changed=null)=>{
       if(!changed){for(const n of at.values())nodeGeometry(n);}
       else for(const tag of changed){const n=at.get(tag);if(n)nodeGeometry(n);}
-      for(const e of [...baseEdges,...focusEdges,...hoverEdges])if(!changed||changed.has(e.a)||changed.has(e.b))edgeGeometry(e);
+      for(const e of [...baseEdges,...focusEdges])if(!changed||changed.has(e.a)||changed.has(e.b))edgeGeometry(e);
     };
     function createNode(n){
       const id="tb-orb-"+serial++;
@@ -670,14 +677,14 @@ const CaptionStudioViz = (() => {
       make("title",{},g).textContent=n.tag+" · "+n.count+" images";
       const halo=make("circle",{fill:n.color,opacity:0,class:"studio-tb-orb-halo"},g);
       const ripple=make("circle",{fill:"none",stroke:"url(#tb-sunlight)","vector-effect":"non-scaling-stroke","stroke-width":"1.2",opacity:0,"pointer-events":"none"},g);
-      const ring=make("circle",{fill:"none",stroke:"url(#tb-sunlight)","vector-effect":"non-scaling-stroke","stroke-width":"2",opacity:0,"pointer-events":"none"},g);
+      const ring=make("circle",{fill:"none",stroke:"var(--text-primary)","vector-effect":"non-scaling-stroke","stroke-width":"1.5",opacity:0,"pointer-events":"none"},g);
       const core=make("circle",{fill:n.color,class:"studio-tb-orb-core"},g);
       const number=make("text",{"text-anchor":"middle","dominant-baseline":"central",fill:"var(--text-on-light)","font-weight":700,"pointer-events":"none"},g);
-      const star=make("path",{d:"M0 -7Q1 -1 7 0Q1 1 0 7Q-1 1 -7 0Q-1 -1 0 -7Z",fill:"url(#tb-sunlight)",stroke:"#141416","stroke-width":"1",opacity:0,"pointer-events":"none"},g);
-      const label=make("text",{fill:n.color,"font-weight":650,stroke:"var(--bg-deep)","paint-order":"stroke","pointer-events":"none"},labelLayer);label.textContent=n.tag;
-      visual.set(n.tag,{g,core,halo,ripple,ring,number,star,label,grad,id});
-      g.addEventListener("pointerenter",()=>{if(drag)return;hover=n.tag;hoverConnections();updateAppearance();});
-      g.addEventListener("pointerleave",()=>{if(hover===n.tag){hover=null;hoverConnections();updateAppearance();}});
+      const label=make("text",{fill:n.color,"font-weight":700,stroke:"var(--bg-deep)","paint-order":"stroke","pointer-events":"none"},labelLayer);label.textContent=n.tag;
+      visual.set(n.tag,{g,core,halo,ripple,ring,number,label,grad,id});
+      // Hover is cosmetic; only deliberate selection reveals relationships.
+      g.addEventListener("pointerenter",()=>{if(!drag)halo.setAttribute("opacity",".24");});
+      g.addEventListener("pointerleave",()=>halo.setAttribute("opacity","0"));
       g.addEventListener("pointerdown",e=>{
         if(e.button!==0)return;e.stopPropagation();dismissMenu();cancelMotion();
         const p=point(e);drag={kind:"node",tag:n.tag,dx:p.x-n.x,dy:p.y-n.y,x:e.clientX,y:e.clientY,moved:false};
@@ -713,69 +720,48 @@ const CaptionStudioViz = (() => {
       focusLayer.replaceChildren();focusEdges.length=0;
       shared=picked?relationMap(picked):new Map();
       if(picked&&at.has(picked))for(const [tag,w] of shared)if(at.has(tag)){
-        const e=addEdge({a:picked,b:tag,w},focusLayer,"is-focused");
         const strength=Math.min(1,w/Math.max(1,at.get(picked).count));
-        e.el.setAttribute("stroke",at.get(tag).color);e.el.setAttribute("stroke-opacity",.22+strength*.73);
-        e.el.setAttribute("stroke-width",.7+strength*2.5);focusEdges.push(e);
-      }
-    }
-    function hoverConnections(){
-      hoverLayer.replaceChildren();hoverEdges.length=0;
-      if(!hover||hover===picked||!at.has(hover))return;
-      for(const [tag,w] of relationMap(hover))if(at.has(tag)){
-        const e=addEdge({a:hover,b:tag,w},hoverLayer,"is-hovered");
-        const strength=Math.min(1,w/Math.max(1,at.get(hover).count));
-        e.el.setAttribute("stroke",at.get(tag).color);e.el.setAttribute("stroke-opacity",.16+strength*.54);
-        e.el.setAttribute("stroke-width",.7+strength*1.4);hoverEdges.push(e);
+        const e=addEdge({a:picked,b:tag,w,ribbon:true,strength},focusLayer,"is-focused");
+        e.el.setAttribute("fill",at.get(tag).color);
+        e.el.setAttribute("fill-opacity",.14+(1-Math.pow(1-strength,2))*.86);
+        focusEdges.push(e);
       }
     }
     function updateAppearance(){
-      const focused=hover||picked,neighbors=focused?relationMap(focused):null;
-      const rankLimit=zoom<.7?15:zoom<1.1?45:zoom<1.6?85:120;
+      const neighbors=picked?relationMap(picked):null;
       for(const e of baseEdges){
-        const touches=focused&&(e.a===focused||e.b===focused);
-        e.el.setAttribute("stroke",e.el.classList.contains("is-alike")?"var(--text-secondary)":at.get(e.a)?.color||"var(--text-muted)");
-        e.el.setAttribute("stroke-opacity",focused?(touches?.42:.045):e.el.classList.contains("is-alike")?.65:.23);
-        e.el.setAttribute("stroke-width",touches?1.3:.7);
-        if(e.el.classList.contains("is-alike"))e.el.setAttribute("stroke-dasharray","4 4");
+        const alike=e.el.classList.contains("is-alike");
+        const touches=picked&&(e.a===picked||e.b===picked);
+        e.el.setAttribute("stroke",alike?"var(--text-primary)":at.get(e.a)?.color||"var(--text-muted)");
+        e.el.setAttribute("stroke-opacity",alike?.9:picked?(touches?0:.08):.28);
+        e.el.setAttribute("stroke-width",alike?1.3:.7);
+        if(alike)e.el.setAttribute("stroke-dasharray","5 3");
       }
-      focusLayer.setAttribute("opacity",hover&&hover!==picked?".22":"1");
-      let rank=0;
       for(const n of at.values()){
-        const v=visual.get(n.tag),selected=n.tag===picked,related=!focused||n.tag===focused||neighbors?.has(n.tag);
-        v.g.setAttribute("opacity",related||selected?1:.15);
+        const v=visual.get(n.tag),selected=n.tag===picked,related=!picked||selected||neighbors?.has(n.tag);
+        v.g.setAttribute("opacity",related?1:.16);
         v.g.setAttribute("aria-pressed",String(selected));
         v.g.setAttribute("aria-label",n.tag+", "+n.count+" images"+(selected?", selected":""));
-        v.core.setAttribute("fill",prefs.glass?"url(#"+v.id+")":n.color);
-        v.halo.setAttribute("opacity",hover===n.tag?".18":"0");
-        v.ring.setAttribute("opacity",selected?"1":"0");v.star.setAttribute("opacity",selected?"1":"0");
+        v.core.setAttribute("fill",prefs.glassNodes?"url(#"+v.id+")":n.color);
+        v.ring.setAttribute("opacity",selected?"1":"0");
         v.number.textContent=String(picked&&n.tag!==picked&&shared.has(n.tag)?shared.get(n.tag):n.count);
-        v.label.setAttribute("opacity",related||selected?"1":".14");
-        v.label.setAttribute("visibility",selected||n.tag===hover||(focused&&related)||rank<rankLimit?"visible":"hidden");
-        rank++;
+        v.label.setAttribute("opacity",related?"1":".35");
+        v.label.setAttribute("visibility","visible");
+        if(related)labelLayer.append(v.label);
       }
       updateGeometry();
     }
     function renderPanel(){
       spotlight.replaceChildren();spotlight.hidden=!picked||!at.has(picked);if(spotlight.hidden)return;
       const n=at.get(picked),head=html("p","",undefined,spotlight);
-      const name=html("strong","",n.tag,head);name.style.color=n.color;
-      button(head,"×","Clear selected tag",()=>choose(null));
-      html("div","studio-tb-panel-caption",n.count+" images · Related displayed tags",spotlight);
+      head.style.color=n.color;
+      html("strong","",n.tag,head);
+      html("span","",String(n.count),head);
       const list=html("ul","",undefined,spotlight);
       for(const [tag,w] of [...shared].sort((a,b)=>b[1]-a[1])){
-        const item=html("li","",undefined,list),row=html("div","studio-tb-related-row",undefined,item);
-        const b=button(row,tag,"Focus "+tag,()=>choose(tag));b.style.color=at.get(tag)?.color||"";
-        const percent=Math.round(w/Math.max(1,n.count)*100);
-        html("span","",w+" · "+percent+"%",row);
-        const track=html("div","studio-tb-related-track",undefined,item);
-        const bar=html("div","",undefined,track);bar.style.width=Math.min(100,percent)+"%";bar.style.background=at.get(tag)?.color||"var(--accent)";
-      }
-      if(!shared.size)html("div","studio-tb-panel-caption","No shared tags in this displayed graph.",spotlight);
-      if(options.onNavigate){
-        const actions=html("div","studio-tb-panel-actions",undefined,spotlight);
-        button(actions,"View in Tags","View matching images in Tags",()=>options.onNavigate("list",picked));
-        button(actions,"Waterfall","View matching images in Waterfall",()=>options.onNavigate("waterfall",picked));
+        const item=html("li","",undefined,list);
+        const b=button(item,tag,"Focus "+tag,()=>choose(tag));b.style.color=at.get(tag)?.color||"";
+        html("span","",String(w),item);
       }
     }
     function choose(tag,toggle=true){
@@ -783,7 +769,7 @@ const CaptionStudioViz = (() => {
       if(tag&&!ensureTag(tag))return;
       if(rare&&rare.tag!==tag)removeRare();
       if(pulse){visual.get(pulse.tag)?.ripple.setAttribute("opacity","0");pulse=null;}
-      picked=tag;hover=null;hoverConnections();focusConnections();renderPanel();updateAppearance();
+      picked=tag;focusConnections();renderPanel();updateAppearance();
       onPick?.(picked);
       if(picked&&!reduced()&&prefs.elasticity>0){pulse={tag:picked,start:performance.now(),amount:0};wake();}
     }
