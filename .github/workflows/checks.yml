@@ -36,7 +36,7 @@ jobs:
           python -m pytest checks/test_krea2_calibration_lifecycle.py -k "auto_target_budget_is_four_percent or fresh_calibration_reads_family_options" -q
       - name: Send-only stream synchronization, ring sizing and replay regression checks
         run: python -m pytest checks/test_send_only_swap.py checks/test_krea2_global_replay.py checks/test_stream_sync_report_gate.py -q
-      - name: Global Replay four-way benchmark queue recipe
+      - name: Global Replay three-way benchmark queue recipe
         run: |
           python -m pytest checks/test_replay_benchmark.py -q
           node checks/test_replay_queue_button.cjs

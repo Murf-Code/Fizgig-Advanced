@@ -2,10 +2,9 @@
 import os
 
 CASES = (
-    ("standard", "Standard", False),
-    ("standard-matched", "Standard", False),
     ("replay", "Global replay", False),
     ("selective", "Global replay", True),
+    ("standard", "Standard", False),
 )
 
 
@@ -38,11 +37,11 @@ def settings(group, output_root, epochs=3, prompt=""):
 
 
 def adjust_plan(desc, values, plan):
-    """Match Standard's adapter targets to Replay, without changing Standard globally."""
+    """Validate the fixed comparison; keep legacy queued matched controls runnable."""
     case = values.get("__replay_compare")
     if not case:
         return plan
-    if desc.key != "krea2" or case not in {c[0] for c in CASES}:
+    if desc.key != "krea2" or case not in ({c[0] for c in CASES} | {"standard-matched"}):
         raise ValueError("Invalid Krea 2 replay comparison case.")
     if plan.problems:
         return plan
