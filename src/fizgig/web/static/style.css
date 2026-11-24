@@ -3796,16 +3796,6 @@ label[title]:has(.tip-mark), .field-label[title]:has(.tip-mark) { cursor: help; 
 #tab-captions.caption-theme-glass .studio-thumb-rail .studio-file:hover {
   background:rgba(255,255,255,.10);
 }
-#tab-captions.caption-theme-glass .studio-thumb-rail .studio-file.is-picked {
-  border-color:#a4f4f3;
-  background:rgba(126,246,241,.14);
-  box-shadow:inset 0 0 0 1px #7ef6f1,0 0 13px rgba(126,246,241,.46);
-  animation:caption-glass-picked 3.5s ease-in-out infinite;
-}
-#tab-captions.caption-theme-glass .studio-thumb-rail .studio-file.active:not(.is-picked) {
-  border-color:#e4c6ff;background:rgba(201,164,242,.2);
-  box-shadow:inset 0 0 0 1px #d7b4ff,0 0 13px rgba(201,164,242,.32);
-}
 @keyframes caption-glass-picked {
   0%,100% {box-shadow:inset 0 0 0 1px #7ef6f1,0 0 10px rgba(126,246,241,.38)}
   50% {box-shadow:inset 0 0 0 1px #aefcf9,0 0 20px rgba(126,246,241,.66)}
@@ -3943,8 +3933,7 @@ body.caption-glass-ui .studio-context-rule {
   #tab-captions.caption-theme-glass .tab-banner.caption-bench-header {padding:14px 12px}
 }
 @media(prefers-reduced-motion:reduce){
-  #tab-captions.caption-theme-glass .studio-thumb-rail .studio-file.is-picked {animation:none}
-  #tab-captions .caption-look-option {transition:none}
+    #tab-captions .caption-look-option {transition:none}
 }
 
 
@@ -4004,19 +3993,6 @@ body.caption-glass-ui .studio-context-rule {
   min-height:132px;
   display:grid;
   place-items:center;
-}
-#tab-captions .studio-thumb-rail .studio-file.is-picked{
-  border-color:var(--accent);
-  background:var(--accent-subtle);
-  box-shadow:0 0 0 1px var(--accent-border);
-}
-#tab-captions .studio-thumb-rail .studio-file.active:not(.is-picked){
-  border-color:var(--accent-border);
-}
-#tab-captions.caption-theme-glass .studio-thumb-rail .studio-file.is-picked{
-  border-color:#a4f4f3;
-  background:rgba(126,246,241,.14);
-  box-shadow:inset 0 0 0 1px #7ef6f1,0 0 13px rgba(126,246,241,.46);
 }
 @media(max-width:1100px){
   #tab-captions .studio-host .studio-thumb-rail{grid-template-columns:none}
@@ -4354,33 +4330,6 @@ body.caption-glass-ui .caption-settings-modal{background:linear-gradient(140deg,
 #tab-captions.caption-theme-glass .studio-duplicate-card.keeper {
   border-color:var(--accent);
   box-shadow:inset 0 0 0 1px var(--accent),0 0 13px var(--caption-glass-tint);
-}
-#tab-captions.caption-theme-glass .studio-thumb-rail .studio-file:is(.is-picked,.active) {
-  position:relative;
-  border:2px solid transparent;
-  background:
-    linear-gradient(var(--bg-inset),var(--bg-inset)) padding-box,
-    radial-gradient(circle at 13% 34%,color-mix(in srgb,var(--text-primary) 82%,transparent) 0 1px,transparent 2px),
-    radial-gradient(circle at 46% 80%,color-mix(in srgb,var(--text-primary) 66%,transparent) 0 1px,transparent 2px),
-    var(--caption-glass-gradient) border-box;
-  box-shadow:0 0 0 1px var(--accent-border),
-    0 0 15px var(--caption-glass-tint),
-    inset 0 0 0 1px var(--accent-border);
-  animation:caption-theme-selection-glow 3.5s ease-in-out infinite;
-}
-#tab-captions.caption-theme-glass .studio-thumb-rail .studio-file:is(.is-picked,.active)::before {
-  content:"";position:absolute;inset:2px;border-radius:9px;pointer-events:none;
-  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--caption-glass-bright) 55%,transparent);
-}
-#tab-captions.caption-theme-glass .studio-thumb-rail .studio-file.active:not(.is-picked) {
-  box-shadow:0 0 0 1px var(--accent-border),0 0 9px var(--caption-glass-tint);
-}
-@keyframes caption-theme-selection-glow {
-  0%,100% {filter:drop-shadow(0 0 3px var(--caption-glass-tint))}
-  50% {filter:drop-shadow(0 0 8px var(--caption-glass-tint))}
-}
-@media(prefers-reduced-motion:reduce) {
-  #tab-captions.caption-theme-glass .studio-thumb-rail .studio-file:is(.is-picked,.active){animation:none}
 }
 /* Dialogs and context menus are rendered under body; they inherit root theme. */
 body.caption-glass-ui .studio-image-context-menu {
@@ -4822,11 +4771,6 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
 }
 #tab-captions .studio-tb-flow-tile img{
   display:block;width:100%;height:auto;max-height:none;object-fit:contain;
-}
-#tab-captions .studio-tb-flow-tile:is(.is-picked,:focus-visible){
-  border-color:var(--accent);
-  box-shadow:inset 0 0 0 1px var(--accent-border),0 0 13px
-    color-mix(in srgb,var(--accent) 25%,transparent);
 }
 #tab-captions .studio-tb-flow-tile:hover{background:var(--accent-subtle)}
 #tab-captions .studio-tb-constellation{
@@ -6871,3 +6815,66 @@ body.caption-glass-ui .studio-image-context-menu .studio-danger-action:not(:disa
 
 #tab-captions .studio-ai-prompt-settings:not([open])>:not(summary){display:none!important}
 #tab-captions .studio-ai-instruction-model .studio-ai-preset-settings select{min-height:35px}
+
+/* Independent selection and verdict layers. No ongoing selection animation. */
+#tab-captions .studio-thumb-rail .studio-file,
+#tab-captions.caption-theme-glass .studio-thumb-rail .studio-file,
+#tab-captions .studio-tb-flow-tile{
+  position:relative;isolation:isolate;overflow:visible;
+  border-color:transparent;box-shadow:none;filter:none;animation:none;
+}
+#tab-captions .studio-thumb-rail .studio-file.active:not(:hover),
+#tab-captions.caption-theme-glass .studio-thumb-rail .studio-file.active:not(:hover){
+  background:transparent;border-color:transparent;
+}
+#tab-captions .studio-tb-flow-tile img{border-radius:7px}
+#tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)::before{
+  content:"";position:absolute;inset:3px;border-radius:inherit;
+  pointer-events:none;z-index:2;border:1px solid rgba(255,255,255,.68);
+  opacity:0;transition:opacity 100ms ease-out;
+}
+#tab-captions.caption-theme-glass :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)::before{
+  border:0;padding:2px;
+  background:linear-gradient(135deg,rgba(255,255,255,.86),rgba(226,214,255,.46) 40%,rgba(155,128,207,.14));
+  -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude;
+}
+#tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)::after{
+  content:"✦";position:absolute;right:9px;top:7px;
+  color:#fff;font-size:21px;line-height:1;font-weight:normal;
+  text-shadow:0 1px 3px rgba(0,0,0,.88),0 0 2px rgba(0,0,0,.7);
+  pointer-events:none;z-index:3;opacity:0;transform:scale(.65);
+  transition:opacity 100ms ease-out,transform 100ms ease-out;
+}
+#tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile).is-picked::before{opacity:1}
+#tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile).is-picked::after{
+  opacity:.9;transform:scale(1);
+}
+#tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile).is-picked.studio-star-enter::after{
+  animation:studio-star-reveal 140ms ease-out both;
+}
+@keyframes studio-star-reveal{from{opacity:0;transform:scale(.65)}to{opacity:.9;transform:scale(1)}}
+#tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile):focus-visible{
+  outline:2px dashed var(--text-primary);outline-offset:2px;
+}
+#tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)[data-learning-status]:focus-visible{
+  outline:2px solid var(--caption-learning-ring);outline-offset:2px;
+  box-shadow:inset 0 0 0 1px var(--text-primary);
+}
+/* Only visible, genuinely stuck images pulse; all other states are static. */
+#tab-captions .studio-stuck-halo{
+  position:absolute;inset:-3px;border-radius:inherit;z-index:0;
+  pointer-events:none;box-shadow:0 0 7px 1px rgba(255,51,68,.48);
+  opacity:.36;
+}
+#tab-captions.active [data-learning-status="stuck"][data-learning-visible="true"]>.studio-stuck-halo{
+  animation:studio-stuck-breathe 2.6s ease-in-out infinite;
+}
+@keyframes studio-stuck-breathe{0%,100%{opacity:.25}50%{opacity:.88}}
+@media(prefers-reduced-motion:reduce){
+  #tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)::before,
+  #tab-captions :is(.studio-thumb-rail .studio-file,.studio-tb-flow-tile)::after{
+    animation:none!important;transition:none!important;
+  }
+  #tab-captions .studio-stuck-halo{animation:none!important}
+}

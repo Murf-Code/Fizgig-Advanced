@@ -39,6 +39,30 @@ const CaptionStudioLearning = (() => {
     node.title=node.dataset.learningBaseTitle+" · "+tones[verdict]+value;
     node.setAttribute("aria-label",node.dataset.learningBaseLabel+", "+tones[verdict]);
   }
+  function visibility(Observer){
+    const tracked=new Set();
+    const observer=Observer?new Observer(entries=>{
+      for(const entry of entries){
+        const tile=entry.target;
+        if(tracked.has(tile)&&entry.isIntersecting&&tile.dataset.learningStatus==="stuck")
+          tile.dataset.learningVisible="true";
+        else delete tile.dataset.learningVisible;
+      }
+    }):null;
+    const forget=tile=>{
+      if(!tile)return;
+      if(tracked.delete(tile))observer?.unobserve(tile);
+      delete tile.dataset.learningVisible;
+    };
+    return {
+      update(tile){
+        if(!observer||tile.dataset.learningStatus!=="stuck"){forget(tile);return;}
+        if(!tracked.has(tile)){tracked.add(tile);observer.observe(tile);}
+      },
+      forget,
+      dispose(){observer?.disconnect();for(const tile of tracked)delete tile.dataset.learningVisible;tracked.clear();}
+    };
+  }
   function sort(items, map, mode) {
     const descending=mode==="loss-high";
     return [...items].sort((a,b)=>{
@@ -54,7 +78,7 @@ const CaptionStudioLearning = (() => {
   // auto-enable colors again. A completed run is never an auto trigger.
   const shouldAutoEnable = (data, optedOutRun) =>
     !!(data?.auto_enable && data.run?.id && data.run.id!==optedOutRun);
-  return Object.freeze({pathKey,index,forPath,decorate,sort,tones,shouldAutoEnable,
+  return Object.freeze({pathKey,index,forPath,decorate,visibility,sort,tones,shouldAutoEnable,
     statusOptions,filterByVerdict});
 })();
 if(typeof module!=="undefined"&&module.exports)module.exports=CaptionStudioLearning;

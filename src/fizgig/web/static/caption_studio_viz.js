@@ -460,7 +460,8 @@ const CaptionStudioViz = (() => {
       tile.dataset.path=it.path;
       tile.setAttribute("aria-label",it.name);
       tile.setAttribute("aria-pressed",String(!!selection?.has(it.path)));
-      if(it.path===activePath||selection?.has(it.path))tile.classList.add("is-picked");
+      if(selection?.has(it.path))tile.classList.add("is-picked");
+      if(it.path===activePath)tile.classList.add("active");
       const img=document.createElement("img");
       img.loading="lazy";img.decoding="async";
       img.src="/api/thumb?path="+encodeURIComponent(it.path)+"&t="+encodeURIComponent(token||"");

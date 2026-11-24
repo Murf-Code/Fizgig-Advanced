@@ -47,3 +47,22 @@ assert.deepEqual(L.filterByVerdict(sample,records,"easy"),[sample[1]]);
 assert.deepEqual(L.filterByVerdict(sample,records,"none"),[sample[2]]);
 assert.deepEqual(L.filterByVerdict(sample,records,"watch"),[]);
 assert.ok(L.statusOptions.some(([value])=>value==="exhausted"));
+
+let callback,observed=new Set();
+class Observer{
+  constructor(fn){callback=fn;}
+  observe(t){observed.add(t);}
+  unobserve(t){observed.delete(t);}
+  disconnect(){observed.clear();}
+}
+const visible=L.visibility(Observer);
+const stuck={dataset:{learningStatus:"stuck"}},easy={dataset:{learningStatus:"easy"}};
+visible.update(stuck);visible.update(easy);
+assert.equal(observed.size,1);
+callback([{target:stuck,isIntersecting:true}]);
+assert.equal(stuck.dataset.learningVisible,"true");
+callback([{target:stuck,isIntersecting:false}]);
+assert.equal(stuck.dataset.learningVisible,undefined);
+stuck.dataset.learningStatus="easy";visible.update(stuck);
+assert.equal(observed.size,0);
+visible.dispose();

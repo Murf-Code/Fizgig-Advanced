@@ -42,11 +42,11 @@ assert.ok(sparseModel.edges.length<=7140);
 const savedDoc=global.document, savedWin=global.window;
 try {
   const fakeElement=()=>{
-    const children=[],handlers={};
-    return {children,handlers,dataset:{},classList:{add(){}},
+    const children=[],handlers={},classes=new Set(),attrs={};
+    return {children,handlers,dataset:{},classes,attrs,classList:{add(name){classes.add(name);}},
       style:{},isConnected:false,
       append(...elements){children.push(...elements);},
-      setAttribute(){},addEventListener(name,fn){handlers[name]=fn;},
+      setAttribute(name,value){attrs[name]=value;},addEventListener(name,fn){handlers[name]=fn;},
       remove(){},replaceChildren(...elements){children.splice(0,children.length,...elements);}
     };
   };
@@ -57,6 +57,11 @@ try {
   const stage=Viz.tagbenchWaterfall([it],item=>picked.push(item.path),
     ()=>{},null,new Set(),"",null,item=>opened.push(item.path));
   const tile=stage.children[0].children[0].children[0];
+  const focused=Viz.tagbenchWaterfall([it],()=>{},()=>{},it.path,new Set(),"");
+  const activeTile=focused.children[0].children[0].children[0];
+  assert.equal(activeTile.classes.has("active"),true);
+  assert.equal(activeTile.classes.has("is-picked"),false);
+  assert.equal(activeTile.attrs["aria-pressed"],"false");
   assert.ok(tile.handlers.click);
   assert.ok(tile.handlers.dblclick);
   tile.handlers.click({detail:1});

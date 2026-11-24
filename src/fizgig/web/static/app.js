@@ -12024,6 +12024,14 @@ function captionLearningDecorate(tile,item) {
   CaptionStudioLearning.decorate(tile,
     CaptionStudioLearning.forPath(S.cap.learningMap,item.path),
     !!S.cap.studioLearningColors);
+  const stuck=tile.dataset.learningStatus==="stuck";
+  let halo=tile.querySelector(".studio-stuck-halo");
+  if(stuck&&!halo)tile.append(el("span",{class:"studio-stuck-halo","aria-hidden":"true"}));
+  else if(!stuck&&halo)halo.remove();
+  if(stuck&&!S.cap.studioLearningVisibility)
+    S.cap.studioLearningVisibility=CaptionStudioLearning.visibility(
+      typeof IntersectionObserver==="undefined"?null:IntersectionObserver);
+  S.cap.studioLearningVisibility?.update(tile);
 }
 function captionLearningUpdateMounted() {
   const host=$("captionsGrid");
@@ -12105,6 +12113,8 @@ function renderCaptions() {
   captionAiControlsRestore();
   // The previous view owns all graph workers and Resize/IntersectionObservers.
   S.cap.studioStageDispose?.();
+  S.cap.studioLearningVisibility?.dispose();
+  S.cap.studioLearningVisibility=null;
   host.innerHTML = "";
   const ext = $("captionExt").value.trim() || ".txt";
   const q = $("capSearch").value.trim().toLowerCase();
@@ -13606,6 +13616,7 @@ function renderCaptionStudio(host,items,ext){
     const next=CaptionStudioSelection.pick(order,selection,S.cap.studioPath,
       S.cap.studioSelectionAnchor,it.path,event,CAP_PAGE);
     if(next.page===null)return false;
+    S.cap.studioStarReveal={paths:new Set(next.selected.filter(path=>!selection.has(path))),until:performance.now()+220};
     selection.clear();
     next.selected.forEach(path=>selection.add(path));
     S.cap.studioPath=next.active;
@@ -13959,9 +13970,11 @@ function renderCaptionStudio(host,items,ext){
       await captionImageOpen(it,tool);
       S.cap.inlineRefreshControls?.();
     };
-    action("Erase","",()=>editTarget("remove"),!canEditTarget||(!preview&&count!==1));
-    action("Crop","",()=>editTarget("crop"),!canEditTarget||(!preview&&count!==1));
-    separator();
+    if(preview||S.cap.studioExploreMode==="list"){
+      action("Erase","",()=>editTarget("remove"),!canEditTarget||(!preview&&count!==1));
+      action("Crop","",()=>editTarget("crop"),!canEditTarget||(!preview&&count!==1));
+      separator();
+    }
     if(!preview){
       action(complete?"Mark Incomplete":"Mark Complete","Ctrl+K",()=>toggleImageReview(it.path),!count);
       const pictures=validTrainingPictures(targets);
@@ -14016,6 +14029,8 @@ function renderCaptionStudio(host,items,ext){
       const it=items[index],tile=row.querySelector(".studio-file");
       if(!tile)continue;
       const chosen=selection.has(it.path);
+      if(chosen&&!tile.classList.contains("is-picked"))tile.classList.add("studio-star-enter");
+      if(!chosen)tile.classList.remove("studio-star-enter");
       tile.classList.toggle("is-picked",chosen);
       tile.classList.toggle("active",it.path===S.cap.studioPath);
       tile.setAttribute("aria-pressed",String(chosen));
@@ -14048,6 +14063,10 @@ function renderCaptionStudio(host,items,ext){
         if(S.cap.studioPath===previous)syncMountedSelection();
         else renderCaptions();
       }},thumb);
+    const reveal=S.cap.studioStarReveal;
+    if(isPicked&&reveal?.paths.has(it.path)&&performance.now()<reveal.until){
+      tile.classList.add("studio-star-enter");reveal.paths.delete(it.path);
+    }
     captionLearningDecorate(tile,it);
     const row=el("div",{class:"studio-browser-row",role:"listitem"},tile);
     row.style.height=height+"px";
@@ -14115,6 +14134,9 @@ function renderCaptionStudio(host,items,ext){
     paintStart=start;paintEnd=end;
     // Unlike replaceChildren(), this retains surviving rows and their img
     // decoding state. Only newly exposed rows are created.
+    for(const [index,row] of mountedThumbs)
+      if(index<start||index>=end)
+        S.cap.studioLearningVisibility?.forget(row.querySelector(".studio-file"));
     CaptionThumbRail.reconcile(windowRows,mountedThumbs,start,end,
       i=>createThumbRow(items[i],i,heights[i]));
     topSpace.style.height=offsets[start]+"px";
@@ -15896,6 +15918,8 @@ function renderCaptionStudio(host,items,ext){
     ++exploreGeneration; // prevents stale worker results from mounting
     S.cap.studioGraphPending?.cancel?.();
     S.cap.studioGraphPending=null;
+    for(const tile of fullStage.querySelectorAll(".studio-tb-flow-tile"))
+      S.cap.studioLearningVisibility?.forget(tile);
     for(const child of fullStage.children)child.dispose?.();
     fullStage.replaceChildren();
     // Keep no invisible Waterfall or Constellation graph alive.
@@ -15949,9 +15973,12 @@ function renderCaptionStudio(host,items,ext){
           S.cap.studioExploreNeedRedraw=true;
           for(const tile of fullStage.querySelectorAll(".studio-tb-flow-tile")){
             const image=tile.dataset.path;
-            tile.classList.toggle("is-picked",
-              selection.has(image)||image===S.cap.studioPath);
-            tile.setAttribute("aria-pressed",String(selection.has(image)));
+            const chosen=selection.has(image);
+            if(chosen&&!tile.classList.contains("is-picked"))tile.classList.add("studio-star-enter");
+            if(!chosen)tile.classList.remove("studio-star-enter");
+            tile.classList.toggle("is-picked",chosen);
+            tile.classList.toggle("active",image===S.cap.studioPath);
+            tile.setAttribute("aria-pressed",String(chosen));
           }
         };
         const openTagsImage=(it,event)=>{

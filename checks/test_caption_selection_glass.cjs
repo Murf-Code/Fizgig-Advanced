@@ -1,0 +1,11 @@
+const assert=require("node:assert/strict"),fs=require("node:fs");
+const app=fs.readFileSync("src/fizgig/web/static/app.js","utf8");
+const css=fs.readFileSync("src/fizgig/web/static/style.css","utf8");
+const menu=app.slice(app.indexOf("const openImageMenu="),app.indexOf("// Single keyboard handler per render",app.indexOf("const openImageMenu=")));
+assert.match(menu,/if\(preview\|\|S\.cap\.studioExploreMode==="list"\)\{\s*action\("Erase"[\s\S]*?action\("Crop"/);
+assert.match(css,/content:"✦"/);
+assert.match(css,/studio-star-reveal 140ms/);
+assert.match(css,/data-learning-status="stuck"\]\[data-learning-visible="true"\]/);
+assert.match(css,/prefers-reduced-motion:reduce/);
+assert.doesNotMatch(app,/selection\.has\(image\)\|\|image===S\.cap\.studioPath/);
+console.log("Glass selection and Waterfall menu checks passed");
