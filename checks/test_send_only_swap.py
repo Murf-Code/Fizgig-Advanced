@@ -46,7 +46,7 @@ def _one_thread():
 
 
 # ---- models -------------------------------------------------------------------------------------------------------
-def _wrap(blocks, names, kind):
+def _wrap(blocks, names, kind, device=CPU):
     """Fizgig's own adapters on the block Linears (families/lora.py), seeded so every model gets the same ones."""
     torch.manual_seed(123)
     for block in blocks:
@@ -54,12 +54,14 @@ def _wrap(blocks, names, kind):
             if isinstance(child, nn.Linear) and name.split(".")[-1] in names:
                 parent = block.get_submodule(name.rpartition(".")[0]) if "." in name else block
                 w = LoRALinear(child)
+                w.home = CPU  # initialize identically before moving adapters to the training device
                 if kind == "lokr":
                     w.add_lokr("lora", True, factor=4)
                     nn.init.normal_(w.adapters["lora"].lokr_w2, std=0.02)
                 else:
                     w.add("lora", 4, 4, True)
                     nn.init.normal_(w.adapters["lora"][1].weight, std=0.02)
+                w.adapters.to(device)
                 setattr(parent, name.split(".")[-1], w)
 
 
@@ -72,7 +74,7 @@ def _int8(model, blocks):
                 quant._quantize_one(m, drv, "int8", CPU)
 
 
-def _krea(mode, kind="lora", int8=False, swap=4):
+def _krea(mode, kind="lora", int8=False, swap=4, device=CPU):
     torch.manual_seed(0)
     m = SingleStreamDiT(KCFG)
     for p in m.parameters():
@@ -81,8 +83,10 @@ def _krea(mode, kind="lora", int8=False, swap=4):
     if int8:
         _int8(m, m.blocks)
     if mode != "none":
-        Krea2Driver().enable_block_swap(m, swap, "cpu", True, send_only=(mode == "send"))
-    _wrap(m.blocks, {"qkv", "q", "k", "v", "proj", "o", "out", "w1", "w2", "w3", "down", "up", "gate"}, kind)
+        Krea2Driver().enable_block_swap(m, swap, device, True, send_only=(mode == "send"))
+    else:
+        m.to(device)
+    _wrap(m.blocks, {"qkv", "q", "k", "v", "proj", "o", "out", "w1", "w2", "w3", "down", "up", "gate"}, kind, device)
     m.enable_gradient_checkpointing()
     m.train()
     return m
@@ -101,20 +105,23 @@ def _krea_batch(step, batch=2):
 
 
 def _krea_fwd(m, step):
-    img, ctx, t, pos, mask = _krea_batch(step)
+    device = m.first.weight.device
+    img, ctx, t, pos, mask = (x.to(device) for x in _krea_batch(step))
     return (m(img, ctx, t, pos, mask) - img).square().mean()
 
 
-def _moss(mode, kind="lora", swap=3):
+def _moss(mode, kind="lora", swap=3, device=CPU):
     torch.manual_seed(0)
     m = MOSSImageDiT(**MTINY)
     for p in m.parameters():
         p.data.normal_(0, 0.05)
     m.requires_grad_(False)
     if mode != "none":
-        MOSSImageDriver().enable_block_swap(m, swap, CPU, True, send_only=(mode == "send"))
+        MOSSImageDriver().enable_block_swap(m, swap, device, True, send_only=(mode == "send"))
         m.switch_block_swap_for_training()
-    _wrap(m.layers, {"q", "v", "ffn_down"}, kind)
+    else:
+        m.to(device)
+    _wrap(m.layers, {"q", "v", "ffn_down"}, kind, device)
     m.enable_gradient_checkpointing(True)
     m.train()
     return m
@@ -129,6 +136,8 @@ def _moss_fwd(m, step, batch=2):
     if batch > 1:
         mask[1, :4] = True
     t = torch.tensor([900.0, 300.0][:batch])
+    device = m.video_embedder.weight.device
+    x, t, ctx, mask = (v.to(device) for v in (x, t, ctx, mask))
     return (m(x, t, ctx, mask) - x).square().mean()
 
 
@@ -412,3 +421,81 @@ def test_reclaim_vram_moves_the_ring():
             vram_reclaim.reclaim(modules=[m], device="cpu", probe_windows=False)
             assert all(a is not b for a, b in zip(flats, m.offloader.ring_flat))
     _same(_train(m, _krea_fwd, Krea2Driver(), between), ref)
+
+
+def test_checkpoint_recompute_waits_again():
+    """A non-reentrant checkpoint must re-enter the residency wait, not just its forward."""
+    from torch.utils.checkpoint import checkpoint
+    events = []
+    off = types.SimpleNamespace(wait_for_block=lambda i: events.append(("wait", i)))
+
+    def block(x):
+        events.append(("block", 3))
+        return x.sin().square()
+
+    x = torch.randn(8, requires_grad=True)
+    checkpoint(offloading.run_checkpointed_block, block, 3, off, x, use_reentrant=False).sum().backward()
+    assert events == [("wait", 3), ("block", 3), ("wait", 3), ("block", 3)]
+
+
+def test_sparse_backward_waits_for_previous_stream_rank():
+    """The previous streaming block can be separated by a resident block."""
+    off = object.__new__(offloading.LoRAStreamOffloader)
+    off.is_stream = [True, False, True, False, True, False, True]
+    off.stream_idx = [0, 2, 4, 6]
+    off.rank = {b: j for j, b in enumerate(off.stream_idx)}
+    off.B = 2
+    off.free_event = [None, None]
+    off._record = lambda: None
+    off._wait_ctx = "fwd"
+    calls = []
+    off._load = lambda rank, slot, ctx: calls.append(("load", rank, slot, ctx))
+    off.wait_for_block = lambda i: calls.append(("wait", i, off._wait_ctx))
+    off._create_backward_hook(6)(None, None, None)
+    assert calls == [("load", 1, 1, "bwd"), ("wait", 4, "bwd")]
+    assert off._wait_ctx == "fwd"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires real asynchronous CUDA copies")
+@pytest.mark.parametrize("family,swap", [("krea", 2), ("krea", 6), ("moss", 2), ("moss", 4)])
+@pytest.mark.parametrize("kind", ["lora", "lokr"])
+def test_cuda_stream_sync_parity(family, swap, kind):
+    """Run manually on a GPU; CPU CI cannot reproduce DMA timing.
+    
+    Compare no swap, classic swap and send-only, including sparse and dense
+    layouts, multiple optimizer steps and validation transitions. Add a short
+    copy-stream delay to stress compute/copy ordering without device-wide syncs.
+    """
+    device = torch.device("cuda")
+    build, fwd, drv = (_krea, _krea_fwd, Krea2Driver()) if family == "krea" else (
+        _moss, _moss_fwd, MOSSImageDriver())
+    baseline = build("none", kind=kind, swap=swap, device=device)
+    expected = _train(baseline, fwd, drv)
+    del baseline
+    for mode in ("classic", "send", "send"):
+        model = build(mode, kind=kind, swap=swap, device=device)
+        if mode == "send":
+            assert isinstance(model.offloader, offloading.LoRAStreamOffloader)
+            copier = model.offloader.copier
+            original_submit = copier.submit
+
+            def delayed_submit(*args, **kwargs):
+                if hasattr(torch.cuda, "_sleep"):
+                    with torch.cuda.stream(copier.copy_stream):
+                        torch.cuda._sleep(100000)
+                return original_submit(*args, **kwargs)
+
+            copier.submit = delayed_submit
+        actual = _train(model, fwd, drv, _val(drv, model, fwd))
+        torch.cuda.synchronize(device)
+        for observed, reference in zip(actual[0], expected[0]):
+            torch.testing.assert_close(observed, reference, rtol=1e-4, atol=1e-6)
+        for observed, reference in zip(actual[1], expected[1]):
+            assert observed.keys() == reference.keys()
+            for name in reference:
+                torch.testing.assert_close(observed[name], reference[name], rtol=1e-3, atol=1e-6, msg=name)
+        assert actual[2].keys() == expected[2].keys()
+        for name in expected[2]:
+            torch.testing.assert_close(actual[2][name], expected[2][name], rtol=1e-3, atol=1e-5, msg=name)
+        model.offloader.remove_hooks()
+        del model

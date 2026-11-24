@@ -480,18 +480,19 @@ class SingleStreamDiT(nn.Module):
         freqs = self.posemb(pos)
         attn_probe.layout((0, imglen), imglen, combined.shape[1], fulllen)    # the padded tail isn't attended
 
+        from fizgig.krea2.offloading import run_checkpointed_block
+        offloader = self.offloader if self.blocks_to_swap else None
         for index, block in enumerate(self.blocks):
-            if self.blocks_to_swap:
-                self.offloader.wait_for_block(index)
-
             if getattr(block, "_handles_checkpointing", False):
                 # torch.compile wraps blocks in a module that checkpoints itself, so the recompute
                 # is captured inside the compiled graph. Checkpointing again here would nest it.
-                combined = block(combined, tvec, freqs, attn_params)
+                combined = run_checkpointed_block(block, index, offloader, combined, tvec, freqs, attn_params)
             elif self.gradient_checkpointing and self.training:
-                combined = torch.utils.checkpoint.checkpoint(block, combined, tvec, freqs, attn_params, use_reentrant=False)
+                combined = torch.utils.checkpoint.checkpoint(
+                    run_checkpointed_block, block, index, offloader, combined, tvec, freqs, attn_params,
+                    use_reentrant=False)
             else:
-                combined = block(combined, tvec, freqs, attn_params)
+                combined = run_checkpointed_block(block, index, offloader, combined, tvec, freqs, attn_params)
 
             if self.blocks_to_swap:
                 self.offloader.submit_move_blocks_forward(self.blocks, index)

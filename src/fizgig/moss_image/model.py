@@ -271,16 +271,18 @@ class MOSSImageDiT(nn.Module):
             x = torch.cat((video, text), 1)
             attn_probe.layout((0, video.shape[1]), video.shape[1], x.shape[1])
             m = mod[index:index + 1]
+            from fizgig.krea2.offloading import run_checkpointed_block
+            offloader = self.offloader if self.blocks_to_swap else None
             for i, layer in enumerate(self.layers):
-                if self.blocks_to_swap:
-                    self.offloader.wait_for_block(i)
                 if i not in skip:
                     if getattr(layer, "_handles_checkpointing", False):     # compiled: the wrapper checkpoints
-                        x = layer(x, rope, m)
+                        x = run_checkpointed_block(layer, i, offloader, x, rope, m)
                     elif torch.is_grad_enabled() and self.gradient_checkpointing:
-                        x = checkpoint(layer, x, rope, m, use_reentrant=False)
+                        x = checkpoint(run_checkpointed_block, layer, i, offloader, x, rope, m, use_reentrant=False)
                     else:
-                        x = layer(x, rope, m)
+                        x = run_checkpointed_block(layer, i, offloader, x, rope, m)
+                elif offloader is not None:
+                    offloader.wait_for_block(i)  # skipped blocks still advance residency
                 if self.blocks_to_swap:
                     self.offloader.submit_move_blocks_forward(layers, i)
             x = self.final_norm_video(x[:, :height * width].to(self.final_norm_video.weight.dtype))
@@ -325,15 +327,15 @@ class MOSSImageDiT(nn.Module):
         x = torch.cat((video, text), 1)
         attn_probe.layout((0, n), n, x.shape[1])
         layers = list(self.layers) if self.blocks_to_swap else None
+        from fizgig.krea2.offloading import run_checkpointed_block
+        offloader = self.offloader if self.blocks_to_swap else None
         for i, layer in enumerate(self.layers):
-            if self.blocks_to_swap:
-                self.offloader.wait_for_block(i)
             if getattr(layer, "_handles_checkpointing", False):
-                x = layer(x, rope, mod, key_mask)
+                x = run_checkpointed_block(layer, i, offloader, x, rope, mod, key_mask)
             elif torch.is_grad_enabled() and self.gradient_checkpointing:
-                x = checkpoint(layer, x, rope, mod, key_mask, use_reentrant=False)
+                x = checkpoint(run_checkpointed_block, layer, i, offloader, x, rope, mod, key_mask, use_reentrant=False)
             else:
-                x = layer(x, rope, mod, key_mask)
+                x = run_checkpointed_block(layer, i, offloader, x, rope, mod, key_mask)
             if self.blocks_to_swap:
                 self.offloader.submit_move_blocks_forward(layers, i)
         x = self.final_norm_video(x[:, :n].to(self.final_norm_video.weight.dtype))

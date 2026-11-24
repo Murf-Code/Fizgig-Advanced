@@ -804,6 +804,13 @@ class _SyncCopier:
         pass
 
 
+def run_checkpointed_block(block, index, offloader, *args):
+    """Re-establish block residency on every checkpoint forward/recompute."""
+    if offloader is not None:
+        offloader.wait_for_block(index)
+    return block(*args)
+
+
 class LoRAStreamOffloader:
     """
     H2D-only offloader for training where the base weights are frozen (e.g. LoRA / LoHa / LoKr).
@@ -1088,10 +1095,20 @@ class LoRAStreamOffloader:
         # reset transfer state and preload the first B streaming blocks. in_slot deliberately survives:
         # after a completed backward pass the ring already holds ranks 0..B-1, so these loads become
         # no-op rebinds (see _load) instead of redundant cold-start transfers.
+        # Finish queued copies before clearing their completion events, including
+        # copies from a previous preview/forward-only pass.
+        self.copier.sync()
         self.free_event = [None] * self.B
         self.copier.reset()
         for k in range(self.B):
             self._load(k, k)
+            if self.cuda_available:
+                blk = self.stream_idx[k]
+                event = self.copier.wait(blk)
+                # A retained slot needs no new transfer. Direct copies can keep
+                # an explicit completion event for that slot after reset.
+                if event is None and isinstance(self.copier, _DirectCopier):
+                    self.copier._events[blk] = self.copier.copy_stream.record_event()
 
         _synchronize_device(self.device)
         _clean_memory_on_device(self.device)
@@ -1111,6 +1128,10 @@ class LoRAStreamOffloader:
             self._load(j, slot, ctx)
         ev = self.copier.wait(block_idx)
         if ev is None:
+            # A retained/preloaded slot may have no event after reset.
+            # Non-CUDA copies are synchronous and have no copy stream.
+            if self.cuda_available:
+                torch.cuda.current_stream(self.device).wait_stream(self.copier.copy_stream)
             return
         if not self.debug:
             torch.cuda.current_stream().wait_event(ev)  # compute waits for H2D (GPU-side, does not block CPU)
@@ -1162,10 +1183,17 @@ class LoRAStreamOffloader:
                 self.free_event[j % self.B] = self._record()
                 if j - self.B >= 0:
                     self._load(j - self.B, (j - self.B) % self.B, "bwd")  # same slot as rank j; evicts rank j
-            if wait_prev:
+            # The previous streamed block is not necessarily adjacent in
+            # model order (sparse swapping). Keep the adjacent resident-block
+            # hook as a second safety boundary.
+            previous = self.stream_idx[j - 1] if prefetch and j > 0 else (
+                block_index - 1 if wait_prev else None)
+            if previous is not None:
                 self._wait_ctx = "bwd"
-                self.wait_for_block(block_index - 1)  # ensure the next block to run is ready
-                self._wait_ctx = "fwd"
+                try:
+                    self.wait_for_block(previous)
+                finally:
+                    self._wait_ctx = "fwd"
             return None
 
         return backward_hook
