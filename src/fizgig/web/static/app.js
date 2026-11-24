@@ -13224,7 +13224,7 @@ function captionConfirmRemoval({title,detail,items=[],confirmLabel="Remove",info
   return new Promise(resolve=>{
     const lastFocus=document.activeElement;
     const backdrop=el("div",{class:"caption-removal-backdrop"});
-    const modal=el("section",{class:"caption-removal-modal",role:"dialog",
+    const modal=el("section",{class:informational?"caption-removal-modal caption-removal-compact":"caption-removal-modal",role:"dialog",
       "aria-modal":"true","aria-labelledby":"captionRemovalTitle",
       "aria-describedby":"captionRemovalDetails",tabindex:"-1"});
     const heading=el("h2",{id:"captionRemovalTitle",text:title});
