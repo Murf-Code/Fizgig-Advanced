@@ -129,6 +129,8 @@ class MOSSImageDriver(FamilyDriver):
     send_only_block_swap = True
 
     def enable_block_swap(self, dit, num_blocks, device, supports_backward=True, send_only=False):
+        if supports_backward and send_only:
+            dit._stream_strategy = getattr(self, "stream_strategy", "default")
         dit.enable_block_swap(num_blocks, device, supports_backward, send_only=bool(send_only))
         dit.move_to_device_except_swap_blocks(device)
 
