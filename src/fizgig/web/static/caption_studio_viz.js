@@ -561,7 +561,16 @@ const CaptionStudioViz = (() => {
       const manual=categories?.tagColors?.[tag.tag]||(category&&categories.colors?.[category]);
       if(manual||friendColor)colors.set(tag.tag,manual||friendColor);
     }
-    return {...graph,nodes,chosen,colors,atlas:constellationAtlas(nodes,all,edges,items)};
+    const atlas=constellationAtlas(nodes,all,edges,items);
+    // The packed hierarchy and the graph must agree on the color of a
+    // long-tail tag. Keep explicit user colors, not arbitrary accent hues.
+    for(const c of atlas.clusters)for(const tag of c.memberTags){
+      if(index.has(tag))continue;
+      const category=categories?.tags?.[tag];
+      const manual=categories?.tagColors?.[tag]||(category&&categories.colors?.[category]);
+      colors.set(tag,manual||c.color);
+    }
+    return {...graph,nodes,chosen,colors,atlas};
   }
   const waterfallScale=value=>{
     const n=Number(value);
@@ -752,7 +761,8 @@ const CaptionStudioViz = (() => {
     const maxCount=nodes[0]?.count||1;
     const visual=new Map();
     let labelOrder=nodes,overviewCamera=null,overviewZoom=1;
-    let expanded=false,activePair=null,collection=null,collectionMotion=null;
+    let rarePage=0,activePair=null,collection=null,collectionMotion=null;
+    const rarePageSize=16,primaryTags=new Set(nodes.map(n=>n.tag));
     const wheelPause=180,wheelExitDistance=40;
     let closingWheel=null;
     const temporaryTags=new Set(),focusEdges=new Map();
@@ -764,17 +774,21 @@ const CaptionStudioViz = (() => {
 
     // Group strokes by color and width so each batch shares a Canvas path.
     const strandBatches=new Map();
-    const overviewEdges=model.chosen.map(edge=>({
-      ...edge,strength:tagAffinity(edge.w,at.get(edge.a).count,at.get(edge.b).count)
-    })).sort((a,b)=>b.strength-a.strength).slice(0,150);
+    // All observed relationships between visible primary nodes are kept.
+    // Canvas batches them; only the layout solver uses the sparse backbone.
+    const backbone=new Set(model.chosen.map(e=>e.a+"\0"+e.b));
+    const overviewEdges=model.edges.filter(e=>at.has(e.a)&&at.has(e.b)).map(edge=>({
+      ...edge,strength:tagAffinity(edge.w,at.get(edge.a).count,at.get(edge.b).count),
+      backbone:backbone.has(edge.a+"\0"+edge.b)
+    })).sort((a,b)=>b.strength-a.strength);
     const strongest=overviewEdges[0]?.strength||1;
     for(const edge of overviewEdges){
       const a=at.get(edge.a),b=at.get(edge.b);
       const tag=a.group===b.group&&a.color===b.color?a.tag:null;
       const color=tag?a.color:null;
       const band=Math.min(4,Math.floor(5*Math.sqrt(edge.strength/strongest)));
-      const key=band+"|"+color;
-      if(!strandBatches.has(key))strandBatches.set(key,{color,tag,band,edges:[]});
+      const key=band+"|"+color+"|"+edge.backbone;
+      if(!strandBatches.has(key))strandBatches.set(key,{color,tag,band,backbone:edge.backbone,edges:[]});
       strandBatches.get(key).edges.push(edge);
     }
     // Resolve theme-dependent SVG colors after mount, then reuse them during motion.
@@ -913,13 +927,14 @@ const CaptionStudioViz = (() => {
         ctx.quadraticCurveTo((p.x+q.x)/2-(q.y-p.y)*.09,(p.y+q.y)/2+(q.x-p.x)*.09,q.x,q.y);
       };
       const neutral=getComputedStyle(canvas).color;
-      for(const {color,tag,band,edges} of strandBatches.values()){
+      if(picked)return; // Focused nodes use their actual clickable SVG edges.
+      for(const {color,tag,band,backbone,edges} of strandBatches.values()){
         if(color&&!strandColors.has(color)){
           strandColors.set(color,getComputedStyle(visual.get(tag).halo).fill);
         }
         ctx.strokeStyle=strandColors.get(color)||neutral;
         ctx.lineWidth=(.65+band*.6)*ratio/scale;
-        ctx.globalAlpha=picked?.05:(color?.18:.085)+band*.055;
+        ctx.globalAlpha=backbone?(color?.18:.13)+band*.055:(.025+band*.026);
         ctx.beginPath();
         for(const e of edges)curve(e.a,e.b);
         ctx.stroke();
@@ -1001,18 +1016,39 @@ const CaptionStudioViz = (() => {
     }
     for(const n of nodes)createNode(n);
     function relationMap(tag){return adjacency.get(tag)||new Map();}
-    function clearTemporaryTags(keep){
+    function clearTemporaryTags(keep=new Set()){
       for(const tag of temporaryTags){
-        if(tag===keep)continue;
+        if(keep.has(tag))continue;
         const v=visual.get(tag);
         v.g.remove();v.label.remove();v.grad.remove();v.clip?.remove();
         visual.delete(tag);at.delete(tag);temporaryTags.delete(tag);
       }
     }
-    function ensureTag(tag){
+    const atlasGroupByTag=new Map();
+    for(const c of atlas.clusters)for(const tag of c.memberTags||[])atlasGroupByTag.set(tag,c);
+    // Deterministically find a free location; do not spawn all rare nodes at
+    // the world origin or accept an overlapping final candidate.
+    function freeTagPosition(n,anchor,peers){
+      const x=anchor?.x??500,y=anchor?.y??350;
+      const spacing=Math.max(12/zoom,radius(n)+8/zoom);
+      const phase=[...n.tag].reduce((h,c)=>(Math.imul(h,31)+c.codePointAt(0))|0,0);
+      const start=(phase>>>0)%360*Math.PI/180;
+      for(let i=0;i<1024;i++){
+        const d=spacing*(1+Math.sqrt(i)*.85),angle=start+i*2.399963;
+        const px=x+Math.cos(angle)*d,py=y+Math.sin(angle)*d;
+        if(peers.every(other=>other===n||Math.hypot(other.x-px,other.y-py)>=radius(n)+radius(other)+6/zoom))
+          return {x:px,y:py};
+      }
+      const right=Math.max(x,...peers.map(other=>other.x+radius(other)));
+      return {x:right+radius(n)+8/zoom,y};
+    }
+    function ensureTag(tag,anchor=null,peers=null){
       if(at.has(tag))return at.get(tag);
       const entry=all.get(tag);if(!entry)return null;
-      const n={...entry,x:500,y:350,ox:0,oy:0,color:model.colors.get(tag)||"var(--accent-text)"};
+      const group=atlasGroupByTag.get(tag);
+      const n={...entry,group:group?.id,ox:0,oy:0,color:model.colors.get(tag)||group?.color||"var(--text-muted)"};
+      const origin=anchor||(!group?.unmapped&&Number.isFinite(group?.x)?group:null);
+      Object.assign(n,freeTagPosition(n,origin,peers||[...at.values()]));
       at.set(tag,n);temporaryTags.add(tag);createNode(n);
       return n;
     }
@@ -1053,7 +1089,7 @@ const CaptionStudioViz = (() => {
           if(score<bestScore){best={box,x,y};bestScore=score;}
           if(!score)break;
         }
-        const show=bestScore===0||n.tag===picked||(!picked&&n===labelOrder[0]);
+        const show=bestScore===0||n.tag===picked||(picked&&temporaryTags.has(n.tag))||(!picked&&n===labelOrder[0]);
         if(show){
           v.label.textContent=label;
           if(coverSrc){
@@ -1114,7 +1150,8 @@ const CaptionStudioViz = (() => {
       labelOrder=picked?[...focusedTags].map(tag=>at.get(tag)):nodes;
       for(const n of at.values()){
         const v=visual.get(n.tag),selected=n.tag===picked,related=!focus||focusedTags.has(n.tag);
-        v.g.setAttribute("opacity",related?1:.23);
+        v.g.style.display=related?"":"none";
+        v.g.setAttribute("opacity",1);
         v.label.style.display=related?"":"none";
         v.g.setAttribute("aria-pressed",String(selected));
         const sharedCount=neighbors.get(n.tag);
@@ -1142,13 +1179,21 @@ const CaptionStudioViz = (() => {
         ()=>options.openWaterfall(picked,null,collectionState(picked,null))).className="studio-tb-pair-action";
       if(!shared.size)html("div","studio-tb-pair-empty","No co-occurring tags",spotlight);
       if(activePair)renderPairPreview();
-      if(shared.size>8)button(spotlight,expanded?"Show fewer connections":"Show more connections",
-        expanded?"Show fewer connections":"Show more connections",()=>{
-          expanded=!expanded;layoutNeighborhood();renderPanel();updateAppearance();
-          spotlight.querySelector("button")?.focus({preventScroll:true});
-        }).className="studio-tb-pair-action";
+      const rareTotal=[...shared.keys()].filter(tag=>!primaryTags.has(tag)).length;
+      if(shared.size)html("div","studio-tb-pair-count",
+        focusEdges.size+" of "+shared.size+" connections shown",spotlight);
+      if(rareTotal>rarePageSize){
+        const pages=Math.ceil(rareTotal/rarePageSize);
+        const page=html("div","studio-tb-pair-count","Additional tags "+(rarePage+1)+" / "+pages,spotlight);
+        const move=delta=>{
+          rarePage+=delta;activePair=null;layoutNeighborhood();renderPanel();updateAppearance();
+        };
+        if(rarePage>0)button(page,"Previous","Previous additional connections",()=>move(-1)).className="studio-tb-pair-action";
+        if(rarePage+1<pages)button(page,"Next","Next additional connections",()=>move(1)).className="studio-tb-pair-action";
+      }
       const list=html("ul","",undefined,spotlight);
       for(const [tag,w] of shared){
+        if(!focusedTags.has(tag))continue;
         const item=html("li","",undefined,list);
         const b=button(item,tag,"Focus "+tag,()=>choose(tag));b.style.color=at.get(tag)?.color||"";
         const pair=button(item,String(w),"Preview "+w+" shared images with "+tag,()=>inspectPair(tag));
@@ -1274,25 +1319,18 @@ const CaptionStudioViz = (() => {
     }
     function layoutNeighborhood(){
       focusedTags.clear();focusEdges.clear();edgeLayer.replaceChildren();
-      clearTemporaryTags(picked);
-      if(!picked)return;
-      const limit=expanded?12:8;
-      const peers=[...shared.keys()].slice(0,limit);
+      if(!picked){clearTemporaryTags();return;}
+      const related=[...shared.keys()];
+      const rare=related.filter(tag=>!primaryTags.has(tag));
+      const shownRare=new Set(rare.slice(rarePage*rarePageSize,(rarePage+1)*rarePageSize));
+      const peers=related.filter(tag=>primaryTags.has(tag)||shownRare.has(tag));
+      clearTemporaryTags(new Set([picked,...peers]));
       focusedTags.add(picked);
       const anchor=at.get(picked);
-      peers.forEach((tag,i)=>{
-        const exists=at.has(tag);
-        const n=ensureTag(tag);
-        if(!exists){
-          // Tags outside the overview occupy free space close to the anchor.
-          const distance=70/zoom,angle=i*2.39996;
-          for(let ring=1;ring<=4;ring++){
-            n.x=anchor.x+Math.cos(angle)*distance*ring;
-            n.y=anchor.y+Math.sin(angle)*distance*ring;
-            if(![...at.values()].some(other=>other!==n&&
-              Math.hypot(other.x-n.x,other.y-n.y)<radius(n)+radius(other)+4/zoom))break;
-          }
-        }
+      const occupied=[anchor,...peers.filter(tag=>at.has(tag)).map(tag=>at.get(tag))];
+      peers.forEach(tag=>{
+        const n=ensureTag(tag,anchor,occupied);
+        if(!occupied.includes(n))occupied.push(n);
         focusedTags.add(tag);
         const count=shared.get(tag);
         const control=make("g",{role:"button",tabindex:0,class:"studio-tb-pair-edge",
@@ -1314,7 +1352,7 @@ const CaptionStudioViz = (() => {
     }
     function selectNeighborhood(tag){
       if(!picked&&tag)overviewCamera={zoom,pan:{...pan}};
-      camera=null;picked=tag;activePair=null;expanded=false;
+      camera=null;picked=tag;activePair=null;rarePage=0;
       if(tag){
         const related=options.relationsForTag?.(tag)||relationMap(tag);
         shared=new Map([...related].filter(([peer])=>peer!==tag&&all.has(peer))
@@ -1354,7 +1392,9 @@ const CaptionStudioViz = (() => {
     }
     function center(tag){const n=at.get(tag);if(n)cameraTo(Math.max(zoom,1.45),{x:n.x-500,y:n.y-350});}
     function fit(animate=true){
-      const values=[...at.values()],minX=Math.min(...values.map(n=>n.x))-80,maxX=Math.max(...values.map(n=>n.x))+130;
+      const values=picked?[...focusedTags].map(tag=>at.get(tag)):[...at.values()];
+      if(!values.length)return;
+      const minX=Math.min(...values.map(n=>n.x))-80,maxX=Math.max(...values.map(n=>n.x))+130;
       const minY=Math.min(...values.map(n=>n.y))-80,maxY=Math.max(...values.map(n=>n.y))+80;
       overviewZoom=Math.min(1.6,1000/(maxX-minX),700/(maxY-minY));
       cameraTo(overviewZoom,{x:(minX+maxX)/2-500,y:(minY+maxY)/2-350},animate);

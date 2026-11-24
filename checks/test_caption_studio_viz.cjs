@@ -230,6 +230,27 @@ try {
   scroll(largeAtlas,newHeader,100,1020);
   assert.equal(gallery(largeAtlas),undefined,"Reverse scroll over the header works even deep in the gallery");
 
+  // Every primary neighbor gets an edge, and only a bounded page of
+  // additional rare tags is materialized. All visible nodes have an edge.
+  const many=Viz.tagbenchModel(Array.from({length:155},(_,i)=>({tags:["anchor","peer_"+i]})));
+  const manyRelations=new Map(many.all.filter(n=>n.tag!=="anchor").map(n=>[n.tag,1]));
+  const manyMap=Viz.tagbenchConstellation(many,()=>{},"anchor",{
+    relationsForTag:()=>manyRelations
+  });
+  const pairNodes=()=>allIn(manyMap).filter(n=>n.attrs.class==="studio-tb-pair-edge");
+  const visibleNodes=()=>allIn(manyMap).filter(n=>n.attrs["data-tag"]&&n.style.display!=="none");
+  assert.equal(pairNodes().length,119+16);
+  assert.equal(visibleNodes().length,pairNodes().length+1);
+  assert.ok(allIn(manyMap).some(n=>n.textContent==="135 of 155 connections shown"));
+  const beforePeers=new Set(visibleNodes().map(n=>n.attrs["data-tag"]));
+  byLabel(manyMap,"Next additional connections").handlers.click();
+  assert.equal(pairNodes().length,119+16);
+  const afterPeers=new Set(visibleNodes().map(n=>n.attrs["data-tag"]));
+  assert.ok([...afterPeers].some(tag=>!beforePeers.has(tag)));
+  assert.equal(visibleNodes().length,pairNodes().length+1);
+  assert.ok(many.all.every(n=>many.colors.has(n.tag)));
+  manyMap.dispose();
+
   // One shared timer, actual href advancement, pause while Waterfall
   // is open, and cleanup when the map is disposed.
   const oldInterval=global.setInterval,oldClear=global.clearInterval,oldMatch=global.matchMedia;
