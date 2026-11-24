@@ -4760,25 +4760,42 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   box-shadow:inset 0 1px 0 color-mix(in srgb,var(--text-primary) 9%,transparent);
 }
 #tab-captions .studio-tb-waterfall{position:relative;width:100%;height:100%;overflow-y:auto;overflow-x:hidden}
-/* Filtered Waterfall shares the Tags query field and keeps its header
-   outside the scrolling mosaic, without reducing unfiltered galleries. */
-#tab-captions .studio-tb-explore.is-filtered-waterfall{
-  display:flex;flex-direction:column;
-}
-#tab-captions .studio-tb-explore.is-filtered-waterfall > .studio-tb-waterfall{
-  flex:1 1 0;min-height:0;height:auto;
-}
-#tab-captions .studio-waterfall-filter{
-  flex:0 0 auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
-  padding:8px 10px;border-bottom:1px solid var(--border);
-  background:var(--bg-inset);min-width:0;
+/* Collection controls belong to the Waterfall toolbar, not its mosaic.
+   Use the same control heights as the image-scale and view controls. */
+#tab-captions .studio-top-actions>.studio-waterfall-filter{
+  flex:0 1 auto;display:flex;align-items:center;gap:8px;
+  min-width:0;max-width:100%;margin:0;padding:0 0 0 8px;
+  border-left:1px solid var(--border);background:transparent;
 }
 #tab-captions .studio-waterfall-tag-heading{
-  margin:0;font-size:16px;font-weight:750;overflow-wrap:anywhere;min-width:0;
+  flex:0 1 auto;margin:0;font-size:15px;font-weight:750;
+  min-width:0;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
 #tab-captions .studio-waterfall-filter-count{
-  color:var(--text-secondary);font-size:12px;white-space:nowrap;
+  flex:none;color:var(--text-secondary);font-size:12px;white-space:nowrap;
   font-variant-numeric:tabular-nums;
+}
+#tab-captions .studio-waterfall-filter>.studio-tb-pair-action,
+#tab-captions .studio-waterfall-filter>.studio-tb-collection-filter{
+  box-sizing:border-box;height:36px;min-height:36px;margin:0;padding:0 9px;
+  border:1px solid var(--border);border-radius:7px;background:var(--bg-raised);
+  color:var(--text-primary);font-size:12px;white-space:nowrap;
+}
+#tab-captions .studio-waterfall-filter>.studio-tb-pair-action{flex:none;cursor:pointer}
+#tab-captions .studio-waterfall-filter>.studio-tb-pair-action:hover{background:var(--bg-hover);border-color:var(--accent-border)}
+#tab-captions .studio-waterfall-filter>.studio-tb-collection-filter{
+  flex:0 1 auto;min-width:72px;max-width:180px;text-overflow:ellipsis;
+}
+@container caption-toolbar (max-width:1100px){
+  #tab-captions .studio-top-actions>.studio-waterfall-filter{
+    flex:1 1 250px;flex-wrap:wrap;justify-content:flex-start;
+  }
+}
+@container caption-toolbar (max-width:740px){
+  #tab-captions .studio-top-actions>.studio-waterfall-filter{
+    order:4;flex:1 1 100%;padding:0;border:0;
+  }
+  #tab-captions .studio-waterfall-tag-heading{max-width:min(240px,100%)}
 }
 /* Each learning outline extends 4px beyond the tile (2px offset + 2px stroke).
    A 9px gutter leaves a 1px separation even when both tiles have verdicts. */

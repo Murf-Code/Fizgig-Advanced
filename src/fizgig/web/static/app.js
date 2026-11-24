@@ -16253,6 +16253,7 @@ function renderCaptionStudio(host,items,ext){
       S.cap.studioLearningVisibility?.forget(tile);
     for(const child of fullStage.children)child.dispose?.();
     fullStage.replaceChildren();
+    actionBar.querySelector(".studio-waterfall-filter")?.remove();
     // Keep no invisible Waterfall or Constellation graph alive.
     S.cap.studioTagbenchGraph=null;
     mountedExploreView=null;
@@ -16288,7 +16289,6 @@ function renderCaptionStudio(host,items,ext){
       renderCaptions();return;
     }
     clearExploreStage();
-    fullStage.classList.toggle("is-filtered-waterfall",view==="waterfall"&&!!S.cap.studioQuery);
     S.cap.studioExploreMode=view;
     indexMode.value="list";
     if(view==="list"){
@@ -16344,7 +16344,7 @@ function renderCaptionStudio(host,items,ext){
         const mapState=state?.key===String(S.imageFolder||"")+"|"+ext&&
           state.mapOnly&&S.cap.studioQuery===waterfallQuery(state)?state:null;
         if(S.cap.studioQuery){
-          const header=el("header",{class:"studio-waterfall-filter studio-tb-collection-header",
+          const header=el("header",{class:"studio-waterfall-filter",
             "aria-label":"Waterfall tag collection"});
           if(mapState){
             const back=btn("← Back to map",mapReturn);
@@ -16365,6 +16365,7 @@ function renderCaptionStudio(host,items,ext){
               span.style.color=CaptionStudioViz.colorForTag(tag,categoryState);heading.append(span);
             }
           }
+          heading.title=heading.textContent;
           const count=items.reduce((n,it)=>n+(it.size?1:0),0);
           header.append(heading,el("span",{class:"studio-waterfall-filter-count",
             text:count+" "+(count===1?"image":"images")}));
@@ -16376,6 +16377,7 @@ function renderCaptionStudio(host,items,ext){
                 "All branch images":"All "+mapState.tag+" images"}));
               for(const tag of related)filter.append(el("option",{value:tag,text:tag}));
               filter.value=mapState.peer||"";
+              filter.title=filter.options[filter.selectedIndex]?.textContent||"";
               filter.addEventListener("change",()=>{
                 mapState.peer=filter.value||null;
                 S.cap.studioQuery=waterfallQuery(mapState);S.cap.page=0;
@@ -16408,8 +16410,12 @@ function renderCaptionStudio(host,items,ext){
               }
             };
             fullStage.addEventListener("wheel",wheel,{capture:true,passive:false});
+            header.addEventListener("wheel",wheel,{capture:true,passive:false});
             const dispose=flow.dispose;
-            flow.dispose=()=>{fullStage.removeEventListener("wheel",wheel,true);dispose?.();};
+            flow.dispose=()=>{
+              fullStage.removeEventListener("wheel",wheel,true);
+              header.removeEventListener("wheel",wheel,true);dispose?.();
+            };
           }else{
             const clear=btn("×",()=>{
               S.cap.studioQuery="";S.cap.studioSearchDraft=null;S.cap.studioConstellationReturn=null;
@@ -16418,7 +16424,7 @@ function renderCaptionStudio(host,items,ext){
             clear.classList.add("studio-tb-pair-action");
             clear.setAttribute("aria-label","Clear image tag filter");header.append(clear);
           }
-          fullStage.append(header);
+          actionBar.insertBefore(header,waterfallScaleControl);
         }
         fullStage.append(flow);
         flow.setScale(S.cap.studioWaterfallScale);
