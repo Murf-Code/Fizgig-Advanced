@@ -200,6 +200,10 @@ class MOSSImageDiT(nn.Module):
             config = apply_stream_strategy(config, getattr(self, "_stream_strategy", "default"))
             self.offloader = create_offloader("moss_image", list(self.layers), n, num_blocks, config)
         if self.offloader is None or not hasattr(self.offloader, "copier"):     # classic, or send-only fell back
+            # The send-only factory may have constructed its own classic
+            # offloader (with hooks) before MOSS selects the shared variant.
+            if self.offloader is not None:
+                self.offloader.remove_hooks()
             self.offloader = ModelOffloader("moss_image", list(self.layers), n, num_blocks, supports_backward,
                                             torch.device(device))
 
