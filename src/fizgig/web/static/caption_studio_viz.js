@@ -2106,11 +2106,15 @@ const CaptionStudioViz = (() => {
         if(branchTrail[branchTrail.length-1]!==picked)branchTrail=[picked];
         selectNeighborhood(picked);
       }else if(picked)layoutNeighborhood();
-      overviewCamera=state.overviewCamera;
-      input.value=state.query;
+      if(state.overviewCamera)overviewCamera=state.overviewCamera;
+      input.value=state.query||"";
       if(state.qualityEnabled!==undefined)qualityEnabled=!!state.qualityEnabled;
       closingWheel=state.closingWheel||null;
-      cameraTo(state.zoom,state.pan,false);
+      if(state.focusOnOpen){
+        const node=at.get(picked);
+        if(node)cameraTo(Math.min(2.2,overviewZoom*1.4),{x:node.x-500,y:node.y-350},false);
+        else fit(false);
+      }else cameraTo(state.zoom,state.pan,false);
       paintDiagnostics();renderPanel();
     };
     stage.resumeCollection=state=>{

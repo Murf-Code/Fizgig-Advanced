@@ -16346,11 +16346,14 @@ function renderCaptionStudio(host,items,ext){
         if(S.cap.studioQuery){
           const header=el("header",{class:"studio-waterfall-filter",
             "aria-label":"Waterfall tag collection"});
-          if(mapState){
-            const back=btn("← Back to map",mapReturn);
-            back.classList.add("studio-tb-pair-action");
-            header.append(back);
-          }
+          const back=btn("← Back to Tags",()=>{
+            // Preserve the entire current tag query when returning to Tags.
+            S.cap.studioConstellationReturn=null;
+            S.cap.studioExploreNeedRedraw=true;
+            openView("list");
+          });
+          back.classList.add("studio-tb-pair-action");
+          header.append(back);
           const heading=el("h3",{class:"studio-waterfall-tag-heading"});
           for(const part of CaptionStudioTags.searchParts(S.cap.studioQuery,vocabulary)){
             const span=el("span",{text:part.tag||part.text});
@@ -16369,6 +16372,27 @@ function renderCaptionStudio(host,items,ext){
           const count=items.reduce((n,it)=>n+(it.size?1:0),0);
           header.append(heading,el("span",{class:"studio-waterfall-filter-count",
             text:count+" "+(count===1?"image":"images")}));
+          // A single positive tag is an unambiguous map target. Complex
+          // Boolean searches without a map origin open the overview.
+          const parts=CaptionStudioTags.searchParts(S.cap.studioQuery,vocabulary)
+            .filter(part=>part.text.trim());
+          const focusTag=mapState?.tag||(parts.length===1&&parts[0].tag?
+            String(parts[0].tag).toLocaleLowerCase():null);
+          const constellation=btn("Open in Constellation",()=>{
+            S.cap.studioExplorePickedTag=focusTag;
+            S.cap.studioConstellationReturn=focusTag?{
+              ...(mapState||{}),key:String(S.imageFolder||"")+"|"+ext,
+              revision:mapState?.revision??(S.cap.studioRevision||0),
+              tag:focusTag,picked:focusTag,peer:null,focusOnOpen:true,
+              branchTrail:mapState?.branchTrail||[focusTag],
+              query:mapState?.query||"",closingWheel:null
+            }:null;
+            S.cap.studioExploreNeedRedraw=true;
+            openView("constellation");
+          });
+          constellation.classList.add("studio-tb-pair-action");
+          constellation.title=focusTag?"Select and zoom to "+focusTag:"Open the tag map overview";
+          header.append(constellation);
           if(mapState){
             const related=[...new Set([...(mapState.related||[]),...(mapState.peer?[mapState.peer]:[])])];
             if(related.length){

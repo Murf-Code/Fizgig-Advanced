@@ -228,6 +228,20 @@ try {
   directReturn.resumeMap(directState);
   assert.equal(directReturn.children[1].attrs.viewBox,directView);
   assert.equal(gallery(directReturn),undefined);
+  {
+    const modest=Viz.tagbenchConstellation(graph,()=>{},"paws",options);
+    const modestSvg=modest.children[1];
+    const beforeWidth=Number(modestSvg.attrs.viewBox.split(" ")[2]);
+    modest.resumeMap({...directState,focusOnOpen:true});
+    const [mx,my,mw,mh]=modestSvg.attrs.viewBox.split(" ").map(Number);
+    const focusedNode=graph.nodes.find(n=>n.tag==="paws");
+    assert.ok(mw<beforeWidth,"zoom in modestly");
+    assert.ok(mw>Number(directView.split(" ")[2]),"do not restore maximum zoom");
+    assert.ok(Math.abs(mx+mw/2-focusedNode.x)<1e-6);
+    assert.ok(Math.abs(my+mh/2-focusedNode.y)<1e-6);
+    assert.ok(allIn(modest).some(n=>n.attrs["aria-label"]==="View images tagged paws"));
+    modest.dispose();
+  }
   direct.dispose();directReturn.dispose();
 
   const largeAtlas=Viz.tagbenchConstellation(graph,()=>{},"paws",{
