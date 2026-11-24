@@ -496,7 +496,7 @@ def test_experimental_ring_sizes_cpu(monkeypatch, family, slots):
     ("moss", 2, 2, True), ("moss", 2, 4, True),
 ])
 @pytest.mark.parametrize("kind", ["lora", "lokr"])
-def test_cuda_stream_sync_parity(monkeypatch, family, swap, slots, pinned):
+def test_cuda_stream_sync_parity(monkeypatch, family, swap, slots, pinned, kind):
     """Run manually on a GPU; CPU CI cannot reproduce DMA timing.
     
     Compare no swap, classic swap and send-only, including sparse and dense
