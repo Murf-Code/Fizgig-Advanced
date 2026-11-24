@@ -604,13 +604,13 @@ const CaptionStudioViz = (() => {
     const gradient=make("linearGradient",{id:"tb-sunlight",x1:"0%",y1:"0%",x2:"100%",y2:"100%"},defs);
     for(const [offset,color] of [["0%","#fffbe5"],["45%","#fff0b3"],["100%","#e4be72"]])
       make("stop",{offset,"stop-color":color},gradient);
-    const baseLayer=make("g"),focusLayer=make("g"),nodeLayer=make("g"),labelLayer=make("g");
+    const baseLayer=make("g"),focusLayer=make("g"),hoverLayer=make("g"),nodeLayer=make("g"),labelLayer=make("g");
     const nodes=model.nodes.map(n=>({...n,ox:0,oy:0}));
     const at=new Map(nodes.map(n=>[n.tag,n])),all=new Map(model.all.map(n=>[n.tag,n]));
     const adjacency=new Map(nodes.map(n=>[n.tag,new Map()]));
     for(const e of model.edges){adjacency.get(e.a)?.set(e.b,e.w);adjacency.get(e.b)?.set(e.a,e.w);}
     const vals=nodes.map(n=>n.links),lo=Math.min(...vals),hi=Math.max(...vals);
-    const visual=new Map(),baseEdges=[],focusEdges=[];
+    const visual=new Map(),baseEdges=[],focusEdges=[],hoverEdges=[];
     let prefs=constellationPrefs(options.preferences),zoom=1,pan={x:0,y:0},picked=null,hover=null,drag=null,rare=null;
     let serial=0,shared=new Map(),frame=null,settling=null,camera=null,pulse=null,disposed=false,dirty=new Set(),lastClick=null;
     const media=typeof matchMedia==="function"?matchMedia("(prefers-reduced-motion: reduce)"):null;
@@ -654,7 +654,7 @@ const CaptionStudioViz = (() => {
     const updateGeometry=(changed=null)=>{
       if(!changed){for(const n of at.values())nodeGeometry(n);}
       else for(const tag of changed){const n=at.get(tag);if(n)nodeGeometry(n);}
-      for(const e of [...baseEdges,...focusEdges])if(!changed||changed.has(e.a)||changed.has(e.b))edgeGeometry(e);
+      for(const e of [...baseEdges,...focusEdges,...hoverEdges])if(!changed||changed.has(e.a)||changed.has(e.b))edgeGeometry(e);
     };
     function createNode(n){
       const id="tb-orb-"+serial++;
@@ -671,8 +671,8 @@ const CaptionStudioViz = (() => {
       const star=make("path",{d:"M0 -7Q1 -1 7 0Q1 1 0 7Q-1 1 -7 0Q-1 -1 0 -7Z",fill:"url(#tb-sunlight)",stroke:"#141416","stroke-width":"1",opacity:0,"pointer-events":"none"},g);
       const label=make("text",{fill:n.color,"font-weight":650,stroke:"#101018","paint-order":"stroke","pointer-events":"none"},labelLayer);label.textContent=n.tag;
       visual.set(n.tag,{g,core,halo,ripple,ring,number,star,label,grad,id});
-      g.addEventListener("pointerenter",()=>{if(drag)return;hover=n.tag;updateAppearance();});
-      g.addEventListener("pointerleave",()=>{if(hover===n.tag){hover=null;updateAppearance();}});
+      g.addEventListener("pointerenter",()=>{if(drag)return;hover=n.tag;hoverConnections();updateAppearance();});
+      g.addEventListener("pointerleave",()=>{if(hover===n.tag){hover=null;hoverConnections();updateAppearance();}});
       g.addEventListener("pointerdown",e=>{
         if(e.button!==0)return;e.stopPropagation();dismissMenu();cancelMotion();
         const p=point(e);drag={kind:"node",tag:n.tag,dx:p.x-n.x,dy:p.y-n.y,x:e.clientX,y:e.clientY,moved:false};
@@ -714,6 +714,16 @@ const CaptionStudioViz = (() => {
         e.el.setAttribute("stroke-width",.7+strength*2.5);focusEdges.push(e);
       }
     }
+    function hoverConnections(){
+      hoverLayer.replaceChildren();hoverEdges.length=0;
+      if(!hover||hover===picked||!at.has(hover))return;
+      for(const [tag,w] of relationMap(hover))if(at.has(tag)){
+        const e=addEdge({a:hover,b:tag,w},hoverLayer,"is-hovered");
+        const strength=Math.min(1,w/Math.max(1,at.get(hover).count));
+        e.el.setAttribute("stroke",at.get(tag).color);e.el.setAttribute("stroke-opacity",.16+strength*.54);
+        e.el.setAttribute("stroke-width",.7+strength*1.4);hoverEdges.push(e);
+      }
+    }
     function updateAppearance(){
       const focused=hover||picked,neighbors=focused?relationMap(focused):null;
       const rankLimit=zoom<.7?15:zoom<1.1?45:zoom<1.6?85:120;
@@ -724,6 +734,7 @@ const CaptionStudioViz = (() => {
         e.el.setAttribute("stroke-width",touches?1.3:.7);
         if(e.el.classList.contains("is-alike"))e.el.setAttribute("stroke-dasharray","4 4");
       }
+      focusLayer.setAttribute("opacity",hover&&hover!==picked?".22":"1");
       let rank=0;
       for(const n of at.values()){
         const v=visual.get(n.tag),selected=n.tag===picked,related=!focused||n.tag===focused||neighbors?.has(n.tag);
@@ -766,7 +777,8 @@ const CaptionStudioViz = (() => {
       if(tag&&toggle&&tag===picked)tag=null;
       if(tag&&!ensureTag(tag))return;
       if(rare&&rare.tag!==tag)removeRare();
-      picked=tag;hover=null;focusConnections();renderPanel();updateAppearance();
+      if(pulse){visual.get(pulse.tag)?.ripple.setAttribute("opacity","0");pulse=null;}
+      picked=tag;hover=null;hoverConnections();focusConnections();renderPanel();updateAppearance();
       onPick?.(picked);
       if(picked&&!reduced()&&prefs.elasticity>0){pulse={tag:picked,start:performance.now(),amount:0};wake();}
     }
@@ -880,7 +892,10 @@ const CaptionStudioViz = (() => {
     stage.addEventListener("pointerdown",e=>{if(!menu.contains(e.target))dismissMenu();if(!search.contains(e.target))matches.replaceChildren();});
     stage.setPreferences=value=>{
       prefs=constellationPrefs(value);stage.classList.toggle("no-celestial",!prefs.celestial);
-      if(!prefs.elasticity||reduced())clearOffsets();updateAppearance();
+      if(!prefs.elasticity||reduced()){
+        clearOffsets();if(pulse){visual.get(pulse.tag)?.ripple.setAttribute("opacity","0");pulse=null;}
+      }
+      updateAppearance();
     };
     stage.dispose=()=>{disposed=true;if(frame!==null)cancelAnimationFrame(frame);frame=null;camera=null;settling=null;pulse=null;};
     stage.append(svg,search,zoomCtl,spotlight,menu);
