@@ -116,9 +116,10 @@ try {
   paws.handlers.keydown({key:"Enter",preventDefault(){},stopPropagation(){}});
   assert.deepEqual([paws.attrs.transform,art.attrs.transform],before);
   const edges=descendants(network).filter(node=>node.attrs.class==="studio-tb-pair-edge");
-  assert.equal(edges[0].attrs["aria-label"],"paws and white fur, 1 shared image");
-  assert.ok(Number(edges[0].children[0].attrs["stroke-width"])>Number(edges[1].children[0].attrs["stroke-width"]));
-  edges[0].handlers.click();
+  assert.equal(edges.length,1);
+  assert.equal(edges[0].attrs["aria-label"],"paws and digital art, 1 shared image");
+  assert.ok(!descendants(network).some(node=>node.attrs["data-tag"]==="white fur"));
+  descendants(network).find(node=>node.attrs["aria-label"]==="Preview 1 shared images with white fur").handlers.click();
   assert.ok(descendants(network).some(node=>node.src==="/thumb"));
   descendants(network).find(node=>node.textContent==="Open in Waterfall").handlers.click();
   assert.deepEqual(pairCalls,[["paws","white fur"],["paws","white fur"]]);
@@ -160,7 +161,8 @@ try {
   const sharedAtlas=Viz.tagbenchConstellation(graph,()=>{},"paws",{
     ...options,relationsForTag:()=>new Map([["white fur",6]])
   });
-  byLabel(sharedAtlas,"paws and white fur, 6 shared images").handlers.click();
+  byLabel(sharedAtlas,"Preview 6 shared images with white fur").handlers.click();
+  byLabel(sharedAtlas,"View shared images in Constellation").handlers.click();
   assert.equal(tiles(gallery(sharedAtlas)).length,6);
   const filter=byLabel(sharedAtlas,"Filter by related tag");
   filter.value="";filter.handlers.change();
@@ -177,7 +179,9 @@ try {
   const wheel=target=>wheelAtlas.children[1].handlers.wheel({
     deltaY:-1,timeStamp:100,clientX:0,clientY:0,target:{closest:()=>target},preventDefault(){}
   });
-  for(let i=0;i<8;i++)wheel(null);
+  for(let i=0;i<12;i++)wheel(wheelTarget);
+  assert.equal(gallery(wheelAtlas),undefined,"Close-up zoom remains in the map");
+  for(let i=0;i<30;i++)wheel(null);
   assert.equal(gallery(wheelAtlas),undefined);
   wheel(wheelTarget);
   assert.equal(tiles(gallery(wheelAtlas)).length,50);
@@ -239,14 +243,13 @@ try {
   });
   const pairNodes=()=>allIn(manyMap).filter(n=>n.attrs.class==="studio-tb-pair-edge");
   const visibleNodes=()=>allIn(manyMap).filter(n=>n.attrs["data-tag"]&&n.style.display!=="none");
-  assert.equal(pairNodes().length,119+16);
+  assert.equal(pairNodes().length,119);
   assert.equal(visibleNodes().length,pairNodes().length+1);
-  assert.ok(allIn(manyMap).some(n=>n.textContent==="135 of 155 connections shown"));
-  const beforePeers=new Set(visibleNodes().map(n=>n.attrs["data-tag"]));
+  assert.ok(allIn(manyMap).some(n=>n.textContent==="119 of 155 connections on map"));
+  const beforePeers=visibleNodes().map(n=>[n.attrs["data-tag"],n.attrs.transform]);
   byLabel(manyMap,"Next additional connections").handlers.click();
-  assert.equal(pairNodes().length,119+16);
-  const afterPeers=new Set(visibleNodes().map(n=>n.attrs["data-tag"]));
-  assert.ok([...afterPeers].some(tag=>!beforePeers.has(tag)));
+  assert.equal(pairNodes().length,119);
+  assert.deepEqual(visibleNodes().map(n=>[n.attrs["data-tag"],n.attrs.transform]),beforePeers);
   assert.equal(visibleNodes().length,pairNodes().length+1);
   assert.ok(many.all.every(n=>many.colors.has(n.tag)));
   manyMap.dispose();

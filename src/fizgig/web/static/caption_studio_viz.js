@@ -976,6 +976,7 @@ const CaptionStudioViz = (() => {
     let rarePage=0,activePair=null,collection=null,collectionMotion=null;
     let branchTrail=[],globalShared=new Map();
     const rarePageSize=16,primaryTags=new Set(nodes.map(n=>n.tag));
+    const extraPositions=new Map(),maxZoom=8;
     const wheelPause=180,wheelExitDistance=40;
     let closingWheel=null;
     const temporaryTags=new Set(),focusEdges=new Map();
@@ -1206,6 +1207,9 @@ const CaptionStudioViz = (() => {
         }
         edge.caption.setAttribute("x",.04*from.x+.32*cx+.64*to.x);
         edge.caption.setAttribute("y",.04*from.y+.32*cy+.64*to.y-10*typeScale/zoom);
+        const bounds={left:500+pan.x-500/zoom,right:500+pan.x+500/zoom,top:350+pan.y-350/zoom,bottom:350+pan.y+350/zoom};
+        const inside=p=>p.x>=bounds.left&&p.x<=bounds.right&&p.y>=bounds.top&&p.y<=bounds.bottom;
+        edge.caption.setAttribute("visibility",inside(from)&&inside(to)&&Math.hypot(dx,dy)>radius(at.get(picked))+radius(at.get(tag))+30/zoom?"visible":"hidden");
         edge.caption.setAttribute("font-size",13*typeScale/zoom);
         edge.caption.setAttribute("stroke-width",3*typeScale/zoom);
       }
@@ -1283,6 +1287,7 @@ const CaptionStudioViz = (() => {
       for(const tag of temporaryTags){
         if(keep.has(tag))continue;
         const v=visual.get(tag);
+        const n=at.get(tag);if(n)extraPositions.set(tag,{x:n.x,y:n.y});
         v.g.remove();v.label.remove();v.grad.remove();v.clip?.remove();
         visual.delete(tag);at.delete(tag);temporaryTags.delete(tag);
       }
@@ -1291,27 +1296,30 @@ const CaptionStudioViz = (() => {
     for(const c of atlas.clusters)for(const tag of c.memberTags||[])atlasGroupByTag.set(tag,c);
     // Deterministically find a free location; do not spawn all rare nodes at
     // the world origin or accept an overlapping final candidate.
+    // Explicitly opened long-tail tags get a stable map coordinate. Use
+    // overview-scale spacing, never the current close-up zoom radius.
     function freeTagPosition(n,anchor,peers){
+      const fixedRadius=other=>countRadius(other.count,maxCount)*typeScale/Math.max(.35,overviewZoom);
       const x=anchor?.x??500,y=anchor?.y??350;
-      const spacing=Math.max(12/zoom,radius(n)+8/zoom);
+      const spacing=Math.max(12,fixedRadius(n)+12);
       const phase=[...n.tag].reduce((h,c)=>(Math.imul(h,31)+c.codePointAt(0))|0,0);
       const start=(phase>>>0)%360*Math.PI/180;
       for(let i=0;i<1024;i++){
         const d=spacing*(1+Math.sqrt(i)*.85),angle=start+i*2.399963;
         const px=x+Math.cos(angle)*d,py=y+Math.sin(angle)*d;
-        if(peers.every(other=>other===n||Math.hypot(other.x-px,other.y-py)>=radius(n)+radius(other)+6/zoom))
+        if(peers.every(other=>other===n||Math.hypot(other.x-px,other.y-py)>=fixedRadius(n)+fixedRadius(other)+12))
           return {x:px,y:py};
       }
-      const right=Math.max(x,...peers.map(other=>other.x+radius(other)));
-      return {x:right+radius(n)+8/zoom,y};
+      const right=Math.max(x,...peers.map(other=>other.x+fixedRadius(other)));
+      return {x:right+fixedRadius(n)+12,y};
     }
-    function ensureTag(tag,anchor=null,peers=null){
+    function ensureTag(tag){
       if(at.has(tag))return at.get(tag);
       const entry=all.get(tag);if(!entry)return null;
       const group=atlasGroupByTag.get(tag);
       const n={...entry,group:group?.id,ox:0,oy:0,color:model.colors.get(tag)||group?.color||"var(--text-muted)"};
-      const origin=anchor||(!group?.unmapped&&Number.isFinite(group?.x)?group:null);
-      Object.assign(n,freeTagPosition(n,origin,peers||[...at.values()]));
+      const origin=!group?.unmapped&&Number.isFinite(group?.x)?group:null;
+      Object.assign(n,extraPositions.get(tag)||freeTagPosition(n,origin,[...at.values()]));
       at.set(tag,n);temporaryTags.add(tag);createNode(n);
       return n;
     }
@@ -1361,7 +1369,7 @@ const CaptionStudioViz = (() => {
           if(score<bestScore){best={box,x,y};bestScore=score;}
           if(!score)break;
         }
-        const show=bestScore===0||n.tag===picked||(picked&&temporaryTags.has(n.tag))||(!picked&&n===labelOrder[0]);
+        const show=bestScore===0||n.tag===picked||(!picked&&n===labelOrder[0]);
         if(show){
           v.label.textContent=label;
           v.label.setAttribute("x",best.x);v.label.setAttribute("y",best.y+sz*.32);
@@ -1510,24 +1518,26 @@ const CaptionStudioViz = (() => {
         ()=>options.openWaterfall(picked,null,collectionState(picked,null))).className="studio-tb-pair-action";
       if(!shared.size)html("div","studio-tb-pair-empty","No co-occurring tags",spotlight);
       if(activePair)renderPairPreview();
-      const rareTotal=[...shared.keys()].filter(tag=>!primaryTags.has(tag)).length;
+      const rare=[...shared.keys()].filter(tag=>!primaryTags.has(tag));
+      const rareTotal=rare.length,rareShown=new Set(rare.slice(rarePage*rarePageSize,(rarePage+1)*rarePageSize));
       if(shared.size)html("div","studio-tb-pair-count",
-        focusEdges.size+" of "+shared.size+" connections shown",spotlight);
+        focusEdges.size+" of "+shared.size+" connections on map",spotlight);
+      if(rareTotal)html("div","studio-tb-pair-count",rareTotal+" additional tags · list only",spotlight);
       if(rareTotal>rarePageSize){
         const pages=Math.ceil(rareTotal/rarePageSize);
         const page=html("div","studio-tb-pair-count","Additional tags "+(rarePage+1)+" / "+pages,spotlight);
         const move=delta=>{
-          rarePage+=delta;activePair=null;layoutNeighborhood();renderPanel();updateAppearance();
+          rarePage+=delta;activePair=null;renderPanel();
         };
         if(rarePage>0)button(page,"Previous","Previous additional connections",()=>move(-1)).className="studio-tb-pair-action";
         if(rarePage+1<pages)button(page,"Next","Next additional connections",()=>move(1)).className="studio-tb-pair-action";
       }
       const list=html("ul","",undefined,spotlight);
       for(const [tag,w] of shared){
-        if(!focusedTags.has(tag))continue;
+        if(!focusedTags.has(tag)&&!rareShown.has(tag))continue;
         const item=html("li","",undefined,list);
         const direction=tagDirection(globalShared.get(tag)||0,n.count,all.get(tag).count);
-        const b=button(item,(direction===1?"→ ":direction===-1?"← ":"")+tag,"Focus "+tag,()=>choose(tag));b.style.color=at.get(tag)?.color||"";
+        const b=button(item,(direction===1?"→ ":direction===-1?"← ":"")+tag,"Focus "+tag,()=>{choose(tag);if(!primaryTags.has(tag))center(tag);});b.style.color=model.colors.get(tag)||"";
         if(options.branching&&direction===1)
           button(item,"→","Follow branch to "+tag,()=>followBranch(tag)).className="studio-tb-pair-count-button";
         const pair=button(item,String(w),"Preview "+w+" shared images with "+tag,()=>inspectPair(tag));
@@ -1661,17 +1671,14 @@ const CaptionStudioViz = (() => {
     function layoutNeighborhood(){
       focusedTags.clear();focusEdges.clear();edgeLayer.replaceChildren();
       if(!picked){clearTemporaryTags();return;}
-      const related=[...shared.keys()];
-      const rare=related.filter(tag=>!primaryTags.has(tag));
-      const shownRare=new Set(rare.slice(rarePage*rarePageSize,(rarePage+1)*rarePageSize));
-      const peers=related.filter(tag=>primaryTags.has(tag)||shownRare.has(tag));
-      clearTemporaryTags(new Set([picked,...peers]));
+      // Focus is a filter over the existing map, not a new layout.
+      // Long-tail relationships stay in the panel until explicitly opened.
+      const peers=[...shared.keys()].filter(tag=>primaryTags.has(tag));
+      clearTemporaryTags(new Set([picked]));
       focusedTags.add(picked);
       const anchor=at.get(picked);
-      const occupied=[anchor,...peers.filter(tag=>at.has(tag)).map(tag=>at.get(tag))];
       peers.forEach(tag=>{
-        const n=ensureTag(tag,anchor,occupied);
-        if(!occupied.includes(n))occupied.push(n);
+        const n=at.get(tag);
         focusedTags.add(tag);
         const count=shared.get(tag);
         const control=make("g",{role:"button",tabindex:0,class:"studio-tb-pair-edge",
@@ -1754,7 +1761,7 @@ const CaptionStudioViz = (() => {
       menu.querySelector("button")?.focus({preventScroll:true});
     }
     function cameraTo(nextZoom,nextPan,animate=true){
-      nextZoom=Math.max(.35,Math.min(5,nextZoom));
+      nextZoom=Math.max(.35,Math.min(maxZoom,nextZoom));
       if(reduced()||!animate){camera=null;zoom=nextZoom;pan=nextPan;view();updateAppearance();return;}
       camera={start:performance.now(),fromZoom:zoom,fromPan:{...pan},toZoom:nextZoom,toPan:nextPan};wake();
     }
@@ -1768,7 +1775,7 @@ const CaptionStudioViz = (() => {
       cameraTo(overviewZoom,{x:(minX+maxX)/2-500,y:(minY+maxY)/2-350},animate);
     }
     function zoomBy(factor,e=null){
-      const next=Math.min(5,Math.max(.35,zoom*factor));
+      const next=Math.min(maxZoom,Math.max(.35,zoom*factor));
       if(factor<1&&branchTrail.length>1&&next<=overviewZoom*.95){backBranch();return;}
       if(next===zoom)return;
       let target={...pan};
@@ -1880,7 +1887,7 @@ const CaptionStudioViz = (() => {
       e.preventDefault();
       if(!e.deltaY)return;
       const overPicked=picked&&e.target.closest(".studio-tb-orb")===visual.get(picked)?.g;
-      if(overPicked&&e.deltaY<0&&zoom*1.12>=Math.min(3.5,Math.max(overviewZoom*1.7,coverZoomLevels(overviewZoom).end+.15))&&options.collectionItems){
+      if(overPicked&&e.deltaY<0&&zoom>=maxZoom-.001&&options.collectionItems){
         openCollection(picked);
         // Ignore the rest of the wheel gesture that zoomed into the circle.
         collection.wheel={direction:-1,canExit:false,distance:0,at:e.timeStamp};
