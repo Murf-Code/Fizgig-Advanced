@@ -6245,6 +6245,11 @@ body:has(.caption-removal-backdrop){overflow:hidden}
   border:1px solid var(--border);border-radius:10px;background:var(--bg-inset)}
 .caption-removal-list li{padding:3px 0;word-break:break-word;color:var(--text-primary)}
 .caption-removal-list .caption-removal-more{color:var(--text-muted);font-style:italic}
+.caption-removal-compact{width:min(100%,300px);border-radius:12px}
+.caption-removal-compact .caption-removal-heading{padding:12px 16px 8px}
+.caption-removal-compact .caption-removal-heading h2{font-size:15px}
+.caption-removal-compact .caption-removal-body{padding:12px 16px}
+.caption-removal-compact .caption-removal-actions{padding:0 16px 12px}
 .caption-removal-toggle{margin-top:8px}
 .caption-removal-heading,.caption-removal-actions{flex-shrink:0}
 .caption-removal-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:10px;padding:14px 22px 20px}
