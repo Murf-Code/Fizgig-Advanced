@@ -1,5 +1,9 @@
 """Fixed Krea 2 A/B controls for the stream-sync test branch (real training, not a microbenchmark)."""
 import os
+from pathlib import Path
+
+STYLE_PROMPT = "A small wooden boat on a quiet lake surrounded by autumn trees, distant mountains and soft morning light"
+DEFAULT_PREVIEW_PROMPTS = "A character portrait, three-quarter view, expressive face\n" + STYLE_PROMPT
 
 CASES = (
     ("replay", "Global replay", False),
@@ -8,11 +12,33 @@ CASES = (
 )
 
 
+def preview_prompts(folder, supplied="", trigger=""):
+    """Resolve the same prompt set once, before queuing any of the three cases."""
+    supplied = str(supplied or "").strip()
+    if supplied:
+        return supplied
+    from fizgig.dataset.caption_file import read_caption
+    likeness = ""
+    for image in sorted(Path(folder).iterdir(), key=lambda p: (p.name.casefold(), p.name)):
+        if not image.is_file() or image.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
+            continue
+        try:
+            caption = " ".join(read_caption(str(image.with_suffix(".txt"))).split())
+        except OSError:
+            continue
+        if caption and not caption.startswith("#"):
+            likeness = caption[:3000]
+            break
+    trigger = " ".join(str(trigger or "").strip(" ,").split())[:200]
+    prefix = trigger + ", " if trigger else ""
+    return (likeness or prefix + "A character portrait, three-quarter view, expressive face") + "\n" + prefix + STYLE_PROMPT
+
+
 def settings(group, output_root, epochs=3, prompt=""):
     epochs = int(epochs)
     if not 1 <= epochs <= 30:
         raise ValueError("Replay comparison epochs must be between 1 and 30.")
-    prompt = str(prompt or "").strip()
+    prompt = str(prompt or "").strip() or DEFAULT_PREVIEW_PROMPTS
     if len(prompt) > 4000:
         raise ValueError("Preview prompts must be at most 4000 characters.")
     common = {
@@ -26,7 +52,7 @@ def settings(group, output_root, epochs=3, prompt=""):
         "VALIDATION_GROUPS": "1", "VALIDATION_TIMESTEPS": "4", "VALIDATION_SEED": "42",
         "VALIDATION_EARLY_STOP": False, "ADAPTIVE_LR": False, "KREA2_LOSS_WATCH": False,
         "KREA2_PER_IMAGE_LR": False, "KREA2_AUTO_RECAPTION": False,
-        "SAMPLE_ENABLED": bool(prompt), "SAMPLE_PROMPT": prompt, "SAMPLE_SEED": "1234",
+        "SAMPLE_ENABLED": True, "SAMPLE_PROMPT": prompt, "SAMPLE_SEED": "1234",
         "SAMPLE_EVERY_N_EPOCHS": "1", "SAMPLE_AT_FIRST": True,
         "SAMPLE_WIDTH": "512", "SAMPLE_HEIGHT": "512", "SAMPLE_STEPS": "20",
     }
@@ -57,5 +83,7 @@ def adjust_plan(desc, values, plan):
         cmd.extend(["--train_blocks", ",".join(f"block_{i}" for i in range(desc.n_blocks))])
     if "--holdout_file" not in stages[0].cmd and "holdout_file =" not in plan.dataset_toml:
         plan.problems.append("Replay comparison needs a validation hold-out. Choose a larger image dataset.")
+    if values.get("SAMPLE_ENABLED") and "--sample_prompts" not in stages[0].cmd:
+        plan.problems.append("Replay comparison requires a usable sample prompt.")
     plan.console.append(f"[replay comparison] {case}: fixed seed, rank, optimizer, resolution and validation.")
     return plan

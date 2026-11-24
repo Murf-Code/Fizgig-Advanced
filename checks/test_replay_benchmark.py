@@ -20,12 +20,12 @@ def test_recipe_is_three_independent_runs(tmp_path):
 def test_comparison_preserves_normal_adapter_targets(tmp_path):
     desc = SimpleNamespace(key="krea2", n_blocks=28)
     for values in rb.settings("test", str(tmp_path)):
-        cmd = ["python", "train.py"]
+        cmd = ["python", "train.py", "--sample_prompts", "prompts.txt"]
         plan = SimpleNamespace(problems=[], stages=[SimpleNamespace(name="Training", cmd=cmd)],
                                dataset_toml='holdout_file = "held.json"', console=[])
         rb.adjust_plan(desc, values, plan)
         assert not plan.problems
-        assert cmd == ["python", "train.py"]
+        assert cmd == ["python", "train.py", "--sample_prompts", "prompts.txt"]
 
 
 def test_no_holdout_is_rejected(tmp_path):
@@ -35,3 +35,33 @@ def test_no_holdout_is_rejected(tmp_path):
                            dataset_toml="", console=[])
     rb.adjust_plan(desc, values, plan)
     assert plan.problems
+
+
+def test_samples_on_with_blank_prompt(tmp_path):
+    runs = rb.settings("test", str(tmp_path))
+    for v in runs:
+        assert v["SAMPLE_ENABLED"] and v["SAMPLE_AT_FIRST"]
+        assert v["SAMPLE_EVERY_N_EPOCHS"] == "1"
+        assert v["SAMPLE_SEED"] == "1234"
+        assert v["SAMPLE_PROMPT"] == rb.DEFAULT_PREVIEW_PROMPTS
+        assert len(v["SAMPLE_PROMPT"].splitlines()) == 2
+        assert (v["SAMPLE_WIDTH"], v["SAMPLE_HEIGHT"]) == ("512", "512")
+
+
+def test_dataset_caption_and_style_prompts(tmp_path):
+    (tmp_path / "a.png").touch()
+    (tmp_path / "a.txt").write_text("  a subject\nwith a distinctive style  ", encoding="utf-8")
+    (tmp_path / "b.png").touch()
+    (tmp_path / "b.txt").write_text("another subject", encoding="utf-8")
+    prompts = rb.preview_prompts(tmp_path, trigger="my_style, ").splitlines()
+    assert prompts == ["a subject with a distinctive style", "my_style, " + rb.STYLE_PROMPT]
+    assert rb.preview_prompts(tmp_path, "custom portrait\ncustom landscape") == "custom portrait\ncustom landscape"
+
+
+def test_missing_sample_flags_rejected(tmp_path):
+    desc = SimpleNamespace(key="krea2", n_blocks=28)
+    values = rb.settings("test", str(tmp_path))[0]
+    plan = SimpleNamespace(problems=[], stages=[SimpleNamespace(name="Training", cmd=[])],
+                           dataset_toml='holdout_file = "held.json"', console=[])
+    rb.adjust_plan(desc, values, plan)
+    assert any("sample prompt" in p for p in plan.problems)

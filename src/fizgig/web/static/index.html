@@ -1015,7 +1015,7 @@
                 <button class="btn btn-primary" id="btnStart">Start Training</button>
                 <button class="btn" id="btnQueue" title="Checked like Start, then lined up: it starts when the runs before it finish">Add to queue</button>
                  <label class="field-hint" title="Queue three fixed Krea 2 runs, three epochs each"><input type="checkbox" id="streamSyncMode" checked> Test Mode</label>
-                 <input id="replayComparePrompt" type="text" placeholder="Optional fixed preview prompt" aria-label="Fixed preview prompt">
+                 <textarea id="replayComparePrompt" rows="2" placeholder="Likeness and style prompts, one per line (auto if blank)" aria-label="Fixed sample prompts"></textarea>
                  <span class="field-hint" id="streamSyncNote" role="status">Global Replay comparison · 3 runs × 3 epochs</span>
                 <button class="btn btn-warning" id="btnPause">Pause</button>
                 <button class="btn" id="btnSampleNow" style="display:none" title="Make the previews now, after the current training step, without waiting for the epoch to end">Sample now</button>
@@ -2482,7 +2482,7 @@
       const queue = document.getElementById("btnQueue");
       const note = document.getElementById("streamSyncNote");
       const prompt = document.getElementById("replayComparePrompt");
-      const description = "Global Replay comparison · 3 runs × 3 epochs · rank 32 · Muon · INT8 · 22 swaps";
+      const description = "Global Replay comparison · 3 runs × 3 epochs · samples on · rank 32 · Muon · INT8 · 22 swaps";
       let busy = false;
       mode.addEventListener("change", () => {
         note.textContent = mode.checked ? description : "";
