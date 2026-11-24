@@ -1017,6 +1017,12 @@
                  <label class="field-hint" title="Temporary Krea 2 correctness diagnostic"><input type="checkbox" id="streamSyncMode"> Test Mode</label>
                  <button class="btn btn-primary" id="streamSyncQueue" type="button" style="display:none">Queue diagnostic</button>
                  <span class="field-hint" id="streamSyncNote" role="status"></span>
+                 <button class="btn" id="replayCompareToggle" type="button" style="display:none">Global Replay comparison</button>
+                 <span id="replayCompareOptions" style="display:none">
+                   <label class="field-hint">Epochs per run <input id="replayCompareEpochs" type="number" min="1" max="30" value="3" style="width:5em"></label>
+                   <input id="replayComparePrompt" type="text" placeholder="Optional fixed preview prompt" aria-label="Fixed preview prompt">
+                   <button class="btn btn-primary" id="replayCompareQueue" type="button">Queue 4 training runs</button>
+                 </span>
                 <button class="btn btn-warning" id="btnPause">Pause</button>
                 <button class="btn" id="btnSampleNow" style="display:none" title="Make the previews now, after the current training step, without waiting for the epoch to end">Sample now</button>
                 <button class="btn btn-lilac is-off" id="btnImageLoss" style="display:none" title="Each training image's loss by epoch, against the rest of the dataset: which images are still being learned, which are done, and what the loss watch decided about each">Per-image loss</button>
@@ -2480,8 +2486,36 @@
     (function () {
       const mode = document.getElementById("streamSyncMode"), queue = document.getElementById("streamSyncQueue");
       const note = document.getElementById("streamSyncNote");
+      const replay = document.getElementById("replayCompareToggle"), opts = document.getElementById("replayCompareOptions");
+      const replayQueue = document.getElementById("replayCompareQueue");
+      replay.addEventListener("click", () => {
+        opts.style.display = opts.style.display === "none" ? "" : "none";
+        note.textContent = opts.style.display === "none" ? "" : "Standard / matched Standard / Replay / selective Replay · rank 32 · Muon · 0.25 MP · INT8 · 22 swaps · fixed validation";
+      });
+      replayQueue.addEventListener("click", async () => {
+        const folder = document.getElementById("imageFolder").value.trim();
+        const epochs = Number(document.getElementById("replayCompareEpochs").value);
+        if (!folder || !Number.isInteger(epochs) || epochs < 1 || epochs > 30) {
+          note.textContent = "Select a Krea 2 dataset and 1–30 epochs per run."; return;
+        }
+        replayQueue.disabled = true;
+        try {
+          const response = await fetch("/api/queue/replay-compare", {
+            method:"POST", headers:{"Content-Type":"application/json",
+              "X-Fizgig-Token":document.querySelector('meta[name="fizgig-token"]').content},
+            body:JSON.stringify({image_folder:folder, epochs, prompt:document.getElementById("replayComparePrompt").value})
+          });
+          const result = await response.json();
+          if (!result.ok) throw new Error(result.error || (result.problems || []).join("; ") || "Could not queue comparison");
+          mode.checked = false; mode.dispatchEvent(new Event("change"));
+          note.textContent = "Four training runs queued. Outputs: " + result.output;
+        } catch (error) { note.textContent = error.message || String(error); }
+        finally { replayQueue.disabled = false; }
+      });
       mode.addEventListener("change", () => {
         queue.style.display = mode.checked ? "" : "none";
+        replay.style.display = mode.checked ? "" : "none";
+        if (!mode.checked) opts.style.display = "none";
         note.textContent = mode.checked ? "Krea 2 · expanded 13-case diagnostic · 0.25 MP · INT8 · rank 32 · Muon · 22 swaps" : "";
       });
       queue.addEventListener("click", async () => {

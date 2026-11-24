@@ -1326,7 +1326,11 @@ def _plan(family_key, values, image_folder, resume="", ft_continue=None, models=
                       resuming=True)
     if resume or ft_continue or str(values.get("RESUME_TRAINING") or "").strip():
         inputs["recache"] = _size_changed(name, out_dir, values)
-    return desc, inputs, launch.plan(desc, inputs)
+    plan = launch.plan(desc, inputs)
+    if values.get("__replay_compare"):
+        from fizgig.web import replay_benchmark
+        replay_benchmark.adjust_plan(desc, values, plan)
+    return desc, inputs, plan
 
 
 _SIZE_KEYS = ("DATASET_MEGAPIXELS", "CLIP_MEGAPIXELS")
@@ -5100,6 +5104,36 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": f"{name} is already there."}, 400)
                 os.makedirs(new)
                 return self.json({"ok": True, "path": new})
+            if path == "/api/queue/replay-compare":
+                from fizgig.web import replay_benchmark
+                folder = str(b.get("image_folder") or "").strip()
+                if not os.path.isdir(folder):
+                    return self.json({"error": "Select a Krea 2 image dataset on Start."}, 400)
+                if any(h.get("share") for h in (load_prefs().get("helpers") or [])):
+                    return self.json({"error": "Disable shared training helpers for the replay comparison."}, 400)
+                group = "replay-compare-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+                root = os.path.join(default_output_dir(), "replay_comparisons")
+                try:
+                    configs = replay_benchmark.settings(group, root, b.get("epochs", 3), b.get("prompt", ""))
+                except (ValueError, TypeError) as exc:
+                    return self.json({"error": str(exc)}, 400)
+                entries = []
+                for vals in configs:
+                    _, inputs, plan = _plan("krea2", vals, folder)
+                    if plan.problems:
+                        return self.json({"problems": [vals["__replay_compare"] + ": " + p for p in plan.problems]}, 400)
+                    out, name = inputs["LORA_OUTPUT_DIR"], inputs["LORA_NAME"]
+                    if os.path.exists(out) or name_taken(vals, inputs) or webqueue.clashes(out, name):
+                        return self.json({"error": "Comparison output already exists; queue a new comparison."}, 400)
+                    entries.append(("krea2", vals, folder, name, out))
+                items = webqueue.add_many(entries)
+                with _lock:
+                    idle = not (_run["proc"] is not None and _run["proc"].poll() is None) and (
+                        _run["state"] not in ("starting", "running", "paused"))
+                if idle and not webqueue.status()["held"]:
+                    webqueue.start_next(_queue_starter)
+                return self.json({"ok": True, "ids": [i["id"] for i in items],
+                                  "output": os.path.join(root, group)})
             if path == "/api/queue/stream-sync":
                 folder = str(b.get("image_folder") or "").strip()
                 name = "stream-sync-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
@@ -5118,7 +5152,8 @@ class Handler(BaseHTTPRequestHandler):
             if path in ("/api/queue/add", "/api/queue/update"):   # Add to queue (or a queued run edited): checked
                 fam, vals, folder = b.get("family", ""), b.get("values") or {}, b.get("image_folder") or ""  # like Start
                 editing = str(b.get("id") or "") if path == "/api/queue/update" else ""
-                if editing and ((webqueue.get(editing) or {}).get("values") or {}).get("__stream_sync"):
+                if editing and any(((webqueue.get(editing) or {}).get("values") or {}).get(k)
+                                   for k in ("__stream_sync", "__replay_compare")):
                     return self.json({"error": "Test Mode uses fixed settings. Remove it and queue a new one."}, 400)
                 if path == "/api/queue/update" and webqueue.get(editing) is None:
                     return self.json({"error": "That run has left the queue (it started, or was removed) - add "
