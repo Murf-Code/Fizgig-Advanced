@@ -16,3 +16,5 @@ Select the Ferwildir dataset, leave Test Mode enabled and click Add to queue. Ei
 All selective cases use the same eight-update warmup and full probe every eight updates. Static is fixed between probes, not permanently pruned. All settings except LR and strategy match the first test: INT8, 22 swaps, Muon, rank/alpha 32, 0.25 MP, seed 42, fixed holdout validation, sample seed 1234 plus prompt index, 512 × 512, 20 requested sampling steps, epoch 0–5. Standard has additional adapter targets. Keep dataset and model/preferences unchanged during a comparison. The artist tag is not necessarily a character identity trigger.
 
 Diagnostic lines mixed with progress bars are retained and probe details carry explicit step numbers. Reports are saved at the comparison root.
+
+Once all cases reach a terminal state, global-replay-results.zip contains both reports, per-run logs and all sample images. Checkpoints and optimizer state are excluded. Interrupted comparisons remain incomplete.

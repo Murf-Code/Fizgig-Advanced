@@ -6,12 +6,14 @@ import re
 import shutil
 import threading
 import time
+import zipfile
 from pathlib import Path
 
 LOG = logging.getLogger(__name__)
 _LOCK = threading.RLock()
 REPORT = "global-replay-report.json"
 COMBINED = "global-replay-comparison.log"
+BUNDLE = "global-replay-results.zip"
 TERMINAL = {"finished", "failed", "stopped", "removed"}
 NUM = r"([0-9.eE+-]+)"
 
@@ -52,6 +54,17 @@ def _save(root, report):
             except OSError:
                 lines.append("Log unavailable: " + f)
     _atomic(root / COMBINED, "\n".join(lines) + "\n")
+    if all(s in TERMINAL for s in statuses):
+        tmp = root / (BUNDLE + ".tmp")
+        with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as bundle:
+            for name in (REPORT, COMBINED):
+                bundle.write(root / name, name)
+            for run in report["runs"]:
+                for name in run.get("samples", []) + run.get("logs", []):
+                    path = root / name
+                    if path.is_file():
+                        bundle.write(path, name)
+        tmp.replace(root / BUNDLE)
 
 
 def create(root, dataset, configs):
@@ -76,13 +89,26 @@ def parse_log(text):
         m = re.search(r"\[selective-replay\] probe (\d+): (\d+)/(\d+) blocks active", line)
         if m:
             probes.append({"step": int(m[1]), "active": int(m[2]), "total": int(m[3])})
-        m = re.search(r"\[selective-replay\] active_blocks=(\[.*?\]) scores=(\[.*?\]) strategy=(\w+)", line)
-        if m and probes:
+        m = re.search(r"\[selective-replay\] active_blocks=(\[.*?\]) scores=(\[.*?\]) strategy=(\w+)(?: step=(\d+))?", line)
+        if m:
             try:
-                probes[-1].update(active_blocks=ast.literal_eval(m[1]), scores=ast.literal_eval(m[2]), strategy=m[3])
+                active = ast.literal_eval(m[1])
+                scores = ast.literal_eval(m[2])
+                step = int(m[4]) if m[4] else None
+                if step is not None:
+                    record = next((p for p in probes if p["step"] == step), None)
+                    if record is None:
+                        record = {"step": step, "active": len(active), "total": len(scores)}
+                        probes.append(record)
+                elif probes and "active_blocks" not in probes[-1]:
+                    record = probes[-1]
+                else:
+                    record = None
+                if record is not None:
+                    record.update(active_blocks=active, scores=scores, strategy=m[3])
             except (ValueError, SyntaxError):
                 pass
-    return {"epochs": epochs, "validation": validation, "probes": probes}
+    return {"epochs": epochs, "validation": validation, "probes": sorted(probes, key=lambda p: p["step"])}
 
 
 def update(output, case, status, *, log_path=None, reason="", wall_seconds=None):

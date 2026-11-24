@@ -28,3 +28,25 @@ def test_all_finished_and_removed(tmp_path):
     assert rr._read_json(root / rr.REPORT)["status"] == "complete"
     rr.update(root / "a", "a", "removed")
     assert rr._read_json(root / rr.REPORT)["status"] == "failed"
+
+
+def test_probe_details_with_explicit_steps_and_missing_header():
+    log = ("steps: 9%|...| INFO:__main__:[selective-replay] active_blocks=[0] scores=[0.1, 0.2] strategy=uphill step=8\n"
+           "[selective-replay] probe 16: 1/2 blocks active\n"
+           "[selective-replay] active_blocks=[1] scores=[0.3, 0.4] strategy=uphill step=16\n")
+    probes = rr.parse_log(log)["probes"]
+    assert [p["step"] for p in probes] == [8, 16]
+    assert [p["active_blocks"] for p in probes] == [[0], [1]]
+
+
+def test_final_bundle_excludes_weights(tmp_path):
+    import zipfile
+    root = tmp_path / "comparison"
+    rr.create(root, "dataset", [{"__replay_compare": "a", "LORA_NAME": "a", "LEARNING_RATE": "0.00045"}])
+    out = root / "a"
+    (out / "sample").mkdir(parents=True)
+    (out / "sample" / "sample.png").write_bytes(b"sample")
+    (out / "weights.safetensors").write_bytes(b"weights")
+    rr.update(out, "a", "finished")
+    with zipfile.ZipFile(root / rr.BUNDLE) as bundle:
+        assert set(bundle.namelist()) == {rr.REPORT, rr.COMBINED, "a/sample/sample.png"}
