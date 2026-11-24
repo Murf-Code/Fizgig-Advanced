@@ -4760,6 +4760,26 @@ body.caption-glass-ui .caption-find-modal .btn-primary {
   box-shadow:inset 0 1px 0 color-mix(in srgb,var(--text-primary) 9%,transparent);
 }
 #tab-captions .studio-tb-waterfall{position:relative;width:100%;height:100%;overflow-y:auto;overflow-x:hidden}
+/* Filtered Waterfall shares the Tags query field and keeps its header
+   outside the scrolling mosaic, without reducing unfiltered galleries. */
+#tab-captions .studio-tb-explore.is-filtered-waterfall{
+  display:flex;flex-direction:column;
+}
+#tab-captions .studio-tb-explore.is-filtered-waterfall > .studio-tb-waterfall{
+  flex:1 1 0;min-height:0;height:auto;
+}
+#tab-captions .studio-waterfall-filter{
+  flex:0 0 auto;display:flex;align-items:center;gap:12px;
+  padding:7px 12px;border-bottom:1px solid var(--border);
+  background:var(--bg-inset);min-width:0;
+}
+#tab-captions .studio-waterfall-filter .studio-filter-bar{
+  flex:1 1 auto;max-width:520px;margin:0;min-width:0;
+}
+#tab-captions .studio-waterfall-filter-count{
+  color:var(--text-secondary);font-size:12px;white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+}
 /* Each learning outline extends 4px beyond the tile (2px offset + 2px stroke).
    A 9px gutter leaves a 1px separation even when both tiles have verdicts. */
 #tab-captions .studio-tb-flow{

@@ -13844,10 +13844,15 @@ function renderCaptionStudio(host,items,ext){
       S.cap.studioQuery=next;
       S.cap.page=0;
       renderCaptions();
-      const replacement=$("captionsGrid").querySelector(".studio-tag-query");
+      const grid=$("captionsGrid");
+      const replacement=grid.querySelector(S.cap.studioExploreMode==="waterfall"?
+        ".studio-waterfall-filter .studio-tag-query":".studio-tag-query")||
+        grid.querySelector(".studio-empty-captions .studio-tag-query");
       if(replacement){
         replacement.focus({preventScroll:true});
         replacement.setSelectionRange(a,b);
+      }else if(S.cap.studioExploreMode==="waterfall"){
+        grid.querySelector('.studio-view-rail [data-view="waterfall"]')?.focus({preventScroll:true});
       }
     };
     field.addEventListener("input",apply);
@@ -15258,7 +15263,16 @@ function renderCaptionStudio(host,items,ext){
       button.setAttribute("aria-pressed","false");
     }
   };
-  let pendingTagClick=null;
+  let pendingTagClick=null,pendingTagFilter=null;
+  const commitTagFilter=()=>{
+    if(pendingTagClick)clearTimeout(pendingTagClick);
+    pendingTagClick=null;
+    if(pendingTagFilter===null)return false;
+    const exact=JSON.stringify(pendingTagFilter);pendingTagFilter=null;
+    S.cap.studioQuery=S.cap.studioQuery===exact?"":exact;
+    S.cap.page=0;S.cap.studioThumbScrollTop=0;
+    return true;
+  };
   let tagEditing=null;
   const beginTagRename=(row,tag)=>{
     if(tagEditing)return;
@@ -15368,16 +15382,15 @@ function renderCaptionStudio(host,items,ext){
       syncAllTagSelection();
       S.cap.studioTagFocus=null;
       if(pendingTagClick)clearTimeout(pendingTagClick);
+      pendingTagFilter=tag;
       pendingTagClick=setTimeout(()=>{
-        pendingTagClick=null;
-        const exact=JSON.stringify(tag);
-        S.cap.studioQuery=S.cap.studioQuery===exact?"":exact;
-        S.cap.page=0;renderCaptions();
+        if(commitTagFilter())renderCaptions();
       },260);
     });
     tagBtn.addEventListener("dblclick",e=>{
       e.preventDefault();
       if(pendingTagClick){clearTimeout(pendingTagClick);pendingTagClick=null;}
+      pendingTagFilter=null;
       beginTagRename(row,tag);
     });
     tagBtn.addEventListener("contextmenu",e=>openTagActions(e,tag,row));
@@ -16260,7 +16273,15 @@ function renderCaptionStudio(host,items,ext){
     // Reopening the already-mounted view must be a no-op. A dataset refresh
     // rebuilds the stage through renderCaptions, not through this button.
     if(mountedExploreView===view)return;
+    // A fast click on Waterfall must not discard the delayed single-click
+    // filter, nor mount a gallery from the previous unfiltered item array.
+    if(view==="waterfall"&&commitTagFilter()){
+      S.cap.studioExploreMode=view;
+      S.cap.studioExploreNeedRedraw=true;
+      renderCaptions();return;
+    }
     clearExploreStage();
+    fullStage.classList.toggle("is-filtered-waterfall",view==="waterfall"&&!!S.cap.studioQuery);
     S.cap.studioExploreMode=view;
     indexMode.value="list";
     if(view==="list"){
@@ -16312,6 +16333,12 @@ function renderCaptionStudio(host,items,ext){
         };
         const flow=CaptionStudioViz.tagbenchWaterfall(items,chooseImage,openImageMenu,
           S.cap.studioPath,S.cap.studioSelection,TOKEN,captionLearningDecorate,openTagsImage,S.cap.studioWaterfallScale);
+        if(S.cap.studioQuery){
+          const header=el("header",{class:"studio-waterfall-filter","aria-label":"Waterfall tag filter"},
+            createTagFilterBar(),el("span",{class:"studio-waterfall-filter-count",
+              text:items.length+" "+(items.length===1?"image":"images")}));
+          fullStage.append(header);
+        }
         fullStage.append(flow);
         flow.setScale(S.cap.studioWaterfallScale);
       }else{
