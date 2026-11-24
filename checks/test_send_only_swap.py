@@ -743,3 +743,48 @@ def test_moss_preview_replacement_retires_previous_ring(monkeypatch, slots):
             assert parked.ring_flat is None and parked.copier is None
             assert m.offloader.B == slots
     _same(_train(m, _moss_fwd, drv, between), ref)
+
+
+@pytest.mark.parametrize("family", ["krea", "moss"])
+def test_resume_with_changed_ring_and_validation(monkeypatch, tmp_path, family):
+    build, fwd, drv = (_krea, _krea_fwd, Krea2Driver()) if family == "krea" else (
+        _moss, _moss_fwd, MOSSImageDriver())
+    def step(model, opt, n):
+        opt.zero_grad(set_to_none=True)
+        loss = fwd(model, n)
+        loss.backward()
+        grads = {k: p.grad.detach().clone() for k, p in _lora_params(model).items()}
+        opt.step()
+        return loss.detach().clone(), grads
+
+    baseline = build("none")
+    opt_ref = torch.optim.AdamW(list(_lora_params(baseline).values()), lr=1e-2)
+    monkeypatch.setenv("FIZGIG_EXPERIMENTAL_STREAM_RING", "2")
+    first = build("send", swap=2)
+    opt = torch.optim.AdamW(list(_lora_params(first).values()), lr=1e-2)
+    for n in range(2):
+        expected, _ = step(baseline, opt_ref, n)
+        actual, _ = step(first, opt, n)
+        assert torch.equal(actual, expected)
+    # Save only the trainable adapter weights and optimizer state, not transient
+    # base-weight ring views, exactly as an adapter resume must do.
+    path = tmp_path / "resume.pt"
+    torch.save({"adapters": {k: p.detach().clone() for k, p in _lora_params(first).items()},
+                "optimizer": opt.state_dict()}, path)
+    first.offloader.retire()
+    monkeypatch.setenv("FIZGIG_EXPERIMENTAL_STREAM_RING", "4")
+    resumed = build("send", swap=2)
+    assert resumed.offloader.B == 4
+    opt_resumed = torch.optim.AdamW(list(_lora_params(resumed).values()), lr=1e-2)
+    state = torch.load(path, weights_only=True)
+    with torch.no_grad():
+        for k, p in _lora_params(resumed).items():
+            p.copy_(state["adapters"][k])
+    opt_resumed.load_state_dict(state["optimizer"])
+    for n in range(2, 4):
+        _val(drv, resumed, fwd)(n)
+        expected, ref_grads = step(baseline, opt_ref, n)
+        actual, grads = step(resumed, opt_resumed, n)
+        assert torch.equal(actual, expected)
+        assert all(torch.equal(grads[k], ref_grads[k]) for k in grads)
+    assert all(torch.equal(p, _lora_params(baseline)[k]) for k, p in _lora_params(resumed).items())
