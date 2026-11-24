@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 _BATCH = 256
 
@@ -47,39 +48,81 @@ class FolderIndex:
         return [e.name for e in self.entries.values()]
 
     def read(self, name, kind, reader):
-        path = os.path.join(self.folder, name)
-        key = os.path.normcase(name)
-        entry = self.entries.get(key)
-        if entry is None:
-            return None
-        try:
-            if not entry.is_file():
-                return None
-            before = signature(entry.stat())
-        except OSError:
-            return None
-        hit = self.rows.get((key, kind))
-        if hit and hit[0] == before:
+        return self.read_many([(name, kind, reader)])[0]
+
+    def read_many(self, requests, cancel=None):
+        """Resolve a bounded batch, parallelizing only actual cache misses.
+
+        Directory metadata and SQLite stay on the calling thread. Duplicate
+        requests share one read; cache hits never enter the executor.
+        """
+        def check():
+            if cancel is not None and cancel.is_set():
+                raise InterruptedError("Caption indexing canceled")
+
+        results = [None] * len(requests)
+        misses = {}
+        for i, (name, kind, reader) in enumerate(requests):
+            check()
+            key = os.path.normcase(name)
+            entry = self.entries.get(key)
+            if entry is None:
+                continue
             try:
-                return json.loads(hit[1])
-            except (TypeError, ValueError):
-                pass
-        try:
-            value = reader(path)
-        except OSError:
-            return None
-        # Don't persist transient read failures or files modified during reading.
-        if value is not None and self.conn is not None:
-            try:
-                if signature(os.stat(path)) == before:
-                    encoded = json.dumps(value, ensure_ascii=True)
-                    self.rows[(key, kind)] = (before, encoded)
-                    self.pending.append((self.key, key, kind, before, encoded))
-                    if len(self.pending) >= _BATCH:
-                        self.flush()
+                if not entry.is_file():
+                    continue
+                before = signature(entry.stat())
             except OSError:
-                pass
-        return value
+                continue
+            hit = self.rows.get((key, kind))
+            if hit and hit[0] == before:
+                try:
+                    results[i] = json.loads(hit[1])
+                    continue
+                except (TypeError, ValueError):
+                    pass
+            k = (key, kind)
+            if k in misses:
+                misses[k][4].append(i)
+            else:
+                misses[k] = (os.path.join(self.folder, name), before, reader, k, [i])
+
+        def read_file(job):
+            path, _, reader, _, _ = job
+            check()
+            try:
+                return reader(path)
+            except OSError:
+                return None
+
+        def record(job, value):
+            check()
+            path, before, _, (key, kind), positions = job
+            for i in positions:
+                results[i] = value
+            if value is not None and self.conn is not None:
+                try:
+                    if signature(os.stat(path)) == before:
+                        encoded = json.dumps(value, ensure_ascii=True)
+                        self.rows[(key, kind)] = (before, encoded)
+                        self.pending.append((self.key, key, kind, before, encoded))
+                        if len(self.pending) >= _BATCH:
+                            self.flush()
+                except OSError:
+                    pass
+
+        jobs = list(misses.values())
+        # Small/warm batches avoid thread startup; cap cold reads to four
+        # workers so a dataset scan does not saturate a training machine.
+        workers = min(4, max(1, (len(jobs) + 15) // 16))
+        if workers == 1:
+            for job in jobs:
+                record(job, read_file(job))
+        else:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="caption-index") as pool:
+                for job, value in zip(jobs, pool.map(read_file, jobs)):
+                    record(job, value)
+        return results
 
     def flush(self):
         if self.conn is None or not self.pending:

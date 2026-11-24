@@ -53,3 +53,31 @@ def test_unavailable_cache_falls_back_to_files(tmp_path):
     (tmp_path / "a.txt").write_text("source", encoding="utf-8")
     with FolderIndex(tmp_path / "missing" / "index.sqlite3", tmp_path) as index:
         assert index.read("a.txt", "caption", lambda p: Path(p).read_text()) == "source"
+
+
+def test_batch_reads_keep_order_deduplicate_and_reuse_cache(tmp_path):
+    from threading import Event
+    import pytest
+
+    folder = tmp_path / "dataset"
+    folder.mkdir()
+    db = tmp_path / "index.sqlite3"
+    for i in range(80):
+        (folder / f"{i}.txt").write_text(str(i), encoding="utf-8")
+    calls = []
+    def reader(path):
+        calls.append(path)
+        return Path(path).read_text(encoding="utf-8")
+    requests = [(f"{i}.txt", "caption", reader) for i in range(80)]
+    requests += [("0.txt", "caption", reader), ("missing.txt", "caption", reader)]
+    expected = [str(i) for i in range(80)] + ["0", None]
+    with FolderIndex(db, folder) as index:
+        assert index.read_many(requests) == expected
+        assert len(calls) == 80
+    with FolderIndex(db, folder) as index:
+        assert index.read_many(requests) == expected
+        assert len(calls) == 80
+        cancel = Event()
+        cancel.set()
+        with pytest.raises(InterruptedError):
+            index.read_many(requests, cancel)

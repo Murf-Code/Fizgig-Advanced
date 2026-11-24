@@ -64,6 +64,8 @@ _SESSION_KEY = [""]          # the logins' key, kept in prefs.json so a login ou
 
 _lock = threading.Lock()
 _login_lock = threading.Lock()
+_caption_scan_lock = threading.Lock()
+_caption_scans = {}  # unique client scan ID -> cooperative cancellation event
 # Open on your phone: one-time passes in the QR code -> when made. Each opens the page logged in once, for a minute.
 _phone_passes: dict = {}
 PHONE_PASS_SECONDS = 60
@@ -2679,7 +2681,7 @@ def _caption_media_filter(names, family):
     return keep
 
 
-def pair_songs(entries):
+def pair_songs(entries, include_duration=True):
     """[(name, path, extra), ...] with each song given the picture of the same name beside it (its waveform) and
     its length, and those pictures left out as items of their own. A clip preview (MiniMax H3: <stem>.mp4 with its
     middle frame as <stem>.png and its sound as <stem>.wav) is the one video, the picture its poster."""
@@ -2699,7 +2701,8 @@ def pair_songs(entries):
             item["image"] = pics[stem]               # the clip's poster
         if ext in _AUDIO:
             item["image"] = pics.get(stem)
-            item["duration"] = _audio_seconds(p)
+            if include_duration:
+                item["duration"] = _audio_seconds(p)
         out.append(item)
     return out
 
@@ -3698,7 +3701,7 @@ class Handler(BaseHTTPRequestHandler):
                     "/caption_studio_learning.js",
                     "/caption_studio_selection.js", "/caption_studio_training_picks.js",
                     "/caption_theme.js", "/caption_image_perf.js", "/caption_thumb_rail.js", "/caption_remove_bridge.js", "/mask_stroke_worker.js",
-                    "/caption_studio_graph_worker.js",
+                    "/caption_studio_graph_worker.js", "/caption_studio_index_worker.js",
                     "/style.css", "/caption_tagbench_theme.css", "/qrcode.js"):
             return self._file(os.path.join(STATIC_DIR, path[1:]),
                               "application/javascript; charset=utf-8" if path.endswith(".js") else "text/css")
@@ -4358,6 +4361,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json({"reviewed": caption_review.reviewed((qs.get("folder") or [""])[0])})
             except ValueError as e:
                 return self.json({"error": str(e)}, 400)
+        if path == "/api/captions/scan":
+            return self._caption_scan_stream((qs.get("folder") or [""])[0],
+                                             (qs.get("ext") or [".txt"])[0],
+                                             (qs.get("family") or [""])[0],
+                                             (qs.get("id") or [""])[0])
         if path == "/api/captions":
             return self._captions((qs.get("folder") or [""])[0], (qs.get("ext") or [".txt"])[0],
                                   (qs.get("family") or [""])[0], subs=(qs.get("subs") or [""])[0] == "1",
@@ -4536,22 +4544,131 @@ class Handler(BaseHTTPRequestHandler):
             items += [{**it, "crop": os.path.basename(big)} for it in crops]
         return self.json({"items": items})
 
-    def _indexed_caption_entries(self, index, names, ext, family, rel=""):
-        out = []
-        folder = index.folder
+    def _caption_entry_plan(self, folder, names, family, rel=""):
+        """Metadata-free listing shared with the complete and streaming paths."""
         keep = _caption_media_filter(names, family)
         lower = {n.lower(): n for n in names}
         for n in names:
             stem, e = os.path.splitext(n)
             if e.lower() not in MEDIA or not keep(n) or is_mask_file(n):
                 continue
-            text = index.read(stem + ext, "caption", captions.read_text)
             p = os.path.join(folder, n)
             mask = mask_for_stem(folder, stem, lower)
+            yield (f"{rel}/{n}" if rel else n, p,
+                   {**({"sub": rel} if rel else {}), **({"mask": os.path.basename(mask)} if mask else {})})
+
+    def _indexed_caption_entries(self, index, names, ext, family, rel=""):
+        out = []
+        for name, p, extra in self._caption_entry_plan(index.folder, names, family, rel):
+            n = os.path.basename(p)
+            stem, e = os.path.splitext(n)
+            text = index.read(stem + ext, "caption", captions.read_text)
             size = index.read(n, "upright-size-v1", _media_size) if e.lower() not in _AUDIO else None
-            out.append((f"{rel}/{n}" if rel else n, p, {"caption": text, "size": size,
-                        **({"sub": rel} if rel else {}), **({"mask": os.path.basename(mask)} if mask else {})}))
+            out.append((name, p, {"caption": text, "size": size, **extra}))
         return out
+
+    def _caption_scan_events(self, folder, ext, family, cancel):
+        """Stream exact, ordered Workbench rows in bounded batches.
+
+        Enumerate first, without opening image headers. Pair media companions
+        before reading their metadata. Only the first small batch is needed
+        for the read-only browser; the rest is indexed progressively.
+        """
+        from fizgig.dataset.image_dataset import superseded_stems
+        from fizgig.dataset import detail_crops
+        from fizgig.web.caption_index import FolderIndex
+
+        def check():
+            if cancel.is_set():
+                raise InterruptedError("Caption indexing canceled")
+
+        yield {"type": "discovering"}
+        plans = []
+        if os.path.isdir(folder):
+            folders = [(rel, d, None) for rel, d in [("", folder)] + launch.prep_subfolders(folder)]
+            big = detail_crops.largest(folder)
+            if big:
+                folders.append(("", big, os.path.basename(big)))
+            for rel, d, crop in folders:
+                check()
+                gone = superseded_stems(d) if crop is None else set()
+                with os.scandir(d) as entries:
+                    names = sorted(e.name for e in entries if os.path.splitext(e.name)[0] not in gone)
+                rows = pair_songs(list(self._caption_entry_plan(d, names, family, rel)), include_duration=False)
+                if crop is not None:
+                    for row in rows:
+                        row["crop"] = crop
+                plans.append((d, rows))
+        total = sum(len(rows) for _, rows in plans)
+        yield {"type": "manifest", "total": total}
+        scanned = 0
+        db = user_file("caption_index_v1.sqlite3")
+        for d, rows in plans:
+            check()
+            if not rows:
+                continue
+            with FolderIndex(db, d) as index:
+                start = 0
+                while start < len(rows):
+                    check()
+                    batch = rows[start:start + (24 if scanned == 0 else 64)]
+                    names = [os.path.basename(row["path"]) for row in batch]
+                    texts = index.read_many([(os.path.splitext(n)[0] + ext, "caption", captions.read_text)
+                                             for n in names], cancel)
+                    image_names = [n for n in names if os.path.splitext(n)[1].lower() not in _AUDIO]
+                    sizes = iter(index.read_many([(n, "upright-size-v1", _media_size) for n in image_names], cancel))
+                    for row, n, caption in zip(batch, names, texts):
+                        check()
+                        audio = os.path.splitext(n)[1].lower() in _AUDIO
+                        row["caption"] = caption
+                        row["size"] = None if audio else next(sizes)
+                        if audio:
+                            row["duration"] = _audio_seconds(row["path"])
+                    start += len(batch)
+                    scanned += len(batch)
+                    yield {"type": "batch", "items": batch, "scanned": scanned, "total": total}
+        check()
+        yield {"type": "done", "total": total}
+
+    def _caption_scan_stream(self, folder, ext, family, scan_id):
+        if not re.fullmatch(r"[A-Za-z0-9_-]{8,100}", scan_id):
+            return self.json({"error": "Invalid caption scan ID"}, 400)
+        cancel = threading.Event()
+        with _caption_scan_lock:
+            if scan_id in _caption_scans or len(_caption_scans) >= 8:
+                return self.json({"error": "Too many active caption scans; retry."}, 409)
+            _caption_scans[scan_id] = cancel
+
+        def emit(event):
+            self.wfile.write((json.dumps(event, default=str) + "\n").encode("utf-8"))
+            self.wfile.flush()
+
+        events = self._caption_scan_events(folder, ext, family, cancel)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.close_connection = True
+            self.end_headers()
+            for event in events:
+                if cancel.is_set():
+                    break
+                emit(event)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, InterruptedError):
+            pass
+        except Exception as error:
+            logger.exception("Caption dataset scan")
+            try:
+                emit({"type": "error", "error": str(error)})
+            except OSError:
+                pass
+        finally:
+            cancel.set()
+            events.close()
+            with _caption_scan_lock:
+                _caption_scans.pop(scan_id, None)
 
     def _caption_items(self, folder, names, ext, family):
         from fizgig.web.caption_index import FolderIndex
@@ -4712,6 +4829,12 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, OSError) as e:
                 return self.json({"error": str(e)}, 400)
         b = self._body()
+        if path == "/api/captions/scan_cancel":
+            with _caption_scan_lock:
+                event = _caption_scans.get(str(b.get("id") or ""))
+                if event is not None:
+                    event.set()
+            return self.json({"canceled": event is not None})
         if path.startswith("/api/helper/") or path.startswith("/api/helpers/"):
             from fizgig.web import helpers
             try:

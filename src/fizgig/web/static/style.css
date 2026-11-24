@@ -7016,3 +7016,20 @@ body.caption-glass-ui .studio-image-context-menu .studio-danger-action:not(:disa
 #tab-captions .studio-query-field>.studio-field-icon,
 #tab-captions .studio-query-field>.studio-field-clear{z-index:3}
 #tab-captions .studio-query-field.is-composing>.studio-query-mirror{visibility:hidden}
+
+/* Progressive indexing uses the existing loading star and a bounded,
+   read-only browser; no incomplete dataset ever enters the editor. */
+#tab-captions .caption-initial-state:has(>.caption-scan-preview) .caption-initial-skeleton{display:none}
+#tab-captions .caption-scan-preview{flex:1 1 0;min-height:0;min-width:0;
+  display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid var(--border);
+  border-radius:12px;background:var(--bg-surface);overflow:hidden}
+#tab-captions .caption-scan-nav{display:flex;align-items:center;gap:8px;flex:none;min-width:0}
+#tab-captions .caption-scan-name{margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tab-captions .caption-scan-body{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);
+  flex:1 1 0;min-height:180px;max-height:65dvh;gap:10px;overflow:hidden}
+#tab-captions .caption-scan-picture{min-height:0;min-width:0;background:var(--bg-inset);
+  display:flex;align-items:center;justify-content:center;border-radius:9px;overflow:hidden}
+#tab-captions .caption-scan-picture img{width:100%;height:100%;min-height:0;object-fit:contain}
+#tab-captions .caption-scan-caption{margin:0;min-width:0;min-height:0;overflow:auto;white-space:pre-wrap;
+  overflow-wrap:anywhere;padding:12px;border-radius:9px;background:var(--bg-inset);color:var(--text-primary);font:inherit}
+@media(max-width:650px){#tab-captions .caption-scan-body{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(120px,2fr) minmax(70px,1fr)}}

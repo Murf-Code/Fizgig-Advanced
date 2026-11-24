@@ -2,7 +2,7 @@ const fs=require("node:fs");
 const app=fs.readFileSync("src/fizgig/web/static/app.js","utf8");
 const start=app.indexOf("async function captionLoadRequest"),end=app.indexOf("\nconst CAP_LEARNING_REFRESH_MS",start);
 if(start<0||end<0)throw Error("Caption loader not found");
-const src=app.slice(start,end);
+const src=app.slice(start,app.indexOf("function cancelCaptionScan",start))+app.slice(app.indexOf("async function loadCaptions() {",start),end);
 
 function check(ok,message){if(!ok)throw Error(message);}
 function harness(apiImpl,optionsImpl=async()=>{},initialOpts=true){
@@ -15,6 +15,20 @@ function harness(apiImpl,optionsImpl=async()=>{},initialOpts=true){
   const deps={S,$,TOKEN:"token",capExt:()=>".txt",captionInitialState:(state,detail)=>{tab.dataset.captionLoad=state;states.push([state,detail]);},
     capItemFolder:it=>it.path.split("/").slice(0,-1).join("/"),subfoldersHint:()=>"",pollCaptions:()=>{},
     loadCaptionOptions:optionsImpl,api:apiImpl,captionAiControlsRestore:()=>{},
+    cancelCaptionScan:()=>{S.cap.studioScan?.controller.abort();S.cap.studioScan=null;},
+    captionScanBrowser:()=>({refresh(){},picked(){return null;}}),
+    captionIndexForLoad:async()=>({sorted:[],vocabulary:[]}),
+    captionProgressiveScan:async(url,scan,emit)=>{
+      let timer;
+      try{
+        const result=await Promise.race([apiImpl(url,undefined,scan.controller.signal),new Promise((_,reject)=>{
+          timer=setTimeout(()=>{scan.controller.abort();reject(new Error("Dataset scan timed out"));},25);
+        })]);
+        emit({type:"manifest",total:result.items.length});
+        emit({type:"batch",items:result.items,scanned:result.items.length,total:result.items.length});
+        scan.serverDone=true;
+      }finally{clearTimeout(timer);}
+    },
     CaptionStudioSelection:{prune:()=>({selected:[],active:null,anchor:null})},
     renderCaptions:()=>renders.push(S.cap.items.map(it=>it.path)),
     AbortController:Controller,setTimeout:(fn,ms)=>setTimeout(fn,Math.min(ms,25)),clearTimeout,

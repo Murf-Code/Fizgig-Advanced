@@ -241,7 +241,25 @@ const CaptionStudioTags = (() => {
     return cleared;
   }
 
-  return Object.freeze({kind, tags, compose, unique, search, compileSearch, addFilter, searchParts, naturalSearch, displaySearch,
+  function datasetIndex(delimiter=",") {
+    const counts=new Map(),vocabulary=new Set();
+    return {
+      add(rows){
+        for(const [caption,mode] of rows){
+          const distinct=new Set();
+          for(const tag of tags(caption,mode,delimiter)){
+            vocabulary.add(tag.toLocaleLowerCase());
+            distinct.add(tag.toLowerCase());
+          }
+          for(const tag of distinct)counts.set(tag,(counts.get(tag)||0)+1);
+        }
+      },
+      finish(){return {sorted:[...counts].sort((a,b)=>b[1]-a[1]),vocabulary:[...vocabulary]};}
+    };
+  }
+
+  return Object.freeze({datasetIndex, kind, tags, compose, unique, search, compileSearch, addFilter, searchParts, naturalSearch, displaySearch,
     order, captionWildcards, wildcards, findTagMatches, tagSelectionScope, scopeTagSelections});
 })();
+if(typeof self!=="undefined"&&typeof document==="undefined")self.CaptionStudioTags=CaptionStudioTags;
 if (typeof module !== "undefined" && module.exports) module.exports = CaptionStudioTags;

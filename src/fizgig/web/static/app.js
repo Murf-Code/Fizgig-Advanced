@@ -11890,6 +11890,7 @@ function captionStarStatus(state,label,detail=""){
 function captionInitialState(state,detail=""){
   const tab=$("tab-captions");
   tab.dataset.captionLoad=state;
+  $("captionScanPreview")?.remove();
   // Keep old content mounted for safe editor cleanup, but make it neither
   // visible nor interactive until the new dataset has rendered completely.
   const grid=$("captionsGrid");
@@ -11924,9 +11925,156 @@ async function captionLoadRequest(label,ms,request){
     ]);
   }finally{clearTimeout(timer);}
 }
+function cancelCaptionScan(){
+  const scan=S.cap.studioScan;
+  S.cap.studioScan=null;
+  if(!scan)return;
+  scan.controller.abort();
+  if(!scan.serverDone)void api("/api/captions/scan_cancel",{id:scan.id}).catch(()=>{});
+}
+// Progressive preview is intentionally read-only. The real workspace stays
+// inert until both the complete listing and review locks are available.
+function captionScanBrowser(items){
+  let selected=0,browsed=false,box=null,img=null,caption=null,position=null,prev=null,next=null,name=null;
+  const draw=()=>{
+    const it=items[selected];
+    if(!it||!box)return;
+    const path=it.image||(it.size?it.path:null);
+    if(path){
+      const url="/api/thumb?path="+encodeURIComponent(path)+"&size=768&t="+encodeURIComponent(TOKEN);
+      if(img.getAttribute("src")!==url)img.src=url;
+      img.hidden=false;
+    }else{img.removeAttribute("src");img.hidden=true;}
+    name.textContent=it.name;
+    caption.textContent=it.caption===null?"No caption yet.":it.caption||"";
+    update();
+  };
+  const update=()=>{
+    if(!box)return;
+    position.textContent=(selected+1)+" / "+items.length.toLocaleString()+" indexed";
+    prev.disabled=selected===0;next.disabled=selected>=items.length-1;
+  };
+  const step=delta=>{
+    selected=Math.max(0,Math.min(items.length-1,selected+delta));
+    browsed=true;draw();
+  };
+  return {
+    refresh(){
+      if(!items.length)return;
+      if(!box){
+        box=el("section",{id:"captionScanPreview",class:"caption-scan-preview","aria-label":"Read-only dataset preview"});
+        name=el("strong",{class:"caption-scan-name"});
+        img=el("img",{alt:"Indexed image preview",decoding:"async"});
+        caption=el("pre",{class:"caption-scan-caption"});
+        prev=el("button",{type:"button",class:"btn btn-sm",text:"‹",title:"Previous indexed image",onclick:()=>step(-1)});
+        next=el("button",{type:"button",class:"btn btn-sm",text:"›",title:"Next indexed image",onclick:()=>step(1)});
+        position=el("span",{class:"field-hint"});
+        box.append(el("div",{class:"caption-scan-nav"},prev,position,next,name),
+          el("div",{class:"caption-scan-body"},el("div",{class:"caption-scan-picture"},img),caption),
+          el("small",{class:"field-hint",text:"Browse while indexing. Editing and dataset-wide actions unlock when indexing and review checks finish."}));
+        $("captionInitialState").append(box);
+        draw();
+      }else update();
+    },
+    picked(){return browsed?items[selected]?.path:null;}
+  };
+}
+async function captionProgressiveScan(url,scan,onEvent){
+  const signal=scan.controller.signal;
+  let timer,timedOut=false,reader=null;
+  const touch=()=>{
+    clearTimeout(timer);
+    timer=setTimeout(()=>{timedOut=true;scan.controller.abort();},120000);
+  };
+  try{
+    touch();
+    const response=await fetch(url,{headers:{"X-Fizgig-Token":TOKEN},signal});
+    if(!response.ok){
+      const data=await response.json().catch(()=>({}));
+      if(response.status===401&&data.login)showLogin();
+      throw new Error(data.error||response.statusText||"Dataset scan failed");
+    }
+    if(!response.body||!response.headers.get("Content-Type")?.includes("application/x-ndjson"))
+      throw new Error("The server does not support progressive caption indexing. Restart Fizgig after updating.");
+    reader=response.body.getReader();
+    const decoder=new TextDecoder();
+    let pending="",total=null,received=0,done=false;
+    const consume=line=>{
+      if(!line.trim())return;
+      const event=JSON.parse(line);
+      if(done)throw new Error("Unexpected data after dataset completion.");
+      if(event.type==="error")throw new Error(event.error||"Dataset scan failed");
+      if(event.type==="manifest"){
+        if(total!==null||!Number.isSafeInteger(event.total)||event.total<0)throw new Error("Invalid scan manifest.");
+        total=event.total;
+      }else if(event.type==="batch"){
+        if(total===null||!Array.isArray(event.items)||event.total!==total||
+            event.scanned!==received+event.items.length||event.scanned>total)
+          throw new Error("Incomplete or invalid dataset scan batch.");
+        received=event.scanned;
+      }else if(event.type==="done"){
+        if(total===null||received!==total||event.total!==total)throw new Error("Dataset scan ended with missing images.");
+        done=true;
+      }else if(event.type!=="discovering")throw new Error("Unknown dataset scan event.");
+      onEvent(event);
+    };
+    while(!done){
+      const chunk=await reader.read();
+      if(chunk.done){pending+=decoder.decode();break;}
+      touch();
+      pending+=decoder.decode(chunk.value,{stream:true});
+      let newline;
+      while((newline=pending.indexOf("\n"))>=0){
+        const line=pending.slice(0,newline);pending=pending.slice(newline+1);consume(line);
+      }
+    }
+    if(pending.trim())consume(pending);
+    if(!done)throw new Error("Dataset scan ended before completion. Retry to continue.");
+    scan.serverDone=true;
+  }catch(error){
+    if(timedOut)throw new Error("Dataset scan timed out. Check the dataset drive or retry.");
+    throw error;
+  }finally{
+    clearTimeout(timer);
+    if(reader)void reader.cancel().catch(()=>{});
+  }
+}
+async function captionIndexForLoad(items,delimiter,signal){
+  const rows=items.map(it=>[it.caption,S.cap.studioModes?.get(it.path)||"auto"]);
+  const check=()=>{if(signal.aborted)throw new Error("Dataset indexing canceled.");};
+  check();
+  if(typeof Worker!=="undefined"){
+    try{
+      return await new Promise((resolve,reject)=>{
+        const worker=new Worker("/caption_studio_index_worker.js");
+        let timer;
+        const finish=(error,value)=>{
+          clearTimeout(timer);signal.removeEventListener("abort",abort);worker.terminate();
+          error?reject(error):resolve(value);
+        };
+        const abort=()=>finish(new Error("Dataset indexing canceled."));
+        worker.onmessage=e=>e.data?.error?finish(new Error(e.data.error)):finish(null,e.data);
+        worker.onerror=e=>finish(new Error(e.message||"Tag index worker failed"));
+        signal.addEventListener("abort",abort,{once:true});
+        if(signal.aborted){abort();return;}
+        timer=setTimeout(()=>finish(new Error("Tag index worker timed out")),120000);
+        try{worker.postMessage({rows,delimiter});}catch(e){finish(e);}
+      });
+    }catch(error){check();console.warn("Tag indexing worker:",error.message);}
+  }
+  // Older browsers still yield between chunks rather than freezing the UI.
+  const index=CaptionStudioTags.datasetIndex(delimiter);
+  for(let start=0;start<rows.length;start+=256){
+    check();index.add(rows.slice(start,start+256));
+    await new Promise(resolve=>setTimeout(resolve,0));
+  }
+  check();return index.finish();
+}
 async function loadCaptions() {
   // Discard stale requests when datasets or caption extensions change while
   // a slower media/review/status request is still in flight.
+  cancelCaptionScan();
+  let scan=null;
   const serial=S.cap.loadSerial=(S.cap.loadSerial||0)+1;
   const current=()=>serial===S.cap.loadSerial;
   const tab=$("tab-captions");
@@ -11941,13 +12089,13 @@ async function loadCaptions() {
   };
   const sameWorkspace=tab.dataset.captionLoad==="ready"&&S.cap.studioMountedDataset===datasetKey;
   const stage=detail=>{
-    if(current()&&!sameWorkspace){
+    if(current()){
       const node=$("captionInitialDetail");
       if(node)node.textContent=detail;
     }
   };
   try {
-  if(!sameWorkspace)captionInitialState("loading");
+  captionInitialState("loading");
   stage("Preparing caption controls…");
   // A dataset switch must not leave Image Prep mounted on the former folder.
   if(S.cap?.imageEditing&&!S.cap.imageClosing){
@@ -11996,12 +12144,24 @@ async function loadCaptions() {
     return;
   }
   const ext = $("captionExt").value.trim() || ".txt",folderAtRequest=String(S.imageFolder);
-  stage("Scanning dataset and reading captions…");
-  const r = await captionLoadRequest("Dataset scan",120000,signal=>api(
-    `/api/captions?folder=${encodeURIComponent(folderAtRequest)}&ext=${encodeURIComponent(ext)}&family=${encodeURIComponent(S.family||"")}`,undefined,signal));
+  stage("Discovering dataset images…");
+  scan={id:typeof crypto!=="undefined"&&crypto.randomUUID?crypto.randomUUID():
+    Date.now().toString(36)+"-"+Math.random().toString(36).slice(2),controller:new AbortController(),serverDone:false};
+  S.cap.studioScan=scan;
+  const items=[],browser=captionScanBrowser(items);
+  await captionProgressiveScan(
+    `/api/captions/scan?folder=${encodeURIComponent(folderAtRequest)}&ext=${encodeURIComponent(ext)}&family=${encodeURIComponent(S.family||"")}&id=${encodeURIComponent(scan.id)}`,
+    scan,event=>{
+      if(!current()||key()!==datasetKey){scan.controller.abort();return;}
+      if(event.type==="manifest")stage("Indexing "+event.total.toLocaleString()+" images…");
+      if(event.type==="batch"){
+        for(const item of event.items)items.push(item);
+        stage("Indexing "+event.scanned.toLocaleString()+" / "+event.total.toLocaleString()+
+          " images · "+Math.floor(event.scanned*100/Math.max(1,event.total))+"%");
+        browser.refresh();
+      }
+    });
   if(!valid())return;
-  if(!Array.isArray(r.items))throw new Error("The dataset scan returned no image list.");
-  const items=r.items;
   const folders=[...new Set(items.map(capItemFolder))];
   const reviewLookup=new Map();
   stage("Checking reviewed images ("+items.length+" files)…");
@@ -12015,9 +12175,15 @@ async function loadCaptions() {
   }));
   if(!valid())return;
   const reviewed=new Set(items.filter(it=>reviewLookup.get(capItemFolder(it))?.has(it.name)).map(it=>it.path));
+  stage("Indexing dataset tags ("+items.length.toLocaleString()+" images)…");
+  const delimiter=S.cap.studioDelimiter||(typeof localStorage!=="undefined"&&localStorage.getItem("fizgig_caption_separator"))||",";
+  S.cap.studioDelimiter=delimiter;
+  const indexRevision=S.cap.studioRevision||0;
+  const tagIndex=await captionIndexForLoad(items,delimiter,scan.controller.signal);
+  if(!valid())return;
   // Refresh must not keep removed paths in a bulk selection or as the active image.
   const kept=CaptionStudioSelection.prune(items,S.cap.studioSelection||[],
-    S.cap.studioPath,S.cap.studioSelectionAnchor);
+    browser.picked()||S.cap.studioPath,S.cap.studioSelectionAnchor);
   if(S.cap.studioSelection){
     S.cap.studioSelection.clear();
     kept.selected.forEach(path=>S.cap.studioSelection.add(path));
@@ -12026,6 +12192,11 @@ async function loadCaptions() {
   S.cap.studioSelectionAnchor=kept.anchor;
   S.cap.items=items;
   S.cap.studioReviewed=reviewed;
+  if((S.cap.studioRevision||0)===indexRevision&&S.cap.studioDelimiter===delimiter){
+    S.cap.studioTagCache={items,rev:indexRevision,sorted:tagIndex.sorted,
+      searchRows:tagIndex.sorted.map(([tag,count])=>[tag,count,tag.toLocaleLowerCase()])};
+    S.cap.studioSearchVocabulary={items,revision:indexRevision,delimiter,vocabulary:new Set(tagIndex.vocabulary)};
+  }
   if(!sameWorkspace)S.cap.liveStatus=null;
   stage("Building Caption Workbench ("+items.length+" files)…");
   S.cap.studioMounting=true;
@@ -12045,9 +12216,12 @@ async function loadCaptions() {
       captionInitialState("error",error.message||String(error));
     }
     if(current()&&sameWorkspace){
+      captionInitialState("ready");
       console.warn("Caption Workbench refresh:",error);
       throw error;
     }
+  }finally{
+    if(scan&&S.cap.studioScan===scan)cancelCaptionScan();
   }
 }
 
@@ -18132,6 +18306,10 @@ function showTab(name) {
   // scrolling pane; a phone scrolls the page itself). Read before anything below scrolls (the tab button's
   // scrollIntoView can move a phone's page)
   const pane = document.querySelector(".notebook-pane"), was = document.querySelector(".tab-panel.active");
+  if(name!=="captions"&&was?.id==="tab-captions"&&S.cap){
+    S.cap.loadSerial=(S.cap.loadSerial||0)+1;
+    cancelCaptionScan();
+  }
   S.tabScroll = S.tabScroll || {};
   if (was && was.id !== "tab-" + name) S.tabScroll[was.id] = [pane ? pane.scrollTop : 0, window.scrollY];
   const tb = document.querySelector(`.tab-item[data-tab="${name}"] span`);
