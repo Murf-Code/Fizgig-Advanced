@@ -301,11 +301,15 @@ const CaptionStudioViz = (() => {
     });
     const chosen=[...strands.keys()];
     const fx=new Float64Array(nodes.length),fy=new Float64Array(nodes.length);
+    const centers=ids.map(()=>({x:0,y:0}));
     for(let step=0;step<125;step++){
+      for(const center of centers){center.x=0;center.y=0;}
+      for(const n of nodes){centers[n.group].x+=n.x;centers[n.group].y+=n.y;}
+      centers.forEach((center,id)=>{center.x/=members.get(id);center.y/=members.get(id);});
       fx.fill(0);fy.fill(0);
       for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
         const dx=nodes[i].x-nodes[j].x,dy=nodes[i].y-nodes[j].y;
-        const f=85/(dx*dx+dy*dy+2);
+        const f=72/(dx*dx+dy*dy+2);
         fx[i]+=dx*f;fy[i]+=dy*f;fx[j]-=dx*f;fy[j]-=dy*f;
       }
       for(const {i,j,weight} of strands.values()){
@@ -314,7 +318,9 @@ const CaptionStudioViz = (() => {
         fx[i]-=dx*f;fy[i]-=dy*f;fx[j]+=dx*f;fy[j]+=dy*f;
       }
       nodes.forEach((n,i)=>{
-        const dx=fx[i]-n.x*.018,dy=fy[i]-n.y*.018;
+        const center=centers[n.group];
+        const dx=fx[i]-n.x*.023+(center.x-n.x)*.12;
+        const dy=fy[i]-n.y*.023+(center.y-n.y)*.12;
         const scale=Math.min(.45,(6-step*.035)/Math.max(1,Math.hypot(dx,dy)));
         n.x+=dx*scale;n.y+=dy*scale;
       });
@@ -516,6 +522,13 @@ const CaptionStudioViz = (() => {
     for(const e of model.edges){adjacency.get(e.a)?.set(e.b,e.w);adjacency.get(e.b)?.set(e.a,e.w);}
     const maxCount=nodes[0].count;
     const visual=new Map();
+    const leaders=new Map();
+    // The model is frequency-ranked; give each community a named landmark.
+    for(const n of nodes)if(!leaders.has(n.group))leaders.set(n.group,n);
+    const labelOrder=[...leaders.values(),...nodes.filter(n=>leaders.get(n.group)!==n)];
+    let typeScale=1;
+    const labelSize=n=>(n.tag===picked?22:leaders.get(n.group)===n?19:15)*typeScale/zoom;
+
     const bridges=[],communityStrands=new Map();
     for(const edge of model.chosen){
       const a=at.get(edge.a),b=at.get(edge.b);
@@ -530,7 +543,7 @@ const CaptionStudioViz = (() => {
     const media=typeof matchMedia==="function"?matchMedia("(prefers-reduced-motion: reduce)"):null;
     const reduced=()=>!!media?.matches;
     // Reserve room for the full total even when selection shows a shorter shared count.
-    const radius=n=>(6+2.6*String(n.count).length+3*Math.sqrt(n.count/maxCount))/zoom;
+    const radius=n=>(4+3.8*String(n.count).length+3*Math.sqrt(n.count/maxCount))*typeScale/zoom;
     const position=n=>({x:n.x+n.ox,y:n.y+n.oy});
     const view=()=>svg.setAttribute("viewBox",[500-500/zoom+pan.x,350-350/zoom+pan.y,1000/zoom,700/zoom].join(" "));
     const search=html("div","studio-tb-search"),input=html("input","",undefined,search),matches=html("div","studio-tb-suggest",undefined,search);
@@ -578,11 +591,11 @@ const CaptionStudioViz = (() => {
     }
     const nodeGeometry=n=>{
       const v=visual.get(n.tag);if(!v)return;
-      const p=position(n),r=radius(n),sz=12*(zoom>1?1/Math.pow(zoom,.22):1)/zoom;
+      const p=position(n),r=radius(n),sz=labelSize(n);
       v.g.setAttribute("transform","translate("+p.x+" "+p.y+")");
       v.hit.setAttribute("r",Math.max(9/zoom,r));v.core.setAttribute("r",r);v.halo.setAttribute("r",r*1.34);
       v.ring.setAttribute("r",r+3/zoom);
-      v.number.setAttribute("font-size",10/zoom);
+      v.number.setAttribute("font-size",13*typeScale/zoom);
       v.number.setAttribute("stroke-width",1.2/zoom);
       v.label.setAttribute("x",p.x+r+6/zoom);v.label.setAttribute("y",p.y+sz*.32);
       v.label.setAttribute("font-size",sz);v.label.setAttribute("stroke-width",Math.max(sz*.28,2/zoom));
@@ -606,10 +619,10 @@ const CaptionStudioViz = (() => {
       const ring=make("circle",{fill:"none",stroke:"#efd16e","vector-effect":"non-scaling-stroke","stroke-width":"1.5",opacity:0,"pointer-events":"none"},g);
       const core=make("circle",{fill:n.color,class:"studio-tb-orb-core"},g);
       const number=make("text",{"text-anchor":"middle","dominant-baseline":"central",
-        "font-family":"monospace","font-weight":700,fill:"#161823",stroke:"#fff",
+        "font-family":"system-ui, sans-serif","font-weight":750,style:"font-variant-numeric:tabular-nums",fill:"#161823",stroke:"#fff",
         "stroke-opacity":.75,"paint-order":"stroke","pointer-events":"none","aria-hidden":"true"},g);
       const hit=make("circle",{fill:"transparent"},g);
-      const label=make("text",{fill:"var(--text-primary)","font-weight":600,stroke:"var(--bg-deep)","paint-order":"stroke","pointer-events":"none"},labelLayer);
+      const label=make("text",{fill:"var(--text-primary)","font-family":"system-ui, sans-serif","font-weight":leaders.get(n.group)===n?750:600,stroke:"var(--bg-deep)","paint-order":"stroke","pointer-events":"none"},labelLayer);
       label.textContent=n.tag;
       visual.set(n.tag,{g,core,halo,ripple,ring,hit,number,label,grad,id});
       g.addEventListener("pointerdown",e=>{
@@ -644,19 +657,21 @@ const CaptionStudioViz = (() => {
       at.set(tag,rare);adjacency.set(tag,links);createNode(rare);return rare;
     }
     function placeLabels(){
-      const priority=picked,boxes=[];
-      const budget=Math.max(4,Math.floor(10*zoom*zoom));
-      const order=priority?[at.get(priority),...at.values()]:at.values();
+      const boxes=[],budget=Math.max(7,Math.ceil(17*zoom*zoom));
+      const order=picked?[at.get(picked),...labelOrder.filter(n=>n.tag!==picked)]:labelOrder;
+      const discs=[...at.values()].map(n=>({...position(n),r:radius(n),tag:n.tag}));
       for(const n of order){
-        if(!n)continue;
-        const v=visual.get(n.tag);
-        if(n.tag===priority&&boxes.length)continue;
-        const {x,y}=position(n),left=x+(radius(n)*zoom+6)/zoom;
-        const box={left,right:left+(n.tag.length*7+7)/zoom,top:y-8/zoom,bottom:y+8/zoom};
-        const show=n.tag===priority||(boxes.length<budget&&!boxes.some(b=>
-          b.left<box.right&&box.left<b.right&&b.top<box.bottom&&box.top<b.bottom));
+        const v=visual.get(n.tag),p=position(n),sz=labelSize(n);
+        const width=(n.tag.length*.60+.5)*sz,gap=radius(n)+3/zoom;
+        const candidates=[p.x+gap,p.x-gap-width];
+        let show=false;
+        if(boxes.length<budget)for(const left of candidates){
+          const box={left,right:left+width,top:p.y-sz*.6,bottom:p.y+sz*.6};
+          if(n.tag!==picked&&(boxes.some(b=>b.left<box.right&&box.left<b.right&&b.top<box.bottom&&box.top<b.bottom)
+            ||discs.some(d=>d.tag!==n.tag&&d.x+d.r>box.left&&d.x-d.r<box.right&&d.y+d.r>box.top&&d.y-d.r<box.bottom)))continue;
+          v.label.setAttribute("x",left);boxes.push(box);show=true;break;
+        }
         v.label.setAttribute("visibility",show?"visible":"hidden");
-        if(show)boxes.push(box);
       }
     }
     function updateAppearance(){
@@ -672,6 +687,8 @@ const CaptionStudioViz = (() => {
         v.core.setAttribute("fill",selected?"#efd16e":prefs.glassNodes?"url(#"+v.id+")":n.color);
         v.ring.setAttribute("opacity",selected?"1":"0");
         v.halo.setAttribute("opacity",n.tag===focus?".24":"0");
+        v.label.setAttribute("fill",selected?"#efd16e":leaders.get(n.group)===n?
+          "color-mix(in srgb, "+n.color+" 50%, var(--text-primary))":"var(--text-primary)");
         v.label.setAttribute("opacity",related?"1":".38");
       }
       updateGeometry();
@@ -813,7 +830,10 @@ const CaptionStudioViz = (() => {
       }
       updateAppearance();
     };
-    const resize=new ResizeObserver(drawStrands);
+    const resize=new ResizeObserver(()=>{
+      const scale=Math.min(svg.clientWidth/1000,svg.clientHeight/700);
+      if(scale>0){typeScale=Math.max(.8,Math.min(1.7,1/scale));updateGeometry();}
+    });
     resize.observe(stage);
     const theme=new MutationObserver(()=>{strandColors.clear();drawStrands();});
     theme.observe(document.documentElement,{attributes:true,attributeFilter:["class","data-theme","style"]});
