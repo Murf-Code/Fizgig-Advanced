@@ -124,10 +124,11 @@ const buttons=()=>{
 
   reply=confirmRemoval({title:"Remove images?",items:Array.from({length:6},(_,i)=>"image"+i)});
   o=overlay();const listToggle=buttons().modal.children[1].children[2];
-  listToggle.focus();o.listeners.keydown(event("Enter"));
+  listToggle.focus();listToggle.click();
   assert.equal(listToggle.props["aria-expanded"],"true");
   assert.equal(overlay(),o);
-  o.listeners.keydown(event("Escape"));assert.equal(await reply,false);
+  o.listeners.keydown(event("Enter"));
+  assert.equal(await reply,true,"Enter confirms even after clicking View All");
 
   const one=context.tagConfirmation(["cat"],["cat, CAT","dog","Cat"]);
   assert.equal(one.title,"Remove “cat” from 2 images?");

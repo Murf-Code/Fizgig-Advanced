@@ -13297,9 +13297,6 @@ function captionConfirmRemoval({title,detail,items=[],tagCounts=[],confirmLabel=
         if(e.repeat)return;
         const focused=document.activeElement;
         if(focused===cancel){close(false);return;}
-        if(focused?.classList?.contains("caption-removal-toggle")){
-          focused.click();return;
-        }
         close(true);return;
       }
       if(e.key!=="Tab")return;
