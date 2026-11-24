@@ -516,7 +516,15 @@ const CaptionStudioViz = (() => {
     for(const e of model.edges){adjacency.get(e.a)?.set(e.b,e.w);adjacency.get(e.b)?.set(e.a,e.w);}
     const maxCount=nodes[0].count;
     const visual=new Map();
-    let hovered=null;
+    const bridges=[],communityStrands=new Map();
+    for(const edge of model.chosen){
+      const a=at.get(edge.a),b=at.get(edge.b);
+      if(a.group!==b.group||a.color!==b.color){bridges.push(edge);continue;}
+      if(!communityStrands.has(a.color))communityStrands.set(a.color,[]);
+      communityStrands.get(a.color).push(edge);
+    }
+    // Resolve theme-dependent SVG colors after mount, then reuse them during motion.
+    const strandColors=new Map();
     let prefs=constellationPrefs(options.preferences),zoom=1,pan={x:0,y:0},picked=null,drag=null,rare=null;
     let serial=0,shared=new Map(),frame=null,settling=null,camera=null,pulse=null,disposed=false,dirty=new Set(),lastClick=null;
     const media=typeof matchMedia==="function"?matchMedia("(prefers-reduced-motion: reduce)"):null;
@@ -541,21 +549,29 @@ const CaptionStudioViz = (() => {
       ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,w,h);
       const scale=Math.min(width/1000,height/700)*zoom*ratio;
       ctx.setTransform(scale,0,0,scale,w/2-(500+pan.x)*scale,h/2-(350+pan.y)*scale);
-      const focus=picked||hovered;
       const curve=(a,b)=>{
         const p=position(at.get(a)),q=position(at.get(b));
         ctx.moveTo(p.x,p.y);
         ctx.quadraticCurveTo((p.x+q.x)/2-(q.y-p.y)*.09,(p.y+q.y)/2+(q.x-p.x)*.09,q.x,q.y);
       };
-      ctx.strokeStyle=getComputedStyle(canvas).color;
-      ctx.globalAlpha=focus?.10:.36;ctx.lineWidth=.85*ratio/scale;
-      ctx.beginPath();
-      for(const e of model.chosen)curve(e.a,e.b);
-      ctx.stroke();
-      if(focus){
-        ctx.strokeStyle=picked?"#e2b84e":getComputedStyle(canvas).color;
+      ctx.lineWidth=.85*ratio/scale;
+      const stroke=(edges,color,alpha)=>{
+        if(!edges.length)return;
+        ctx.strokeStyle=color;ctx.globalAlpha=alpha;ctx.beginPath();
+        for(const e of edges)curve(e.a,e.b);
+        ctx.stroke();
+      };
+      stroke(bridges,getComputedStyle(canvas).color,picked?.045:.14);
+      for(const [color,edges] of communityStrands){
+        if(!strandColors.has(color)){
+          strandColors.set(color,getComputedStyle(visual.get(edges[0].a).halo).fill);
+        }
+        stroke(edges,strandColors.get(color),picked?.11:.48);
+      }
+      if(picked){
+        ctx.strokeStyle="#e2b84e";
         ctx.globalAlpha=.74;ctx.lineWidth=1.15*ratio/scale;ctx.beginPath();
-        for(const tag of relationMap(focus).keys())if(at.has(tag))curve(focus,tag);
+        for(const tag of relationMap(picked).keys())if(at.has(tag))curve(picked,tag);
         ctx.stroke();
       }
     }
@@ -590,14 +606,6 @@ const CaptionStudioViz = (() => {
       const label=make("text",{fill:"var(--text-primary)","font-weight":600,stroke:"var(--bg-deep)","paint-order":"stroke","pointer-events":"none"},labelLayer);
       label.textContent=n.tag;
       visual.set(n.tag,{g,core,halo,ripple,ring,hit,label,grad,id});
-      const highlight=tag=>{
-        if(drag||hovered===tag)return;
-        hovered=tag;updateAppearance();
-      };
-      g.addEventListener("pointerenter",()=>highlight(n.tag));
-      g.addEventListener("pointerleave",()=>highlight(null));
-      g.addEventListener("focus",()=>highlight(n.tag));
-      g.addEventListener("blur",()=>highlight(null));
       g.addEventListener("pointerdown",e=>{
         if(e.button!==0)return;e.stopPropagation();dismissMenu();cancelMotion();
         const p=point(e);drag={kind:"node",tag:n.tag,dx:p.x-n.x,dy:p.y-n.y,x:e.clientX,y:e.clientY,moved:false};
@@ -614,7 +622,6 @@ const CaptionStudioViz = (() => {
     function relationMap(tag){return adjacency.get(tag)||new Map();}
     function removeRare(){
       if(!rare)return;
-      if(hovered===rare.tag)hovered=null;
       const v=visual.get(rare.tag);v?.g.remove();v?.label.remove();v?.grad.remove();
       visual.delete(rare.tag);at.delete(rare.tag);adjacency.delete(rare.tag);rare=null;
     }
@@ -631,7 +638,7 @@ const CaptionStudioViz = (() => {
       at.set(tag,rare);adjacency.set(tag,links);createNode(rare);return rare;
     }
     function placeLabels(){
-      const priority=picked||hovered,boxes=[];
+      const priority=picked,boxes=[];
       const budget=Math.max(4,Math.floor(10*zoom*zoom));
       const order=priority?[at.get(priority),...at.values()]:at.values();
       for(const n of order){
@@ -647,7 +654,7 @@ const CaptionStudioViz = (() => {
       }
     }
     function updateAppearance(){
-      const focus=picked||hovered,neighbors=relationMap(focus);
+      const focus=picked,neighbors=relationMap(focus);
       for(const n of at.values()){
         const v=visual.get(n.tag),selected=n.tag===picked,related=!focus||n.tag===focus||neighbors.has(n.tag);
         v.g.setAttribute("opacity",related?1:.22);
@@ -799,7 +806,7 @@ const CaptionStudioViz = (() => {
     };
     const resize=new ResizeObserver(drawStrands);
     resize.observe(stage);
-    const theme=new MutationObserver(drawStrands);
+    const theme=new MutationObserver(()=>{strandColors.clear();drawStrands();});
     theme.observe(document.documentElement,{attributes:true,attributeFilter:["class","data-theme","style"]});
     stage.dispose=()=>{resize.disconnect();theme.disconnect();disposed=true;if(frame!==null)cancelAnimationFrame(frame);frame=null;camera=null;settling=null;pulse=null;};
     stage.append(canvas,svg,search,zoomCtl,spotlight,menu);

@@ -18,3 +18,5 @@ assert.match(graph,/ctx\.quadraticCurveTo/);
 assert.match(graph,/setAttribute\("visibility",show/);
 assert.match(graph,/prefs\.glassNodes\?/);
 assert.match(graph,/html\("span","",String\(w\),item\)/);
+assert.doesNotMatch(graph,/hovered|g\.addEventListener\("(pointerenter|pointerleave|mouseover|focus|blur)"/);
+assert.match(graph,/stroke\(edges,strandColors\.get\(color\)/);
