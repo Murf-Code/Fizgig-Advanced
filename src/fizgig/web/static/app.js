@@ -13219,12 +13219,16 @@ function studioThumbIndex(offsets,position){
 // Confirmation for Caption Workbench image and tag removal. It is shared by
 // right-click actions, Delete shortcuts, the legacy caption cards and batch
 // tools; nothing is changed until the user explicitly confirms.
-function captionConfirmRemoval({title,detail,items=[],confirmLabel="Remove",informational=false}) {
+function captionTagRemovalTitle(tags,count) {
+  const names=tags.length<=2?tags.map(tag=>'“'+tag+'”').join(" and "):tags.length+" selected tags";
+  return "Remove "+names+" from "+count+" image"+(count===1?"":"s")+"?";
+}
+function captionConfirmRemoval({title,detail,items=[],confirmLabel="Remove",informational=false,compact=false}) {
   if(document.querySelector(".caption-removal-backdrop"))return Promise.resolve(false);
   return new Promise(resolve=>{
     const lastFocus=document.activeElement;
     const backdrop=el("div",{class:"caption-removal-backdrop"});
-    const modal=el("section",{class:informational?"caption-removal-modal caption-removal-compact":"caption-removal-modal",role:"dialog",
+    const modal=el("section",{class:(informational||compact)?"caption-removal-modal caption-removal-compact":"caption-removal-modal",role:"dialog",
       "aria-modal":"true","aria-labelledby":"captionRemovalTitle",
       "aria-describedby":"captionRemovalDetails",tabindex:"-1"});
     const heading=el("h2",{id:"captionRemovalTitle",text:title});
@@ -14357,9 +14361,8 @@ function renderCaptionStudio(host,items,ext){
     const removing=parts.filter(tag=>picked.has(tag.toLowerCase()));
     if(!removing.length)return;
     if(!(await captionConfirmRemoval({
-      title:"Remove "+removing.length+" tag"+(removing.length===1?"":"s")+" from image?",
-      detail:"Remove these tags from "+current.name+". Other images and their captions are unchanged. You can undo the edit.",
-      items:removing,confirmLabel:"Remove "+(removing.length===1?"tag":"tags")
+      title:captionTagRemovalTitle(removing,1),
+      detail:"This can be undone.",compact:true,confirmLabel:"Remove"
     })))return;
     ta.value=studioCompose(ta.value,parts.filter(t=>!picked.has(t.toLowerCase())),"tags");
     for(const tag of picked)imageTagPicked.delete(tag);
@@ -15074,10 +15077,8 @@ function renderCaptionStudio(host,items,ext){
     if(!changes.length){say("No editable captions match.");return false;}
     if(changes.length>1000){say("Too many changes for one atomic batch. Limit the selection to 1000 images.");return false;}
     if(mode==="remove"&&!(await captionConfirmRemoval({
-      title:"Remove tag from "+changes.length+" image"+(changes.length===1?"":"s")+"?",
-      detail:'Remove "'+old.trim()+'" from '+changes.length+' editable caption'+(changes.length===1?"":"s")+
-        (scope==="all"?" across the dataset?":" in the selected scope?")+" This can be undone.",
-      items:[old.trim()],confirmLabel:"Remove tag"
+      title:captionTagRemovalTitle([old.trim()],changes.length),
+      detail:"This can be undone.",compact:true,confirmLabel:"Remove"
     })))return false;
     try{
       await api("/api/captions/batch_edit",{ext,edits:changes.map(c=>({
@@ -15994,8 +15995,8 @@ function renderCaptionStudio(host,items,ext){
     const total=changes.reduce((sum,row)=>sum+row.removed,0);
     if(!(await captionConfirmRemoval({
       title:"Remove "+(kind==="duplicate"?"duplicate":"empty")+" tags?",
-      detail:"Clean "+changes.length+" caption"+(changes.length===1?"":"s")+" in the selected images. This can be undone.",
-      items:changes.map(row=>row.name),confirmLabel:"Clean tags"
+      detail:"Remove "+total+" "+label+" tag"+(total===1?"":"s")+" from "+changes.length+" image"+(changes.length===1?"":"s")+"? This can be undone.",
+      compact:true,confirmLabel:"Remove"
     })))return;
     try{
       await api("/api/captions/batch_edit",{ext,edits:changes.map(r=>({
@@ -16041,10 +16042,8 @@ function renderCaptionStudio(host,items,ext){
     })).filter(row=>row.after!==(row.before||""));
     if(!changes.length){say("None of the selected images contain those tags.");return true;}
     if(!(await captionConfirmRemoval({
-      title:"Remove "+wanted.size+" selected tag"+(wanted.size===1?"":"s")+"?",
-      detail:"Remove the selected tags from "+changes.length+" affected image"+
-        (changes.length===1?"":"s")+". This can be undone.",
-      items:picked,confirmLabel:"Remove "+(wanted.size===1?"tag":"tags")
+      title:captionTagRemovalTitle(picked,changes.length),
+      detail:"This can be undone.",compact:true,confirmLabel:"Remove"
     })))return true;
     try{
       await api("/api/captions/batch_edit",{ext,edits:changes.map(row=>({
