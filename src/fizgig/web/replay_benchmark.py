@@ -7,13 +7,18 @@ DEFAULT_PREVIEW_PROMPTS = "A character portrait, three-quarter view, expressive 
 
 CASES = (
     ("replay", "Global replay", False),
-    ("selective", "Global replay", True),
+    ("downhill", "Global replay", True),
+    ("uphill", "Global replay", True),
+    ("high_gradient", "Global replay", True),
+    ("low_gradient", "Global replay", True),
+    ("random", "Global replay", True),
+    ("rotational", "Global replay", True),
     ("standard", "Standard", False),
 )
 
 
 def preview_prompts(folder, supplied="", trigger=""):
-    """Resolve the same prompt set once, before queuing any of the three cases."""
+    """Resolve the same prompt set once, before queuing any of the eight cases."""
     supplied = str(supplied or "").strip()
     if supplied:
         return supplied
@@ -67,7 +72,7 @@ def adjust_plan(desc, values, plan):
     case = values.get("__replay_compare")
     if not case:
         return plan
-    if desc.key != "krea2" or case not in ({c[0] for c in CASES} | {"standard-matched"}):
+    if desc.key != "krea2" or case not in ({c[0] for c in CASES} | {"standard-matched", "selective"}):
         raise ValueError("Invalid Krea 2 replay comparison case.")
     if plan.problems:
         return plan
@@ -75,6 +80,10 @@ def adjust_plan(desc, values, plan):
     if len(stages) != 1:
         plan.problems.append("Replay comparison needs exactly one normal Training stage.")
         return plan
+    from fizgig.krea2.selective_policy import STRATEGIES
+    if case in STRATEGIES:
+        stages[0].cmd.extend(["--family_option", f"selective_strategy={case}",
+                              "--family_option", "selective_budget=14"])
     if case == "standard-matched":
         cmd = stages[0].cmd
         if "--train_blocks" in cmd:

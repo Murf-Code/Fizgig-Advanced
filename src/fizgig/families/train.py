@@ -2444,10 +2444,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         net.add_trainable(network_dim, network_alpha, blocks=blocks, kind=network_type, factor=lokr_factor)
         if selective_global_replay:
             driver.configure_selective_global_replay(dit, net, warmup_updates=8, reactivate_every=8, score_decay=0.5)
-            logger.info("[selective-replay] all blocks train for the first 8 optimizer updates; then each block's "
-                        "displacement since its last probe is scored against the fresh global-loss gradient. Uphill "
-                        "blocks skip LoRA-factor gradients; all blocks are reactivated for one probe update every 8 "
-                        "steps. Block input gradients still propagate through every transformer block.")
+            logger.info("[selective-replay] strategy=%s budget=%s; all blocks train for the first 8 updates; "
+                        "then reassess every 8 updates with a full-block probe. Block input gradients still "
+                        "propagate through every block.",
+                        driver._selective_strategy,
+                        driver._selective_budget if driver._selective_strategy != "legacy" else "unrestricted")
         elif global_replay:
             logger.info("[global-replay] Selective block check off: all 28 blocks train on every update.")
     def render_bank():
@@ -3541,7 +3542,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     skipped = selective_status["total"] - selective_status["active"]
                     logger.info(f"[selective-replay] probe {driver.selective_state_dict()['optimizer_steps']}: "
                                 f"{selective_status['active']}/{selective_status['total']} blocks active; "
-                                f"{skipped} uphill/neutral blocks skip adapter-gradient computation until rechecked.")
+                                f"{skipped} blocks skip adapter-gradient computation until rechecked.")
+                    logger.info("[selective-replay] active_blocks=%s scores=%s strategy=%s",
+                                driver.selective_active_blocks(), selective_status["scores"],
+                                driver._selective_strategy)
                 else:
                     logger.info(f"[selective-replay] periodic reactivation: all "
                                 f"{selective_status['total']} blocks are active for the next probe update.")

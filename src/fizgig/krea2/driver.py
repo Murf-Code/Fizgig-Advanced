@@ -271,11 +271,18 @@ class Krea2Driver(FamilyDriver):
         self._selective_warmup_updates = max(1, int(warmup_updates))
         self._selective_reactivate_every = max(1, int(reactivate_every))
         self._selective_score_decay = min(0.99, max(0.0, float(score_decay)))
+        from fizgig.krea2.selective_policy import STRATEGIES
+        self._selective_strategy = str(self.options.get("selective_strategy") or "legacy")
+        self._selective_budget = int(self.options.get("selective_budget") or max(1, n // 2))
+        if self._selective_strategy != "legacy" and (self._selective_strategy not in STRATEGIES
+                                                     or not 1 <= self._selective_budget <= n):
+            raise ValueError("Invalid selective replay strategy or budget.")
         self._selective_optimizer_steps = 0
         self._selective_scores = [None] * n
         self._selective_active = set(range(n))
         # each block's weights at its last probe (CPU), the start of the displacement the next probe scores
-        self._selective_anchor = {i: self._selective_flat(by_block[i]) for i in range(n)}
+        self._selective_anchor = ({i: self._selective_flat(by_block[i]) for i in range(n)}
+                                  if self._selective_strategy in ("legacy", "downhill", "uphill") else {})
         self._set_selective_active_parameters()
 
     @staticmethod
@@ -306,6 +313,20 @@ class Krea2Driver(FamilyDriver):
         (before the step), on CPU so the check does not increase VRAM use. Then re-anchor at the current weights."""
         if not self.selective_probe_due:
             return None
+        strategy = self._selective_strategy
+        if strategy in ("random", "rotational"):
+            return {"cosines": {}}
+        if strategy in ("high_gradient", "low_gradient"):
+            scores = {}
+            for index, params in self._selective_params_by_block.items():
+                if not all(p.requires_grad and p.grad is not None for p in params):
+                    continue
+                # RMS per parameter, not a raw norm biased by the number of parameters.
+                sums = [p.grad.detach().float().square().sum() for p in params]
+                rms = float((torch.stack(sums).sum() / sum(p.numel() for p in params)).sqrt())
+                if np.isfinite(rms):
+                    scores[index] = rms
+            return {"cosines": scores}
         cosines = {}
         for index in range(self._selective_block_count):
             block_params = self._selective_params_by_block[index]
@@ -343,6 +364,11 @@ class Krea2Driver(FamilyDriver):
             if not active and self._selective_scores:
                 known = [(score, i) for i, score in enumerate(self._selective_scores) if score is not None]
                 active = {max(known)[1]} if known else set(range(self._selective_block_count))
+            if self._selective_strategy != "legacy":
+                from fizgig.krea2.selective_policy import select_blocks
+                probe_index = (step - self._selective_warmup_updates) // self._selective_reactivate_every
+                active = select_blocks(self._selective_strategy, self._selective_scores,
+                                       self._selective_budget, probe_index)
             self._selective_active = active or set(range(self._selective_block_count))
             self._set_selective_active_parameters()
             return {"kind": "probe", "active": len(self._selective_active), "total": self._selective_block_count,
@@ -366,7 +392,9 @@ class Krea2Driver(FamilyDriver):
                 "warmup_updates": self._selective_warmup_updates,
                 "reactivate_every": self._selective_reactivate_every,
                 "score_decay": self._selective_score_decay,
-                "scores": list(self._selective_scores), "active_blocks": sorted(self._selective_active)}
+                "scores": list(self._selective_scores), "active_blocks": sorted(self._selective_active),
+                **({"strategy": self._selective_strategy, "budget": self._selective_budget}
+                   if self._selective_strategy != "legacy" else {})}
 
     def load_selective_state_dict(self, state):
         if not self.selective_global_replay or not isinstance(state, dict) or state.get("version") != 1:
@@ -375,6 +403,9 @@ class Krea2Driver(FamilyDriver):
                 or int(state.get("reactivate_every", -1)) != self._selective_reactivate_every
                 or float(state.get("score_decay", -1)) != self._selective_score_decay):
             raise RuntimeError("Selective global replay settings differ from the saved run state.")
+        if (state.get("strategy", "legacy") != self._selective_strategy
+                or (self._selective_strategy != "legacy" and state.get("budget") != self._selective_budget)):
+            raise RuntimeError("The saved selective strategy or budget differs from this run.")
         scores = state.get("scores")
         if not isinstance(scores, list) or len(scores) != self._selective_block_count:
             raise RuntimeError("The saved Selective global replay scores do not match the Krea 2 block count.")

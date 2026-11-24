@@ -38,7 +38,7 @@ jobs:
         run: python -m pytest checks/test_send_only_swap.py checks/test_krea2_global_replay.py checks/test_stream_sync_report_gate.py -q
       - name: Global Replay three-way benchmark queue recipe
         run: |
-          python -m pytest checks/test_replay_benchmark.py -q
+          python -m pytest checks/test_replay_benchmark.py checks/test_selective_policy.py -q
           node checks/test_replay_queue_button.cjs
       - name: Stream diagnostic CPU smoke (not CUDA verification)
         run: python scripts/diagnose_stream_sync.py --cpu --suite expanded --steps 1 --warmup 0 --rank 4 --width 128 --latent-size 8 --optimizer adamw --report /tmp/stream-sync-report.json
