@@ -45,7 +45,10 @@ const document={body:new Element("body"),activeElement:null,
   }};
 document.body.isConnected=true;
 const opener=new Element("button");opener.isConnected=true;opener.focus();
-const context={el,document,Promise,studioTokens:caption=>caption.split(",").map(s=>s.trim()).filter(Boolean)};
+const context={el,document,Promise,studioTokens:caption=>String(caption||"").split("\n")[0].split(",").map(s=>s.trim()).filter(Boolean),
+  studioCaptionMode:it=>it.mode||"tags",studioUnique:tags=>[...new Map(tags.map(t=>[t.toLowerCase(),t])).values()],
+  studioCompose:(caption,tags)=>tags.join(", ")+(String(caption||"").match(/\n[\s\S]*$/)?.[0]||""),
+  capItemFolder:it=>"dataset"};
 vm.runInNewContext(source+"\nthis.confirmRemoval=captionConfirmRemoval;this.tagConfirmation=captionTagRemovalConfirmation;",context);
 const confirmRemoval=context.confirmRemoval;
 const event=(key,target=null)=>({key,target,preventDefault(){this.prevented=true;},stopPropagation(){this.stopped=true;}});
@@ -144,6 +147,38 @@ const buttons=()=>{
     assert.equal(result.tagCounts,undefined);
   }
 
+  // Rename uses the same modal, but reports only affected images and a
+  // non-destructive primary action rather than a generic system dialog.
+  const files=[
+    {name:"a.png",path:"a",caption:"cat, dog"},
+    {name:"b.png",path:"b",caption:"dog,dog"},
+    {name:"c.png",path:"c",caption:"CAT, lion"},
+    {name:"d.png",path:"d",caption:"cat",mode:"prose"},
+    {name:"e.png",path:"e",caption:"cat"},
+    {name:"f.png",path:"f",caption:"cat, bird\nKeep this description."}
+  ];
+  const plan=context.captionBulkTagChanges(files,"rename","cat","lion",new Map(),new Set(["e"]));
+  assert.equal(plan.changes.length,3);
+  assert.equal(plan.locked,1);
+  assert.equal(plan.blockedDraft,false);
+  assert.equal(plan.changes.map(c=>c.path).join(","),"a,c,f");
+  assert.equal(plan.changes[1].after,"lion");
+  assert.equal(plan.changes[2].after,"lion, bird\nKeep this description.");
+  assert.equal(context.captionBulkTagChanges(files,"rename","cat","lion",
+    new Map([["b","dog, bird"]]),new Set(["e"])).blockedDraft,false);
+  assert.equal(context.captionBulkTagChanges(files,"rename","cat","lion",
+    new Map([["b","dog, cat"]]),new Set(["e"])).blockedDraft,true);
+  const title=context.captionTagRenameTitle("cat","lion",plan.changes.length);
+  assert.equal(title,"Rename “cat” to “lion” in 3 images?");
+  assert.equal(context.captionTagRenameTitle("cat","lion",1),"Rename “cat” to “lion” in 1 image?");
+  reply=confirmRemoval({title,detail:"This can be undone.",confirmLabel:"Rename",destructive:false,compact:true});
+  o=overlay();
+  assert.equal(buttons().confirm.textContent,"Rename");
+  assert.equal(buttons().confirm.props.class,"btn btn-primary");
+  o.listeners.keydown(event("Enter"));
+  assert.equal(await reply,true);
+  assert.doesNotMatch(app,/confirm\("Apply "\+mode\+" tag to "/);
+  assert.match(app,/captionTagRenameTitle\(old\.trim\(\),newTag\.trim\(\),changes\.length\)/);
   assert.match(css,/\.caption-removal-backdrop\{/);
   assert.match(css,/\.caption-removal-modal\{/);
   assert.match(app,/if\(!\(await captionConfirmRemoval\(/);
