@@ -12,4 +12,7 @@ assert.match(menu,/if\(S\.cap\.studioExploreMode==="list"\)\s*action\("Clear Sel
 assert.match(menu,/if\(S\.cap\.studioExploreMode==="list"\)\{\s*action\("Copy Tags"[\s\S]*?action\("Paste Tags"/);
 assert.match(css,/border:1px solid rgba\(0,0,0,\.72\);padding:2px/);
 assert.match(css,/-webkit-text-stroke:1px rgba\(0,0,0,\.9\)/);
+assert.match(css,/\.studio-tb-flow\{\s*display:flex;align-items:flex-start;gap:9px/);
+assert.match(css,/\.studio-tb-flow-column\{\s*flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:9px/);
+assert.match(css,/linear-gradient\(135deg,#fffbe5,#fff0b3 45%,#e4be72\)/);
 console.log("Glass selection and Waterfall menu checks passed");
