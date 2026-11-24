@@ -2704,41 +2704,26 @@ def pair_songs(entries):
     return out
 
 
-_sizes: dict = {}             # (path, mtime) -> [width, height] or None
-
-
 def _media_size(path):
-    """[width, height] of a picture (its header only) or a clip (its first stream), None for a song or an unreadable
-    file - for the Captions cards and their size sort."""
+    """Read upright dimensions once on a persistent index miss."""
     ext = os.path.splitext(path)[1].lower()
     if ext in _AUDIO:
         return None
     try:
-        key = (path, os.path.getmtime(path))
-    except OSError:
-        return None
-    if key not in _sizes:
-        wh = None
+        if ext in _IMAGES:
+            from PIL import Image
+            from fizgig.utils.upright import upright_size
+            with Image.open(path) as im:
+                return list(upright_size(im, path))
+        import cv2
+        cap = cv2.VideoCapture(path)
         try:
-            if ext in _IMAGES:
-                from PIL import Image
-                with Image.open(path) as im:
-                    from fizgig.utils.upright import upright_size
-                    wh = list(upright_size(im, path))
-            else:
-                import cv2
-                cap = cv2.VideoCapture(path)
-                try:
-                    w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    wh = [w, h] if w and h else None
-                finally:
-                    cap.release()
-        except Exception:
-            wh = None
-        if len(_sizes) > 20000:
-            _sizes.clear()
-        _sizes[key] = wh
-    return _sizes[key]
+            w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            return [w, h] if w and h else None
+        finally:
+            cap.release()
+    except Exception:
+        return None
 
 
 REMOVED_DIR = "removed"           # the desktop's Remove folder
@@ -4528,62 +4513,51 @@ class Handler(BaseHTTPRequestHandler):
         return self.json({"items": out})
 
     def _captions(self, folder, ext, family="", subs=False, skip=()):
-        """The folder's items with their captions. subs: the training sub-folders too (Include sub-folders: the
-        training run's own folder rules, so originals, originals_2..., removed are left out), each item named by its
-        path from the folder ("sub/0001.png") with "sub" as its "sub"."""
-        out = []
-        try:
-            os.listdir(folder)
-        except OSError:
-            return self.json({"items": []})
+        """Return a complete current listing; only unchanged file contents are cached."""
         from fizgig.dataset.image_dataset import superseded_stems
+        from fizgig.web.caption_index import FolderIndex
+        if not os.path.isdir(folder):
+            return self.json({"items": []})
+        out = []
+        db = user_file("caption_index_v1.sqlite3")
         for rel, d in [("", folder)] + (launch.subfolders(folder, skip) if subs else launch.prep_subfolders(folder)):
             try:
-                gone = superseded_stems(d)              # shown (and trained) from Image Prep's resized/ copy
-                names = sorted(n for n in os.listdir(d) if os.path.splitext(n)[0] not in gone)
+                gone = superseded_stems(d)
+                with FolderIndex(db, d) as index:
+                    names = sorted(n for n in index.names if os.path.splitext(n)[0] not in gone)
+                    out.extend(self._indexed_caption_entries(index, names, ext, family, rel))
             except OSError:
                 continue
-            keep = _caption_media_filter(names, family)
-            lower = {n.lower(): n for n in names}
-            for n in names:
-                stem, e = os.path.splitext(n)
-                if e.lower() not in MEDIA or not keep(n) or is_mask_file(n):
-                    continue
-                cap = os.path.join(d, stem + ext)
-                try:
-                    text = captions.read_text(cap)          # any encoding: one odd file never empties the list (#225)
-                except OSError:
-                    text = None
-                p = os.path.join(d, n)
-                mask = mask_for_stem(d, stem, lower)        # masked training: the picture's mask, shown on its row
-                out.append((f"{rel}/{n}" if rel else n, p, {"caption": text, "size": _media_size(p),
-                            **({"sub": rel} if rel else {}), **({"mask": os.path.basename(mask)} if mask else {})}))
         items = pair_songs(out)
         from fizgig.dataset import detail_crops
-        big = detail_crops.largest(folder)           # its detail crops, after the pictures: the largest size
+        big = detail_crops.largest(folder)
         if big:
-            crops = self._caption_items(big, sorted(os.listdir(big)), ext, family)
+            crops = self._caption_items(big, None, ext, family)
             items += [{**it, "crop": os.path.basename(big)} for it in crops]
         return self.json({"items": items})
 
-    def _caption_items(self, folder, names, ext, family):
+    def _indexed_caption_entries(self, index, names, ext, family, rel=""):
         out = []
+        folder = index.folder
         keep = _caption_media_filter(names, family)
         lower = {n.lower(): n for n in names}
         for n in names:
             stem, e = os.path.splitext(n)
             if e.lower() not in MEDIA or not keep(n) or is_mask_file(n):
                 continue
-            cap = os.path.join(folder, stem + ext)
-            try:
-                text = captions.read_text(cap)          # any encoding: one odd file never empties the list (#225)
-            except OSError:
-                text = None
+            text = index.read(stem + ext, "caption", captions.read_text)
             p = os.path.join(folder, n)
-            mask = mask_for_stem(folder, stem, lower)        # masked training: the picture's mask, shown on its row
-            out.append((n, p, {"caption": text, "size": _media_size(p),
-                               **({"mask": os.path.basename(mask)} if mask else {})}))
-        return pair_songs(out)
+            mask = mask_for_stem(folder, stem, lower)
+            size = index.read(n, "upright-size-v1", _media_size) if e.lower() not in _AUDIO else None
+            out.append((f"{rel}/{n}" if rel else n, p, {"caption": text, "size": size,
+                        **({"sub": rel} if rel else {}), **({"mask": os.path.basename(mask)} if mask else {})}))
+        return out
+
+    def _caption_items(self, folder, names, ext, family):
+        from fizgig.web.caption_index import FolderIndex
+        with FolderIndex(user_file("caption_index_v1.sqlite3"), folder) as index:
+            return pair_songs(self._indexed_caption_entries(
+                index, sorted(index.names) if names is None else names, ext, family))
 
     # -- POST
     def do_POST(self):
