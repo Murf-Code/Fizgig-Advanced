@@ -7,6 +7,7 @@ No VAE/text encoder or full training run is needed. Never disables block swap
 for the full checkpoint. CPU-only mode is for harness smoke tests, not GPU proof.
 """
 import argparse
+from dataclasses import asdict
 import gc
 import json
 import math
@@ -142,7 +143,15 @@ def build(args, device, case):
     elif mode != "resident" and isinstance(model.offloader, LoRAStreamOffloader):
         raise RuntimeError("Classic mode unexpectedly uses send-only")
     if mode != "resident" and model.offloader.use_pinned_memory != case["pinned"]:
-        raise RuntimeError("Requested pinning strategy was not applied")
+        raise UnsafePinning("Requested pinning strategy was not applied; host safety fallback selected a different mode")
+    if mode.startswith("fast") and device.type == "cuda":
+        host_plan = model.offloader.host_memory_plan
+        if host_plan is None:
+            raise RuntimeError("Streaming host allocation policy was not reported")
+        if not case["pinned"] and host_plan.staging_slots != case["ring"]:
+            raise UnsafePinning(
+                f"Requested {case['ring']} staging slots, allocated {host_plan.staging_slots}; "
+                "reduced host pool would confound ring benchmark")
     model.enable_gradient_checkpointing()
     model.train()
     # Reset AFTER all model-loading/quantization/offloader allocations. FamilyLoRA
@@ -318,6 +327,7 @@ def execute(args, device, case, batches, reference_dir, record):
     peak = torch.cuda.max_memory_allocated(device) / 2**30 if device.type == "cuda" else None
     reserved = torch.cuda.max_memory_reserved(device) / 2**30 if device.type == "cuda" else None
     pinned_bytes = pinned_storage(model, off) if off is not None else 0
+    host_plan = getattr(off, "host_memory_plan", None)
     shared = windows_gpu_memory() if device.type == "cuda" else {}
     if off is not None:
         off.remove_hooks()
@@ -335,6 +345,7 @@ def execute(args, device, case, batches, reference_dir, record):
           f"pinned storage={pinned_bytes/2**30:.3f} GiB, allocated peak={peak} GiB", flush=True)
     return {**case, "steps": rows, "summary": summary, "peak_allocated_gib": peak,
             "peak_reserved_gib": reserved, "pinned_storage_gib": pinned_bytes/2**30,
+            "host_memory_plan": asdict(host_plan) if host_plan is not None else None,
             "windows_process_gpu_memory_end": shared}
 
 
@@ -606,6 +617,7 @@ def main():
         "WDDM shared/dedicated counters are optional end-of-case samples, not peaks.",
         "Peak allocated/reserved are PyTorch CUDA allocator metrics; NVML is device-wide.",
         "Math attention cases use their own reference and strict deterministic algorithms.",
+        "Host safety fallback cases are skipped instead of timing a different strategy under the requested label.",
         "Each case runs in its own process; reference tensors and cached batches are shared on disk."]
     with tempfile.TemporaryDirectory(prefix="fizgig-stream-sync-", dir=args.scratch) as tmp:
         tmp = Path(tmp)
