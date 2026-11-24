@@ -54,17 +54,18 @@ assert.ok(sparseModel.edges.length<=120*119/2);
 // Waterfall tiles preserve ordinary single-click selection. Double-click is
 // a distinct action that opens the exact tile in the Tags editor.
 const savedDoc=global.document, savedWin=global.window;
+const savedResize=global.ResizeObserver,savedMutation=global.MutationObserver;
 try {
   const fakeElement=()=>{
     const children=[],handlers={},classes=new Set(),attrs={};
-    return {children,handlers,dataset:{},classes,attrs,classList:{add(name){classes.add(name);}},
-      style:{},isConnected:false,
+    return {children,handlers,dataset:{},classes,attrs,classList:{add(name){classes.add(name);},toggle(){}},
+      style:{},isConnected:false,getContext(){return null;},contains(){return false;},
       append(...elements){children.push(...elements);},
       setAttribute(name,value){attrs[name]=value;},addEventListener(name,fn){handlers[name]=fn;},
       remove(){},replaceChildren(...elements){children.splice(0,children.length,...elements);}
     };
   };
-  global.document={createElement:()=>fakeElement()};
+  global.document={createElement:()=>fakeElement(),createElementNS:()=>fakeElement()};
   global.window={innerWidth:850};
   const picked=[],opened=[];
   const it={path:"/dataset/portrait.webp",name:"portrait.webp",size:[512,768]};
@@ -85,9 +86,34 @@ try {
   tile.handlers.dblclick({preventDefault(){prevented=true;}});
   assert.equal(prevented,true);
   assert.deepEqual(opened,[it.path]);
+
+  // A focused relationship can include a tag omitted from the overview.
+  global.ResizeObserver=global.MutationObserver=class {observe(){}};
+  const graph=Viz.tagbenchModel([
+    {tags:["paws","white fur","digital art"]},
+    {tags:["digital art"]},
+    {tags:["digital art"]}
+  ]);
+  graph.nodes=graph.nodes.filter(node=>node.tag!=="white fur");
+  graph.chosen=[];graph.edges=[];
+  const pairCalls=[];
+  const network=Viz.tagbenchConstellation(graph,()=>{},"paws",{
+    relationsForTag:()=>new Map([["digital art",1],["white fur",1]]),
+    previewPair:(...pair)=>{pairCalls.push(pair);return [{src:"/thumb",name:"sample.png"}];},
+    openPair:(...pair)=>pairCalls.push(pair)
+  });
+  const descendants=node=>[node,...node.children.flatMap(descendants)];
+  const edges=descendants(network).filter(node=>node.attrs.class==="studio-tb-pair-edge");
+  assert.equal(edges[0].attrs["aria-label"],"paws and white fur, 1 shared image");
+  assert.ok(Number(edges[0].children[0].attrs["stroke-width"])>Number(edges[1].children[0].attrs["stroke-width"]));
+  edges[0].handlers.click();
+  assert.ok(descendants(network).some(node=>node.src==="/thumb"));
+  descendants(network).find(node=>node.textContent==="Open in Waterfall").handlers.click();
+  assert.deepEqual(pairCalls,[["paws","white fur"],["paws","white fur"]]);
 } finally {
   global.document=savedDoc;
   global.window=savedWin;
+  global.ResizeObserver=savedResize;global.MutationObserver=savedMutation;
 }
 // One palette powers Constellation, Image Tags and All Tags. Direct
 // right-click colors override automatic and legacy category assignments.

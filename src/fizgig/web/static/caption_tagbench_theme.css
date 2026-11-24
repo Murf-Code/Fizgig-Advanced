@@ -198,3 +198,29 @@
 #tab-captions .studio-tb-strands{
   position:absolute;inset:0;width:100%;height:100%;pointer-events:none;color:var(--text-primary);
 }
+
+#tab-captions .studio-tb-pair-edge{cursor:pointer;outline:none}
+#tab-captions .studio-tb-pair-edge:focus-visible path:first-child{
+  stroke:var(--text-primary);stroke-opacity:1
+}
+#tab-captions .studio-tb-pair-preview{
+  display:grid;gap:7px;padding:10px;margin:0 0 8px;
+  background:var(--bg-inset);border:1px solid var(--accent-border);border-radius:8px;
+  overflow-wrap:anywhere
+}
+#tab-captions .studio-tb-pair-count,
+#tab-captions .studio-tb-pair-empty{color:var(--text-secondary);font-size:12px}
+#tab-captions .studio-tb-pair-thumbs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}
+#tab-captions .studio-tb-pair-thumbs img{
+  display:block;width:100%;aspect-ratio:1.45;object-fit:cover;border-radius:4px
+}
+#tab-captions .studio-tb-pair-action{
+  color:var(--text-primary);background:var(--accent-subtle);border:1px solid var(--accent-border);
+  padding:5px 8px;border-radius:6px;cursor:pointer;font:inherit;font-size:12px
+}
+#tab-captions .studio-tb-cluster>button.studio-tb-pair-action{margin-bottom:8px}
+#tab-captions .studio-tb-cluster li .studio-tb-pair-count-button{
+  min-width:28px;padding-inline:4px;text-align:right;color:var(--text-secondary);
+  font-variant-numeric:tabular-nums
+}
+#tab-captions .studio-tb-cluster li .studio-tb-pair-count-button:hover{text-decoration:underline}

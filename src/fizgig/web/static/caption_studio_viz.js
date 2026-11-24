@@ -246,7 +246,7 @@ const CaptionStudioViz = (() => {
       linkCounts.set(edge.a,(linkCounts.get(edge.a)||0)+1);
       linkCounts.set(edge.b,(linkCounts.get(edge.b)||0)+1);
     }
-    return {all,top,edges,linkCounts};
+    return {all,top,edges,linkCounts,imageCount:items.length};
   }
   function tagbenchModel(items,categories) {
     const graph=tagbenchGraph(items),{all,top,edges,linkCounts}=graph;
@@ -532,7 +532,7 @@ const CaptionStudioViz = (() => {
     const canvas=html("canvas","studio-tb-strands");
     canvas.setAttribute("aria-hidden","true");
     const ctx=canvas.getContext("2d");
-    const nodeLayer=make("g"),labelLayer=make("g");
+    const regionLayer=make("g"),edgeLayer=make("g"),nodeLayer=make("g"),labelLayer=make("g");
     const nodes=model.nodes.map(n=>({...n,ox:0,oy:0}));
     const at=new Map(nodes.map(n=>[n.tag,n])),all=new Map(model.all.map(n=>[n.tag,n]));
     const adjacency=new Map(nodes.map(n=>[n.tag,new Map()]));
@@ -542,7 +542,34 @@ const CaptionStudioViz = (() => {
     const leaders=new Map();
     // The model is frequency-ranked; give each community a named landmark.
     for(const n of nodes)if(!leaders.has(n.group))leaders.set(n.group,n);
-    let labelOrder=nodes,overviewCamera=null;
+    const groups=new Map();
+    for(const n of nodes){
+      if(!groups.has(n.group))groups.set(n.group,[]);
+      groups.get(n.group).push(n);
+    }
+    const regionByTag=new Map();
+    const regions=[...groups.values()].filter(group=>group.length>=3)
+      .sort((a,b)=>b.length-a.length).map(group=>{
+        const x=group.reduce((sum,n)=>sum+n.x,0)/group.length;
+        const y=group.reduce((sum,n)=>sum+n.y,0)/group.length;
+        const rx=Math.max(...group.map(n=>Math.abs(n.x-x)))+24;
+        const ry=Math.max(...group.map(n=>Math.abs(n.y-y)))+24;
+        const color=tbHue(group[0].group);
+        const wash=make("ellipse",{cx:x,cy:y,rx,ry,fill:color,"fill-opacity":".085","pointer-events":"none"},regionLayer);
+        return {group,x,y,rx,ry,color,wash};
+      });
+    const regionLabels=make("g",{},svg);
+    for(const region of regions){
+      for(const n of region.group)regionByTag.set(n.tag,region);
+      const names=region.group.slice(0,2).map(n=>n.tag);
+      region.label=make("text",{x:region.x,y:region.y,"text-anchor":"middle","dominant-baseline":"central",
+        fill:"color-mix(in srgb, "+region.color+" 65%, var(--text-primary))",stroke:"var(--bg-deep)",
+        "paint-order":"stroke","font-weight":750,"pointer-events":"none"},regionLabels);
+      region.label.textContent=names.map(name=>name.length>23?name.slice(0,22)+"…":name).join(" · ");
+    }
+    let labelOrder=nodes,overviewCamera=null,overviewZoom=1;
+    let expanded=false,activePair=null;
+    const temporaryTags=new Set(),focusEdges=new Map();
     const focusPositions=new Map();
     let typeScale=1;
     const labelSize=n=>(n.tag===picked?22:leaders.get(n.group)===n?19:15)*typeScale/zoom;
@@ -556,7 +583,7 @@ const CaptionStudioViz = (() => {
     }
     // Resolve theme-dependent SVG colors after mount, then reuse them during motion.
     const strandColors=new Map();
-    let prefs=constellationPrefs(options.preferences),zoom=1,pan={x:0,y:0},picked=null,drag=null,rare=null;
+    let prefs=constellationPrefs(options.preferences),zoom=1,pan={x:0,y:0},picked=null,drag=null;
     let serial=0,shared=new Map(),frame=null,settling=null,camera=null,pulse=null,disposed=false,dirty=new Set(),lastClick=null;
     const media=typeof matchMedia==="function"?matchMedia("(prefers-reduced-motion: reduce)"):null;
     const reduced=()=>!!media?.matches;
@@ -594,35 +621,78 @@ const CaptionStudioViz = (() => {
         for(const e of edges)curve(e.a,e.b);
         ctx.stroke();
       };
-      if(!picked){
-        stroke(bridges,getComputedStyle(canvas).color,picked?.045:.14);
-        for(const [color,edges] of communityStrands){
-          if(!strandColors.has(color)){
-            strandColors.set(color,getComputedStyle(visual.get(edges[0].a).halo).fill);
-          }
-          stroke(edges,strandColors.get(color),picked?.11:.48);
+      if(picked)return;
+      if(regionOverview()){
+        const routes=new Map();
+        for(const e of bridges){
+          const from=regionByTag.get(e.a),to=regionByTag.get(e.b);
+          if(!from||!to||from===to)continue;
+          const key=[from.group[0].group,to.group[0].group].sort().join(":");
+          if(!routes.has(key)||e.w>routes.get(key).w)routes.set(key,{from,to,w:e.w});
         }
-      }else{
-        ctx.strokeStyle="#e2b84e";
-        for(const tag of focusPositions.keys()){
-          if(tag===picked)continue;
-          const count=shared.get(tag);
-          const strength=Math.sqrt(count/at.get(picked).count);
-          ctx.lineWidth=(.6+6*strength)*ratio/scale;
-          ctx.globalAlpha=.24+.66*strength;
-          ctx.beginPath();curve(picked,tag);ctx.stroke();
+        ctx.strokeStyle=getComputedStyle(canvas).color;
+        ctx.globalAlpha=.22;
+        ctx.beginPath();
+        for(const {from,to} of [...routes.values()].sort((a,b)=>b.w-a.w).slice(0,9)){
+          ctx.moveTo(from.x,from.y);
+          ctx.quadraticCurveTo((from.x+to.x)/2-(to.y-from.y)*.12,(from.y+to.y)/2+(to.x-from.x)*.12,to.x,to.y);
         }
+        ctx.stroke();
+        return;
+      }
+      stroke(bridges,getComputedStyle(canvas).color,.10);
+      for(const [color,edges] of communityStrands){
+        if(!strandColors.has(color)){
+          strandColors.set(color,getComputedStyle(visual.get(edges[0].a).halo).fill);
+        }
+        stroke(edges,strandColors.get(color),.40);
+      }
+    }
+    function regionOverview(){
+      return !picked&&regions.length>0&&zoom<=overviewZoom*1.15;
+    }
+    function updateRegions(){
+      const overview=regionOverview(),boxes=[];
+      for(const region of regions){
+        region.wash.style.display=picked?"none":"";
+        const size=21*typeScale/zoom;
+        const width=region.label.textContent.length*size*.59;
+        const box={left:region.x-width/2,right:region.x+width/2,top:region.y-size,bottom:region.y+size};
+        const show=overview&&!boxes.some(b=>b.left<box.right&&box.left<b.right&&b.top<box.bottom&&box.top<b.bottom);
+        region.label.style.display=show?"":"none";
+        region.label.setAttribute("font-size",size);
+        region.label.setAttribute("stroke-width",size*.27);
+        if(show)boxes.push(box);
+      }
+    }
+    function updateFocusEdges(){
+      for(const [tag,edge] of focusEdges){
+        const from=position(at.get(picked)),to=position(at.get(tag));
+        const dx=to.x-from.x,dy=to.y-from.y;
+        const cx=from.x+dx*.62,cy=from.y+dy*.24;
+        const path="M "+from.x+" "+from.y+" Q "+cx+" "+cy+" "+to.x+" "+to.y;
+        const strength=associationStrength(tag,shared.get(tag));
+        edge.line.setAttribute("d",path);edge.hit.setAttribute("d",path);
+        edge.line.setAttribute("stroke-width",1.25+5.5*strength);
+        edge.line.setAttribute("stroke-opacity",activePair===tag?1:.42+.48*strength);
+        edge.caption.setAttribute("x",.04*from.x+.32*cx+.64*to.x);
+        edge.caption.setAttribute("y",.04*from.y+.32*cy+.64*to.y-10*typeScale/zoom);
+        edge.caption.setAttribute("font-size",13*typeScale/zoom);
+        edge.caption.setAttribute("stroke-width",3*typeScale/zoom);
       }
     }
     const nodeGeometry=n=>{
       const v=visual.get(n.tag);if(!v)return;
-      const p=position(n),r=radius(n),sz=labelSize(n);
+      const p=position(n),r=radius(n)*(regionOverview()?.43:1),sz=labelSize(n);
       v.g.setAttribute("transform","translate("+p.x+" "+p.y+")");
       v.hit.setAttribute("r",Math.max(9/zoom,r));v.core.setAttribute("r",r);v.halo.setAttribute("r",r*1.34);
       v.ring.setAttribute("r",r+3/zoom);
       v.number.setAttribute("font-size",13*typeScale/zoom);
       v.number.setAttribute("stroke-width",1.2/zoom);
-      v.label.setAttribute("x",p.x+r+6/zoom);v.label.setAttribute("y",p.y+sz*.32);
+      const anchor=n.tag===picked?"end":"start";
+      v.label.setAttribute("text-anchor",anchor);
+      v.label.setAttribute("x",p.x+(anchor==="end"?-1:1)*(r+6/zoom));
+      v.label.setAttribute("y",p.y+sz*.32);
       v.label.setAttribute("font-size",sz);v.label.setAttribute("stroke-width",Math.max(sz*.28,2/zoom));
       v.ripple.setAttribute("r",r+4/zoom+(pulse?.tag===n.tag?pulse.amount*13/zoom:0));
     };
@@ -630,6 +700,10 @@ const CaptionStudioViz = (() => {
       if(!changed){for(const n of at.values())nodeGeometry(n);}
       else for(const tag of changed){const n=at.get(tag);if(n)nodeGeometry(n);}
       drawStrands();
+      updateRegions();
+      updateFocusEdges();
+      const overview=regionOverview();
+      for(const n of labelOrder)visual.get(n.tag).number.style.display=overview?"none":"";
       placeLabels();
     };
     function createNode(n){
@@ -664,24 +738,30 @@ const CaptionStudioViz = (() => {
     }
     for(const n of nodes)createNode(n);
     function relationMap(tag){return adjacency.get(tag)||new Map();}
-    function removeRare(){
-      if(!rare)return;
-      const v=visual.get(rare.tag);v?.g.remove();v?.label.remove();v?.grad.remove();
-      visual.delete(rare.tag);at.delete(rare.tag);adjacency.delete(rare.tag);rare=null;
+    function clearTemporaryTags(keep){
+      for(const tag of temporaryTags){
+        if(tag===keep)continue;
+        const v=visual.get(tag);
+        v.g.remove();v.label.remove();v.grad.remove();
+        visual.delete(tag);at.delete(tag);temporaryTags.delete(tag);
+      }
     }
     function ensureTag(tag){
       if(at.has(tag))return at.get(tag);
       const entry=all.get(tag);if(!entry)return null;
-      removeRare();
-      const related=options.relationsForTag?.(tag)||new Map();
-      const links=new Map([...related].filter(([key])=>at.has(key)));
-      let x=500+pan.x,y=350+pan.y;
-      const nearest=[...links].sort((a,b)=>b[1]-a[1])[0];
-      if(nearest){const n=at.get(nearest[0]);x=n.x+45;y=n.y+35;}
-      rare={...entry,links:links.size,x,y,ox:0,oy:0,color:model.colors.get(tag)||"var(--accent-text)"};
-      at.set(tag,rare);adjacency.set(tag,links);createNode(rare);return rare;
+      const n={...entry,x:500,y:350,ox:0,oy:0,color:model.colors.get(tag)||"var(--accent-text)"};
+      at.set(tag,n);temporaryTags.add(tag);createNode(n);
+      return n;
     }
     function placeLabels(){
+      if(regionOverview()){
+        for(const n of labelOrder)visual.get(n.tag).label.setAttribute("visibility","hidden");
+        return;
+      }
+      if(picked){
+        for(const n of labelOrder)visual.get(n.tag).label.setAttribute("visibility","visible");
+        return;
+      }
       const boxes=[];
       const discs=labelOrder.map(n=>({...position(n),r:radius(n),tag:n.tag}));
       for(const n of labelOrder){
@@ -698,7 +778,7 @@ const CaptionStudioViz = (() => {
           if(score<bestScore){best={box,left,y};bestScore=score;}
           if(!score)break;
         }
-        const show=!!picked||bestScore===0||n===labelOrder[0];
+        const show=bestScore===0||n===labelOrder[0];
         if(show){
           v.label.setAttribute("x",best.left);v.label.setAttribute("y",best.y+sz*.32);
           boxes.push(best.box);
@@ -707,7 +787,7 @@ const CaptionStudioViz = (() => {
       }
     }
     function updateAppearance(){
-      const focus=picked,neighbors=relationMap(focus);
+      const focus=picked,neighbors=shared;
       labelOrder=picked?[...focusPositions.keys()].map(tag=>at.get(tag)):nodes;
       for(const n of at.values()){
         const v=visual.get(n.tag),selected=n.tag===picked,related=!focus||focusPositions.has(n.tag);
@@ -733,30 +813,95 @@ const CaptionStudioViz = (() => {
       head.style.color=n.color;
       html("strong","",n.tag,head);
       html("span","",String(n.count),head);
+      if(!shared.size)html("div","studio-tb-pair-empty","No co-occurring tags",spotlight);
+      if(activePair)renderPairPreview();
+      if(shared.size>8)button(spotlight,expanded?"Show fewer connections":"Show more connections",
+        expanded?"Show fewer connections":"Show more connections",()=>{
+          expanded=!expanded;layoutNeighborhood();renderPanel();updateAppearance();
+          spotlight.querySelector("button")?.focus({preventScroll:true});
+        }).className="studio-tb-pair-action";
       const list=html("ul","",undefined,spotlight);
       for(const [tag,w] of shared){
         const item=html("li","",undefined,list);
         const b=button(item,tag,"Focus "+tag,()=>choose(tag));b.style.color=at.get(tag)?.color||"";
-        html("span","",String(w),item);
+        const pair=button(item,String(w),"Preview "+w+" shared images with "+tag,()=>inspectPair(tag));
+        pair.className="studio-tb-pair-count-button";
       }
+    }
+    function renderPairPreview(){
+      const matches=options.previewPair?.(picked,activePair)||[];
+      const preview=html("section","studio-tb-pair-preview",undefined,spotlight);
+      html("strong","",picked+" + "+activePair,preview);
+      const count=shared.get(activePair);
+      html("div","studio-tb-pair-count",count+(count===1?" shared image":" shared images"),preview);
+      const tiles=html("div","studio-tb-pair-thumbs",undefined,preview);
+      for(const {src,name} of matches){
+        const img=html("img","",undefined,tiles);
+        img.src=src;img.alt=name;img.title=name;img.decoding="async";
+      }
+      if(options.openPair)button(preview,"Open in Waterfall","Open shared images in Waterfall",
+        ()=>options.openPair(picked,activePair)).className="studio-tb-pair-action";
+    }
+    function inspectPair(tag){
+      const fromPanel=spotlight.contains(document.activeElement);
+      activePair=tag;
+      renderPanel();spotlight.scrollTop=0;updateFocusEdges();
+      if(fromPanel)spotlight.querySelector(".studio-tb-pair-preview button")?.focus({preventScroll:true});
+    }
+    function associationStrength(tag,count){
+      const baseline=all.get(tag).count/Math.max(1,model.imageCount||maxCount);
+      const lift=count/(at.get(picked).count*baseline);
+      // Shrink isolated coincidences before ranking or sizing a line.
+      const logLift=Math.log1p(lift);
+      return count/(count+2)*logLift/(1+logLift);
+    }
+    function layoutNeighborhood(){
+      focusPositions.clear();focusEdges.clear();edgeLayer.replaceChildren();
+      clearTemporaryTags(picked);
+      if(!picked)return;
+      const limit=expanded?12:8;
+      const peers=[...shared.keys()].slice(0,limit);
+      const step=Math.min(70,510/Math.max(1,peers.length-1));
+      focusPositions.set(picked,{x:350,y:350});
+      peers.forEach((tag,i)=>{
+        const n=ensureTag(tag);
+        if(!n)return;
+        focusPositions.set(tag,{x:650,y:350+(i-(peers.length-1)/2)*step});
+        const count=shared.get(tag);
+        const control=make("g",{role:"button",tabindex:0,class:"studio-tb-pair-edge",
+          "aria-label":picked+" and "+tag+", "+count+(count===1?" shared image":" shared images")},edgeLayer);
+        const line=make("path",{fill:"none",stroke:n.color,"vector-effect":"non-scaling-stroke","pointer-events":"none"},control);
+        const hit=make("path",{fill:"none",stroke:"transparent","stroke-width":16,
+          "vector-effect":"non-scaling-stroke","pointer-events":"stroke"},control);
+        const caption=make("text",{"text-anchor":"middle",fill:"var(--text-primary)",stroke:"var(--bg-deep)",
+          "paint-order":"stroke","font-weight":750,"pointer-events":"none","aria-hidden":"true"},control);
+        caption.textContent=count;
+        control.addEventListener("click",()=>inspectPair(tag));
+        control.addEventListener("keydown",event=>{
+          if(event.key!=="Enter"&&event.key!==" ")return;
+          event.preventDefault();inspectPair(tag);
+        });
+        focusEdges.set(tag,{line,hit,caption});
+      });
     }
     function selectNeighborhood(tag){
       if(!picked&&tag)overviewCamera={zoom,pan:{...pan}};
-      camera=null;focusPositions.clear();picked=tag;shared=new Map([...relationMap(tag)].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0])));
+      camera=null;picked=tag;activePair=null;expanded=false;
       if(tag){
-        const peers=[...shared].slice(0,8);
-        focusPositions.set(tag,{x:360,y:300});
-        peers.forEach(([peer],i)=>focusPositions.set(peer,{x:590,y:350+(i-(peers.length-1)/2)*70}));
+        const related=options.relationsForTag?.(tag)||relationMap(tag);
+        shared=new Map([...related].filter(([peer])=>peer!==tag&&all.has(peer))
+          .sort((a,b)=>associationStrength(b[0],b[1])-associationStrength(a[0],a[1])
+            ||b[1]-a[1]||a[0].localeCompare(b[0])));
         zoom=1;pan={x:0,y:0};
-      }else if(overviewCamera){
-        zoom=overviewCamera.zoom;pan=overviewCamera.pan;overviewCamera=null;
+      }else{
+        shared=new Map();
+        if(overviewCamera){zoom=overviewCamera.zoom;pan=overviewCamera.pan;overviewCamera=null;}
       }
-      view();renderPanel();updateAppearance();
+      layoutNeighborhood();view();renderPanel();updateAppearance();
     }
     function choose(tag,toggle=true){
       if(tag&&toggle&&tag===picked)tag=null;
       if(tag&&!ensureTag(tag))return;
-      if(rare&&rare.tag!==tag)removeRare();
       if(pulse){visual.get(pulse.tag)?.ripple.setAttribute("opacity","0");pulse=null;}
       selectNeighborhood(tag);
       onPick?.(picked);
@@ -781,7 +926,8 @@ const CaptionStudioViz = (() => {
     function fit(animate=true){
       const values=[...at.values()],minX=Math.min(...values.map(n=>n.x))-80,maxX=Math.max(...values.map(n=>n.x))+130;
       const minY=Math.min(...values.map(n=>n.y))-80,maxY=Math.max(...values.map(n=>n.y))+80;
-      cameraTo(Math.min(1.6,1000/(maxX-minX),700/(maxY-minY)),{x:(minX+maxX)/2-500,y:(minY+maxY)/2-350},animate);
+      overviewZoom=Math.min(1.6,1000/(maxX-minX),700/(maxY-minY));
+      cameraTo(overviewZoom,{x:(minX+maxX)/2-500,y:(minY+maxY)/2-350},animate);
     }
     function zoomBy(factor,e=null){
       const next=Math.min(5,Math.max(.35,zoom*factor));
@@ -831,7 +977,7 @@ const CaptionStudioViz = (() => {
       if(camera||settling||pulse)wake();
     }
     svg.addEventListener("pointerdown",e=>{
-      if(e.button!==0||e.target.closest(".studio-tb-orb"))return;
+      if(e.button!==0||e.target.closest(".studio-tb-orb,.studio-tb-pair-edge"))return;
       dismissMenu();cancelMotion();const p=point(e);
       drag={kind:"pan",x:e.clientX,y:e.clientY,world:p,px:pan.x,py:pan.y,moved:false};
       svg.setPointerCapture(e.pointerId);

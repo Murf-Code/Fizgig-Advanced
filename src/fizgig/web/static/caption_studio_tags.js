@@ -60,7 +60,10 @@ const CaptionStudioTags = (() => {
       }
       if (!token || token === ")" || token === "AND" || token === "OR" || token === "NOT")
         throw new Error("Expected a tag");
-      const stripped = token.replace(/^['"]|['"]$/g, "").replace(/\\"/g, '"');
+      let stripped = token.replace(/^['"]|['"]$/g, "").replace(/\\"/g, '"');
+      if(token.startsWith('"')){
+        try{stripped=JSON.parse(token);}catch{/* Accept legacy quoted search terms. */}
+      }
       if (!stripped.trim()) throw new Error("Empty tag");
       const key = stripped.toLocaleLowerCase();
       return have => have.has(key);

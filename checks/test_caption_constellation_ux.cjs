@@ -17,6 +17,6 @@ console.log("Constellation UX integration checks passed");
 assert.match(graph,/ctx\.quadraticCurveTo/);
 assert.match(graph,/setAttribute\("visibility",show/);
 assert.match(graph,/prefs\.glassNodes\?/);
-assert.match(graph,/html\("span","",String\(w\),item\)/);
+assert.match(graph,/button\(item,String\(w\),"Preview "/);
 assert.doesNotMatch(graph,/hovered|g\.addEventListener\("(pointerenter|pointerleave|mouseover|focus|blur)"/);
 assert.match(graph,/stroke\(edges,strandColors\.get\(color\)/);

@@ -16323,6 +16323,18 @@ function renderCaptionStudio(host,items,ext){
           categoryState.generatedColors=model.colors;
           // The Image Tags palette is derived from this same model on return.
           S.cap.studioExploreNeedRedraw=true;
+          let indexedTag=null,matchingRows=[];
+          const rowsForTag=tag=>{
+            if(indexedTag===tag)return matchingRows;
+            indexedTag=tag;
+            matchingRows=[];
+            for(const it of datasetItems){
+              if(studioCaptionMode(it)!=="tags")continue;
+              const tags=new Set(studioTokens(it.caption,"tags").map(t=>t.trim().toLocaleLowerCase()));
+              if(tags.has(tag))matchingRows.push({it,tags});
+            }
+            return matchingRows;
+          };
           const network=CaptionStudioViz.tagbenchConstellation(model,tag=>{
 
           S.cap.studioExplorePickedTag=tag;
@@ -16349,16 +16361,24 @@ function renderCaptionStudio(host,items,ext){
           },S.cap.studioExplorePickedTag||null,{
             preferences:S.cap.studioConstellationPrefs,
             relationsForTag:tag=>{
-              // Rare tags are searched on demand. Keep the worker's main
-              // graph bounded at 120 nodes rather than storing all pairs.
-              const related=new Map(),visible=new Set(model.nodes.map(n=>n.tag));
-              for(const it of datasetItems){
-                if(studioCaptionMode(it)!=="tags")continue;
-                const tags=new Set(studioTokens(it.caption,"tags").map(t=>t.toLocaleLowerCase()));
-                if(!tags.has(tag))continue;
-                for(const t of tags)if(t!==tag&&visible.has(t))related.set(t,(related.get(t)||0)+1);
-              }
+              const related=new Map();
+              for(const {tags} of rowsForTag(tag))
+                for(const peer of tags)if(peer!==tag)related.set(peer,(related.get(peer)||0)+1);
               return related;
+            },
+            previewPair:(tag,peer)=>rowsForTag(tag).filter(row=>row.tags.has(peer))
+              .slice(0,4).map(({it})=>({src:thumbUrl(it),name:it.name})),
+            openPair:(tag,peer)=>{
+              // The graph measures the whole dataset. Use the same scope
+              // in Waterfall and carry the pair into the normal tag query.
+              $("capSearch").value="";
+              $("capFilter").value="all";
+              S.cap.studioLearningFilter="all";
+              S.cap.studioQuery=CaptionStudioTags.addFilter(JSON.stringify(tag),peer);
+              S.cap.studioExploreMode="waterfall";
+              S.cap.studioExploreNeedRedraw=true;
+              S.cap.studioThumbScrollTop=0;S.cap.page=0;
+              renderCaptions();
             },
             onNavigate:(mode,tag)=>{
               S.cap.studioQuery=JSON.stringify(tag);
