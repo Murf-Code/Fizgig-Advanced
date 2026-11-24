@@ -1308,6 +1308,7 @@ def _state_flags(st):
 RECLAIM_PREF_DEFAULTS = {"auto_reclaim_vram": "1", "reclaim_slowdown": "1.5", "reclaim_slow_steps": "20",
                          "reclaim_warmup_steps": "50", "reclaim_min_free_gb": "0.1", "reclaim_cooldown": "200",
                          "reclaim_max_tries": "3", "send_only_block_swap": "1", "send_only_force": "0",
+                         "send_only_strategy": "default",
                          "vram_margin_gb": "1.5", "background_loading": "1"}
 RECLAIM_SETTINGS = (
     ("reclaim_slowdown", "--reclaim_slowdown", 1.5, float),
@@ -1330,6 +1331,9 @@ def clean_reclaim_prefs(changes):
     for tick in ("auto_reclaim_vram", "send_only_block_swap", "send_only_force", "background_loading"):
         if tick in ch:
             ch[tick] = "1" if ch[tick] in (True, "1", 1, "true", "True") else "0"
+    if "send_only_strategy" in ch:
+        from fizgig.krea2.stream_strategy import clean_stream_strategy
+        ch["send_only_strategy"] = clean_stream_strategy(ch["send_only_strategy"])
     if "vram_margin_gb" in ch:                 # the Auto plan's safety margin: 0 to 8 GB, blank = 1.5
         raw = str(ch["vram_margin_gb"] if ch["vram_margin_gb"] is not None else "").strip()
         if not raw:
@@ -1373,7 +1377,15 @@ def send_only_flags(prefs):
         return not (v is False or str(v).strip().lower() in ("false", "0", "off", "no", ""))
     if not tick("send_only_block_swap", "1"):
         return ["--no-send_only_swap"]
-    return ["--send_only_force"] if tick("send_only_force", "0") else []
+    flags = ["--send_only_force"] if tick("send_only_force", "0") else []
+    from fizgig.krea2.stream_strategy import clean_stream_strategy
+    try:
+        strategy = clean_stream_strategy((prefs or {}).get("send_only_strategy"))
+    except ValueError:
+        strategy = "default"  # old or corrupted preference: keep the established default
+    if strategy != "default":
+        flags += ["--send_only_strategy", strategy]
+    return flags
 
 
 def background_loading_flags(prefs):
