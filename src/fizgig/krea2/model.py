@@ -388,7 +388,10 @@ class SingleStreamDiT(nn.Module):
         # previews); a replaced offloader's stale hooks otherwise fire alongside the
         # new ones on the next backward -> "mat2 is on cpu" / exploding loss.
         _off = getattr(self, "offloader", None)
-        if _off is not None and hasattr(_off, "remove_hooks"):
+        if _off is not None and hasattr(_off, "retire"):
+            _off.retire()
+        elif _off is not None and hasattr(_off, "remove_hooks"):
+            _off.set_forward_only(True)  # settle outstanding classic transfers
             _off.remove_hooks()
 
         self.blocks_to_swap = num_blocks
