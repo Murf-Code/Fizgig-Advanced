@@ -1513,7 +1513,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                  best_checkpoint_min_delta=0.005,
                  auto_reclaim_vram=True, reclaim_slowdown=1.5, reclaim_slow_steps=20, reclaim_warmup_steps=50,
                  reclaim_min_free_gb=vram_reclaim.RECLAIM_FREE_GB, reclaim_cooldown=200, reclaim_max_tries=3,
-                 send_only_swap=True, send_only_force=False, background_loading=True,
+                 send_only_swap=True, send_only_force=False, background_loading=True, send_only_strategy="default",
                  training_maps=False, training_maps_images=3,
                  trigger_word=None, trigger_position="start", recaption_triggers=None, recaption_instruction=None,
                  recaption_instruction_detailed=None, recaption_task=None, recaption_task_detailed=None,
@@ -2318,6 +2318,14 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     else:
         send_only = send_only_plan(send_only_swap, blocks_to_swap, precision, gradient_checkpointing, gc_off_blocks,
                                    finetune, wont_help="" if send_only_force else send_only_wont_help(blocks_to_swap, _mp))
+    from fizgig.krea2.stream_strategy import clean_stream_strategy
+    strategy = clean_stream_strategy(send_only_strategy)
+    # Never apply a diagnostic-derived experiment to Global Replay or an incompatible family.
+    driver.stream_strategy = strategy if (send_only and not global_replay and not finetune
+        and getattr(driver, "send_only_block_swap", False)) else "default"
+    if strategy != "default":
+        logger.info("[block swap] requested strategy=%s; training strategy=%s (memory preflight still applies)",
+                    strategy, driver.stream_strategy)
     dit, swapped = quant.load_base(driver, dit_path, device, precision, blocks_to_swap, send_only=send_only)
     if int8_rotated_backward:            # experimental, opt-in (modules/int8_train.py): an INT8 backward too
         from fizgig.modules import int8_train as _i8
@@ -2847,6 +2855,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     "torch_compile": bool(do_compile), "compiled_checkpoint_outside": do_compile == "outside",
                     "max_grad_norm": float(max_grad_norm), "background_loading": bool(_bg),
                     "send_only_swap": bool(send_only_swap), "send_only_force": bool(send_only_force),
+                    "send_only_strategy": send_only_strategy,
                     "caption_dropout": float(caption_dropout),
                 },
                 "data": {
@@ -4603,6 +4612,9 @@ def setup_parser():
                    help="early stop: checks in a row without a better validation loss before the run stops")
     p.add_argument("--validation_min_delta", type=float, default=0.001,
                    help="early stop: what counts as better - below the best by more than this fraction of it")
+    from fizgig.krea2.stream_strategy import STREAM_STRATEGIES
+    p.add_argument("--send_only_strategy", choices=STREAM_STRATEGIES, default="default",
+                   help="Experimental training-only H2D strategy; existing compatibility and host memory guards remain active")
     p.add_argument("--send_only_force", action="store_true",
                    help="faster block swap even where it won't help (low system RAM, few blocks, big pictures)")
     p.add_argument("--background_loading", action=argparse.BooleanOptionalAction, default=True,
@@ -4843,7 +4855,7 @@ def main():
         best_checkpoint_cooldown=a.best_checkpoint_cooldown, best_checkpoint_min_delta=a.best_checkpoint_min_delta,
         auto_reclaim_vram=a.auto_reclaim_vram, reclaim_slowdown=a.reclaim_slowdown, send_only_swap=a.send_only_swap,
         background_loading=a.background_loading,
-        send_only_force=a.send_only_force,
+        send_only_force=a.send_only_force, send_only_strategy=a.send_only_strategy,
         reclaim_slow_steps=a.reclaim_slow_steps, reclaim_warmup_steps=a.reclaim_warmup_steps,
         reclaim_min_free_gb=a.reclaim_min_free_gb, reclaim_cooldown=a.reclaim_cooldown,
         reclaim_max_tries=a.reclaim_max_tries,
