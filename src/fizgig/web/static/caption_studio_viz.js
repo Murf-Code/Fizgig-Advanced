@@ -476,11 +476,19 @@ const CaptionStudioViz = (() => {
         }
         return segments;
       });
-    return {x,y,spread:Math.max(45,...rows.map(n=>Math.hypot(n.x-x,n.y-y)+45)),contours};
+    return {x,y,spread:Math.max(45,...rows.map(n=>Math.hypot(n.x-x,n.y-y)+45)),contours,
+      density:{left,top,step,nx,ny,grid,peak}};
   }
   // Event-driven cache: at most two contour rebuilds per second per moving
   // community. A stationary/released community gets one exact final rebuild.
   // Pan, zoom, theme changes and preview slides never invalidate geometry.
+  // Smooth, translucent paint sampled from exactly the same field as
+  // the contour lines. Keep a soft fringe beyond the outer contour.
+  function auraPaintAlpha(value,peak){
+    if(!(peak>0)||!(value>0))return 0;
+    const t=Math.min(1,value/peak);
+    return Math.round(255*Math.pow(t,.70));
+  }
   function auraCache(initial,rows,maxCount,interval=500){
     const capture=nodes=>nodes.map(n=>({tag:n.tag,count:n.count,x:n.x,y:n.y}));
     let previous=capture(rows),field=initial,last=-Infinity;
@@ -508,9 +516,9 @@ const CaptionStudioViz = (() => {
       const x=rows.reduce((sum,n)=>sum+n.x,0)/rows.length;
       const y=rows.reduce((sum,n)=>sum+n.y,0)/rows.length;
       const count=rows.reduce((sum,n)=>sum+n.count,0);
-      const {contours,spread}=auraDensity(rows,maxCount);
+      const {contours,spread,density}=auraDensity(rows,maxCount);
       return {id,x,y,count,label:rows[0].tag,tags:rows.map(n=>n.tag),color:rows[0].color,
-        spread,contours};
+        spread,contours,density};
     });
     const byTag=new Map(nodes.map(n=>[n.tag,n]));
     const unmapped=Math.max(0,all.length-nodes.length);
@@ -1043,7 +1051,28 @@ const CaptionStudioViz = (() => {
       // Seed with the worker result; only moved communities rebuild.
       const field=original.length===c.tags.length?c:auraDensity(original,maxCount);
       auraStates.set(c.id,{nodes:original,field,paths:makeContourPaths(field),
-        update:auraCache(field,original,maxCount)});
+        paint:null,paintField:null,paintColor:null,update:auraCache(field,original,maxCount)});
+    }
+    // Tiny reusable world-space textures (at most 100x100 per community).
+    // No pixel reads, fullscreen blur, extra animation loop or GPU dependency.
+    function auraPaint(state,color){
+      const field=state.field,d=field.density;
+      if(!d||!d.peak)return null;
+      if(state.paint&&state.paintField===field&&state.paintColor===color)return state.paint;
+      const paint=state.paint||document.createElement("canvas");
+      if(paint.width!==d.nx)paint.width=d.nx;
+      if(paint.height!==d.ny)paint.height=d.ny;
+      const layer=paint.getContext("2d");
+      if(!layer)return null;
+      const mask=layer.createImageData(d.nx,d.ny);
+      for(let i=0;i<d.grid.length;i++)mask.data[i*4+3]=auraPaintAlpha(d.grid[i],d.peak);
+      layer.globalCompositeOperation="source-over";
+      layer.putImageData(mask,0,0);
+      layer.globalCompositeOperation="source-in";
+      layer.fillStyle=color;layer.fillRect(0,0,d.nx,d.ny);
+      layer.globalCompositeOperation="source-over";
+      state.paint=paint;state.paintField=field;state.paintColor=color;
+      return paint;
     }
     function drawStrands(){
       const width=svg.clientWidth,height=svg.clientHeight;
@@ -1055,10 +1084,13 @@ const CaptionStudioViz = (() => {
       const scale=Math.min(width/1000,height/700)*zoom*ratio;
       ctx.setTransform(scale,0,0,scale,w/2-(500+pan.x)*scale,h/2-(350+pan.y)*scale);
       if(packed)return;
-      // Keep the existing rendering lifecycle; no timer or idle animation.
+      // Paint all translucent density fields before drawing their contours.
+      // Additive premultiplied color is order-independent: blue and pink
+      // produce violet, yellow and cyan produce greenish mixtures, etc.
+      // The low opacity prevents overlapping fields from blowing out.
       if(!picked&&prefs.celestial){
         const moving=!!((drag?.kind==="node"&&drag.moved)||settling);
-        const now=performance.now();
+        const now=performance.now(),regions=[];
         for(const c of atlas.clusters){
           if(c.unmapped)continue;
           const anchor=visual.get(c.tags[0]),state=auraStates.get(c.id);
@@ -1068,11 +1100,29 @@ const CaptionStudioViz = (() => {
           if(field!==state.field){
             state.field=field;state.paths=makeContourPaths(field);
           }
-          const color=getComputedStyle(anchor.halo).fill;
-          const gradient=ctx.createRadialGradient(field.x,field.y,0,field.x,field.y,field.spread);
-          gradient.addColorStop(0,color);gradient.addColorStop(1,"transparent");
-          ctx.globalAlpha=.15;ctx.fillStyle=gradient;ctx.beginPath();
-          ctx.arc(field.x,field.y,field.spread,0,Math.PI*2);ctx.fill();
+          if(!state.color)state.color=getComputedStyle(anchor.halo).fill;
+          regions.push({state,field,color:state.color});
+        }
+        ctx.save();
+        ctx.globalCompositeOperation="lighter";
+        ctx.globalAlpha=.26;
+        ctx.imageSmoothingEnabled=true;
+        ctx.imageSmoothingQuality="medium";
+        for(const {state,field,color} of regions){
+          const paint=auraPaint(state,color),d=field.density;
+          if(paint&&d){
+            // The raster samples are centered on the density grid points.
+            ctx.drawImage(paint,d.left-d.step/2,d.top-d.step/2,d.nx*d.step,d.ny*d.step);
+          }else{
+            const gradient=ctx.createRadialGradient(field.x,field.y,0,field.x,field.y,field.spread);
+            gradient.addColorStop(0,color);gradient.addColorStop(1,"transparent");
+            ctx.fillStyle=gradient;ctx.beginPath();ctx.arc(field.x,field.y,field.spread,0,Math.PI*2);ctx.fill();
+          }
+        }
+        ctx.restore();
+        // Crisp community-colored topography and graph strands must not be
+        // included in the paint blend. The effect is purely decorative.
+        for(const {state,field,color} of regions){
           ctx.strokeStyle=color;ctx.lineWidth=ratio/scale;
           field.contours.forEach((segments,i)=>{
             ctx.globalAlpha=.16+i*.075;
@@ -1858,7 +1908,7 @@ const CaptionStudioViz = (() => {
       if(scale>0){typeScale=Math.max(.8,Math.min(1.7,1/scale));updateGeometry();}
     });
     resize.observe(stage);
-    const theme=new MutationObserver(()=>{strandColors.clear();drawStrands();});
+    const theme=new MutationObserver(()=>{strandColors.clear();for(const state of auraStates.values())state.color=null;drawStrands();});
     theme.observe(document.documentElement,{attributes:true,attributeFilter:["class","data-theme","style"]});
     stage.dispose=()=>{disposed=true;stopCoverTimer();document.removeEventListener?.("visibilitychange",visibilityChanged);
       media?.removeEventListener?.("change",visibilityChanged);removeCollection(false);resize.disconnect();theme.disconnect();
@@ -1897,7 +1947,7 @@ const CaptionStudioViz = (() => {
     return stage;
   }
 
-  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings,tagDirection,tagArrow,auraDensity,auraCache});
+  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings,tagDirection,tagArrow,auraDensity,auraCache,auraPaintAlpha});
 })();
 // A classic WebWorker can import this existing pure graph implementation
 // without maintaining a second constellation algorithm.

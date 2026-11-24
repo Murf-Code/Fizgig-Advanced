@@ -79,3 +79,15 @@ assert.ok(finalAura.spread>secondAura.spread);
 assert.ok(JSON.stringify(finalAura.contours)!==JSON.stringify(secondAura.contours));
 assert.equal(cached(finalNodes,9000,false),finalAura);
 console.log("Dynamic aura geometry, 500ms throttle, final refresh and idle cache passed");
+
+const paintField=Viz.auraDensity([{tag:"a",count:4,x:0,y:0},{tag:"b",count:4,x:30,y:0}],4);
+assert.ok(paintField.density.grid instanceof Float32Array);
+assert.ok(paintField.density.nx<=100&&paintField.density.ny<=100);
+assert.equal(Viz.auraPaintAlpha(0,1),0);
+assert.equal(Viz.auraPaintAlpha(1,1),255);
+assert.equal(Viz.auraPaintAlpha(1,0),0);
+assert.ok(Viz.auraPaintAlpha(.1,1)>0);
+assert.ok(Viz.auraPaintAlpha(.1,1)<Viz.auraPaintAlpha(.5,1));
+assert.ok(Viz.auraPaintAlpha(.5,1)<255);
+assert.ok(clustered.atlas.clusters.every(c=>c.unmapped||c.density.grid.length===c.density.nx*c.density.ny));
+console.log("Bounded paint textures and smooth density alpha passed");
