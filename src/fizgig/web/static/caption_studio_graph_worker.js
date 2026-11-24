@@ -4,8 +4,9 @@
 importScripts("/caption_studio_viz.js");
 self.onmessage=event=>{
   try{
-    const {items,categories}=event.data||{};
-    const model=self.CaptionStudioViz.tagbenchModel(items||[],categories||{});
+    const {items,categories,lossGroups}=event.data||{};
+    const model=lossGroups?self.CaptionStudioViz.summarizeAtlasLoss(items||[],lossGroups):
+      self.CaptionStudioViz.tagbenchModel(items||[],categories||{});
     self.postMessage({model});
   }catch(error){
     self.postMessage({error:String(error?.message||error)});

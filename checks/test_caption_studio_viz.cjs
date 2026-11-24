@@ -324,3 +324,27 @@ assert.equal(covers.coverSamples.get("common")[0],0);
 assert.equal(covers.coverSamples.has("only_0"),false);
 assert.deepEqual(covers.coverSamples,Viz.tagbenchModel(Array.from({length:200},(_,i)=>({tags:["common","only_"+i],coverIndex:i}))).coverSamples);
 console.log("Bounded deterministic slideshow samples passed");
+
+const loss=Viz.summarizeAtlasLoss([
+  {tags:["lion","lion","mane"],recent:2,verdict:"stuck"},
+  {tags:["lion"],recent:0},
+  {tags:["fox"],recent:-1,verdict:"suspect"},
+  {tags:["lion"],recent:null},
+  {tags:["lion"],recent:NaN}
+],[{id:0,memberTags:["lion","mane"]},{id:1,memberTags:["fox"]}]);
+assert.equal(loss.tags.get("lion").measured,2);
+assert.equal(loss.tags.get("lion").mean,1);
+assert.equal(loss.tags.get("lion").stuck,1);
+assert.equal(loss.communities.get(0).measured,2);
+assert.equal(loss.communities.get(0).mean,1);
+assert.equal(loss.baseline.measured,3);
+assert.equal(loss.baseline.mean,1/3);
+assert.equal(Viz.lossTone(loss.tags.get("lion"),loss.baseline),"var(--text-muted)");
+assert.equal(Viz.lossTone({measured:3,mean:2},loss.baseline),"var(--danger)");
+assert.equal(Viz.lossTone({measured:3,mean:-1},loss.baseline),"var(--data-teal)");
+const warningModel=Viz.tagbenchModel([{tags:["blue eyes","blue eyes","blue_eyes","lion"]},{tags:["blue-eyes","lion"]}]);
+assert.equal(warningModel.warnings.get("blue eyes").duplicates,1);
+assert.equal(warningModel.warnings.get("blue eyes").variantCount,2);
+assert.equal(warningModel.warnings.has("lion"),false);
+assert.equal(warningModel.atlas.clusters.reduce((sum,c)=>sum+c.imageCount,0)>=2,true);
+console.log("Loss aggregation, no double counting, low-sample caution and caption warnings passed");

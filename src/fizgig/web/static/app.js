@@ -12257,6 +12257,7 @@ function captionLearningDecorate(tile,item) {
 function captionLearningUpdateMounted() {
   const host=$("captionsGrid");
   if(!host?.classList.contains("studio-host"))return;
+  host.querySelector(".studio-tb-constellation")?.refreshLearning?.();
   const byPath=new Map((S.cap.items||[])
     .map(it=>[CaptionStudioLearning.pathKey(it.path),it]));
   for(const tile of host.querySelectorAll(".studio-thumb-rail .studio-file[data-path], .studio-tb-flow-tile[data-path]")) {
@@ -13669,13 +13670,13 @@ function captionConfirmRemoval({title,detail,items=[],tagCounts=[],confirmLabel=
 // Constellation layout is O(nodes²) over many iterations. Keep those
 // computations off the browser UI thread so typing, scrolling and navigation
 // remain responsive while the exact same TagBench graph is calculated.
-function captionGraphModelAsync(items,categories) {
+function captionGraphModelAsync(items,categories,lossGroups=null) {
   // Off-main-thread TagBench layout; cancellation ends the worker when the
   // user switches away. In older browsers, retain a safe synchronous fallback.
   if(typeof Worker==="undefined"){
     let canceled=false;
     const task=Promise.resolve().then(()=>
-      canceled?null:CaptionStudioViz.tagbenchModel(items,categories));
+      canceled?null:lossGroups?CaptionStudioViz.summarizeAtlasLoss(items,lossGroups):CaptionStudioViz.tagbenchModel(items,categories));
     task.cancel=()=>{canceled=true;};
     return task;
   }
@@ -13697,7 +13698,7 @@ function captionGraphModelAsync(items,categories) {
       else finish(event.data?.model);
     };
     worker.onerror=event=>finish(null,new Error(event.message||"Constellation worker failed"));
-    try{worker.postMessage({items,categories});}
+    try{worker.postMessage({items,categories,lossGroups});}
     catch(error){finish(null,error);}
   });
   task.cancel=()=>cancel?.();
@@ -16437,7 +16438,48 @@ function renderCaptionStudio(host,items,ext){
               renderCaptions();
             }
           });
+          // Refresh loss independently of topology: no graph layout or
+          // preview restart. Prepare only measured rows in small UI chunks,
+          // then aggregate in the existing graph worker.
+          let lossSnapshot=null,lossResult=null,lossSerial=0,lossWork=null,lossDisposed=false;
+          const oldDispose=network.dispose;
+          network.dispose=()=>{
+            lossDisposed=true;lossSerial++;lossWork?.cancel?.();oldDispose?.();
+          };
+          network.refreshLearning=async()=>{
+            const enabled=!!S.cap.studioLearningColors;
+            const snapshot=S.cap.learningMap;
+            if(!enabled){
+              lossSerial++;lossWork?.cancel?.();lossWork=null;lossSnapshot=null;lossResult=null;
+              network.setLearning(null,false);return;
+            }
+            if(snapshot&&snapshot===lossSnapshot)return;
+            const serial=++lossSerial;lossWork?.cancel?.();lossWork=null;
+            lossSnapshot=snapshot;lossResult=null;
+            if(!snapshot?.size){network.setLearning(null,true);return;}
+            network.setLearning(null,true,true);
+            const stale=()=>lossDisposed||serial!==lossSerial||generation!==exploreGeneration||
+              S.cap.items!==datasetItems||(S.cap.studioRevision||0)!==revision;
+            try{
+              const measured=[];
+              for(let i=0;i<datasetItems.length;i++){
+                if(i&&i%400===0){await new Promise(resolve=>setTimeout(resolve,0));if(stale())return;}
+                const it=datasetItems[i],record=CaptionStudioLearning.forPath(snapshot,it.path);
+                if(!record||studioCaptionMode(it)!=="tags")continue;
+                measured.push({tags:studioTokens(it.caption,"tags"),recent:record.recent,verdict:record.verdict});
+              }
+              if(stale())return;
+              const groups=model.atlas.clusters.map(c=>({id:c.id,memberTags:c.memberTags}));
+              const task=captionGraphModelAsync(measured,null,groups);lossWork=task;
+              lossResult=await task;
+              if(stale())return;
+              lossWork=null;network.setLearning(lossResult,true);
+            }catch(error){
+              if(!stale()){lossWork=null;lossSnapshot=null;network.setLearning(null,true);}
+            }
+          };
           fullStage.replaceChildren(network);
+          network.refreshLearning();
           if(resume&&network.resumeCollection){
             S.cap.studioConstellationReturn=null;
             network.resumeCollection({...resume,positions:resume.revision===revision?resume.positions:[]});
@@ -16480,7 +16522,10 @@ function renderCaptionStudio(host,items,ext){
       (view==="constellation"&&!!fullStage.querySelector(".studio-tb-collection"));
     waterfallScaleControl.hidden=!showWaterfallScale;
     actionBar.classList.toggle("has-waterfall-scale",showWaterfallScale);
-    learningToggle.hidden=view==="constellation";
+    learningToggle.hidden=false;
+    learningToggle.title=view==="constellation"?"Overlay average relative loss by tag and community. Does not change training.":
+      "Visualize per-image training loss and Loss Watch verdicts. Does not change training.";
+    learningLabel.textContent=view==="constellation"?"Training loss":"Per-image Loss";
     learningFilter.hidden=view==="constellation"||!learningCheck.checked;
     for(const button of viewButtons.querySelectorAll("button")){
       const selected=button.dataset.view===view;
@@ -16520,9 +16565,10 @@ function renderCaptionStudio(host,items,ext){
       renderCaptions();
     }
   });
+  const learningLabel=el("span",{text:"Per-image Loss"});
   const learningToggle=el("label",{class:"studio-learning-toggle",
     title:"Visualize per-image training loss and Loss Watch verdicts, including per-image adaptive LR. This only changes the display, not training or adaptive LR."},
-    learningCheck,el("span",{text:"Per-image Loss"}));
+    learningCheck,learningLabel);
   const learningFilter=el("label",{class:"studio-learning-filter-label",
     hidden:!learningCheck.checked,title:"Filter images by loss status"},
     createLearningFilterSelect());

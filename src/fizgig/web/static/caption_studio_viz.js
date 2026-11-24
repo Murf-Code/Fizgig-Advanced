@@ -221,6 +221,77 @@ const CaptionStudioViz = (() => {
       "hsl("+Math.round(id*137.508%360)+" 72% 62%)";
     return "color-mix(in srgb, "+hue+" "+colorMix+"%, var(--text-primary))";
   };
+  // Caption diagnostics are evidence, never automatic correction.
+  function captionWarnings(items,all){
+    const warnings=new Map(),forms=new Map();
+    for(const item of items){
+      const seen=new Set(),duplicates=new Set();
+      for(const raw of item.tags||[]){
+        const tag=lower(raw);if(!tag)continue;
+        if(seen.has(tag))duplicates.add(tag);
+        seen.add(tag);
+      }
+      for(const tag of duplicates){
+        const w=warnings.get(tag)||{duplicates:0,variants:[]};
+        w.duplicates++;warnings.set(tag,w);
+      }
+    }
+    for(const {tag} of all){
+      const key=tag.replace(/[\s_-]+/g,"");
+      if(key.length<3)continue;
+      if(!forms.has(key))forms.set(key,[]);
+      forms.get(key).push(tag);
+    }
+    for(const tags of forms.values())if(tags.length>1){
+      for(const tag of tags){
+        const w=warnings.get(tag)||{duplicates:0,variants:[]};
+        w.variants=tags.slice(0,6).filter(t=>t!==tag);
+        w.variantCount=tags.length-1;warnings.set(tag,w);
+      }
+    }
+    return warnings;
+  }
+  // One contribution per image per tag and per community, never per
+  // occurrence or pair. Missing measurements are not treated as zero.
+  function summarizeAtlasLoss(items,groups){
+    const groupByTag=new Map();
+    for(const g of groups||[])for(const tag of g.memberTags)groupByTag.set(tag,g.id);
+    const tags=new Map(),communities=new Map(),baseline={measured:0,sum:0,squares:0};
+    const accumulate=(map,key,value,verdict)=>{
+      let row=map.get(key);
+      if(!row){row={measured:0,sum:0,stuck:0,suspect:0};map.set(key,row);}
+      if(value!==null){row.measured++;row.sum+=value;}
+      if(verdict==="stuck")row.stuck++;
+      if(verdict==="suspect")row.suspect++;
+    };
+    for(const item of items){
+      const unique=new Set((item.tags||[]).map(lower).filter(Boolean));
+      if(!unique.size)continue;
+      const raw=item.recent;
+      const value=raw!=null&&Number.isFinite(Number(raw))?Number(raw):null;
+      if(value!==null){
+        baseline.measured++;baseline.sum+=value;baseline.squares+=value*value;
+      }
+      const memberships=new Set();
+      for(const tag of unique){
+        accumulate(tags,tag,value,item.verdict);
+        if(groupByTag.has(tag))memberships.add(groupByTag.get(tag));
+      }
+      for(const id of memberships)accumulate(communities,id,value,item.verdict);
+    }
+    const mean=baseline.measured?baseline.sum/baseline.measured:null;
+    const deviation=baseline.measured?Math.sqrt(Math.max(0,baseline.squares/baseline.measured-mean*mean)):0;
+    for(const map of [tags,communities])for(const row of map.values()){
+      row.mean=row.measured?row.sum/row.measured:null;delete row.sum;
+    }
+    return {tags,communities,baseline:{measured:baseline.measured,mean,deviation}};
+  }
+  function lossTone(row,baseline){
+    if(!row||row.measured<3||baseline?.measured<3||!Number.isFinite(baseline?.mean)||!Number.isFinite(row.mean))
+      return "var(--text-muted)";
+    const delta=row.mean-baseline.mean,threshold=Math.max(.000001,baseline.deviation*.15);
+    return delta>threshold?"var(--danger)":delta< -threshold?"var(--data-teal)":"var(--text-muted)";
+  }
   function tagbenchGraph(items) {
     // Bound pair storage by the visible vocabulary. Search still indexes every tag.
     const counts=new Map(),covers=new Map(),coverSamples=new Map();
@@ -562,6 +633,13 @@ const CaptionStudioViz = (() => {
       if(manual||friendColor)colors.set(tag.tag,manual||friendColor);
     }
     const atlas=constellationAtlas(nodes,all,edges,items);
+    const groupByTag=new Map();
+    for(const c of atlas.clusters){c.imageCount=0;for(const tag of c.memberTags)groupByTag.set(tag,c);}
+    for(const item of items){
+      const groups=new Set();
+      for(const raw of item.tags||[]){const c=groupByTag.get(lower(raw));if(c)groups.add(c);}
+      for(const c of groups)c.imageCount++;
+    }
     // The packed hierarchy and the graph must agree on the color of a
     // long-tail tag. Keep explicit user colors, not arbitrary accent hues.
     for(const c of atlas.clusters)for(const tag of c.memberTags){
@@ -570,7 +648,7 @@ const CaptionStudioViz = (() => {
       const manual=categories?.tagColors?.[tag]||(category&&categories.colors?.[category]);
       colors.set(tag,manual||c.color);
     }
-    return {...graph,nodes,chosen,colors,atlas};
+    return {...graph,nodes,chosen,colors,atlas,warnings:captionWarnings(items,all)};
   }
   const waterfallScale=value=>{
     const n=Number(value);
@@ -770,6 +848,8 @@ const CaptionStudioViz = (() => {
     let typeScale=1,packed=false,coverTimer=null;
     const activeCovers=new Set();
     const atlas=model.atlas||constellationAtlas(model.nodes,model.all,model.edges);
+    let lossData=null,lossEnabled=false,lossPending=false,qualityEnabled=false;
+    const packedLoss=[],packedWarnings=[];
     const labelSize=n=>(n.tag===picked?22:13+8*Math.sqrt(n.count/maxCount))*typeScale/zoom;
 
     // Group strokes by color and width so each batch shares a Canvas path.
@@ -859,6 +939,9 @@ const CaptionStudioViz = (() => {
         "aria-label":desc,style:"cursor:pointer"},g);
       make("title",{},background).textContent=desc;
       activatePacked(background,()=>enterPacked(c));
+      const groupRing=make("circle",{r:Math.max(1,c.r-2),fill:"none","stroke-width":3,
+        "vector-effect":"non-scaling-stroke","pointer-events":"none",opacity:0},g);
+      packedLoss.push({ring:groupRing,id:c.id,total:c.imageCount??c.count,community:true});
       for(const child of c.children){
         const title=child.more?child.more.length+" additional tags, "+child.count+" occurrences":
           child.tag+", "+child.count+" images";
@@ -867,6 +950,16 @@ const CaptionStudioViz = (() => {
           stroke:c.color,"stroke-width":.75,"fill-opacity":child.more?.72:.87,
           role:"button",tabindex:0,"aria-label":title,style:"cursor:pointer"},g);
         make("title",{},disk).textContent=title;
+        if(child.tag){
+          const ring=make("circle",{cx:child.x,cy:child.y,r:Math.max(1,child.r-1),fill:"none",
+            "stroke-width":2,"vector-effect":"non-scaling-stroke","pointer-events":"none",opacity:0},g);
+          packedLoss.push({ring,id:child.tag,total:child.count});
+          if(model.warnings?.has(child.tag)&&child.r>=6){
+            const flag=make("text",{x:child.x+child.r*.58,y:child.y-child.r*.38,fill:"var(--warning)",
+              "font-size":Math.min(13,child.r),"font-weight":900,"pointer-events":"none",opacity:0},g);
+            flag.textContent="!";packedWarnings.push(flag);
+          }
+        }
         activatePacked(disk,()=>{
           if(child.more){browsePackedTags(child.more);return;}
           choose(child.tag,false);center(child.tag);
@@ -962,6 +1055,9 @@ const CaptionStudioViz = (() => {
       v.g.setAttribute("transform","translate("+p.x+" "+p.y+")");
       v.hit.setAttribute("r",Math.max(9/zoom,r));v.core.setAttribute("r",r);v.halo.setAttribute("r",r*1.34);
       v.ring.setAttribute("r",r+3/zoom);
+      v.lossRing.setAttribute("r",r+7/zoom);
+      v.warning.setAttribute("x",r*.72);v.warning.setAttribute("y",-r*.68);
+      v.warning.setAttribute("font-size",13*typeScale/zoom);
       if(v.cover){
         v.coverClip.setAttribute("r",Math.max(0,r-1.8*typeScale/zoom));
         for(const [key,value] of Object.entries({x:-r,y:-r,width:r*2,height:r*2}))
@@ -989,7 +1085,12 @@ const CaptionStudioViz = (() => {
       const halo=make("circle",{fill:n.color,opacity:0,class:"studio-tb-orb-halo"},g);
       const ripple=make("circle",{fill:"none",stroke:"url(#tb-sunlight)","vector-effect":"non-scaling-stroke","stroke-width":"1.2",opacity:0,"pointer-events":"none"},g);
       const ring=make("circle",{fill:"none",stroke:"#efd16e","vector-effect":"non-scaling-stroke","stroke-width":"1.5",opacity:0,"pointer-events":"none"},g);
+      const lossRing=make("circle",{fill:"none","stroke-width":3,"vector-effect":"non-scaling-stroke",
+        "pointer-events":"none",opacity:0},g);
       const core=make("circle",{fill:n.color,class:"studio-tb-orb-core"},g);
+      const warning=make("text",{fill:"var(--warning)",stroke:"var(--bg-deep)","paint-order":"stroke",
+        "stroke-width":1.5,"font-weight":900,"pointer-events":"none",opacity:0},g);
+      warning.textContent="!";
       const artwork=make("g",{"pointer-events":"none","aria-hidden":"true"},g);
       const number=make("text",{"text-anchor":"middle","dominant-baseline":"central",
         "font-family":"system-ui, sans-serif","font-weight":750,style:"font-variant-numeric:tabular-nums",fill:"#161823",stroke:"#fff",
@@ -997,7 +1098,7 @@ const CaptionStudioViz = (() => {
       const hit=make("circle",{fill:"transparent"},g);
       const label=make("text",{fill:"var(--text-primary)","font-family":"system-ui, sans-serif","font-weight":650,stroke:"var(--bg-deep)","paint-order":"stroke","pointer-events":"none"},labelLayer);
       label.textContent=n.tag;
-      visual.set(n.tag,{g,core,halo,ripple,ring,hit,artwork,number,label,grad,id});
+      visual.set(n.tag,{g,core,halo,ripple,ring,lossRing,warning,hit,artwork,number,label,grad,id});
       g.addEventListener("pointerdown",e=>{
         if(e.button!==0)return;e.stopPropagation();dismissMenu();cancelMotion();
         const p=point(e);drag={kind:"node",tag:n.tag,dx:p.x-n.x,dy:p.y-n.y,x:e.clientX,y:e.clientY,moved:false};
@@ -1012,7 +1113,7 @@ const CaptionStudioViz = (() => {
         if(e.key==="ContextMenu"||(e.shiftKey&&e.key==="F10")){e.preventDefault();const r=g.getBoundingClientRect();openMenu(n.tag,r.left,r.bottom);}
       });
       g.addEventListener("contextmenu",e=>{e.preventDefault();e.stopPropagation();openMenu(n.tag,e.clientX,e.clientY);});
-      nodeGeometry(n);
+      nodeGeometry(n);paintTagDiagnostics(n);
     }
     for(const n of nodes)createNode(n);
     function relationMap(tag){return adjacency.get(tag)||new Map();}
@@ -1145,6 +1246,28 @@ const CaptionStudioViz = (() => {
     const visibilityChanged=()=>syncCoverTimer();
     document.addEventListener?.("visibilitychange",visibilityChanged);
     media?.addEventListener?.("change",visibilityChanged);
+    function paintLoss(ring,row,total){
+      ring.setAttribute("opacity",lossEnabled&&row?.measured?String(.40+.60*Math.min(1,row.measured/Math.max(1,total))):"0");
+      ring.setAttribute("stroke",lossTone(row,lossData?.baseline));
+      ring.setAttribute("stroke-dasharray",row?.measured<3?"3 3":"none");
+    }
+    function paintTagDiagnostics(n){
+      const v=visual.get(n.tag);if(!v)return;
+      paintLoss(v.lossRing,lossData?.tags.get(n.tag),n.count);
+      v.warning.setAttribute("opacity",qualityEnabled&&model.warnings?.has(n.tag)?1:0);
+    }
+    function paintDiagnostics(){
+      for(const n of at.values())paintTagDiagnostics(n);
+      for(const {ring,id,total,community} of packedLoss)
+        paintLoss(ring,(community?lossData?.communities:lossData?.tags)?.get(id),total);
+      for(const flag of packedWarnings)flag.setAttribute("opacity",qualityEnabled?1:0);
+      lossLegend.hidden=!lossEnabled;
+      const baseline=lossData?.baseline;
+      lossLegend.textContent=lossPending?"Training loss · updating…":
+        baseline?.measured?"Training loss · "+baseline.measured+" measured tagged images · red above mean / teal below · gray limited or similar":
+          "Training loss · no measured tagged images for this run";
+      qualityButton.setAttribute("aria-pressed",String(qualityEnabled));
+    }
     function updateAppearance(){
       const focus=picked,neighbors=shared;
       labelOrder=picked?[...focusedTags].map(tag=>at.get(tag)):nodes;
@@ -1173,6 +1296,28 @@ const CaptionStudioViz = (() => {
       head.style.color=n.color;
       html("strong","",n.tag,head);
       html("span","",String(n.count),head);
+      html("div","studio-tb-pair-count",((100*n.count/Math.max(1,model.imageCount||n.count)).toFixed(1))+"% of tagged items",spotlight);
+      if(lossEnabled){
+        const row=lossData?.tags.get(n.tag);
+        const detail=html("div","studio-tb-pair-count",row?.measured?
+          "Mean relative loss "+row.mean.toFixed(3)+" · "+row.measured+"/"+n.count+" measured":
+          lossPending?"Training loss updating…":"No measured loss for this tag",spotlight);
+        if(row?.measured){
+          detail.style.color=lossTone(row,lossData?.baseline);
+          if(row.measured<3)html("div","studio-tb-pair-count","Limited sample; interpret cautiously",spotlight);
+        }
+        if(row?.stuck||row?.suspect)html("div","studio-tb-pair-count",
+          row.stuck+" stuck · "+row.suspect+" suspect (Loss Watch)",spotlight);
+        html("div","studio-tb-pair-count","Association only; not a tag-level training verdict.",spotlight);
+      }
+      if(qualityEnabled){
+        const warning=model.warnings?.get(n.tag);
+        if(warning?.duplicates)html("div","studio-tb-pair-count",
+          "Repeated tag in "+warning.duplicates+" captions",spotlight);
+        if(warning?.variantCount)html("div","studio-tb-pair-count",
+          "Possible formatting variants: "+warning.variants.join(", ")+(warning.variantCount>warning.variants.length?" …":""),spotlight);
+        if(!warning)html("div","studio-tb-pair-count","No repeated-tag or formatting-variant warnings",spotlight);
+      }
       if(options.collectionItems)button(spotlight,"View "+n.count+" "+(n.count===1?"image":"images"),
         "View images tagged "+picked,()=>openCollection(picked)).className="studio-tb-pair-action";
       if(options.openWaterfall)button(spotlight,"Open in Waterfall","Open "+picked+" in Waterfall",
@@ -1278,6 +1423,7 @@ const CaptionStudioViz = (() => {
       panel.append(flow);
       collection={panel,header,flow,tag,previousFocus,wheel:null};
       for(const part of [svg,search,zoomCtl,spotlight,menu])part.inert=true;
+      lossLegend.style.display="none";
       stage.append(panel);
       options.onCollectionChange?.(true);
       if(animate&&!reduced()&&panel.animate&&!resume)
@@ -1294,6 +1440,7 @@ const CaptionStudioViz = (() => {
       options.onCollectionChange?.(false);
       syncCoverTimer();
       for(const part of [svg,search,zoomCtl,spotlight,menu])part.inert=false;
+      lossLegend.style.display="";
       if(restoreFocus){
         const focusTarget=previousFocus?.isConnected&&stage.contains(previousFocus)?
           previousFocus:visual.get(tag)?.g||input;
@@ -1420,6 +1567,15 @@ const CaptionStudioViz = (() => {
     }
     button(zoomCtl,"+","Zoom in",()=>zoomBy(1.2));button(zoomCtl,"−","Zoom out",()=>zoomBy(1/1.2));
     button(zoomCtl,"⛶","Fit full graph",()=>{if(picked)choose(null);fit();});
+    const qualityButton=button(zoomCtl,"!","Toggle caption quality warnings",()=>{
+      qualityEnabled=!qualityEnabled;paintDiagnostics();renderPanel();
+    });
+    qualityButton.setAttribute("aria-pressed","false");
+    const lossLegend=html("div","studio-tb-loss-legend");
+    lossLegend.hidden=true;
+    Object.assign(lossLegend.style,{position:"absolute",left:"12px",bottom:"12px",maxWidth:"min(440px,65%)",
+      background:"var(--bg-surface)",color:"var(--text-primary)",border:"1px solid var(--border)",
+      padding:"6px 9px",borderRadius:"6px",fontSize:"11px",pointerEvents:"none"});
     const searchMatches=()=>{
       matches.replaceChildren();const q=input.value.toLowerCase().trim();if(!q)return;
       const found=model.all.filter(n=>n.tag.includes(q)).sort((a,b)=>(b.tag===q)-(a.tag===q)||b.count-a.count).slice(0,8);
@@ -1561,7 +1717,11 @@ const CaptionStudioViz = (() => {
     stage.dispose=()=>{disposed=true;stopCoverTimer();document.removeEventListener?.("visibilitychange",visibilityChanged);
       media?.removeEventListener?.("change",visibilityChanged);removeCollection(false);resize.disconnect();theme.disconnect();
       if(frame!==null)cancelAnimationFrame(frame);frame=null;camera=null;settling=null;pulse=null;};
-    stage.append(canvas,svg,search,zoomCtl,spotlight,menu);
+    stage.append(canvas,svg,search,zoomCtl,spotlight,menu,lossLegend);
+    stage.setLearning=(data,enabled,pending=false)=>{
+      if(disposed)return;
+      lossData=data;lossEnabled=!!enabled;lossPending=!!pending;paintDiagnostics();renderPanel();
+    };
     stage.setPreferences(prefs);view();
     if(nodes.length)fit(false);
     else html("p","studio-tb-empty-graph","No tagged images in this dataset.",stage);
@@ -1580,7 +1740,7 @@ const CaptionStudioViz = (() => {
     return stage;
   }
 
-  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas});
+  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings});
 })();
 // A classic WebWorker can import this existing pure graph implementation
 // without maintaining a second constellation algorithm.
