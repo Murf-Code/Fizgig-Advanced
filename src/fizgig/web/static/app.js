@@ -14184,7 +14184,7 @@ function renderCaptionStudio(host,items,ext){
   const prefetchNear=(start,end,direction)=>{
     clearTimeout(prefetchTimer);
     prefetchTimer=setTimeout(()=>{
-      if(!thumbs.isConnected)return;
+      if(!thumbs.isConnected||!thumbs.clientWidth||!thumbs.clientHeight)return;
       const [first,last]=CaptionThumbRail.prefetchRange(
         start,end,items.length,direction,3);
       for(let i=first;i<last;i++){
@@ -14194,11 +14194,14 @@ function renderCaptionStudio(host,items,ext){
     },180); // Skip costly lookahead until the user has really paused scrolling.
   };
   const paintWindow=()=>{
-    if(!thumbs.isConnected)return;
+    if(!thumbs.isConnected||!thumbs.clientWidth||!thumbs.clientHeight)return;
     rebuildGeometry();
     const {offsets,heights,total,gap}=geometry;
+    // Never interpret an accidentally unbounded rail as a visible viewport.
+    // The CSS scrollport is size-contained; this guard also covers first paint.
+    const viewportHeight=Math.min(thumbs.clientHeight,Math.max(1,window.innerHeight||thumbs.clientHeight));
     const top=pendingResizePosition??thumbs.scrollTop;
-    const bottom=top+Math.max(100,thumbs.clientHeight);
+    const bottom=top+viewportHeight;
     const start=Math.max(0,studioThumbIndex(offsets,top)-7);
     const end=Math.min(items.length,studioThumbIndex(offsets,bottom)+10);
     if(start===paintStart&&end===paintEnd){
@@ -14236,9 +14239,10 @@ function renderCaptionStudio(host,items,ext){
   if(typeof ResizeObserver!=="undefined"){
     const observer=new ResizeObserver(()=>{
       if(!thumbs.isConnected){observer.disconnect();return;}
-      if(Math.abs(thumbs.clientWidth-railWidth)>=1){
-        rebuildGeometry();queueWindow();
-      }
+      if(!thumbs.clientWidth||!thumbs.clientHeight)return;
+      // Width changes rebuild geometry; height-only changes also change the
+      // visible range, including when returning from a hidden explorer view.
+      queueWindow();
     });
     observer.observe(thumbs);
     S.cap.studioThumbObserver?.disconnect();

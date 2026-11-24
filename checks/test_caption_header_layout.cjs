@@ -16,3 +16,17 @@ const toolbar=css.match(/#tab-captions\.active #captionsGrid\.studio-host > \.st
 assert.match(toolbar,/flex:\s*0 0 auto/);
 assert.match(css,/#tab-captions:not\(\[data-caption-load="ready"\]\)>\.caption-bench-header,/);
 console.log("Caption chrome remains intrinsic; workspace and explore stage fit available height; loading visibility remains guarded");
+
+// Virtual spacers must contribute to scrollHeight, never intrinsic rail height.
+const rail=css.match(/#tab-captions \.studio-host \.studio-thumb-rail\.is-windowed,\s*#tab-captions\.caption-theme-glass \.studio-thumb-rail\.is-windowed\s*\{([^}]+)\}/)[1];
+assert.match(rail,/flex:\s*1 1 0/);
+assert.match(rail,/height:\s*0/);
+assert.match(rail,/min-height:\s*0/);
+assert.match(rail,/contain:\s*size layout style/);
+assert.match(rail,/overflow-y:\s*auto/);
+assert.match(css,/grid-template-rows:\s*minmax\(0,1fr\)/);
+const app=fs.readFileSync("src/fizgig/web/static/app.js","utf8");
+assert.match(app,/const viewportHeight=Math\.min\(thumbs\.clientHeight,Math\.max\(1,window\.innerHeight/);
+assert.match(app,/if\(!thumbs\.isConnected\|\|!thumbs\.clientWidth\|\|!thumbs\.clientHeight\)return;/);
+assert.match(app,/if\(!thumbs\.clientWidth\|\|!thumbs\.clientHeight\)return;\s*\/\/ Width changes[^]*?queueWindow\(\);/);
+console.log("Virtual thumbnail rail is size-contained and repaints on height changes");

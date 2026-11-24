@@ -5482,6 +5482,7 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
     flex:1 1 0;
     min-height:min(300px,45dvh);
     height:0;
+    grid-template-rows:minmax(0,1fr);
   }
   #tab-captions.active #captionsGrid.studio-host > .studio-layout > :is(.studio-browser,.studio-editor,.studio-index) {
     height:auto;
@@ -5492,6 +5493,10 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
   #tab-captions.active #captionsGrid.studio-host > .studio-layout > .studio-browser {
     display:flex;
     flex-direction:column;
+    overflow:hidden;
+  }
+  #tab-captions.active #captionsGrid.studio-host > .studio-layout > .studio-browser > :not(.studio-thumb-rail) {
+    flex-shrink:0;
   }
   #tab-captions.active #captionsGrid.studio-host > .studio-tb-explore:not([hidden]) {
     flex:1 1 0;
@@ -5772,7 +5777,23 @@ body.caption-glass-ui .studio-tag-context-menu .studio-tag-color-category>summar
   overscroll-behavior-y:contain;
   scroll-behavior:auto;
   overflow-anchor:none; /* Spacer corrections must not fight Chromium's scroll anchoring. */
-  contain:layout style;
+  /* Virtual spacers describe scroll extent, never the rail's intrinsic size. */
+  flex:1 1 0;
+  height:0;
+  min-height:0;
+  contain:size layout style;
+}
+/* In stacked layouts the rail still needs a finite independent scrollport. */
+@media (max-width:1100px) {
+  #tab-captions .studio-host .studio-browser {
+    height:min(82dvh,950px);
+    overflow:hidden;
+  }
+}
+@media (max-width:650px) {
+  #tab-captions .studio-host .studio-browser {
+    height:min(280px,70dvh);
+  }
 }
 #tab-captions .studio-thumb-rail.is-windowed .studio-thumb-spacer{
   display:block;
