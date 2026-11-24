@@ -184,11 +184,10 @@ class MOSSImageDiT(nn.Module):
         copy back, the CPU copy never changes) instead of the classic exchange. None keeps the mode the model was
         last given - the preview park and unpark re-enter here bare and must come back in the run's mode."""
         from fizgig.modules.offloading import ModelOffloader
-        if self.offloader is not None:
-            self.offloader.remove_hooks()       # stale backward hooks double-swap blocks ("mat2 is on cpu")
         n = len(self.layers)
         if not 0 < num_blocks <= n - 2:
             raise ValueError(f"block swap: 1..{n - 2} blocks, got {num_blocks}")
+        self._retire_block_swap()
         if send_only is None:
             send_only = getattr(self, "_send_only", False)
         self._send_only = bool(send_only)
@@ -218,10 +217,18 @@ class MOSSImageDiT(nn.Module):
         if self.blocks_to_swap:
             self.offloader.prepare_block_devices_before_forward(list(self.layers))
 
+    def _retire_block_swap(self):
+        off = self.offloader
+        if off is not None:
+            if hasattr(off, "retire"):
+                off.retire()
+            else:
+                off.set_forward_only(True)  # settle pending classic transfers before replacement
+                off.remove_hooks()
+            self.offloader = None
+
     def disable_block_swap(self):
-        if self.offloader is not None:
-            self.offloader.remove_hooks()
-        self.offloader = None
+        self._retire_block_swap()
         self.blocks_to_swap = 0
 
     def switch_block_swap_for_inference(self):
