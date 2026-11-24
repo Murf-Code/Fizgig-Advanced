@@ -558,6 +558,8 @@ const CaptionStudioViz = (() => {
     const visual=new Map();
     let labelOrder=nodes,overviewCamera=null,overviewZoom=1;
     let expanded=false,activePair=null,collection=null,collectionMotion=null;
+    const wheelPause=180,wheelExitDistance=40;
+    let closingWheel=null;
     const temporaryTags=new Set(),focusEdges=new Map();
     const focusedTags=new Set();
     let typeScale=1;
@@ -858,6 +860,7 @@ const CaptionStudioViz = (() => {
       const header=html("header","studio-tb-collection-header",undefined,panel);
       const back=button(header,"← Back to map","Back to Constellation map",closeCollection);
       back.className="studio-tb-pair-action";
+      back.title="Back to map · Scroll down over this header or scroll up at the top of the images";
       const heading=html("h3","",tag+(peer?" + "+peer:""),header);
       heading.style.color=at.get(tag)?.color||"";
       panel.setAttribute("aria-label",heading.textContent+" image collection");
@@ -884,7 +887,7 @@ const CaptionStudioViz = (() => {
       },event=>event.preventDefault(),resume?.path,null,options.thumbToken,null,null,100);
       if(pictures.length===1)flow.classList.add("is-single");
       panel.append(flow);
-      collection={panel,flow,tag,previousFocus};
+      collection={panel,header,flow,tag,previousFocus,wheel:null};
       for(const part of [svg,search,zoomCtl,spotlight,menu])part.inert=true;
       stage.append(panel);
       if(animate&&!reduced()&&panel.animate&&!resume)
@@ -1098,10 +1101,49 @@ const CaptionStudioViz = (() => {
       if(!e.deltaY)return;
       const overPicked=picked&&e.target.closest(".studio-tb-orb")===visual.get(picked)?.g;
       if(overPicked&&e.deltaY<0&&zoom*1.12>=Math.min(3.5,overviewZoom*1.7)&&options.collectionItems){
-        openCollection(picked);return;
+        openCollection(picked);
+        // Ignore the rest of the wheel gesture that zoomed into the circle.
+        collection.wheel={direction:-1,canExit:false,distance:0,at:e.timeStamp};
+        return;
       }
       cancelMotion();zoomBy(e.deltaY<0?1.12:1/1.12,e);
     },{passive:false});
+    stage.addEventListener("wheel",event=>{
+      const {deltaX,deltaY,deltaMode,timeStamp,target}=event;
+      if(event.ctrlKey||event.shiftKey||!deltaY||Math.abs(deltaX)>Math.abs(deltaY))return;
+      const direction=Math.sign(deltaY);
+      if(closingWheel){
+        if(direction===closingWheel.direction&&timeStamp-closingWheel.at<wheelPause){
+          closingWheel.at=timeStamp;
+          event.preventDefault();event.stopPropagation();
+          return;
+        }
+        closingWheel=null;
+      }
+      if(!collection||collection.closing||target.closest?.("select"))return;
+
+      const {header,flow}=collection;
+      const canExit=direction<0?flow.scrollTop<=0:header.contains(target);
+      const previous=collection.wheel;
+      if(!previous||direction!==previous.direction||timeStamp-previous.at>=wheelPause){
+        // Only a gesture that starts at the boundary can leave the collection.
+        collection.wheel={direction,canExit,distance:0,at:timeStamp};
+      }
+      const gesture=collection.wheel;
+      gesture.at=timeStamp;
+      if(!canExit){
+        gesture.canExit=false;
+        return;
+      }
+      event.preventDefault();
+      if(!gesture.canExit)return;
+      const unit=deltaMode===1?16:deltaMode===2?Math.max(wheelExitDistance,flow.clientHeight):1;
+      gesture.distance+=Math.abs(deltaY)*unit;
+      if(gesture.distance>=wheelExitDistance){
+        closingWheel={direction,at:timeStamp};
+        closeCollection();
+      }
+    },{capture:true,passive:false});
     stage.addEventListener("keydown",e=>{if(e.key==="Escape"){e.preventDefault();e.stopPropagation();if(collection)closeCollection();else if(!menu.hidden)dismissMenu();else choose(null);}});
     stage.addEventListener("pointerdown",e=>{if(!menu.contains(e.target))dismissMenu();if(!search.contains(e.target))matches.replaceChildren();});
     stage.setPreferences=value=>{

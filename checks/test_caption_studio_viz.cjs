@@ -59,7 +59,7 @@ try {
   const fakeElement=()=>{
     const children=[],handlers={},classes=new Set(),attrs={};
     return {children,handlers,dataset:{},classes,attrs,classList:{add(name){classes.add(name);},toggle(){}},
-      style:{},isConnected:false,getContext(){return null;},contains(){return false;},
+      style:{},isConnected:false,getContext(){return null;},contains(node){return this===node||children.some(child=>child.contains(node));},
       getBoundingClientRect(){return {top:0,left:0,width:100,height:100};},
       focus(){global.document.activeElement=this;},
       querySelector(selector){return descendants(this).find(node=>node.className===selector.slice(1));},
@@ -175,12 +175,60 @@ try {
   const wheelAtlas=Viz.tagbenchConstellation(graph,()=>{},"paws",options);
   const wheelTarget=allIn(wheelAtlas).find(node=>node.attrs["data-tag"]==="paws");
   const wheel=target=>wheelAtlas.children[1].handlers.wheel({
-    deltaY:-1,clientX:0,clientY:0,target:{closest:()=>target},preventDefault(){}
+    deltaY:-1,timeStamp:100,clientX:0,clientY:0,target:{closest:()=>target},preventDefault(){}
   });
   for(let i=0;i<8;i++)wheel(null);
   assert.equal(gallery(wheelAtlas),undefined);
   wheel(wheelTarget);
   assert.equal(tiles(gallery(wheelAtlas)).length,50);
+
+  function scroll(root,target,deltaY,timeStamp,extra={}){
+    let prevented=false,stopped=false;
+    root.handlers.wheel({
+      deltaX:0,deltaY,deltaMode:0,timeStamp,target,...extra,
+      preventDefault(){prevented=true;},stopPropagation(){stopped=true;}
+    });
+    return {prevented,stopped};
+  }
+
+  const wheelFlow=gallery(wheelAtlas).children[1];
+  wheelFlow.scrollTop=0;
+  scroll(wheelAtlas,wheelFlow,-80,120);
+  assert.ok(gallery(wheelAtlas),"Momentum from zooming in leaves the collection open");
+  const beforeReturn=wheelAtlas.children[1].attrs.viewBox;
+  scroll(wheelAtlas,wheelFlow,-20,350);
+  assert.ok(gallery(wheelAtlas),"A small trackpad movement stays in the collection");
+  scroll(wheelAtlas,wheelFlow,-25,380);
+  assert.equal(gallery(wheelAtlas),undefined);
+  assert.equal(wheelAtlas.children[1].attrs.viewBox,beforeReturn);
+  assert.deepEqual(scroll(wheelAtlas,wheelAtlas.children[1],-16,420),{prevented:true,stopped:true});
+  assert.deepEqual(scroll(wheelAtlas,wheelAtlas.children[1],-16,650),{prevented:false,stopped:false});
+
+  const largeAtlas=Viz.tagbenchConstellation(graph,()=>{},"paws",{
+    ...options,relationsForTag:()=>new Map([["white fur",6]]),
+    collectionItems:()=>Array.from({length:400},(_,index)=>
+      ({...it,name:"paws "+index,path:"/dataset/large-"+index+".webp"}))
+  });
+  byLabel(largeAtlas,"View images tagged paws").handlers.click();
+  const largeFlow=gallery(largeAtlas).children[1];
+  assert.equal(tiles(largeFlow).length,120);
+  largeFlow.scrollTop=600;
+  assert.equal(scroll(largeAtlas,largeFlow,100,100).prevented,false);
+  assert.equal(scroll(largeAtlas,largeFlow,-100,320).prevented,false);
+  largeFlow.scrollTop=0;
+  scroll(largeAtlas,largeFlow,-100,350);
+  assert.ok(gallery(largeAtlas),"Scrolling to the top keeps the gallery open until a new gesture");
+  scroll(largeAtlas,largeFlow,-3,600,{deltaMode:1});
+  assert.equal(gallery(largeAtlas),undefined);
+
+  byLabel(largeAtlas,"View images tagged paws").handlers.click();
+  const [newHeader,newFlow]=gallery(largeAtlas).children;
+  newFlow.scrollTop=600;
+  const filterControl=byLabel(largeAtlas,"Filter by related tag");
+  filterControl.closest=selector=>selector==="select"?filterControl:null;
+  assert.equal(scroll(largeAtlas,filterControl,100,800).prevented,false);
+  scroll(largeAtlas,newHeader,100,1020);
+  assert.equal(gallery(largeAtlas),undefined,"Reverse scroll over the header works even deep in the gallery");
 
 } finally {
   global.document=savedDoc;
