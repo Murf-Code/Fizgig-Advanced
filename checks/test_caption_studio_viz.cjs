@@ -332,6 +332,38 @@ try {
     global.getComputedStyle=oldStyle;
   }
 
+  // Both zoom levels share the very same nodes, colors and world positions.
+  const alignedModel=Viz.tagbenchModel([
+    ...Array.from({length:10},()=>({tags:["lion","mane"]})),
+    ...Array.from({length:12},()=>({tags:["fox","tail"]}))
+  ]);
+  const aligned=Viz.tagbenchConstellation(alignedModel,()=>{});
+  const alignedSvg=aligned.children[1];
+  const snapshotNodes=()=>allIn(aligned).filter(n=>n.attrs["data-tag"]).map(n=>[
+    n,n.attrs.transform,allIn(n).find(c=>c.attrs.class==="studio-tb-orb-core").attrs.fill
+  ]);
+  const originals=snapshotNodes();
+  const [ax,ay,aw,ah]=alignedSvg.attrs.viewBox.split(" ").map(Number);
+  const alignedWheel=direction=>{
+    alignedSvg.handlers.wheel({deltaY:direction,clientX:ax+aw/2,clientY:ay+ah/2,
+      target:{closest:()=>null},preventDefault(){}});
+  };
+  for(let i=0;i<3;i++)alignedWheel(1);
+  const [bx,by,bw,bh]=alignedSvg.attrs.viewBox.split(" ").map(Number);
+  assert.ok(bw>aw);
+  assert.ok(Math.abs(bx+bw/2-(ax+aw/2))<1e-6);
+  assert.ok(Math.abs(by+bh/2-(ay+ah/2))<1e-6);
+  assert.ok(allIn(aligned).some(n=>n.attrs["data-community"]!==undefined&&n.children[0].attrs.d));
+  const after=snapshotNodes();
+  assert.equal(after.length,originals.length);
+  for(let i=0;i<after.length;i++){
+    assert.equal(after[i][0],originals[i][0]);
+    assert.equal(after[i][1],originals[i][1]);assert.equal(after[i][2],originals[i][2]);
+  }
+  for(let i=0;i<3;i++)alignedWheel(-1);
+  assert.ok(Math.abs(Number(alignedSvg.attrs.viewBox.split(" ")[2])-aw)<1e-6);
+  aligned.dispose();
+
   const zoomModel=Viz.tagbenchModel([{tags:["anchor","peer"]},{tags:["anchor"]}]);
   const zoomMap=Viz.tagbenchConstellation(zoomModel,()=>{});
   const zoomSvg=zoomMap.children[1];

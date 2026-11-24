@@ -942,6 +942,37 @@ const CaptionStudioViz = (() => {
     const t=Math.max(0,Math.min(1,(zoom-start)/(end-start)));
     return t*t*(3-2*t);
   }
+  // The overview uses the actual graph disks, not a second layout.
+  // The padded convex envelope is intentionally lightweight and only
+  // updated when the underlying positions change.
+  function communityEnvelope(discs,padding=10){
+    if(!discs.length)return {path:"",x:0,y:0,width:0};
+    const points=[];
+    for(const d of discs)for(let i=0;i<16;i++){
+      const a=i*Math.PI/8,r=(d.r+padding)/Math.cos(Math.PI/16);
+      points.push({x:d.x+Math.cos(a)*r,y:d.y+Math.sin(a)*r});
+    }
+    points.sort((a,b)=>a.x-b.x||a.y-b.y);
+    const cross=(o,a,b)=>(a.x-o.x)*(b.y-o.y)-(a.y-o.y)*(b.x-o.x);
+    const half=rows=>{
+      const out=[];
+      for(const p of rows){
+        while(out.length>1&&cross(out[out.length-2],out[out.length-1],p)<=0)out.pop();
+        out.push(p);
+      }
+      return out;
+    };
+    const lower=half(points),upper=half([...points].reverse());
+    const hull=[...lower.slice(0,-1),...upper.slice(0,-1)];
+    const left=Math.min(...hull.map(p=>p.x)),right=Math.max(...hull.map(p=>p.x));
+    const top=Math.min(...hull.map(p=>p.y));
+    return {path:"M "+hull.map(p=>p.x+" "+p.y).join(" L ")+" Z",
+      x:(left+right)/2,y:top,width:right-left};
+  }
+  function overviewBlend(zoom,fit){
+    const t=Math.max(0,Math.min(1,(.98-zoom/Math.max(.001,fit))/.25));
+    return t*t*(3-2*t);
+  }
   function countRadius(count,maxCount){
     const max=Math.max(1,maxCount),value=Math.max(1,Math.min(max,count));
     const oldRadius=n=>5+3.8*String(n).length+20*Math.sqrt(n/max);
@@ -977,7 +1008,7 @@ const CaptionStudioViz = (() => {
     canvas.setAttribute("aria-hidden","true");
     const ctx=canvas.getContext("2d");
     const packLayer=make("g",{"aria-label":"Dataset community overview"});
-    const edgeLayer=make("g"),nodeLayer=make("g"),labelLayer=make("g");
+    const edgeLayer=make("g"),nodeLayer=make("g"),labelLayer=make("g"),packLabels=make("g");
     const nodes=model.nodes.map(n=>({...n,ox:0,oy:0,
       color:n.color===tbHue(n.group)?tbHue(n.group,92):n.color}));
     const at=new Map(nodes.map(n=>[n.tag,n])),all=new Map(model.all.map(n=>[n.tag,n]));
@@ -999,7 +1030,8 @@ const CaptionStudioViz = (() => {
     const activeCovers=new Set();
     const atlas=model.atlas||constellationAtlas(model.nodes,model.all,model.edges);
     let lossData=null,lossEnabled=false,lossPending=false,qualityEnabled=false;
-    const packedLoss=[],packedWarnings=[];
+    const packedLoss=[],packedWarnings=[],alignedGroups=[];
+    let atlasOpacity=0;
     const labelSize=n=>(n.tag===picked?22:13+8*Math.sqrt(n.count/maxCount))*typeScale/zoom;
 
     // Link-free overview. Co-occurrence data remains available for the
@@ -1014,9 +1046,18 @@ const CaptionStudioViz = (() => {
     const position=n=>({x:n.x+n.ox,y:n.y+n.oy});
     const view=()=>{
       packed=!picked&&model.all.length>1&&zoom<overviewZoom*.82;
-      svg.setAttribute("viewBox",packed?"0 0 1000 700":[500-500/zoom+pan.x,350-350/zoom+pan.y,1000/zoom,700/zoom].join(" "));
-      packLayer.style.display=packed?"":"none";
-      for(const layer of [edgeLayer,nodeLayer,labelLayer])layer.style.display=packed?"none":"";
+      atlasOpacity=!picked&&model.all.length>1?overviewBlend(zoom,overviewZoom):0;
+      // Same camera and same node layer throughout semantic zoom.
+      svg.setAttribute("viewBox",[500-500/zoom+pan.x,350-350/zoom+pan.y,1000/zoom,700/zoom].join(" "));
+      for(const layer of [packLayer,packLabels]){
+        layer.style.display=atlasOpacity>0?"":"none";
+        layer.setAttribute("opacity",atlasOpacity);
+        layer.style.pointerEvents=packed?"":"none";
+      }
+      packExtras.hidden=!packed||!packExtras.children.length;
+      labelLayer.setAttribute("opacity",1-atlasOpacity);
+      canvas.style.opacity=String(1-atlasOpacity);
+      edgeLayer.style.display=packed?"none":"";
     };
     const search=html("div","studio-tb-search"),input=html("input","",undefined,search),matches=html("div","studio-tb-suggest",undefined,search);
     input.placeholder="Search Tags";input.setAttribute("aria-label","Search all dataset tags");
@@ -1040,7 +1081,11 @@ const CaptionStudioViz = (() => {
     }
     function enterPacked(c){
       if(c.unmapped){browsePackedTags(c.memberTags);return;}
-      cameraTo(Math.min(5,Math.max(overviewZoom*1.35,1.25)),{x:c.x-500,y:c.y-350});
+      const rows=c.tags.map(tag=>at.get(tag)).filter(Boolean);
+      if(!rows.length)return;
+      const x=rows.reduce((sum,n)=>sum+n.x,0)/rows.length;
+      const y=rows.reduce((sum,n)=>sum+n.y,0)/rows.length;
+      cameraTo(Math.min(maxZoom,Math.max(overviewZoom*1.18,zoom)),{x:x-500,y:y-350});
     }
     function activatePacked(el,action){
       el.addEventListener("pointerdown",e=>e.stopPropagation());
@@ -1049,60 +1094,61 @@ const CaptionStudioViz = (() => {
         if(e.key==="Enter"||e.key===" "){e.preventDefault();e.stopPropagation();action();}
       });
     }
-    const packedLabel=(parent,label,x,y,font,maxWidth,weight=650)=>{
-      if(font<6)return;
-      const maxChars=Math.max(3,Math.floor(maxWidth/(font*.56)));
-      const text=make("text",{x,y,"text-anchor":"middle",fill:"var(--text-primary)",
-        stroke:"var(--bg-deep)","stroke-opacity":.85,"stroke-width":Math.max(1,font*.16),
-        "stroke-linejoin":"round","paint-order":"stroke","font-size":font,"font-weight":weight,
-        "pointer-events":"none"},parent);
-      text.textContent=label.length>maxChars?label.slice(0,maxChars-1)+"…":label;
-      return text;
-    };
-    // This zoom level is deliberately a hierarchy, not another graph.
-    // No strands over the circles; associations return in the graph view.
+    const packExtras=html("div","studio-tb-atlas-extra");
+    packExtras.hidden=true;
+    Object.assign(packExtras.style,{position:"absolute",right:"12px",bottom:"12px",display:"flex",
+      flexDirection:"column",gap:"5px",maxWidth:"180px",zIndex:"2"});
+    // Unassigned vocabulary has no graph coordinates. Keep it accessible
+    // without inventing another map position or relocating real nodes.
     for(const c of atlas.clusters){
-      const desc=c.label+", "+c.memberCount+" tags, "+c.count+" tag occurrences"+
-        (c.unmapped?", unassigned frequency group":"");
-      const g=make("g",{transform:"translate("+c.px+" "+c.py+")",class:"studio-tb-atlas-community"},packLayer);
-      const background=make("circle",{r:c.r,
-        fill:"color-mix(in srgb, "+c.color+" 80%, var(--bg-deep))",
-        stroke:c.color,"stroke-width":1.2,role:"button",tabindex:0,
-        "aria-label":desc,style:"cursor:pointer"},g);
-      const groupTitle=make("title",{},background);groupTitle.textContent=desc;
-      activatePacked(background,()=>enterPacked(c));
-      const groupRing=make("circle",{r:Math.max(1,c.r-2),fill:"none","stroke-width":3,
-        "vector-effect":"non-scaling-stroke","pointer-events":"none",opacity:0},g);
-      packedLoss.push({ring:groupRing,id:c.id,total:c.imageCount??c.count,community:true,title:groupTitle,base:desc});
-      for(const child of c.children){
-        const title=child.more?child.more.length+" additional tags, "+child.count+" occurrences":
-          child.tag+", "+child.count+" images";
-        const disk=make("circle",{cx:child.x,cy:child.y,r:child.r,
-          fill:"color-mix(in srgb, "+c.color+" "+(child.more?48:58)+"%, var(--text-primary))",
-          stroke:c.color,"stroke-width":.75,"fill-opacity":child.more?.72:.87,
-          role:"button",tabindex:0,"aria-label":title,style:"cursor:pointer"},g);
-        const diskTitle=make("title",{},disk);diskTitle.textContent=title;
-        if(child.tag){
-          const ring=make("circle",{cx:child.x,cy:child.y,r:Math.max(1,child.r-1),fill:"none",
-            "stroke-width":2,"vector-effect":"non-scaling-stroke","pointer-events":"none",opacity:0},g);
-          packedLoss.push({ring,id:child.tag,total:child.count,title:diskTitle,base:title});
-          if(model.warnings?.has(child.tag)&&child.r>=6){
-            const flag=make("text",{x:child.x+child.r*.58,y:child.y-child.r*.38,fill:"var(--warning)",
-              "font-size":Math.min(13,child.r),"font-weight":900,"pointer-events":"none",opacity:0},g);
-            flag.textContent="!";packedWarnings.push(flag);
-          }
-        }
-        activatePacked(disk,()=>{
-          if(child.more){browsePackedTags(child.more);return;}
-          choose(child.tag,false);center(child.tag);
-        });
-        if(child.r>=15)packedLabel(g,child.label,child.x,child.y+3,
-          Math.min(11,child.r*.37),child.r*1.75,550);
+      const desc=c.label+", "+c.memberCount+" tags, "+c.count+" tag occurrences";
+      if(c.unmapped){
+        const extra=button(packExtras,c.label+" · "+c.memberCount,"Browse "+desc,()=>browsePackedTags(c.memberTags));
+        extra.style.color="var(--text-muted)";
+        extra.className="studio-tb-pair-action";
+        continue;
       }
-      const font=Math.min(22,Math.max(7,c.r*.20));
-      packedLabel(g,c.label,0,0,font,c.r*1.78,750);
-      if(c.r>=25)packedLabel(g,c.memberCount+" tags",0,font*.96,
-        Math.max(7,font*.62),c.r*1.6,600);
+      const members=c.tags.map(tag=>at.get(tag)).filter(Boolean);
+      if(!members.length)continue;
+      // Use the exact same display color as the detailed graph. The
+      // nodes themselves are never duplicated or recolored.
+      const color=members[0].color;
+      const g=make("g",{class:"studio-tb-atlas-community","data-community":String(c.id)},packLayer);
+      const body=make("path",{fill:color,"fill-opacity":.16,stroke:color,"stroke-opacity":.6,
+        "stroke-width":1.5,"stroke-linejoin":"round","vector-effect":"non-scaling-stroke",
+        role:"button",tabindex:0,"aria-label":desc,style:"cursor:pointer"},g);
+      const title=make("title",{},body);title.textContent=desc;
+      activatePacked(body,()=>enterPacked(c));
+      const ring=make("path",{fill:"none","stroke-width":3,"stroke-linejoin":"round",
+        "vector-effect":"non-scaling-stroke","pointer-events":"none",opacity:0},g);
+      packedLoss.push({ring,id:c.id,total:c.imageCount??c.count,community:true,title,base:desc});
+      const labels=make("g",{class:"studio-tb-atlas-community","data-community-label":String(c.id),
+        role:"button",tabindex:0,"aria-label":"Browse "+desc,style:"cursor:pointer"},packLabels);
+      activatePacked(labels,()=>browsePackedTags(c.memberTags));
+      const heading=make("text",{"text-anchor":"middle",fill:color,stroke:"var(--bg-deep)",
+        "paint-order":"stroke","stroke-linejoin":"round","font-weight":750},labels);
+      heading.textContent=c.label;
+      const count=make("text",{"text-anchor":"middle",fill:"var(--text-primary)",stroke:"var(--bg-deep)",
+        "paint-order":"stroke","stroke-linejoin":"round","font-weight":600},labels);
+      count.textContent=c.memberCount+" tags"+(c.memberCount>members.length?" · +"+(c.memberCount-members.length):"");
+      alignedGroups.push({members,body,ring,labels,heading,count,key:null});
+    }
+    function refreshAlignedAtlas(){
+      if(!atlasOpacity)return;
+      for(const g of alignedGroups){
+        const discs=g.members.map(n=>({r:radius(n),...position(n)}));
+        const key=discs.map(n=>[n.x,n.y,n.r].join(",")).join(";");
+        if(key!==g.key){
+          g.key=key;g.envelope=communityEnvelope(discs);
+          g.body.setAttribute("d",g.envelope.path);g.ring.setAttribute("d",g.envelope.path);
+        }
+        const {x,y,width}=g.envelope;
+        const font=Math.min(18/Math.max(.001,overviewZoom),Math.max(9/Math.max(.001,overviewZoom),width*.15));
+        g.labels.setAttribute("transform","translate("+x+" "+(y-font*.95)+")");
+        g.heading.setAttribute("font-size",font);g.heading.setAttribute("stroke-width",font*.19);
+        g.count.setAttribute("y",font*.85);g.count.setAttribute("font-size",font*.68);
+        g.count.setAttribute("stroke-width",font*.14);
+      }
     }
     const auraStates=new Map();
     for(const c of atlas.clusters){
@@ -1169,7 +1215,7 @@ const CaptionStudioViz = (() => {
       ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,w,h);
       const scale=Math.min(width/1000,height/700)*zoom*ratio;
       ctx.setTransform(scale,0,0,scale,w/2-(500+pan.x)*scale,h/2-(350+pan.y)*scale);
-      if(packed)return;
+      if(atlasOpacity>=.999)return;
       // Auras join into a single density body, like liquid droplets.
       if(!picked&&prefs.celestial){
         const moving=!!((drag?.kind==="node"&&drag.moved)||settling);
@@ -1251,6 +1297,7 @@ const CaptionStudioViz = (() => {
     const updateGeometry=(changed=null)=>{
       if(!changed){for(const n of at.values())nodeGeometry(n);}
       else for(const tag of changed){const n=at.get(tag);if(n)nodeGeometry(n);}
+      refreshAlignedAtlas();
       drawStrands();
       updateFocusEdges();
       placeLabels();
@@ -1349,7 +1396,7 @@ const CaptionStudioViz = (() => {
         }
         syncCoverTimer();
       };
-      if(packed){finish();return;}
+      if(atlasOpacity>=.999){finish();return;}
       const boxes=[];
       const coverOpacity=options.coverForTag?coverZoomOpacity(zoom,overviewZoom):0;
       // Avoid unnecessary layout reads or thumbnail requests at overview zoom.
@@ -1796,17 +1843,8 @@ const CaptionStudioViz = (() => {
       let target={...pan};
       if(e){const p=point(e),ratio=zoom/next;
         target={x:p.x-(p.x-500-pan.x)*ratio-500,y:p.y-(p.y-350-pan.y)*ratio-350};}
-      if(packed){
-        if(factor>1){
-          if(e){
-            const p=point(e),c=atlas.clusters.find(c=>Math.hypot(p.x-c.px,p.y-c.py)<=c.r);
-            if(c&&!c.unmapped){enterPacked(c);return;}
-          }
-          fit();return;
-        }
-        return;
-      }
-      if(!picked&&next<overviewZoom*.82&&model.all.length>1)target={x:0,y:0};
+      // No camera reset or recenter at the overview threshold. The
+      // pointer's world coordinate is preserved in both directions.
       cameraTo(next,target,!e);
     }
     button(zoomCtl,"+","Zoom in",()=>zoomBy(1.2));button(zoomCtl,"−","Zoom out",()=>zoomBy(1/1.2));
@@ -1858,7 +1896,7 @@ const CaptionStudioViz = (() => {
       if(camera||settling||pulse)wake();
     }
     svg.addEventListener("pointerdown",e=>{
-      if(packed||e.button!==0||e.target.closest(".studio-tb-orb,.studio-tb-pair-edge,.studio-tb-atlas-community"))return;
+      if(e.button!==0||e.target.closest(".studio-tb-orb,.studio-tb-pair-edge,.studio-tb-atlas-community"))return;
       dismissMenu();cancelMotion();const p=point(e);
       drag={kind:"pan",x:e.clientX,y:e.clientY,world:p,px:pan.x,py:pan.y,moved:false};
       svg.setPointerCapture(e.pointerId);
@@ -1965,7 +2003,7 @@ const CaptionStudioViz = (() => {
     stage.dispose=()=>{disposed=true;stopCoverTimer();document.removeEventListener?.("visibilitychange",visibilityChanged);
       media?.removeEventListener?.("change",visibilityChanged);removeCollection(false);resize.disconnect();theme.disconnect();
       if(frame!==null)cancelAnimationFrame(frame);frame=null;camera=null;settling=null;pulse=null;};
-    stage.append(canvas,svg,search,zoomCtl,spotlight,menu,lossLegend);
+    stage.append(canvas,svg,search,zoomCtl,spotlight,menu,lossLegend,packExtras);
     stage.setLearning=(data,enabled,pending=false)=>{
       if(disposed)return;
       if(lossData===data&&lossEnabled===!!enabled&&lossPending===!!pending)return;
@@ -1999,7 +2037,7 @@ const CaptionStudioViz = (() => {
     return stage;
   }
 
-  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings,tagDirection,tagArrow,auraDensity,auraCache,auraPaintAlpha,mergeAuraFields,coverZoomLevels,coverZoomOpacity,countRadius});
+  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings,tagDirection,tagArrow,auraDensity,auraCache,auraPaintAlpha,mergeAuraFields,coverZoomLevels,coverZoomOpacity,countRadius,communityEnvelope,overviewBlend});
 })();
 // A classic WebWorker can import this existing pure graph implementation
 // without maintaining a second constellation algorithm.

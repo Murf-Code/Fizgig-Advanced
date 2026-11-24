@@ -123,3 +123,11 @@ for(const [i,a] of enlarged.nodes.entries())for(const b of enlarged.nodes.slice(
   assert.ok(Math.hypot(a.x-b.x,a.y-b.y)+1e-6>=sum,"Enlarged node disks must not overlap at rest");
 }
 console.log("Node size bounds and expanded layout passed");
+
+const envelope=Viz.communityEnvelope([{x:0,y:0,r:20},{x:60,y:10,r:10}]);
+assert.ok(envelope.path.startsWith("M ")&&envelope.path.endsWith(" Z"));
+assert.ok(envelope.width>=100);
+assert.equal(Viz.overviewBlend(1,1),0);
+assert.equal(Viz.overviewBlend(.65,1),1);
+assert.ok(Viz.overviewBlend(.85,1)>0&&Viz.overviewBlend(.85,1)<1);
+console.log("Aligned community envelopes and continuous overview transition passed");
