@@ -13219,7 +13219,7 @@ function studioThumbIndex(offsets,position){
 // Confirmation for Caption Workbench image and tag removal. It is shared by
 // right-click actions, Delete shortcuts, the legacy caption cards and batch
 // tools; nothing is changed until the user explicitly confirms.
-function captionConfirmRemoval({title,detail,items=[],confirmLabel="Remove"}) {
+function captionConfirmRemoval({title,detail,items=[],confirmLabel="Remove",informational=false}) {
   if(document.querySelector(".caption-removal-backdrop"))return Promise.resolve(false);
   return new Promise(resolve=>{
     const lastFocus=document.activeElement;
@@ -13263,9 +13263,9 @@ function captionConfirmRemoval({title,detail,items=[],confirmLabel="Remove"}) {
       resolve(confirmed);
     };
     const cancel=el("button",{class:"btn",type:"button",text:"Cancel",onclick:()=>close(false)});
-    const proceed=el("button",{class:"btn btn-danger",type:"button",
+    const proceed=el("button",{class:informational?"btn btn-primary":"btn btn-danger",type:"button",
       text:confirmLabel,onclick:()=>close(true)});
-    const footer=el("div",{class:"caption-removal-actions"},cancel,proceed);
+    const footer=el("div",{class:"caption-removal-actions"},...(informational?[proceed]:[cancel,proceed]));
     modal.append(el("header",{class:"caption-removal-heading"},heading),body,footer);
     backdrop.append(modal);document.body.append(backdrop);
     backdrop.addEventListener("pointerdown",e=>{if(e.target===backdrop)close(false);});
@@ -13277,7 +13277,7 @@ function captionConfirmRemoval({title,detail,items=[],confirmLabel="Remove"}) {
       else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
     });
     // Cancel, never the destructive action, receives initial keyboard focus.
-    cancel.focus({preventScroll:true});
+    (informational?proceed:cancel).focus({preventScroll:true});
   });
 }
 
@@ -15970,19 +15970,28 @@ function renderCaptionStudio(host,items,ext){
     studioCaptionMode(it)==="tags");
   const cleanTags=async(kind)=>{
     const eligible=selectedForEdit();
-    if(!eligible.length)return say("No unlocked tag captions selected.");
+    const label=kind==="duplicate"?"duplicate":"empty";
+    const report=(detail,items=[])=>captionConfirmRemoval({title:"Tag cleanup results",detail,items,confirmLabel:"Done",informational:true});
+    if(!eligible.length)return report("No unlocked tag captions selected. No changes made.");
     if(eligible.length>1000)return say("Tag cleanup supports up to 1000 images per operation.");
     if(eligible.some(it=>S.cap.studioDrafts?.has(it.path)&&
         S.cap.studioDrafts.get(it.path)!==(it.caption??"")))
       return say("Save caption drafts before tag cleanup.");
     const changes=eligible.map(it=>{
       const original=it.caption??"";
-      const tags=studioTokens(original,"tags");
-      const cleaned=kind==="duplicate"?studioUnique(tags):tags.filter(Boolean);
+      const delimiter=S.cap.studioDelimiter||",";
+      const line=original.split(/\r?\n/,1)[0];
+      const fields=line.split(delimiter).map(x=>x.trim());
+      const tags=fields.filter(Boolean);
+      const seen=new Set(),duplicates=[];
+      for(const tag of tags){const key=tag.toLocaleLowerCase();if(seen.has(key))duplicates.push(tag);else seen.add(key);}
+      const removed=kind==="duplicate"?duplicates.length:(line.trim()?fields.length-tags.length:0);
+      const cleaned=kind==="duplicate"?studioUnique(tags):tags;
       return {folder:capItemFolder(it),name:it.name,path:it.path,before:it.caption,
-        after:studioCompose(original,cleaned,"tags")};
-    }).filter(r=>r.after!==r.before);
-    if(!changes.length)return say("No "+(kind==="duplicate"?"duplicate":"empty")+" tags found.");
+        removed,duplicates,after:removed?studioCompose(original,cleaned,"tags"):original};
+    }).filter(r=>r.removed>0&&r.after!==r.before);
+    if(!changes.length)return report("Checked "+eligible.length+" captions. No "+label+" tags found. No changes made.");
+    const total=changes.reduce((sum,row)=>sum+row.removed,0);
     if(!(await captionConfirmRemoval({
       title:"Remove "+(kind==="duplicate"?"duplicate":"empty")+" tags?",
       detail:"Clean "+changes.length+" caption"+(changes.length===1?"":"s")+" in the selected images. This can be undone.",
@@ -15999,7 +16008,9 @@ function renderCaptionStudio(host,items,ext){
       }
       S.cap.studioRevision=(S.cap.studioRevision||0)+1;
       renderCaptions();
-    }catch(err){say(err.message);}
+      await report("Removed "+total+" "+label+" tag"+(total===1?"":"s")+" from "+changes.length+" of "+eligible.length+" checked captions. You can undo this edit.",
+        changes.map(row=>row.name+" — "+row.removed+" removed"+(kind==="duplicate"?": "+row.duplicates.join(", "):"")));
+    }catch(err){await report("Cleanup failed: "+err.message);}
   };
   // Delete Tag removes the *selected tags* from the *selected images*
   // (or the active image if no images are selected). It never assumes an
