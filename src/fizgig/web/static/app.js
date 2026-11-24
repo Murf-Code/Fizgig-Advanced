@@ -36,8 +36,8 @@ const S = {
 };
 
 // ---- server ------------------------------------------------------------------------------------------------
-async function api(path, body) {
-  const opt = {headers: {"X-Fizgig-Token": TOKEN}};
+async function api(path, body, signal) {
+  const opt = {headers: {"X-Fizgig-Token": TOKEN}, signal};
   if (body !== undefined) {
     opt.method = "POST";
     opt.headers["Content-Type"] = "application/json";
@@ -11566,8 +11566,10 @@ function capSentShow() {                         // the line under the ticks: ex
 }
 
 
-async function loadCaptionOptions() {
-  const o = S.cap.opts = await api("/api/captions/options?family=" + encodeURIComponent(S.family));
+async function loadCaptionOptions(signal, family=S.family) {
+  const o = await api("/api/captions/options?family=" + encodeURIComponent(family),undefined,signal);
+  if(signal?.aborted||family!==S.family)return;
+  S.cap.opts=o;
   const saved = S.capSaved || {};
   const model = $("capModel");
   model.innerHTML = "";
@@ -11908,13 +11910,35 @@ function captionInitialState(state,detail=""){
   $("captionInitialRetry").hidden=state!=="error";
   $("captionInitialState").setAttribute("aria-busy",String(loading));
 }
+// Abort hung reads instead of leaving the workbench skeleton indefinitely.
+async function captionLoadRequest(label,ms,request){
+  const controller=new AbortController();
+  let timer;
+  try{
+    return await Promise.race([
+      Promise.resolve().then(()=>request(controller.signal)),
+      new Promise((_,reject)=>{timer=setTimeout(()=>{
+        reject(new Error(label+" timed out. Check the dataset drive or retry."));
+        controller.abort();
+      },ms);})
+    ]);
+  }finally{clearTimeout(timer);}
+}
 async function loadCaptions() {
   // Discard stale requests when datasets or caption extensions change while
   // a slower media/review/status request is still in flight.
   const serial=S.cap.loadSerial=(S.cap.loadSerial||0)+1;
   const current=()=>serial===S.cap.loadSerial;
   const tab=$("tab-captions");
-  const datasetKey=JSON.stringify([String(S.imageFolder||""),capExt(),S.family||""]);
+  const key=()=>JSON.stringify([String(S.imageFolder||""),capExt(),S.family||""]);
+  const datasetKey=key();
+  const valid=()=>{
+    if(!current())return false;
+    if(key()===datasetKey)return true;
+    // Do not abandon the only opening request if the dataset changes.
+    if(tab.classList.contains("active"))void loadCaptions().catch(console.warn);
+    return false;
+  };
   const sameWorkspace=tab.dataset.captionLoad==="ready"&&S.cap.studioMountedDataset===datasetKey;
   if(!sameWorkspace)captionInitialState("loading");
   try {
@@ -11925,14 +11949,14 @@ async function loadCaptions() {
     if(!currentFolder||(old!==currentFolder&&!old.startsWith(currentFolder+"/"))){
       if(!(await captionImageClose()))
         throw new Error("Finish and close the previous dataset's picture editor first.");
-      if(!current())return;
+      if(!valid())return;
     }
   }
-  if (!S.cap.opts || S.cap.optsFamily !== S.family) {        // a model change can bring the song card
-    await loadCaptionOptions().catch((e) => {        // said, and asked again next time the tab opens
-      S.cap.opts = null; $("capModelHint").textContent = `Couldn't get the caption models: ${e.message}`; });
-    if(!current())return;
-    S.cap.optsFamily = S.family;
+  if (!S.cap.opts || S.cap.optsFamily !== S.family) {
+    await captionLoadRequest("Caption model options",8000,signal=>loadCaptionOptions(signal))
+      .catch(e=>{if(current()){S.cap.opts=null;$("capModelHint").textContent="Couldn't get the caption models: "+e.message;}});
+    if(!valid())return;
+    if(S.cap.opts)S.cap.optsFamily=S.family;
   }
   pollCaptions();
   $("captionExt").value = capExt();         // the files this tab writes and reads are the ones training reads
@@ -11964,23 +11988,23 @@ async function loadCaptions() {
     return;
   }
   const ext = $("captionExt").value.trim() || ".txt",folderAtRequest=String(S.imageFolder);
-  const r = await api(`/api/captions?folder=${encodeURIComponent(capFolder())}` +
-    `&ext=${encodeURIComponent(ext)}&family=${encodeURIComponent(S.family || "")}`);
-  if(!current()||String(S.imageFolder)!==folderAtRequest||capExt()!==ext)return;
-  const items=r.items;                      // pictures and largest detail crops
+  const r = await captionLoadRequest("Dataset scan",120000,signal=>api(
+    `/api/captions?folder=${encodeURIComponent(folderAtRequest)}&ext=${encodeURIComponent(ext)}&family=${encodeURIComponent(S.family||"")}`,undefined,signal));
+  if(!valid())return;
+  if(!Array.isArray(r.items))throw new Error("The dataset scan returned no image list.");
+  const items=r.items;
   const folders=[...new Set(items.map(capItemFolder))];
   const reviewLookup=new Map();
-  const liveRequest=api("/api/captions/live_status?folder="+encodeURIComponent(folderAtRequest)).catch(()=>null);
   await Promise.all(folders.map(async folder=>{
     try{
-      const data=await api("/api/captions/reviews?folder="+encodeURIComponent(folder));
-      reviewLookup.set(folder,new Set(data.reviewed||[]));
-    }catch(e){reviewLookup.set(folder,new Set());console.warn("Caption review status:",e.message);}
+      const data=await captionLoadRequest("Review status",15000,signal=>api(
+        "/api/captions/reviews?folder="+encodeURIComponent(folder),undefined,signal));
+      if(!Array.isArray(data.reviewed))throw new Error("Invalid review status");
+      reviewLookup.set(folder,new Set(data.reviewed));
+    }catch(e){throw new Error("Could not check reviewed images in "+folder+": "+e.message);}
   }));
-  if(!current())return;
+  if(!valid())return;
   const reviewed=new Set(items.filter(it=>reviewLookup.get(capItemFolder(it))?.has(it.name)).map(it=>it.path));
-  const liveStatus=await liveRequest;
-  if(!current()||String(S.imageFolder)!==folderAtRequest||capExt()!==ext)return;
   // Refresh must not keep removed paths in a bulk selection or as the active image.
   const kept=CaptionStudioSelection.prune(items,S.cap.studioSelection||[],
     S.cap.studioPath,S.cap.studioSelectionAnchor);
@@ -11992,14 +12016,20 @@ async function loadCaptions() {
   S.cap.studioSelectionAnchor=kept.anchor;
   S.cap.items=items;
   S.cap.studioReviewed=reviewed;
-  S.cap.liveStatus=liveStatus;
+  if(!sameWorkspace)S.cap.liveStatus=null;
   S.cap.studioMounting=true;
   try{renderCaptions();}
   finally{S.cap.studioMounting=false;}
   S.cap.studioMountedDataset=datasetKey;
   captionInitialState("ready");
+  // Optional training diagnostics must not gate the editor mount.
+  void captionLoadRequest("Live training status",10000,signal=>api(
+    "/api/captions/live_status?folder="+encodeURIComponent(folderAtRequest),undefined,signal))
+    .then(status=>{if(current()&&key()===datasetKey){S.cap.liveStatus=status;S.cap.studioStatusRefresh?.();}})
+    .catch(e=>console.warn("Caption live status:",e.message));
   }catch(error){
-    if(current()&&!sameWorkspace)captionInitialState("error",error.message);
+    if(current()&&key()!==datasetKey){valid();return;}
+    if(current()&&!sameWorkspace)captionInitialState("error",error.message||String(error));
     if(current()&&sameWorkspace){
       console.warn("Caption Workbench refresh:",error);
       throw error;
@@ -13050,7 +13080,9 @@ function captionWorkbenchSettingsOpen(advanced=false,initializeOnly=false){
       renderCaptions();
     });
     row("Show tag autocomplete suggestions",autocomplete,"Uses known tags in the active dataset");
-    const constellation=CaptionStudioViz.constellationPrefs(prefs.constellation);
+    const constellation=(typeof CaptionStudioViz!=="undefined"&&CaptionStudioViz.constellationPrefs)
+      ? CaptionStudioViz.constellationPrefs(prefs.constellation)
+      : {elasticity:20,glass:true,celestial:true};
     S.cap.studioConstellationPrefs=constellation;
     const applyConstellation=()=>{
       savePref("constellation",constellation);
