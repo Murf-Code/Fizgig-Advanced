@@ -13275,12 +13275,20 @@ function captionConfirmRemoval({title,detail,items=[],confirmLabel="Remove",info
     backdrop.addEventListener("pointerdown",e=>{if(e.target===backdrop)close(false);});
     backdrop.addEventListener("keydown",e=>{
       if(e.key==="Escape"){e.preventDefault();e.stopPropagation();close(false);return;}
+      if(e.key==="Enter"&&!e.isComposing){
+        e.preventDefault();e.stopPropagation();
+        if(e.repeat)return;
+        if(document.activeElement?.classList?.contains("caption-removal-toggle")){
+          document.activeElement.click();return;
+        }
+        close(true);return;
+      }
       if(e.key!=="Tab")return;
       const focusable=[...modal.querySelectorAll("button")],first=focusable[0],last=focusable[focusable.length-1];
       if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
       else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
     });
-    // Cancel, never the destructive action, receives initial keyboard focus.
+    // Enter confirms the dialog; Escape cancels. Keep initial focus on Cancel.
     (informational?proceed:cancel).focus({preventScroll:true});
   });
 }
