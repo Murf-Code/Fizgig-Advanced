@@ -16343,7 +16343,8 @@ function renderCaptionStudio(host,items,ext){
           };
           const resume=S.cap.studioConstellationReturn?.key===datasetKey?
             S.cap.studioConstellationReturn:null;
-          const collectionItems=(tag,peer)=>rowsForTag(tag)
+          const scopedRows=(tag,trail=[])=>rowsForTag(tag).filter(({tags})=>trail.every(t=>tags.has(t)));
+          const collectionItems=(tag,peer,trail=[])=>scopedRows(tag,trail)
             .filter(({it,tags})=>it.size&&(!peer||tags.has(peer))).map(({it})=>it);
           const network=CaptionStudioViz.tagbenchConstellation(model,tag=>{
 
@@ -16382,6 +16383,7 @@ function renderCaptionStudio(host,items,ext){
                 encodeURIComponent(TOKEN)+"&v="+(S.cap.studioThumbRevisions?.get(it.path)||0);
             },
             collectionItems,
+            branching:true,
             waterfallScale:()=>S.cap.studioWaterfallScale,
             onCollectionChange:visible=>{
               waterfallScaleControl.hidden=!visible;
@@ -16392,7 +16394,8 @@ function renderCaptionStudio(host,items,ext){
               $("capSearch").value="";
               $("capFilter").value="all";
               S.cap.studioLearningFilter="all";
-              S.cap.studioQuery=peer?CaptionStudioTags.addFilter(JSON.stringify(tag),peer):JSON.stringify(tag);
+              const tags=[...new Set([...(state.branchTrail||[]),tag,...(peer?[peer]:[])])];
+              S.cap.studioQuery=tags.slice(1).reduce((query,t)=>CaptionStudioTags.addFilter(query,t),JSON.stringify(tags[0]));
               S.cap.studioExploreMode="waterfall";
               S.cap.studioExploreNeedRedraw=true;
               S.cap.studioThumbScrollTop=0;S.cap.page=0;
@@ -16410,13 +16413,13 @@ function renderCaptionStudio(host,items,ext){
               S.cap.studioExploreNeedRedraw=true;
               openView("list");
             },
-            relationsForTag:tag=>{
+            relationsForTag:(tag,trail=[])=>{
               const related=new Map();
-              for(const {tags} of rowsForTag(tag))
+              for(const {tags} of scopedRows(tag,trail))
                 for(const peer of tags)if(peer!==tag)related.set(peer,(related.get(peer)||0)+1);
               return related;
             },
-            previewPair:(tag,peer)=>rowsForTag(tag).filter(row=>row.tags.has(peer))
+            previewPair:(tag,peer,trail=[])=>scopedRows(tag,trail).filter(row=>row.tags.has(peer))
               .slice(0,4).map(({it})=>({src:thumbUrl(it),name:it.name})),
             openPair:(tag,peer)=>{
               // The graph measures the whole dataset. Use the same scope

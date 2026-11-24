@@ -274,6 +274,34 @@ try {
   assert.ok(!allIn(diag).some(n=>n.textContent==="Mean relative loss 2.000 · 3/3 measured"));
   diag.dispose();
 
+  const branchRows=[
+    ...Array.from({length:12},()=>({tags:["feline","lion","mane"]})),
+    ...Array.from({length:8},()=>({tags:["feline","lion"]})),
+    ...Array.from({length:40},()=>({tags:["feline","tiger"]})),
+    ...Array.from({length:4},()=>({tags:["lion","mane"]}))
+  ];
+  const branchModel=Viz.tagbenchModel(branchRows);
+  const matching=(tag,trail=[])=>branchRows.filter(r=>r.tags.includes(tag)&&trail.every(t=>r.tags.includes(t)));
+  let handed=null;
+  const branch=Viz.tagbenchConstellation(branchModel,()=>{},"feline",{
+    branching:true,
+    relationsForTag:(tag,trail=[])=>{
+      const found=new Map();
+      for(const row of matching(tag,trail))for(const peer of row.tags)
+        if(peer!==tag)found.set(peer,(found.get(peer)||0)+1);
+      return found;
+    },
+    collectionItems:(tag,peer,trail=[])=>matching(tag,trail).filter(r=>!peer||r.tags.includes(peer)),
+    openWaterfall:(tag,peer,state)=>{handed=state;}
+  });
+  byLabel(branch,"Follow branch to lion").handlers.click({stopPropagation(){}});
+  assert.ok(allIn(branch).some(n=>n.textContent==="20 images matching the entire branch"));
+  byLabel(branch,"Open lion in Waterfall").handlers.click();
+  assert.deepEqual(handed.branchTrail,["feline","lion"]);
+  byLabel(branch,"Back one branch level").handlers.click();
+  assert.ok(!allIn(branch).some(n=>n.textContent==="20 images matching the entire branch"));
+  branch.dispose();
+
   // One shared timer, actual href advancement, pause while Waterfall
   // is open, and cleanup when the map is disposed.
   const oldInterval=global.setInterval,oldClear=global.clearInterval,oldMatch=global.matchMedia;
@@ -371,3 +399,13 @@ assert.equal(warningModel.warnings.get("blue eyes").variantCount,2);
 assert.equal(warningModel.warnings.has("lion"),false);
 assert.equal(warningModel.atlas.clusters.reduce((sum,c)=>sum+c.imageCount,0)>=2,true);
 console.log("Loss aggregation, no double counting, low-sample caution and caption warnings passed");
+
+assert.equal(Viz.tagDirection(760,2400,800),1);
+assert.equal(Viz.tagDirection(760,800,2400),-1);
+assert.equal(Viz.tagDirection(80,100,100),0);
+assert.equal(Viz.tagDirection(2,100,2),0);
+assert.equal(Viz.tagDirection(20,100,60),0);
+const arrow=Viz.tagArrow({x:0,y:0},{x:100,y:0},20,8,4);
+assert.ok(arrow&&Math.abs(Math.hypot(arrow[0].x-100,arrow[0].y)-20)<.1);
+assert.equal(Viz.tagArrow({x:0,y:0},{x:10,y:0},20,8,4),null);
+console.log("Directional tag associations and arrow geometry passed");

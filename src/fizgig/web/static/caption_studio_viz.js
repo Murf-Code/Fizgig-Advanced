@@ -336,6 +336,28 @@ const CaptionStudioViz = (() => {
     }
     return {all,top,edges,linkCounts,covers,coverSamples,imageCount:items.length};
   }
+  // Direction means observed asymmetric containment, not semantic ancestry.
+  function tagDirection(shared,a,b){
+    if(!Number.isFinite(shared)||shared<5||shared>Math.min(a,b))return 0;
+    const left=shared/a,right=shared/b;
+    return right>=.72&&right-left>=.25?1:left>=.72&&left-right>=.25?-1:0;
+  }
+  function tagArrow(from,to,targetRadius,length,width,orientation=1){
+    const dx=to.x-from.x,dy=to.y-from.y;
+    const cx=(from.x+to.x)/2-dy*.09*orientation,cy=(from.y+to.y)/2+dx*.09*orientation;
+    if(Math.hypot(dx,dy)<=targetRadius+length)return null;
+    const point=t=>({x:(1-t)**2*from.x+2*(1-t)*t*cx+t*t*to.x,y:(1-t)**2*from.y+2*(1-t)*t*cy+t*t*to.y});
+    let lo=0,hi=1;
+    for(let i=0;i<12;i++){
+      const mid=(lo+hi)/2,p=point(mid);
+      if(Math.hypot(p.x-to.x,p.y-to.y)>targetRadius)lo=mid;else hi=mid;
+    }
+    const t=(lo+hi)/2,tip=point(t);
+    const tx=(1-t)*(cx-from.x)+t*(to.x-cx),ty=(1-t)*(cy-from.y)+t*(to.y-cy);
+    const norm=Math.hypot(tx,ty)||1,ux=tx/norm,uy=ty/norm;
+    return [tip,{x:tip.x-ux*length-uy*width,y:tip.y-uy*length+ux*width},
+      {x:tip.x-ux*length+uy*width,y:tip.y-uy*length-ux*width}];
+  }
   function tagAffinity(shared,leftCount,rightCount){
     return shared/Math.sqrt(leftCount*rightCount)*shared/(shared+2);
   }
@@ -840,6 +862,7 @@ const CaptionStudioViz = (() => {
     const visual=new Map();
     let labelOrder=nodes,overviewCamera=null,overviewZoom=1;
     let rarePage=0,activePair=null,collection=null,collectionMotion=null;
+    let branchTrail=[],globalShared=new Map();
     const rarePageSize=16,primaryTags=new Set(nodes.map(n=>n.tag));
     const wheelPause=180,wheelExitDistance=40;
     let closingWheel=null;
@@ -859,6 +882,7 @@ const CaptionStudioViz = (() => {
     const backbone=new Set(model.chosen.map(e=>e.a+"\0"+e.b));
     const overviewEdges=model.edges.filter(e=>at.has(e.a)&&at.has(e.b)).map(edge=>({
       ...edge,strength:tagAffinity(edge.w,at.get(edge.a).count,at.get(edge.b).count),
+      direction:tagDirection(edge.w,at.get(edge.a).count,at.get(edge.b).count),
       backbone:backbone.has(edge.a+"\0"+edge.b)
     })).sort((a,b)=>b.strength-a.strength);
     const strongest=overviewEdges[0]?.strength||1;
@@ -1031,6 +1055,20 @@ const CaptionStudioViz = (() => {
         ctx.beginPath();
         for(const e of edges)curve(e.a,e.b);
         ctx.stroke();
+        // Keep all lines; arrows on the sparse backbone prevent clutter.
+        if(backbone){
+          ctx.fillStyle=ctx.strokeStyle;ctx.globalAlpha=.56+band*.08;ctx.beginPath();
+          for(const e of edges){
+            if(!e.direction)continue;
+            const from=at.get(e.direction===1?e.a:e.b),to=at.get(e.direction===1?e.b:e.a);
+            const points=tagArrow(position(from),position(to),radius(to)+3*ratio/scale,
+              (6+band)*ratio/scale,(3+band*.4)*ratio/scale,e.direction);
+            if(!points)continue;
+            ctx.moveTo(points[0].x,points[0].y);ctx.lineTo(points[1].x,points[1].y);
+            ctx.lineTo(points[2].x,points[2].y);ctx.closePath();
+          }
+          ctx.fill();
+        }
       }
     }
     function updateFocusEdges(){
@@ -1043,6 +1081,13 @@ const CaptionStudioViz = (() => {
         edge.line.setAttribute("d",path);edge.hit.setAttribute("d",path);
         edge.line.setAttribute("stroke-width",1.25+9.5*strength);
         edge.line.setAttribute("stroke-opacity",activePair===tag?1:.42+.48*strength);
+        if(edge.arrow){
+          const target=at.get(edge.direction===1?tag:picked);
+          const vertices=tagArrow(edge.direction===1?from:to,edge.direction===1?to:from,
+            radius(target)+8*typeScale/zoom,(9+6*strength)*typeScale/zoom,(4+3*strength)*typeScale/zoom,edge.direction);
+          const shape=vertices?"M "+vertices.map(p=>p.x+" "+p.y).join(" L ")+" Z":"";
+          edge.arrow.setAttribute("d",shape);edge.arrowHit?.setAttribute("d",shape);
+        }
         edge.caption.setAttribute("x",.04*from.x+.32*cx+.64*to.x);
         edge.caption.setAttribute("y",.04*from.y+.32*cy+.64*to.y-10*typeScale/zoom);
         edge.caption.setAttribute("font-size",13*typeScale/zoom);
@@ -1327,7 +1372,13 @@ const CaptionStudioViz = (() => {
           "Possible formatting variants: "+warning.variants.join(", ")+(warning.variantCount>warning.variants.length?" …":""),spotlight);
         if(!warning)html("div","studio-tb-pair-count","No repeated-tag or formatting-variant warnings",spotlight);
       }
-      if(options.collectionItems)button(spotlight,"View "+n.count+" "+(n.count===1?"image":"images"),
+      const scoped=branchTrail.length>1?options.collectionItems?.(picked,null,branchTrail)?.length??n.count:n.count;
+      if(branchTrail.length>1){
+        html("div","studio-tb-pair-count",branchTrail.join(" → "),spotlight);
+        html("div","studio-tb-pair-count",scoped+" images matching the entire branch",spotlight);
+        button(spotlight,"← Back one tag","Back one branch level",backBranch).className="studio-tb-pair-action";
+      }
+      if(options.collectionItems)button(spotlight,"View "+scoped+" "+(scoped===1?"image":"images"),
         "View images tagged "+picked,()=>openCollection(picked)).className="studio-tb-pair-action";
       if(options.openWaterfall)button(spotlight,"Open in Waterfall","Open "+picked+" in Waterfall",
         ()=>options.openWaterfall(picked,null,collectionState(picked,null))).className="studio-tb-pair-action";
@@ -1349,17 +1400,25 @@ const CaptionStudioViz = (() => {
       for(const [tag,w] of shared){
         if(!focusedTags.has(tag))continue;
         const item=html("li","",undefined,list);
-        const b=button(item,tag,"Focus "+tag,()=>choose(tag));b.style.color=at.get(tag)?.color||"";
+        const direction=tagDirection(globalShared.get(tag)||0,n.count,all.get(tag).count);
+        const b=button(item,(direction===1?"→ ":direction===-1?"← ":"")+tag,"Focus "+tag,()=>choose(tag));b.style.color=at.get(tag)?.color||"";
+        if(options.branching&&direction===1)
+          button(item,"→","Follow branch to "+tag,()=>followBranch(tag)).className="studio-tb-pair-count-button";
         const pair=button(item,String(w),"Preview "+w+" shared images with "+tag,()=>inspectPair(tag));
         pair.className="studio-tb-pair-count-button";
       }
     }
     function renderPairPreview(){
-      const matches=options.previewPair?.(picked,activePair)||[];
+      const matches=(options.branching?options.previewPair?.(picked,activePair,branchTrail):options.previewPair?.(picked,activePair))||[];
       const preview=html("section","studio-tb-pair-preview",undefined,spotlight);
       html("strong","",picked+" + "+activePair,preview);
       const count=shared.get(activePair);
       html("div","studio-tb-pair-count",count+(count===1?" shared image":" shared images"),preview);
+      const total=globalShared.get(activePair)||0,a=at.get(picked).count,b=all.get(activePair).count;
+      html("div","studio-tb-pair-count",Math.round(100*total/a)+"% of "+picked+" images also "+activePair+
+        " · "+Math.round(100*total/b)+"% in reverse",preview);
+      if(options.branching&&!branchTrail.includes(activePair))
+        button(preview,"Follow branch →","Follow branch to "+activePair,()=>followBranch(activePair)).className="studio-tb-pair-action";
       const tiles=html("div","studio-tb-pair-thumbs",undefined,preview);
       for(const {src,name} of matches){
         const img=html("img","",undefined,tiles);
@@ -1389,19 +1448,19 @@ const CaptionStudioViz = (() => {
     }
     function collectionState(tag,peer,image=null,imageIndex=0,offset=0){
       return {tag,peer,path:image?.path,imageIndex,offset,zoom,pan:{...pan},overviewCamera,
-        query:input.value,picked,positions:nodes.map(n=>[n.tag,n.x,n.y])};
+        query:input.value,picked,branchTrail:[...branchTrail],positions:nodes.map(n=>[n.tag,n.x,n.y])};
     }
     function openCollection(tag,peer=null,resume=null,animate=true){
       if(!options.collectionItems||!tag||collection)return;
       cancelMotion();stopCoverTimer();
-      const pictures=options.collectionItems(tag,peer);
+      const pictures=options.collectionItems(tag,peer,branchTrail);
       const previousFocus=document.activeElement;
       const panel=html("section","studio-tb-collection");
       const header=html("header","studio-tb-collection-header",undefined,panel);
       const back=button(header,"← Back to map","Back to Constellation map",closeCollection);
       back.className="studio-tb-pair-action";
       back.title="Back to map · Scroll down over this header or scroll up at the top of the images";
-      const heading=html("h3","",tag+(peer?" + "+peer:""),header);
+      const heading=html("h3","",branchTrail.length>1?[...new Set([...branchTrail,tag,...(peer?[peer]:[])])].join(" + "):tag+(peer?" + "+peer:""),header);
       heading.style.color=at.get(tag)?.color||"";
       panel.setAttribute("aria-label",heading.textContent+" image collection");
       html("span","",pictures.length+" "+(pictures.length===1?"image":"images"),header);
@@ -1414,7 +1473,7 @@ const CaptionStudioViz = (() => {
       if(related.length){
         const filter=html("select","studio-tb-collection-filter",undefined,header);
         filter.setAttribute("aria-label","Filter by related tag");
-        html("option","","All "+tag+" images",filter).value="";
+        html("option","",""+(branchTrail.length>1?"All branch images":"All "+tag+" images"),filter).value="";
         for(const other of related)html("option","",other,filter).value=other;
         filter.value=peer||"";
         filter.addEventListener("change",()=>{
@@ -1497,36 +1556,63 @@ const CaptionStudioViz = (() => {
         const caption=make("text",{"text-anchor":"middle",fill:"var(--text-primary)",stroke:"var(--bg-deep)",
           "paint-order":"stroke","font-weight":750,"pointer-events":"none","aria-hidden":"true"},control);
         caption.textContent=count;
+        const direction=tagDirection(globalShared.get(tag)||0,anchor.count,n.count);
+        let arrow=null,arrowHit=null;
+        if(direction){
+          arrow=make("path",{fill:n.color,stroke:n.color,"stroke-width":.6,"pointer-events":"none",
+            "data-direction":direction===1?"outgoing":"incoming"},control);
+          if(direction===1&&options.branching){
+            arrowHit=make("path",{fill:"transparent",stroke:"transparent","stroke-width":12,
+              "vector-effect":"non-scaling-stroke",role:"button",tabindex:0,
+              "aria-label":"Follow branch to "+tag,style:"cursor:pointer"},control);
+            const follow=e=>{e?.stopPropagation?.();followBranch(tag);};
+            arrowHit.addEventListener("click",follow);
+            arrowHit.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();follow(e);}});
+          }
+        }
         const openRelationship=()=>options.collectionItems?openCollection(picked,tag):inspectPair(tag);
         control.addEventListener("click",openRelationship);
         control.addEventListener("keydown",event=>{
           if(event.key!=="Enter"&&event.key!==" ")return;
           event.preventDefault();openRelationship();
         });
-        focusEdges.set(tag,{line,hit,caption});
+        focusEdges.set(tag,{line,hit,caption,arrow,arrowHit,direction});
       });
     }
     function selectNeighborhood(tag){
       if(!picked&&tag)overviewCamera={zoom,pan:{...pan}};
       camera=null;picked=tag;activePair=null;rarePage=0;
       if(tag){
-        const related=options.relationsForTag?.(tag)||relationMap(tag);
-        shared=new Map([...related].filter(([peer])=>peer!==tag&&all.has(peer))
+        globalShared=options.relationsForTag?.(tag)||relationMap(tag);
+        const related=branchTrail.length>1?(options.relationsForTag?.(tag,branchTrail)||globalShared):globalShared;
+        const ancestors=new Set(branchTrail.slice(0,-1));
+        shared=new Map([...related].filter(([peer])=>peer!==tag&&all.has(peer)&&!ancestors.has(peer))
           .sort((a,b)=>associationStrength(b[0],b[1])-associationStrength(a[0],a[1])
             ||b[1]-a[1]||a[0].localeCompare(b[0])));
       }else{
-        shared=new Map();
+        shared=new Map();globalShared=new Map();
         if(overviewCamera){zoom=overviewCamera.zoom;pan=overviewCamera.pan;overviewCamera=null;}
       }
       layoutNeighborhood();view();renderPanel();updateAppearance();
     }
-    function choose(tag,toggle=true){
+    function choose(tag,toggle=true,keepBranch=false){
       if(tag&&toggle&&tag===picked)tag=null;
       if(tag&&!ensureTag(tag))return;
+      if(!keepBranch)branchTrail=tag?[tag]:[];
       if(pulse){visual.get(pulse.tag)?.ripple.setAttribute("opacity","0");pulse=null;}
       selectNeighborhood(tag);
       onPick?.(picked);
       if(picked&&!reduced()&&prefs.elasticity>0){pulse={tag:picked,start:performance.now(),amount:0};wake();}
+    }
+    function followBranch(tag){
+      if(!options.branching||!picked||!shared.has(tag)||branchTrail.includes(tag))return;
+      branchTrail=[...(branchTrail.length?branchTrail:[picked]),tag];
+      choose(tag,false,true);center(tag);
+    }
+    function backBranch(){
+      if(branchTrail.length<2)return false;
+      branchTrail.pop();const tag=branchTrail[branchTrail.length-1];
+      choose(tag,false,true);center(tag);return true;
     }
     function openMenu(tag,x,y){
       dismissMenu();const rect=stage.getBoundingClientRect();
@@ -1557,6 +1643,7 @@ const CaptionStudioViz = (() => {
     }
     function zoomBy(factor,e=null){
       const next=Math.min(5,Math.max(.35,zoom*factor));
+      if(factor<1&&branchTrail.length>1&&next<=overviewZoom*.95){backBranch();return;}
       if(next===zoom)return;
       let target={...pan};
       if(e){const p=point(e),ratio=zoom/next;
@@ -1737,13 +1824,21 @@ const CaptionStudioViz = (() => {
     stage.setPreferences(prefs);view();
     if(nodes.length)fit(false);
     else html("p","studio-tb-empty-graph","No tagged images in this dataset.",stage);
-    if(pickedTag&&ensureTag(pickedTag))selectNeighborhood(pickedTag);
+    if(pickedTag&&ensureTag(pickedTag)){
+      branchTrail=options.resume?.branchTrail?.filter(tag=>all.has(tag))||[pickedTag];
+      if(branchTrail[branchTrail.length-1]!==pickedTag)branchTrail=[pickedTag];
+      selectNeighborhood(pickedTag);
+    }
     stage.resumeCollection=state=>{
       for(const [tag,x,y] of state.positions||[]){
         const node=at.get(tag);
         if(node){node.x=x;node.y=y;}
       }
-      if(picked)layoutNeighborhood();
+      if(state.branchTrail?.length&&picked){
+        branchTrail=state.branchTrail.filter(tag=>all.has(tag));
+        if(branchTrail[branchTrail.length-1]!==picked)branchTrail=[picked];
+        selectNeighborhood(picked);
+      }else if(picked)layoutNeighborhood();
       overviewCamera=state.overviewCamera;
       input.value=state.query;
       cameraTo(state.zoom,state.pan,false);
@@ -1752,7 +1847,7 @@ const CaptionStudioViz = (() => {
     return stage;
   }
 
-  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings});
+  return Object.freeze({buildGraph,waterfall,constellation,colorForTag,setTagbenchPalette,tagbenchModel,tagbenchWaterfall,tagbenchConstellation,waterfallScale,waterfallColumns,constellationPrefs,elasticOffset,constellationAtlas,summarizeAtlasLoss,lossTone,captionWarnings,tagDirection,tagArrow});
 })();
 // A classic WebWorker can import this existing pure graph implementation
 // without maintaining a second constellation algorithm.
