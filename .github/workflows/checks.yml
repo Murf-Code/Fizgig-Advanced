@@ -22,6 +22,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r checks/requirements.txt
+      - name: Upstream integration regression checks
+        run: python -m pytest checks/test_likeness_per_run.py checks/test_royale_sheet_epochs.py checks/test_cache_rocm_release.py checks/test_lora_regularisation.py checks/test_app_window.py checks/test_app_browser_fallback.py checks/test_isolation_masks.py -q
       - name: WebView2 browser-parity performance and hook regression checks
         run: python -m unittest discover -s checks -p test_webview2_performance.py -v
       - name: Caption Studio CPU optimization, lazy explorer and thumbnail cache
