@@ -1562,6 +1562,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                            "itself, so the two don't combine. Drop --context_lora_path.")
     from fizgig.training import replay_research as _rr
     research_mode = _rr.config(family_options)
+    research_updates = 0
     if research_mode and (desc.key != "krea2" or resume_state_dir or finetune or share_worker):
         raise RuntimeError("Experiment 5A needs a fresh single-GPU Krea 2 LoRA run.")
     driver = desc.load_driver()
@@ -3530,7 +3531,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             adaptive.record_clip(gn, max_grad_norm)
 
     def _update():
-        nonlocal pending
+        nonlocal pending, research_updates
         if ftr is not None and ftr.fused is not None:
             pending = 0                    # every parameter already stepped from its own gradient hook
             lr_acc.clear()
@@ -3547,8 +3548,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             for g in optimizer.param_groups:
                 g["lr"] = g["lr"] * m
         research_mask = _rr.active_mask(net) if research_mode else None
-        research_before = (_rr.probe_before(net) if research_mode == "telemetry"
-                           and driver.selective_probe_due else None)
+        research_before = (_rr.probe_before(net) if
+                           (research_mode == "telemetry" and driver.selective_probe_due)
+                           or (research_mode == "causal" and (research_updates + 1) % 8 == 0)
+                           else None)
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
         if selective_global_replay:
             driver.record_selective_gradient_update()
@@ -3585,9 +3588,13 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if ema is not None:
             ema.update()                   # after the clipped step, so the average tracks what was applied
         if research_mode:
-            research_step = driver.selective_state_dict()["optimizer_steps"]
+            research_updates += 1
+            research_step = research_updates
+            if selective_global_replay and driver.selective_state_dict()["optimizer_steps"] != research_step:
+                raise RuntimeError("Research optimizer-step count mismatch")
             _rr.record(logger, kind="hash", step=research_step, sha256=_rr.fingerprint(net),
-                       active_blocks=research_mask, next_active_blocks=list(driver.selective_active_blocks()))
+                       active_blocks=research_mask, next_active_blocks=(
+                           list(driver.selective_active_blocks()) if selective_global_replay else list(range(28))))
             if research_before is not None:
                 _rr.record(logger, kind="probe_telemetry", step=research_step,
                            factors=_rr.probe_after(net, research_before))
@@ -3915,7 +3922,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if research_mode:
             _rr.record(logger, kind="raw_validation", step=step_off + global_step,
                        loss=v, per_t=per_t, timesteps=list(validator.ts))
-            if research_mode == "telemetry":
+            if research_mode in ("telemetry", "causal"):
                 if ema is None:
                     raise RuntimeError("Experiment 5A telemetry requires EMA.")
                 ema.swap_in()
@@ -4095,10 +4102,16 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 logger.info("[maps] training maps: no picture could be read from the cache - off for this run")
                 maps = None
     if research_mode:
-        if (not selective_global_replay or driver._selective_strategy != "adaptive_gradient"
-                or steps_per_epoch != 29 or accum != 1 or max_train_epochs != 5
-                or validator is None or ema is None or validation_every_steps or int(seed) != 42):
-            raise RuntimeError("Experiment 5A requires the original 29-step, five-epoch, seed-42 adaptive gradient benchmark with EMA and epoch validation.")
+        if (not global_replay or steps_per_epoch != 29 or accum != 1 or max_train_epochs != 5
+                or validator is None or ema is None or validation_every_steps or int(seed) != 42
+                or (research_mode != "causal" and not selective_global_replay)
+                or (selective_global_replay and driver._selective_strategy != "adaptive_gradient")):
+            raise RuntimeError("Replay research requires the original 29-step, five-epoch, seed-42 benchmark with EMA and epoch validation.")
+        if research_mode == "causal":
+            route = (family_options or {}).get("replay_causal_route")
+            if route and not selective_global_replay:
+                raise RuntimeError("Causal interventions require selective replay")
+            _rr.record(logger, kind="routing", route=route or ("gradient" if selective_global_replay else "unrestricted"))
         _rr.record(logger, kind="hash", step=0, sha256=_rr.fingerprint(net), active_blocks=[])
     for epoch in (_worker_epochs() if share_worker else range(start_epoch, max_train_epochs)):
         while face_phase.get("said"):        # the boost's switches during the last epoch, each on a line of its own
@@ -4578,7 +4591,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             anchor_losses.clear()
         if slider_prompts and done < max_train_epochs:
             slider_live(done)
-        if research_mode and done == 2:
+        if research_mode and research_mode != "causal" and done == 2:
             if global_step != 58 or driver.selective_state_dict()["optimizer_steps"] != 58:
                 raise RuntimeError("Experiment 5A did not reach exactly 58 optimizer updates.")
             progress.close()
@@ -4627,6 +4640,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     shutil.copyfile(final, os.path.join(output_dir, f"{output_name}-{max_train_epochs:06d}.safetensors"))
     if save_state_on_train_end:
         state(max_train_epochs)
+    if research_mode == "causal":
+        if global_step != 145 or research_updates != 145:
+            raise RuntimeError("Experiment 5B did not complete exactly 145 updates")
+        _rr.record(logger, kind="complete", step=145, planned_epochs=5)
     logger.info(f"Training complete -> {final}")
     return final
 

@@ -281,6 +281,15 @@ class Krea2Driver(FamilyDriver):
         self._selective_matched_counts = (load_matched_counts(matched_report, n, self._selective_warmup_updates,
                                                               self._selective_reactivate_every)
                                          if self._selective_strategy == "adaptive_random" else None)
+        self._causal_route = self.options.get("replay_causal_route")
+        self._causal_masks = None
+        if self._causal_route:
+            from fizgig.krea2.replay_causal import ROUTES, source_schedule
+            if (self.options.get("replay_research") != "causal" or self._causal_route not in ROUTES
+                    or self._selective_strategy != "adaptive_gradient" or n != 28
+                    or self._selective_warmup_updates != 8 or self._selective_reactivate_every != 8):
+                raise ValueError("Invalid Experiment 5B routing configuration")
+            self._causal_masks = source_schedule(matched_report)
         self._selective_optimizer_steps = 0
         self._selective_update_counts = [0] * n
         self._selective_scores = [None] * n
@@ -319,6 +328,8 @@ class Krea2Driver(FamilyDriver):
         if not self.selective_probe_due:
             return None
         strategy = self._selective_strategy
+        if getattr(self, "_causal_masks", None) is not None:
+            return {"cosines": {}}  # fixed intervention: bypass adaptive scoring, keep full probes
         if strategy in ("random", "rotational", "static_early", "balanced_random", "static_first_half", "adaptive_random"):
             return {"cosines": {}}
         if strategy in ("high_gradient", "low_gradient", "walking_coverage", "hybrid_coverage",
@@ -391,7 +402,10 @@ class Krea2Driver(FamilyDriver):
             if self._selective_strategy != "legacy":
                 from fizgig.krea2.selective_policy import select_blocks, adaptive_blocks, ADAPTIVE_STRATEGIES
                 probe_index = (step - self._selective_warmup_updates) // self._selective_reactivate_every
-                if self._selective_strategy in ADAPTIVE_STRATEGIES:
+                if getattr(self, "_causal_masks", None) is not None:
+                    from fizgig.krea2.replay_causal import intervention
+                    active = intervention(self._causal_route, self._causal_masks, probe_index)
+                elif self._selective_strategy in ADAPTIVE_STRATEGIES:
                     matched = None
                     if self._selective_strategy == "adaptive_random":
                         if not 0 <= probe_index < len(self._selective_matched_counts):

@@ -35,6 +35,9 @@ def _save(root, report):
                         if all(s in TERMINAL for s in statuses)
                         else "partial" if any(s in ("blocked", "stopped", "paused", "failed", "removed") for s in statuses)
                         else "in_progress")
+    if any(r["case"].startswith("causal-") for r in report["runs"]):
+        from fizgig.krea2.replay_causal import compare_runs
+        report["causal_comparisons"] = compare_runs(report["runs"])
     report["updated_at"] = time.time()
     _atomic(root / REPORT, json.dumps(report, indent=2, allow_nan=False))
     lines = ["Fizgig Global Replay comparison", "Status: " + report["status"],
@@ -168,6 +171,43 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                             or not any(r.get("kind") == "complete" and r.get("step") == 58 for r in rows)
                             or (case == "repro-strict-telemetry-lr450" and ema_checks != [29, 58])):
                         run.update(status="failed", reason="Incomplete Experiment 5A diagnostics; do not compare this run.")
+                if status == "finished" and case.startswith("causal-"):
+                    from fizgig.krea2.replay_causal import (ALL, PROBES, SOURCE, checked_mask,
+                                                            expected_mask, intervention, source_schedule)
+                    from fizgig.web.replay_benchmark import CAUSAL_ROUTES
+                    try:
+                        rows = run.get("research", [])
+                        hashes = [r for r in rows if r.get("kind") == "hash"]
+                        if [r["step"] for r in hashes] != list(range(146)):
+                            raise ValueError("missing fingerprints")
+                        for kind in ("raw_validation", "ema_validation"):
+                            if [r["step"] for r in rows if r.get("kind") == kind] != [29, 58, 87, 116, 145]:
+                                raise ValueError("missing " + kind)
+                        if [r["step"] for r in rows if r.get("kind") == "probe_telemetry"] != list(PROBES):
+                            raise ValueError("missing probe telemetry")
+                        if not any(r.get("kind") == "complete" and r.get("step") == 145 for r in rows):
+                            raise ValueError("missing completion marker")
+                        env = [r for r in rows if r.get("kind") == "environment"]
+                        if len(env) != 1 or env[0].get("mode") != "causal" or not env[0].get("deterministic"):
+                            raise ValueError("not strict deterministic causal execution")
+                        if case == "causal-unrestricted-lr450":
+                            masks = [set(ALL) for _ in PROBES]
+                        elif case == SOURCE:
+                            probes = run["probes"]
+                            if [p["step"] for p in probes] != list(PROBES):
+                                raise ValueError("missing source probes")
+                            masks = [checked_mask(p["active_blocks"]) for p in probes]
+                            if any(p["active"] != len(mask) or p["total"] != 28
+                                   or p["strategy"] != "adaptive_gradient" for p, mask in zip(probes, masks)):
+                                raise ValueError("invalid source probes")
+                        else:
+                            source = source_schedule(root / REPORT)
+                            masks = [intervention(CAUSAL_ROUTES[case], source, i) for i in range(len(PROBES))]
+                        for row in hashes[1:]:
+                            if checked_mask(row["active_blocks"]) != expected_mask(masks, row["step"]):
+                                raise ValueError(f"unexpected actual routing at step {row['step']}")
+                    except (RuntimeError, ValueError, KeyError, TypeError, IndexError) as exc:
+                        run.update(status="failed", reason="Invalid Experiment 5B diagnostics: " + str(exc))
             perf = output / (".perf_" + run["name"] + ".json")
             if perf.is_file():
                 try:

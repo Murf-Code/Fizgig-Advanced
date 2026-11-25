@@ -15,10 +15,20 @@ RESEARCH_MODES = {
     "repro-strict-b-lr450": "strict",
     "repro-strict-telemetry-lr450": "telemetry",
 }
-CASES = tuple((case, "Global replay", True) for case in RESEARCH_MODES)
+CAUSAL_ROUTES = {
+    "causal-unrestricted-lr450": None,
+    "causal-gradient-lr450": None,
+    "causal-random-lr450": "random",
+    "causal-exact-lr450": "exact",
+    "causal-block26-lr450": "block26",
+    "causal-block13-lr450": "block13",
+}
+CASES = tuple((case, "Global replay", case != "causal-unrestricted-lr450") for case in CAUSAL_ROUTES)
 
 def case_strategy(case):
-    if case in RESEARCH_MODES:
+    if case == "causal-unrestricted-lr450":
+        return "replay"
+    if case in RESEARCH_MODES or case in CAUSAL_ROUTES:
         return "adaptive_gradient"
     return case.removesuffix("-lr450").removesuffix("-lr350")
 
@@ -72,6 +82,11 @@ def adjust_plan(desc, values, plan):
             stages[0].cmd.extend(["--family_option", "selective_budget=14"])
     if case in RESEARCH_MODES:
         stages[0].cmd.extend(["--family_option", f"replay_research={RESEARCH_MODES[case]}"])
+    if case in CAUSAL_ROUTES:
+        stages[0].cmd.extend(["--family_option", "replay_research=causal"])
+        route = CAUSAL_ROUTES[case]
+        if route:
+            stages[0].cmd.extend(["--family_option", f"replay_causal_route={route}"])
     if case == "standard-matched":
         cmd = stages[0].cmd
         if "--train_blocks" in cmd:
