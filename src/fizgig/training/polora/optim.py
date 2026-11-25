@@ -136,7 +136,7 @@ class Polora(Optimizer):
     def __init__(self, model=None, lr=2e-4, beta1=0.9, epsilon=1e-12,
                  delta=1e-4, curvature_beta=0.99, ns_steps=8, higham_iters=8,
                  compile=True, magnitude_scale=1.0, decay_start=1.0,
-                 decay_type="none", log_norms_every=0, *, pairs=None, chunk_memory_mib=128):
+                 decay_type="none", log_norms_every=0, *, pairs=None, chunk_memory_mib=128, research_state_views=True):
         if pairs is None:
             if model is None:
                 raise ValueError("Polora requires either `model` (PEFT) or `pairs=[(A,B),...]`.")
@@ -151,6 +151,7 @@ class Polora(Optimizer):
         # Grok independent audit, round 2: chunk the existing shape batches
         # without changing their per-pair math. This is a workspace estimate,
         # not a guarantee of overall peak CUDA memory. Zero disables chunking.
+        self.research_state_views = bool(research_state_views)
         self.chunk_memory_mib = float(chunk_memory_mib)
         if not math.isfinite(self.chunk_memory_mib) or self.chunk_memory_mib < 0:
             raise ValueError("chunk_memory_mib must be finite and nonnegative")
@@ -485,7 +486,7 @@ class Polora(Optimizer):
                 if len(part) == n:
                     sA, sB = self._update_group(g.As, g.Bs, g.f32, g.M_A, g.M_B, g.Q, g.P, g.vA, g.vB,
                                                 lr, magnitude, log_now or record_now)
-                elif part[-1] - part[0] == len(part) - 1:
+                elif self.research_state_views and part[-1] - part[0] == len(part) - 1:
                     # Grok round 4: the large state tensors already have contiguous
                     # rows. Mutate views, keeping the two warm-start halves packed
                     # exactly as in the original chunk's kernel.
@@ -502,7 +503,11 @@ class Polora(Optimizer):
                     g.vB[n+start:n+end].copy_(vB[count:])
                     del vA, vB
                 else:
-                    idx, vidx = self._chunk_index(group_id, g, part)
+                    if self.research_state_views:
+                        idx, vidx = self._chunk_index(group_id, g, part)
+                    else:
+                        idx = torch.tensor(part, dtype=torch.long, device=g.M_A.device)
+                        vidx = torch.cat([idx, idx+n])
                     M_A, M_B = g.M_A.index_select(0, idx), g.M_B.index_select(0, idx)
                     Q, P = g.Q.index_select(0, idx), g.P.index_select(0, idx)
                     vA, vB = g.vA.index_select(0, vidx), g.vB.index_select(0, vidx)

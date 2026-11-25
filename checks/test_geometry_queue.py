@@ -67,3 +67,21 @@ def test_resolution_queue(tmp_path):
     assert data["runs"][0]["failure_kind"] == "cuda_oom"
     assert data["runs"][1]["status"] == "queued"
     assert report.parse_log("bucket: (496, 496), count: 29")["reported_buckets"][0]["width"] == 496
+
+
+def test_optimizer_comparison(tmp_path):
+    quality = bench.optimizer_settings("quality", str(tmp_path))
+    short = bench.optimizer_settings("fit", str(tmp_path), short=True)
+    assert len(quality) == 6 and len(short) == 2
+    for v in quality + short:
+        assert v["NETWORK_DIM"] == v["NETWORK_ALPHA"] == "16"
+        assert v["BLOCKS_SWAP"] == "18" and v["DATASET_MEGAPIXELS"] == "0.25"
+        assert v["VALIDATION_HOLDOUT"] and not v["KREA2_SELECTIVE_BLOCK_CHECK"]
+    assert all(v["SAMPLE_ENABLED"] and v["MAX_TRAIN_EPOCHS"] == "5" for v in quality)
+    assert all(not v["SAMPLE_ENABLED"] and bench.is_feasibility(v["__geometry_compare"])
+               and v["MAX_TRAIN_EPOCHS"] == "1" and v["OPTIMIZER_TYPE"] == "lora_tsd" for v in short)
+    assert quality[2]["OPTIMIZER_ARGS"].replace("research_state_views=False","research_state_views=True") == quality[3]["OPTIMIZER_ARGS"]
+    parsed = report.parse_log("[geometry-opt] update=4 ms=12.5 allocated_bytes=1024 reserved_bytes=2048 alloc_retries=1\n"
+                              "[geometry-tsd] update=4 max_change=0.299 warm=2 unchanged=0 shrunk=1 pairs=264")
+    assert parsed["optimizer_ms_mean_after_warmup"] == 12.5
+    assert parsed["tsd_stats"][0]["warm"] == 2

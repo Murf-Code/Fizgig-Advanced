@@ -1559,14 +1559,16 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         raise RuntimeError("A Context LoRA trains a LoRA on top of another one; a fine-tune trains the base model "
                            "itself, so the two don't combine. Drop --context_lora_path.")
     geometry_fit_steps = int((family_options or {}).get("geometry_feasibility_steps", 0) or 0)
+    geometry_timing = str((family_options or {}).get("geometry_optimizer_timing", "")) == "1"
+    geometry_updates = 0
     if geometry_fit_steps and (geometry_fit_steps != 50 or desc.key != "krea2" or finetune
-                               or share_worker or str(optimizer_type).lower() != "polora"
+                               or share_worker or str(optimizer_type).lower() not in ("polora", "lora_tsd")
                                or int(network_dim) not in (16, 32, 64) or int(network_alpha) != int(network_dim)
                                or int(max_train_epochs) != 1
                                or int(gradient_accumulation_steps) != 1 or resume_state_dir):
-        raise ValueError("Geometry feasibility requires fresh rank 16/32/64 Krea 2 PoLoRA, alpha=rank, one epoch, accumulation 1.")
+        raise ValueError("Geometry feasibility requires fresh rank 16/32/64 Krea 2 PoLoRA or LoRA-TSD, alpha=rank, one epoch, accumulation 1.")
     driver = desc.load_driver()
-    driver.set_options({k:v for k,v in (family_options or {}).items() if k != "geometry_feasibility_steps"})      # before the data: an option may shape the dataset
+    driver.set_options({k:v for k,v in (family_options or {}).items() if k not in ("geometry_feasibility_steps", "geometry_optimizer_timing")})      # before the data: an option may shape the dataset
     _method = str((family_options or {}).get("training_method", "") or "").strip()
     if desc.key == "krea2" and _method and not getattr(driver, "global_replay", False):
         # a method from the test build that was not kept (Blockwise flow, Residual-path hybrid): train Standard
@@ -3529,7 +3531,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             adaptive.record_clip(gn, max_grad_norm)
 
     def _update():
-        nonlocal pending
+        nonlocal pending, geometry_updates
         if ftr is not None and ftr.fused is not None:
             pending = 0                    # every parameter already stepped from its own gradient hook
             lr_acc.clear()
@@ -3546,7 +3548,19 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             for g in optimizer.param_groups:
                 g["lr"] = g["lr"] * m
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
+        if geometry_timing:
+            torch.cuda.synchronize(device)
+            _geo_t0 = time.perf_counter()
         optimizer.step()
+        if geometry_fit_steps or geometry_timing:
+            geometry_updates += 1
+        if geometry_timing:
+            torch.cuda.synchronize(device)
+            _geo_ms = (time.perf_counter() - _geo_t0) * 1000
+            _geo_mem = torch.cuda.memory_stats(device)
+            logger.info("[geometry-opt] update=%d ms=%.3f allocated_bytes=%d reserved_bytes=%d alloc_retries=%d",
+                        geometry_updates, _geo_ms, torch.cuda.memory_allocated(device),
+                        torch.cuda.memory_reserved(device), _geo_mem.get("num_alloc_retries", 0))
         if selective_global_replay:
             selective_status = driver.finish_selective_optimizer_step(selective_snapshot)
             if selective_status is not None:
@@ -4415,8 +4429,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 torch.cuda.synchronize(device)
                 allocated = torch.cuda.max_memory_allocated(device)
                 reserved = torch.cuda.max_memory_reserved(device)
+                if geometry_updates != min(geometry_fit_steps, steps_per_epoch):
+                    raise RuntimeError(f"Geometry fit expected {min(geometry_fit_steps, steps_per_epoch)} optimizer calls, got {geometry_updates}")
                 logger.info("[geometry-fit] complete updates=%d allocated_bytes=%d reserved_bytes=%d wall_seconds=%.3f",
-                            global_step, allocated, reserved, time.monotonic() - geometry_fit_started)
+                            geometry_updates, allocated, reserved, time.monotonic() - geometry_fit_started)
                 progress.close()
                 # Diagnostic-only: do not label a partial epoch as a completed
                 # training checkpoint or export an unfinished adapter.

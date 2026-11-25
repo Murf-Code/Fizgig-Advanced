@@ -87,8 +87,15 @@ def create(root, dataset, configs):
 def parse_log(text):
     epochs, validation, feasibility = [], [], None
     buckets = []
+    optimizer_timing, tsd_stats = [], []
     failure = None
     for line in text.splitlines():
+        opt = re.search(r"\[geometry-opt\] update=(\d+) ms=" + NUM + r" allocated_bytes=(\d+) reserved_bytes=(\d+) alloc_retries=(\d+)", line)
+        if opt:
+            optimizer_timing.append({"update": int(opt[1]), "ms": float(opt[2]), "allocated_bytes": int(opt[3]), "reserved_bytes": int(opt[4]), "alloc_retries_cumulative": int(opt[5])})
+        tsd = re.search(r"\[geometry-tsd\] update=(\d+) max_change=" + NUM + r" warm=(\d+) unchanged=(\d+) shrunk=(\d+) pairs=(\d+)", line)
+        if tsd:
+            tsd_stats.append({"update": int(tsd[1]), "max_change": float(tsd[2]), "warm": int(tsd[3]), "unchanged": int(tsd[4]), "shrunk": int(tsd[5]), "pairs": int(tsd[6])})
         bucket = re.search(r"bucket: \((\d+), (\d+)\), count: (\d+)", line)
         if bucket:
             buckets.append({"width": int(bucket[1]), "height": int(bucket[2]), "count": int(bucket[3])})
@@ -105,7 +112,10 @@ def parse_log(text):
             feasibility = {"updates": int(m[1]), "cuda_peak_allocated_bytes": int(m[2]),
                            "cuda_peak_reserved_bytes": int(m[3]), "training_wall_seconds": float(m[4])}
     return {"epochs": epochs, "validation": validation, "feasibility": feasibility,
-            "reported_buckets": buckets, "failure_kind": failure}
+            "reported_buckets": buckets, "failure_kind": failure,
+            "optimizer_timing": optimizer_timing, "tsd_stats": tsd_stats,
+            "optimizer_ms_mean_after_warmup": (sum(x["ms"] for x in optimizer_timing if x["update"] > 3) /
+                sum(x["update"] > 3 for x in optimizer_timing)) if any(x["update"] > 3 for x in optimizer_timing) else None}
 
 
 def update(output, case, status, *, log_path=None, reason="", wall_seconds=None):

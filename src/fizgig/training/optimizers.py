@@ -43,7 +43,7 @@ MUON_ONLY_KEYS = ("adjust_lr_fn", "momentum", "nesterov", "ns_steps", "ns_coeffi
 # PoLoRA's own Optimizer Args (fizgig/training/polora, Apache-2.0). The UI pre-fills magnitude_scale=3; other defaults live in
 # the Polora class. ns_steps is shared with Muon, so it is not stripped when switching between the two.
 POLORA_ONLY_KEYS = ("magnitude_scale", "curvature_beta", "beta1", "delta", "higham_iters", "compile",
-                    "decay_start", "decay_type", "log_norms_every", "chunk_memory_mib")
+                    "decay_start", "decay_type", "log_norms_every", "chunk_memory_mib", "research_state_views")
 # SOAP's (fizgig/training/soap.py, MIT) and LoRA-TSD's (fizgig/training/lora_tsd.py, MIT) own Optimizer Args.
 # LoRA-TSD shares momentum and ns_steps with Muon: they're kept for it.
 SOAP_ONLY_KEYS = ("shampoo_beta", "precondition_frequency", "max_precond_dim", "merge_dims", "precondition_1d",

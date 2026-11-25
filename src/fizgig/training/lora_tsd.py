@@ -227,7 +227,7 @@ class LoRATSD(Optimizer):
                 loss = closure()
         self._step_count += 1
         mag = self.magnitude_scale
-        changes, capped = [], 0
+        changes, capped, warm_pairs, unchanged_pairs = [], 0, 0, 0
         for group, scale in zip(self.param_groups, self._adapter_scales):
             A, B = group["params"]
             if A.grad is None and B.grad is None:
@@ -252,6 +252,7 @@ class LoRATSD(Optimizer):
                 # updates are linear and do not invert a nearly empty factor.
                 warm = not za and float(_product_norm(B32,A32)) < 2*cap
                 if za or zb or warm:
+                    warm_pairs += 1
                     if za:
                         dA, dB = -lr * _rank_polar(G_A, group["ridge_eps"]), torch.zeros_like(B32)
                     else:
@@ -279,6 +280,7 @@ class LoRATSD(Optimizer):
                     self.state[B]["momentum_buffer"].mul_(c)
                 changes.append(scale * actual)
                 capped += int(hit)
+                unchanged_pairs += int(actual == 0.0)
         if changes and self.log_every and (self._step_count == 1 or self._step_count % self.log_every == 0):
             lrs = [g["lr"] for g in self.param_groups]
             self.last_stats = {"step": self._step_count, "magnitude": mag, "avg_change": sum(changes) / len(changes),
@@ -287,6 +289,9 @@ class LoRATSD(Optimizer):
                 "[lora_tsd] step %d: magnitude %.3g x LR %.3g, avg weight change a pair %.4f (cap %.3g), "
                 "%d of %d pairs at the cap", self._step_count, mag, sum(lrs) / len(lrs),
                 self.last_stats["avg_change"], self.param_groups[0]["max_delta_norm"] * mag, capped, len(changes))
+            logging.getLogger("fizgig.lora_tsd").info(
+                "[geometry-tsd] update=%d max_change=%.9g warm=%d unchanged=%d shrunk=%d pairs=%d",
+                self._step_count, max(changes), warm_pairs, unchanged_pairs, capped, len(changes))
         return loss
 
 

@@ -75,8 +75,37 @@ RESOLUTION_CASES = tuple(
      ("polora-r64-mp0p25-unchunked-fit", 64, "0.25", 0))
 
 
+# Isolate the state-view patch at identical chunk sizes. TSD uses the repaired
+# implementation in this branch, not the unsafe historical version.
+QUALITY_CASES = (
+    ("quality-adamw8bit", "adamw8bit", "0.0002", "weight_decay=0"),
+    ("quality-muon", "muon", "0.0002", "adjust_lr_fn=match_rms_adamw weight_decay=0 momentum=0.95 nesterov=True ns_steps=5"),
+    ("quality-polora-reference", "polora", "0.02", "magnitude_scale=3 compile=False chunk_memory_mib=128 research_state_views=False"),
+    ("quality-polora-views", "polora", "0.02", "magnitude_scale=3 compile=False chunk_memory_mib=128 research_state_views=True"),
+    ("quality-tsd-balanced", "lora_tsd", "0.005", "magnitude_scale=3 balance=True max_delta_norm=0.1 ball_iters=3 log_every=1"),
+    ("quality-tsd-unbalanced", "lora_tsd", "0.005", "magnitude_scale=3 balance=False max_delta_norm=0.1 ball_iters=3 log_every=1"),
+)
+TSD_FIT_CASES = tuple(("fit-" + case, opt, lr, args)
+                      for case, opt, lr, args in QUALITY_CASES[-2:])
+
+
 def is_feasibility(case):
-    return case == FEASIBILITY_CASE or case in {x[0] for x in RESOLUTION_CASES}
+    return (case == FEASIBILITY_CASE or case in {x[0] for x in RESOLUTION_CASES}
+            or case in {x[0] for x in TSD_FIT_CASES})
+
+
+def optimizer_settings(group, output_root, short=False):
+    common = settings(group, output_root)[0]
+    cases = TSD_FIT_CASES if short else QUALITY_CASES
+    return [{**common, "__geometry_compare": case, "OPTIMIZER_TYPE": opt,
+             "OPTIMIZER_ARGS": args, "LEARNING_RATE": lr,
+             "NETWORK_DIM": "16", "NETWORK_ALPHA": "16", "BLOCKS_SWAP": "18",
+             "MAX_TRAIN_EPOCHS": "1" if short else "5",
+             "SAMPLE_ENABLED": not short, "SAVE_STATE": False,
+             "SAVE_STATE_ON_TRAIN_END": False,
+             "LORA_NAME": f"{group}-{case}",
+             "LORA_OUTPUT_DIR": os.path.join(output_root, group, case)}
+            for case, opt, lr, args in cases]
 
 
 def resolution_settings(group, output_root):
@@ -94,7 +123,7 @@ def adjust_plan(desc, values, plan):
     case = values.get("__geometry_compare")
     if not case:
         return plan
-    if desc.key != "krea2" or (case not in {x[0] for x in CASES} and not is_feasibility(case)):
+    if desc.key != "krea2" or (case not in {x[0] for x in CASES + QUALITY_CASES} and not is_feasibility(case)):
         raise ValueError("Invalid Krea 2 matrix geometry comparison case.")
     if plan.problems:
         return plan
@@ -109,6 +138,8 @@ def adjust_plan(desc, values, plan):
         cmd.extend(["--family_option", f"geometry_feasibility_steps={FEASIBILITY_STEPS}"])
     elif "--sample_prompts" not in cmd:
         plan.problems.append("Matrix geometry comparison requires usable sample prompts.")
+    if case in {x[0] for x in QUALITY_CASES + TSD_FIT_CASES}:
+        cmd.extend(["--family_option", "geometry_optimizer_timing=1"])
     if "--train_blocks" in cmd:
         plan.problems.append("Matrix geometry comparison requires unrestricted eligible blocks.")
     plan.console.append(f"[matrix geometry pilot] {case}: fixed rank, data, seed, validation; provisional LR.")
