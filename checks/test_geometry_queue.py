@@ -30,3 +30,14 @@ def test_fixed_pilot(tmp_path):
     assert data["runs"][0]["validation"][-1]["loss"]==0.5
     with zipfile.ZipFile(root/report.BUNDLE) as z:
         assert report.REPORT in z.namelist() and report.COMBINED in z.namelist()
+
+def test_rank64_feasibility_is_separate(tmp_path):
+    v, = bench.feasibility_settings("fit", str(tmp_path))
+    assert v["NETWORK_DIM"] == v["NETWORK_ALPHA"] == "64"
+    assert v["OPTIMIZER_TYPE"] == "polora"
+    assert v["MAX_TRAIN_EPOCHS"] == "1"
+    assert not v["SAMPLE_ENABLED"] and not v["SAVE_STATE_ON_TRAIN_END"]
+    assert all(x["NETWORK_DIM"] == "32" for x in bench.settings("pilot", str(tmp_path)))
+    parsed = report.parse_log("[geometry-fit] complete updates=50 allocated_bytes=1024 reserved_bytes=2048 wall_seconds=12.5")
+    assert parsed["feasibility"]["updates"] == 50
+    assert parsed["feasibility"]["cuda_peak_reserved_bytes"] == 2048

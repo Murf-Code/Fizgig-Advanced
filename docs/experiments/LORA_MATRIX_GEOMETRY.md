@@ -40,3 +40,7 @@ Ported the batch enqueue and report design from Fizgig Advanced's test/global-re
 ## Rank adjustment
 
 The initial queued diffusion pilot uses rank 32 / alpha 32 to reduce memory pressure on the 12 GB RTX 4070 Ti. All other pilot controls and provisional learning rates are unchanged. Rank 64 is reserved for later experiments if feasible. This change applies to newly queued runs, not previously saved queue entries. A short GPU preflight is not yet implemented; actual VRAM fit remains unverified.
+
+## Rank 64 fit probe
+
+The **Test rank 64 fit** button queues one PoLoRA run using rank/alpha 64, LR 0.02, magnitude 3, compile off, 128 MiB estimated chunk budget, and otherwise the pilot's fixed INT8/block-swap/data controls. It stops after at most 50 updates or one epoch if shorter, without sample generation or final checkpoint export. The report captures CUDA process allocator peak allocated/reserved bytes and training wall time; normal performance telemetry may also record device-wide memory. The five-run rank-32 queue is unchanged. Automatic OOM recovery remains disabled. A successful short probe is not proof of five-epoch fit or fit for other optimizers. The probe and integrated regression suite still require execution.

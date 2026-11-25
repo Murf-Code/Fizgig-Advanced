@@ -1015,6 +1015,7 @@
                 <button class="btn btn-primary" id="btnStart">Start Training</button>
                 <button class="btn" id="btnQueue" title="Checked like Start, then lined up: it starts when the runs before it finish">Add to queue</button>
                 <button class="btn" id="btnGeometryQueue" title="Krea 2 rank 32 optimizer pilot: five runs, five epochs each, fixed controls">Queue geometry test</button>
+                <button class="btn" id="btnGeometryFit" title="PoLoRA rank 64, up to 50 training updates, memory feasibility only">Test rank 64 fit</button>
                 <button class="btn btn-warning" id="btnPause">Pause</button>
                 <button class="btn" id="btnSampleNow" style="display:none" title="Make the previews now, after the current training step, without waiting for the epoch to end">Sample now</button>
                 <button class="btn btn-lilac is-off" id="btnImageLoss" style="display:none" title="Each training image's loss by epoch, against the rest of the dataset: which images are still being learned, which are done, and what the loss watch decided about each">Per-image loss</button>
@@ -2475,24 +2476,30 @@
   <script src="/app.js" onerror="fizgigRetry(this)"></script>
   <script>
   (() => {
-    const button = document.getElementById("btnGeometryQueue");
-    button.addEventListener("click", async () => {
+    const pilot = document.getElementById("btnGeometryQueue");
+    const fit = document.getElementById("btnGeometryFit");
+    const queueTest = async (feasibility) => {
+      const button = feasibility ? fit : pilot;
       const folder = document.getElementById("imageFolder").value.trim();
       if (!folder) { alert("Select the Krea 2 training dataset first."); return; }
-      if (!confirm("Queue five Krea 2 optimizer pilot runs (rank 32, five epochs each)? They use fixed settings and start when the queue is free.")) return;
+      if (!confirm(feasibility
+          ? "Queue one rank 64 PoLoRA feasibility run (up to 50 updates, no previews)?"
+          : "Queue five Krea 2 optimizer pilot runs (rank 32, five epochs each)? They use fixed settings and start when the queue is free.")) return;
       button.disabled = true;
       try {
-        const response = await fetch("/api/queue/geometry-compare", {
+        const response = await fetch(feasibility ? "/api/queue/geometry-feasibility" : "/api/queue/geometry-compare", {
           method: "POST", headers: {"Content-Type": "application/json",
             "X-Fizgig-Token": document.querySelector('meta[name="fizgig-token"]').content},
           body: JSON.stringify({image_folder: folder})
         });
         const result = await response.json();
         if (!result.ok) throw Error(result.error || (result.problems || []).join("\n") || "Could not queue test");
-        alert("Five geometry pilot runs queued. Report folder:\n" + result.output);
+        alert((feasibility ? "Rank 64 feasibility run queued." : "Five geometry pilot runs queued.") + " Report folder:\n" + result.output);
       } catch (error) { alert(error.message); }
       finally { button.disabled = false; }
-    });
+    };
+    pilot.addEventListener("click", () => queueTest(false));
+    fit.addEventListener("click", () => queueTest(true));
   })();
   </script>
 </body>

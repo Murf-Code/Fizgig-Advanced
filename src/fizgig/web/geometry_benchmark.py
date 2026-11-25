@@ -51,11 +51,26 @@ def settings(group, output_root):
             for case, opt, lr, args in CASES]
 
 
+FEASIBILITY_CASE = "polora-r64-feasibility"
+FEASIBILITY_STEPS = 50
+
+
+def feasibility_settings(group, output_root):
+    v = next(v for v in settings(group, output_root)
+             if v["__geometry_compare"] == "polora-budgeted")
+    return [{**v, "__geometry_compare": FEASIBILITY_CASE,
+             "LORA_NAME": f"{group}-{FEASIBILITY_CASE}",
+             "LORA_OUTPUT_DIR": os.path.join(output_root, group, FEASIBILITY_CASE),
+             "NETWORK_DIM": "64", "NETWORK_ALPHA": "64",
+             "MAX_TRAIN_EPOCHS": "1", "SAMPLE_ENABLED": False,
+             "SAVE_STATE": False, "SAVE_STATE_ON_TRAIN_END": False}]
+
+
 def adjust_plan(desc, values, plan):
     case = values.get("__geometry_compare")
     if not case:
         return plan
-    if desc.key != "krea2" or case not in {x[0] for x in CASES}:
+    if desc.key != "krea2" or case not in ({x[0] for x in CASES} | {FEASIBILITY_CASE}):
         raise ValueError("Invalid Krea 2 matrix geometry comparison case.")
     if plan.problems:
         return plan
@@ -66,7 +81,9 @@ def adjust_plan(desc, values, plan):
     cmd = stages[0].cmd
     if "--holdout_file" not in cmd and "holdout_file =" not in plan.dataset_toml:
         plan.problems.append("Matrix geometry comparison requires a validation holdout.")
-    if "--sample_prompts" not in cmd:
+    if case == FEASIBILITY_CASE:
+        cmd.extend(["--family_option", f"geometry_feasibility_steps={FEASIBILITY_STEPS}"])
+    elif "--sample_prompts" not in cmd:
         plan.problems.append("Matrix geometry comparison requires usable sample prompts.")
     if "--train_blocks" in cmd:
         plan.problems.append("Matrix geometry comparison requires unrestricted eligible blocks.")

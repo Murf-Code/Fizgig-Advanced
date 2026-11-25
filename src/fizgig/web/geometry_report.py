@@ -77,7 +77,7 @@ def create(root, dataset, configs):
 
 
 def parse_log(text):
-    epochs, validation = [], []
+    epochs, validation, feasibility = [], [], None
     for line in text.splitlines():
         m = re.search(r"epoch (\d+)/(\d+)\s+avr_loss=" + NUM + r"\s+step=(\d+)\s+" + NUM + r"s/step", line)
         if m:
@@ -85,7 +85,11 @@ def parse_log(text):
         m = re.search(r"\[validation\] step (\d+) \(([^)]+)\): loss " + NUM, line)
         if m:
             validation.append({"step": int(m[1]), "phase": m[2], "loss": float(m[3])})
-    return {"epochs": epochs, "validation": validation}
+        m = re.search(r"\[geometry-fit\] complete updates=(\d+) allocated_bytes=(\d+) reserved_bytes=(\d+) wall_seconds=" + NUM, line)
+        if m:
+            feasibility = {"updates": int(m[1]), "cuda_peak_allocated_bytes": int(m[2]),
+                           "cuda_peak_reserved_bytes": int(m[3]), "training_wall_seconds": float(m[4])}
+    return {"epochs": epochs, "validation": validation, "feasibility": feasibility}
 
 
 def update(output, case, status, *, log_path=None, reason="", wall_seconds=None):
@@ -114,6 +118,8 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                 run["logs"].append(dest.relative_to(root).as_posix())
                 raw = "\n".join((root / f).read_text(encoding="utf-8", errors="replace") for f in run["logs"])
                 run.update(parse_log(raw))
+                if case == "polora-r64-feasibility" and status == "finished" and not run.get("feasibility"):
+                    run.update(status="failed", reason="Missing feasibility completion telemetry; do not infer GPU fit.")
             perf = output / (".perf_" + run["name"] + ".json")
             if perf.is_file():
                 try:

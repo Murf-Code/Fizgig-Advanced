@@ -5075,16 +5075,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": f"{name} is already there."}, 400)
                 os.makedirs(new)
                 return self.json({"ok": True, "path": new})
-            if path == "/api/queue/geometry-compare":
+            if path in ("/api/queue/geometry-compare", "/api/queue/geometry-feasibility"):
                 from fizgig.web import geometry_benchmark, geometry_report
                 folder = str(b.get("image_folder") or "").strip()
                 if not os.path.isdir(folder):
                     return self.json({"error": "Select a Krea 2 image dataset on Start."}, 400)
                 if any(h.get("share") for h in (load_prefs().get("helpers") or [])):
                     return self.json({"error": "Disable shared training helpers for the matrix geometry comparison."}, 400)
-                group = "geometry-pilot-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+                feasibility = path == "/api/queue/geometry-feasibility"
+                group = ("geometry-r64-fit-" if feasibility else "geometry-pilot-") + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
                 root = os.path.join(default_output_dir(), "matrix_geometry_comparisons")
-                configs = geometry_benchmark.settings(group, root)
+                configs = (geometry_benchmark.feasibility_settings(group, root) if feasibility else
+                           geometry_benchmark.settings(group, root))
                 entries = []
                 for vals in configs:
                     _, inputs, plan = _plan("krea2", vals, folder)
