@@ -136,7 +136,7 @@ class Polora(Optimizer):
     def __init__(self, model=None, lr=2e-4, beta1=0.9, epsilon=1e-12,
                  delta=1e-4, curvature_beta=0.99, ns_steps=8, higham_iters=8,
                  compile=True, magnitude_scale=1.0, decay_start=1.0,
-                 decay_type="none", log_norms_every=0, *, pairs=None):
+                 decay_type="none", log_norms_every=0, *, pairs=None, chunk_memory_mib=128):
         if pairs is None:
             if model is None:
                 raise ValueError("Polora requires either `model` (PEFT) or `pairs=[(A,B),...]`.")
@@ -148,6 +148,12 @@ class Polora(Optimizer):
         params = [p for A, B in pairs for p in (A, B)]
         super().__init__([{"params": params, "lr": lr}], {})
         self.pairs = pairs
+        # Grok independent audit, round 2: chunk the existing shape batches
+        # without changing their per-pair math. This is a workspace estimate,
+        # not a guarantee of overall peak CUDA memory. Zero disables chunking.
+        self.chunk_memory_mib = float(chunk_memory_mib)
+        if not math.isfinite(self.chunk_memory_mib) or self.chunk_memory_mib < 0:
+            raise ValueError("chunk_memory_mib must be finite and nonnegative")
         self.epsilon = float(epsilon)
         self.delta = float(delta)
         self.beta1 = beta1
@@ -444,35 +450,43 @@ class Polora(Optimizer):
         magnitude = self.effective_magnitude()
         scale = magnitude * self._timestep_scale * self._decay_factor()
         sig_A, sig_B = [], []
-        # One batched bmm / Newton-Schulz / sigma_max per (r, d_in, d_out, device, dtype) shape group.
+        # Chunk along independent pairs; no change to the optimizer equations,
+        # stacked checkpoint layout, or skip semantics. Conservative estimate
+        # accounts for factor-shaped workspaces and small Gram temporaries.
         for g in self._groups:
-            on = None if active is None else [j for j, i in enumerate(g.idxs) if active[i]]
-            if on is not None and len(on) == len(g.idxs):
-                on = None                   # the whole group trains: its stacked state is updated in place
-            if on is None:
-                sA, sB = self._update_group(g.As, g.Bs, g.f32, g.M_A, g.M_B, g.Q, g.P, g.vA, g.vB,
-                                            lr, magnitude, log_now or record_now)
-            elif not on:
-                continue                    # every pair of this group sat the step out
-            else:
-                # the trained pairs' rows, updated as a smaller batch, then written back; the others are untouched
-                n = len(g.idxs)
-                idx = torch.tensor(on, dtype=torch.long, device=g.M_A.device)
-                vidx = torch.cat([idx, idx + n])
-                M_A, M_B = g.M_A.index_select(0, idx), g.M_B.index_select(0, idx)
-                Q, P = g.Q.index_select(0, idx), g.P.index_select(0, idx)
-                vA, vB = g.vA.index_select(0, vidx), g.vB.index_select(0, vidx)
-                sA, sB = self._update_group([g.As[j] for j in on], [g.Bs[j] for j in on], g.f32,
-                                            M_A, M_B, Q, P, vA, vB, lr, magnitude, log_now or record_now)
-                g.M_A.index_copy_(0, idx, M_A)
-                g.M_B.index_copy_(0, idx, M_B)
-                g.Q.index_copy_(0, idx, Q)
-                g.P.index_copy_(0, idx, P)
-                g.vA.index_copy_(0, vidx, vA)
-                g.vB.index_copy_(0, vidx, vB)
-            if sA is not None:
-                sig_A.append(sA)
-                sig_B.append(sB)
+            n = len(g.idxs)
+            on = list(range(n)) if active is None else [j for j,i in enumerate(g.idxs) if active[i]]
+            if not on:
+                continue
+            r, din = g.As[0].shape
+            dout = g.Bs[0].shape[0]
+            bytes_per_pair = 4 * (16*r*(din+dout) + 32*r*r + 8*(din+dout))
+            chunk = (max(1, int(self.chunk_memory_mib*1024**2 / bytes_per_pair))
+                     if self.chunk_memory_mib else n)
+            for offset in range(0, len(on), chunk):
+                part = on[offset:offset+chunk]
+                if len(part) == n:
+                    sA, sB = self._update_group(g.As, g.Bs, g.f32, g.M_A, g.M_B, g.Q, g.P, g.vA, g.vB,
+                                                lr, magnitude, log_now or record_now)
+                else:
+                    idx = torch.tensor(part, dtype=torch.long, device=g.M_A.device)
+                    vidx = torch.cat([idx, idx+n])
+                    M_A, M_B = g.M_A.index_select(0, idx), g.M_B.index_select(0, idx)
+                    Q, P = g.Q.index_select(0, idx), g.P.index_select(0, idx)
+                    vA, vB = g.vA.index_select(0, vidx), g.vB.index_select(0, vidx)
+                    sA, sB = self._update_group([g.As[j] for j in part], [g.Bs[j] for j in part], g.f32,
+                                                M_A, M_B, Q, P, vA, vB, lr, magnitude, log_now or record_now)
+                    g.M_A.index_copy_(0, idx, M_A)
+                    g.M_B.index_copy_(0, idx, M_B)
+                    g.Q.index_copy_(0, idx, Q)
+                    g.P.index_copy_(0, idx, P)
+                    g.vA.index_copy_(0, vidx, vA)
+                    g.vB.index_copy_(0, vidx, vB)
+                    # Explicit release before the next chunk allocates its workspace.
+                    del M_A, M_B, Q, P, vA, vB, idx, vidx
+                if sA is not None:
+                    sig_A.append(sA)
+                    sig_B.append(sB)
 
         if log_now or record_now:       # one sync for both averages
             sa, sb = torch.stack([torch.cat(sig_A).float().mean(), torch.cat(sig_B).float().mean()]).tolist()

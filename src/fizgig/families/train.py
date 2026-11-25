@@ -2539,6 +2539,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             _oargs = (_oargs + f" weight_decay={desc.optimizer_weight_decay:g}").strip()
         optimizer, opt_label = create_optimizer(optimizer_type, opt_params, learning_rate, _oargs,
                                                 eps_floor_8bit=desc.optimizer_eps_floor_8bit)
+    if optimizer.__class__.__name__ == "LoRATSD":
+        from fizgig.families.lora import TRAINABLE
+        scales = {id(w.adapters[TRAINABLE][0].weight): w.scales[TRAINABLE]
+                  for w in net.wrapped.values() if TRAINABLE in w.adapters
+                  and isinstance(w.adapters[TRAINABLE], torch.nn.Sequential)}
+        optimizer.set_adapter_scales([scales[id(g["params"][0])] for g in optimizer.param_groups])
     _polora = optimizer.__class__.__name__ == "Polora"
     if _polora:
         # PoLoRA: Adaptive LR and per-image LR move its learning rate, as with every other optimizer (Min/Max are real
