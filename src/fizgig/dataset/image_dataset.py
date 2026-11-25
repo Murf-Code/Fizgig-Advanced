@@ -503,6 +503,14 @@ def global_random_sink(sink):
     return sink
 
 
+SIDE_BY_SIDE = "fizgig_mp_"      # LoRA Isolation's side-by-side pictures' names (families/multi_person.PREFIX)
+
+
+def side_by_side(key) -> bool:
+    """Is this item key (its dataset block's prefix + its name) one of LoRA Isolation's side-by-sides?"""
+    return str(key).rsplit(":", 1)[-1].startswith(SIDE_BY_SIDE)
+
+
 class BucketBatchManager:
     """Manages batched iteration over bucketed items, loading cached tensors."""
 
@@ -1035,6 +1043,10 @@ class ImageDataset(torch.utils.data.Dataset):
     # on its latent's grid as `loss_mask` in the batch. Set on the CLASS by the trainer before the dataset group is
     # generated, like clip_still_as_photo.
     loss_masks: bool = False
+    # LoRA Isolation's side-by-sides (families/multi_person.py, files named SIDE_BY_SIDE...) get their masks whether or
+    # not the run trains masked: the trainer weights them at floor 0 (#407). Set on the CLASS, for a family with masked
+    # training.
+    side_by_side_masks: bool = False
     # Tag variants (dataset/tag_variants.py): the run's seed, set on the CLASS by the trainer like loss_masks. None (the
     # cache pass, tools) = no per-step picks: every item trains on its own caption.
     variant_seed: Optional[int] = None
@@ -1565,7 +1577,8 @@ class ImageDataset(torch.utils.data.Dataset):
             _mdir = self.mask_directory or self.image_directory
             # a regularisation set's pictures train whole and plain: no mask, no Boost the face (an anchor for the kind
             # of thing they show, not a subject)
-            if self.loss_masks and _mdir and bucket_key == bucket_reso and not self.is_reg \
+            if (self.loss_masks or (self.side_by_side_masks and item_key.startswith(SIDE_BY_SIDE))) and _mdir \
+                    and bucket_key == bucket_reso and not self.is_reg \
                     and self.latent_cache_frames(cache_file) <= 1:          # stills only: never a clip or a voice
                 if _mask_names is None:
                     _mask_names = folder_names(_mdir)

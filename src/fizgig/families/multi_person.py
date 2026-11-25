@@ -9,7 +9,10 @@ Four parts, all model-agnostic (measured on Krea 2, 15 Oct 2026; branch experime
 - Fused triggers: "zwxem, a woman" is read as "zwxemwoman" (the dataset's caption_replace, the user's .txt files
   untouched), so the subject never shares the generic " woman" token every other woman uses.
 
-The strangers are a fixed, pinned set on Hugging Face, downloaded once into user_data on first use.
+The strangers are a fixed, pinned set on Hugging Face, downloaded once into user_data on first use, each with a person
+mask. Each side-by-side gets a mask from it: the stranger's half is their mask (the person white, the background
+black), the subject's half all white (it trains whole, as before). The trainer weights it at floor 0 whether or not
+the run trains masked, so the stranger's background teaches nothing (#407).
 """
 from __future__ import annotations
 
@@ -22,15 +25,17 @@ from fizgig.utils.image import flatten
 from fizgig.utils.upright import open_upright
 
 from fizgig.dataset.caption_file import read_caption
-from fizgig.dataset.masks import is_mask_file
+from fizgig.dataset.masks import MASK_SUFFIX, is_mask_file
 
 REPO = "ShootTheSound/fizgig-multi-person-strangers"
-REVISION = "8aeb77502234781cb5dca524994c80efcaa51024"      # pinned: a run's composites never change underneath it
+REVISION = "7efbfaaaecc0698d6c340d51c3ffbf349e982f5a"      # pinned: a run's composites never change underneath it
 PREFIX = "fizgig_mp_"                                       # the composites' file names (the trainer's --lr_boost)
 PER_SUBJECT = 16
 LR_BOOST = 2.0
 PANEL = 512                                                 # each half of a 1024 x 512 composite
-TAIL = "two people side by side, two close-up portraits"
+# the side-by-sides' last words: what they are (two separate portraits joined), in words a prompt with two subjects
+# together doesn't use - "two people side by side" did, and the subjects borrowed each other's looks more (#407)
+TAIL = "a split-screen diptych of two separate close-up portraits"
 _IMG = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 # what a subject can be, read from the captions when the folder's "replace it with" box is empty
 CLASS_WORDS = ("woman", "man", "girl", "boy", "lady", "guy", "person", "child", "kid", "baby", "teenager", "dog", "cat",
@@ -286,6 +291,15 @@ def _square(im, size=PANEL, center=None):
 FACECROP = "FaceCrop_"          # Image Prep's face crops (dataset/prep.py): already framed on the face, never re-cropped
 
 
+def _stranger_mask(path, size=PANEL):
+    """A stranger's half of a side-by-side's mask: their mask from the set (the person white, the background black),
+    or all white when the set has none."""
+    from PIL import Image
+    from fizgig.dataset.masks import mask_for, read_mask
+    m = mask_for(path)
+    return _square(read_mask(m), size) if m else Image.new("L", (size, size), 255)
+
+
 class _Faces:
     """The largest face's centre in an upright picture, from Image Prep's own detector (CPU), or None when there is no
     face or no detector - then the picture is centre-cropped as before."""
@@ -347,7 +361,8 @@ def build(subjects, ext=".txt", seed=42, log=print, face_first=True):
             st = os.stat(os.path.join(s["folder"], n))
             stamps.append([n, int(st.st_mtime), st.st_size])
         sig = {"photos": stamps, "fused": s["fused"], "n": PER_SUBJECT, "seed": seed, "index": s["index"],
-               "revision": REVISION, "ext": ext, "face_first": bool(face_first), "picking": 2}
+               "revision": REVISION, "ext": ext, "face_first": bool(face_first), "picking": 2, "masks": 1,
+               "tail": TAIL}
         mark = os.path.join(s["out"], "fizgig_mp_built.json")
         try:
             with open(mark, encoding="utf-8") as f:
@@ -377,8 +392,11 @@ def build(subjects, ext=".txt", seed=42, log=print, face_first=True):
             sheet = Image.new("RGB", (2 * PANEL, PANEL))
             sheet.paste(a if left else b, (0, 0))
             sheet.paste(b if left else a, (PANEL, 0))
+            msheet = Image.new("L", (2 * PANEL, PANEL), 255)        # the subject's half: whole
+            msheet.paste(_stranger_mask(path), (PANEL, 0) if left else (0, 0))
             name = f"{PREFIX}{k:02d}"
             sheet.save(os.path.join(s["out"], name + ".png"))
+            msheet.save(os.path.join(s["out"], name + MASK_SUFFIX + ".png"))
             me, them = ("left", "right") if left else ("right", "left")
             with open(os.path.join(s["out"], name + ext), "w", encoding="utf-8") as f:
                 f.write(f"{desc} on the {them}, and {s['fused']} on the {me}, {TAIL}")
