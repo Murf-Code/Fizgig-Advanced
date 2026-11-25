@@ -1466,7 +1466,7 @@ def _apply_test_vram_cap(gb, at):
     logger.warning(f"[test] VRAM capped at {gb:g} GB from step {at} (FIZGIG_TEST_VRAM_CAP_GB) - a test setting")
 
 
-def _reg_limit(group, per_epoch, say=False):
+def _reg_limit(group, per_epoch, say=False, quota_mode="fractional-v2"):
     """A LoRA's regularisation set (dataset blocks marked is_reg): at most per_epoch of its pictures an epoch, a
     different handful each epoch (BucketBatchManager.limit). 0 = every one, as a fine-tune's set trains. The group's
     length follows, so the steps an epoch (and the run card's totals) count only what trains."""
@@ -1474,7 +1474,7 @@ def _reg_limit(group, per_epoch, say=False):
         return
     for ds in getattr(group, "datasets", None) or []:
         if getattr(ds, "is_reg", False) and getattr(ds, "batch_manager", None) is not None:
-            have = ds.batch_manager.limit(int(per_epoch))
+            have = ds.batch_manager.limit(int(per_epoch), quota_mode=quota_mode)
             if say:
                 logger.info(f"[reg] {have} regularisation picture(s); each epoch uses "
                             f"{min(int(per_epoch), have)} of them, a different handful each epoch")
@@ -1923,7 +1923,22 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                                "those off.")
         logger.info(f"[batch] {bsz} pictures a step, each from the same size bucket; a batch whose captions differ "
                     "in shape runs each shape's pictures as their own group")
-    _reg_limit(group, reg_per_epoch, say=True)     # a LoRA's regularisation set: its share an epoch (--reg_per_epoch)
+    # Read the sampling policy before limit() builds or sorts any capped buckets. Old mid-epoch
+    # checkpoints can have fixed quotas; new ones must reproduce the exact saved sampling schedule.
+    from fizgig.training import regularisation_resume as _reg_resume
+    _reg_meta = {}
+    if resume_state_dir:
+        _reg_state_path = os.path.join(resume_state_dir, "training_state.json")
+        if os.path.isfile(_reg_state_path):
+            with open(_reg_state_path, encoding="utf-8") as _f:
+                _header = json.load(_f)
+            if _header.get("architecture") == state_arch or (desc.resumes_untagged_states and
+                                                             "architecture" not in _header):
+                _reg_meta = _header
+    _reg_staged = bool(stage_dataset_config and not slider and not finetune and share_worker is None)
+    _reg_mode = _reg_resume.prepare(group, reg_per_epoch, _reg_meta, bsz, staged=_reg_staged, log=logger.info)
+    _reg_capped = bool(_reg_resume.capped(group, reg_per_epoch))
+    _reg_limit(group, reg_per_epoch, say=True, quota_mode=_reg_mode)
     loader = DataLoader(group, batch_size=1, shuffle=True, num_workers=0,
                         collate_fn=(lambda b: b[0]) if slider_prompts else _Collator(shared_epoch, group))
     # Background loading (training/prefetch.py): the next batches are read from the cache while the GPU trains -
@@ -1940,7 +1955,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     loader = _prefetch.Prefetch(loader, enabled=_bg)
     # Start at a smaller size: the first stage_until of the epochs draw from this dataset (its own cache folder),
     # blending into the full size over stage_blend of the run
-    low_loader = None
+    low_loader = low_group = None
     if stage_dataset_config and not slider and not finetune and share_worker is None:
         _lbp = BlueprintGenerator(ConfigSanitizer()).generate(load_user_config(stage_dataset_config),
                                                               argparse.Namespace(), architecture=arch)
@@ -1949,7 +1964,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if low_group.num_train_items == 0:
             logger.warning("[stages] the smaller size has no cache - this run trains at the full size throughout")
         else:
-            _reg_limit(low_group, reg_per_epoch)
+            _reg_resume.restore_seeds(low_group, (_reg_meta.get("regularisation_schedule") or {}).get("low_dataset_seeds"))
+            _reg_limit(low_group, reg_per_epoch, quota_mode=_reg_mode)
             low_loader = DataLoader(low_group, batch_size=1, shuffle=True, num_workers=0,
                                     collate_fn=_Collator(shared_epoch, low_group))
             logger.info(f"[stages] the first {float(stage_until) * 100:.0f}% of the epochs at the smaller size "
@@ -1972,6 +1988,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             low_iter[0] = iter(low_loader)
             return next(low_iter[0])
     steps_per_epoch = len(loader)
+    _reg_mid = _reg_meta.get("mid_epoch") or {}
+    if (_reg_capped and _reg_mid and int(_reg_meta.get("batch_size", 1)) == bsz
+            and _reg_mid.get("steps_per_epoch") is not None
+            and int(_reg_mid["steps_per_epoch"]) != steps_per_epoch):
+        raise RuntimeError("[resume] steps per epoch changed for a capped regularisation restore point; "
+                           "restore the original dataset/settings or use an epoch-boundary checkpoint")
     logger.info(f"{desc.display_name} training: {group.num_train_items} items, {max_train_epochs} epochs, "
                 f"{steps_per_epoch} steps/epoch")
     _launch = uuid.uuid4().hex[:12]      # this launch: a re-run of the same name is a new training share
@@ -2636,6 +2658,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             logger.info(f"[resume] it trained {saved_batch_size} picture(s) a step and goes on at {bsz}: "
                         f"step {global_step} -> {start_epoch * steps_per_epoch}")
             global_step = start_epoch * steps_per_epoch
+        if _reg_capped and resume_mid and saved_batch_size != bsz:
+            # New batching cannot safely skip the old epoch's batch identities.
+            logger.info("[resume] capped regularisation batch size changed: retraining the in-progress epoch")
+            resume_mid = None
         resume_es = meta.get("early_stop")
         if adaptive:
             adaptive.load_state_dict(meta.get("adaptive_lr_state"))
@@ -3314,6 +3340,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                             extra={"learning_rate": box_learning_rate,
                                    **({"adaptive_lr_state": adaptive.state_dict()} if adaptive else {}),
                                    **({"mid_epoch": mid} if mid is not None else {}),
+                                   **({"regularisation_schedule": _reg_resume.snapshot(group, _reg_mode, reg_per_epoch,
+                                                                                       low_group if low_loader is not None else None)}
+                                      if _reg_capped else {}),
                                    **({"early_stop": es.state_dict()} if es is not None else {}),
                                    **({"batch_size": bsz} if bsz > 1 else {}),
                                    **({"selective_global_replay": driver.selective_state_dict()}

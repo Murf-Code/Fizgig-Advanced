@@ -531,6 +531,7 @@ class BucketBatchManager:
         self.epoch = 0
 
         self.quota: Optional[dict] = None   # limit(): items a bucket gives each epoch (None = all of them)
+        self.quota_mode = "fractional-v2"
         self.live_pools = {}  # reso -> original and newly admitted entries
         self.live_capacity = {}  # fixed original number of image slots
         self.reindex()
@@ -546,7 +547,7 @@ class BucketBatchManager:
             for i in range(num_batches):
                 self.bucket_batch_indices.append((reso, i))
 
-    def limit(self, per_epoch: int) -> int:
+    def limit(self, per_epoch: int, quota_mode="fractional-v2") -> int:
         """At most per_epoch items an epoch (a LoRA's regularisation set, --reg_per_epoch). Each bucket gives its
         share by its size: the whole part every epoch, and the leftover places go to buckets drawn afresh each epoch
         in proportion to what's left of their share (shuffle), so a small bucket whose share is under one picture
@@ -556,11 +557,18 @@ class BucketBatchManager:
         total = sum(len(b) for b in self.buckets.values())
         if per_epoch <= 0 or per_epoch >= total:
             return total
+        if quota_mode not in ("fixed-v1", "fractional-v1", "fractional-v2"):
+            raise ValueError(f"Unknown regularisation quota mode: {quota_mode}")
+        self.quota_mode = quota_mode
+        if quota_mode == "fractional-v2":
+            # Stable starting order across processes and filesystem enumeration orders.
+            self.buckets = {r: sorted(self.buckets[r], key=lambda it: str(it.item_key)) for r in self.bucket_resos}
         self._raw = {r: per_epoch * len(self.buckets[r]) / total for r in self.bucket_resos}
         quota = {r: int(v) for r, v in self._raw.items()}
         for r in sorted(self.bucket_resos, key=lambda r: self._raw[r] - quota[r], reverse=True)[:per_epoch - sum(quota.values())]:
             quota[r] += 1                      # the count: largest remainders first, the shares add up to per_epoch
         self.quota = quota
+        self._fixed_quota = dict(quota)
         self.bucket_batch_indices = self._indices(quota)
         self._n_batches = len(self.bucket_batch_indices)
         return total
@@ -585,8 +593,17 @@ class BucketBatchManager:
             rest = sorted((r for r in order if r not in got), key=lambda r: self._raw[r] - quota[r], reverse=True)
             for r in (got + rest)[:extra]:           # rounding can leave one short or over: the count holds
                 quota[r] += 1
-        self.quota = quota
         idx = self._indices(quota)
+        if self.quota_mode == "fractional-v2":
+            # Larger batches cannot always realise a new allocation in the original number
+            # of steps. Fall back rather than duplicate/drop images or change the scheduler.
+            if len(idx) != self._n_batches:
+                quota = dict(self._fixed_quota)
+                idx = self._indices(quota)
+            self.quota = quota
+            self.bucket_batch_indices = idx
+            return
+        self.quota = quota
         if len(idx) > self._n_batches:               # batches over 1 picture: the steps stay the count made at start
             rng.shuffle(idx)
             idx = idx[:self._n_batches]
@@ -628,7 +645,7 @@ class BucketBatchManager:
             self.buckets[reso][:] = pool[:self.live_capacity[reso]]
         for bucket in self.buckets.values():
             rng.shuffle(bucket)
-        if self.quota is not None:
+        if self.quota is not None and self.quota_mode != "fixed-v1":
             self._draw_quota(rng)
         rng.shuffle(self.bucket_batch_indices)
 
