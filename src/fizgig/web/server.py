@@ -1269,7 +1269,11 @@ def _plan(family_key, values, image_folder, resume="", ft_continue=None, models=
                       resuming=True)
     if resume or ft_continue or str(values.get("RESUME_TRAINING") or "").strip():
         inputs["recache"] = _size_changed(name, out_dir, values)
-    return desc, inputs, launch.plan(desc, inputs)
+    plan = launch.plan(desc, inputs)
+    if values.get("__geometry_compare"):
+        from fizgig.web import geometry_benchmark
+        geometry_benchmark.adjust_plan(desc, values, plan)
+    return desc, inputs, plan
 
 
 _SIZE_KEYS = ("DATASET_MEGAPIXELS", "CLIP_MEGAPIXELS")
@@ -1818,6 +1822,9 @@ def _oom_recover(kind, stage_name, plan):
     """A run ran out of memory (oom.classify's kind): carry it on by itself when web/oom.py says so - a Continue from
     its newest save, or a fresh restart a step lighter - logged plainly and kept on its record. False when it
     stops here (the advice and what was tried are in the log); the caller then lets the queue move on."""
+    if (_run.get("values") or {}).get("__geometry_compare"):
+        append_log("[matrix geometry pilot] OOM recovery disabled: preserve matched controls.\n")
+        return False
     rid = _run.get("history_id")
     rec = history.get(rid) or {}
     tries = [t for t in (rec.get("oom") or []) if isinstance(t, dict)]
@@ -2244,6 +2251,32 @@ def _progress_dict(upd):
 
 
 def _run_stages(stages, out_dir):
+    from fizgig.web import geometry_report
+    with _lock:
+        case = (_run.get("values") or {}).get("__geometry_compare")
+        log_path = _run_log["path"]
+        history_id = _run.get("history_id")
+    if not case:
+        return _run_stages_impl(stages, out_dir, webqueue.on_run_ended)
+    began = time.monotonic()
+    endings = []
+    def defer_end(result, lora, starter):
+        endings.append((result, lora, starter))
+    geometry_report.update(out_dir, case, "running")
+    try:
+        return _run_stages_impl(stages, out_dir, defer_end)
+    finally:
+        with _lock:
+            state = _run["state"] if _run.get("history_id") == history_id else "unknown"
+        status = {"completed": "finished", "failed": "failed", "stopped": "stopped",
+                  "paused": "paused"}.get(state, "failed")
+        geometry_report.update(out_dir, case, status, log_path=log_path,
+                               wall_seconds=time.monotonic() - began)
+        for ending in endings:
+            webqueue.on_run_ended(*ending)
+
+
+def _run_stages_impl(stages, out_dir, on_end):
     from fizgig.training.progress import TrainingProgressTracker
     append_log(f"\n=== Fizgig run, {datetime.datetime.now():%Y-%m-%d %H:%M:%S} ===\n")
     with _lock:
@@ -2257,7 +2290,7 @@ def _run_stages(stages, out_dir):
         with _lock:
             if _run["state"] == "stopped":
                 history.end(_run.get("history_id"), "stopped", _run.get("progress"))
-                webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+                on_end("stopped", _run.get("lora"), _queue_starter)
                 return
             _run["stage"] = stage.name
             if stage.name == "Training" and not _run.get("training_at"):
@@ -2281,14 +2314,14 @@ def _run_stages(stages, out_dir):
             with _lock:
                 _run.update(state="failed", proc=None, ended_at=time.time())
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
-            webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
+            on_end("failed", _run.get("lora"), _queue_starter)
             return
         if skipped:
             append_log(f"\n■ Stopped before starting {stage.name}.\n")
             with _lock:
                 _run["proc"] = None
             history.end(_run.get("history_id"), "stopped", _run.get("progress"))
-            webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+            on_end("stopped", _run.get("lora"), _queue_starter)
             return
         mem = oom.Watch()                       # GPU / system-RAM messages, and the Auto plan the trainer chose
         for line in proc.stdout:
@@ -2335,7 +2368,7 @@ def _run_stages(stages, out_dir):
                 _run["proc"] = None              # gone: a stop-and-wait sees it at once
             append_log(f"\n■ Stopped during {stage.name}.\n")
             history.end(_run.get("history_id"), "stopped", _run.get("progress"))
-            webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+            on_end("stopped", _run.get("lora"), _queue_starter)
             return
         if ret != 0:
             kind = oom.classify(ret, mem)
@@ -2346,7 +2379,7 @@ def _run_stages(stages, out_dir):
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
             if kind and _oom_recover(kind, stage.name, mem.plan):
                 return                           # it carries on by itself: the queue waits for that run
-            webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
+            on_end("failed", _run.get("lora"), _queue_starter)
             return
     paused = ((os.path.exists(os.path.join(out_dir, ".pause_requested")) or _run["pause"])
               and _run.get("family") != refmod.KEY                   # a RefMod finishes in one go
@@ -2374,11 +2407,11 @@ def _run_stages(stages, out_dir):
         except OSError:
             pass
         history.end(_run.get("history_id"), "stopped", _run.get("progress"))
-        webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+        on_end("stopped", _run.get("lora"), _queue_starter)
         append_log("\n■ Stopped at the end of the final stage.\n")
         return
     history.end(_run.get("history_id"), "paused" if paused else "finished", _run.get("progress"))
-    webqueue.on_run_ended("paused" if paused else "finished", _run.get("lora"), _queue_starter)
+    on_end("paused" if paused else "finished", _run.get("lora"), _queue_starter)
     append_log(("\n⏸ Restore point saved and training stopped. Resume continues from it.\n" if _run.get("save_stop")
                 else "\n⏸ Paused. Resume continues from the saved state.\n") if paused else
                f"\n✔ Run complete. {_run['early_stop']}\n" if _run.get("early_stop") else "\n✔ Run complete.\n")
@@ -5042,9 +5075,43 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": f"{name} is already there."}, 400)
                 os.makedirs(new)
                 return self.json({"ok": True, "path": new})
+            if path == "/api/queue/geometry-compare":
+                from fizgig.web import geometry_benchmark, geometry_report
+                folder = str(b.get("image_folder") or "").strip()
+                if not os.path.isdir(folder):
+                    return self.json({"error": "Select a Krea 2 image dataset on Start."}, 400)
+                if any(h.get("share") for h in (load_prefs().get("helpers") or [])):
+                    return self.json({"error": "Disable shared training helpers for the matrix geometry comparison."}, 400)
+                group = "geometry-pilot-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+                root = os.path.join(default_output_dir(), "matrix_geometry_comparisons")
+                configs = geometry_benchmark.settings(group, root)
+                entries = []
+                for vals in configs:
+                    _, inputs, plan = _plan("krea2", vals, folder)
+                    if plan.problems:
+                        return self.json({"problems": [vals["__geometry_compare"] + ": " + p for p in plan.problems]}, 400)
+                    out, name = inputs["LORA_OUTPUT_DIR"], inputs["LORA_NAME"]
+                    if os.path.exists(out) or name_taken(vals, inputs) or webqueue.clashes(out, name):
+                        return self.json({"error": "Comparison output already exists; queue a new comparison."}, 400)
+                    entries.append(("krea2", vals, folder, name, out))
+                try:
+                    geometry_report.create(os.path.join(root, group), folder, configs)
+                except OSError as exc:
+                    return self.json({"error": f"Could not create comparison report: {exc}"}, 400)
+                items = webqueue.add_many(entries)
+                with _lock:
+                    idle = not (_run["proc"] is not None and _run["proc"].poll() is None) and (
+                        _run["state"] not in ("starting", "running", "paused"))
+                if idle and not webqueue.status()["held"]:
+                    webqueue.start_next(_queue_starter)
+                return self.json({"ok": True, "ids": [i["id"] for i in items],
+                                  "output": os.path.join(root, group),
+                                  "report": os.path.join(root, group, geometry_report.COMBINED)})
             if path in ("/api/queue/add", "/api/queue/update"):   # Add to queue (or a queued run edited): checked
                 fam, vals, folder = b.get("family", ""), b.get("values") or {}, b.get("image_folder") or ""  # like Start
                 editing = str(b.get("id") or "") if path == "/api/queue/update" else ""
+                if editing and ((webqueue.get(editing) or {}).get("values") or {}).get("__geometry_compare"):
+                    return self.json({"error": "Geometry pilot controls are fixed. Remove and requeue the comparison instead."}, 400)
                 if path == "/api/queue/update" and webqueue.get(editing) is None:
                     return self.json({"error": "That run has left the queue (it started, or was removed) - add "
                                                "this as a new one instead."}, 400)
@@ -5108,6 +5175,10 @@ class Handler(BaseHTTPRequestHandler):
                 r = startup_choice(str(b.get("choice") or ""))
                 return self.json(r, 400 if r.get("error") else 200)
             if path == "/api/queue/remove":
+                item = webqueue.get(str(b.get("id") or "")) or {}
+                from fizgig.web import geometry_report
+                geometry_report.update(item.get("output_dir"), (item.get("values") or {}).get("__geometry_compare"),
+                                       "removed", reason="Removed from queue")
                 webqueue.remove(str(b.get("id") or ""))
                 return self.json({"ok": True})
             if path == "/api/queue/move":

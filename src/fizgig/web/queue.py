@@ -70,6 +70,19 @@ def add(family, values, image_folder, lora, output_dir):
     return item
 
 
+def add_many(entries):
+    """Append a preflighted comparison as one queue operation, before any case starts."""
+    items = [{"id": uuid.uuid4().hex[:10], "family": family, "values": dict(values),
+              "image_folder": folder, "lora": lora, "output_dir": out,
+              "queued_at": time.strftime("%Y-%m-%d %H:%M")}
+             for family, values, folder, lora, out in entries]
+    with _lock:
+        _q["items"].extend(items)
+        _save()
+    return items
+
+
+
 def clashes(output_dir, lora, skip=""):
     """A queued run that would save into the same files (same output folder and LoRA name), or None. skip: the item
     being edited, which may of course keep its own name."""
