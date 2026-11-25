@@ -41,7 +41,7 @@ def bits(a,b):
     dt = {torch.float32:torch.int32, torch.bfloat16:torch.int16}[a.dtype]
     assert torch.equal(a.detach().contiguous().view(dt), b.detach().contiguous().view(dt))
 
-def same(p,o,q,ref):
+def same(p,o,q,ref,norms=True):
     for pp,qq in zip(p,q):
         for a,b in zip(pp,qq):
             bits(a,b)
@@ -50,7 +50,8 @@ def same(p,o,q,ref):
         assert st.keys() == ref.pair_state[i].keys()
         for k,v in st.items():
             bits(v,ref.pair_state[i][k])
-    assert o.last_norms == ref.last_norms
+    if norms:
+        assert o.last_norms == ref.last_norms
     assert o._step_count == ref._step_count
 
 def budget(c,r=8,i=20,o=300):
@@ -104,8 +105,9 @@ def test_fresh_serialized_checkpoint(src,dst):
             for key,arr,off in (("v_sigma_A",g.vA,0),("v_sigma_DA",g.vA,len(g.idxs)),
                                 ("v_sigma_B",g.vB,0),("v_sigma_DB",g.vB,len(g.idxs))):
                 assert resumed.pair_state[i][key].data_ptr()==arr[j+off].data_ptr()
+    assert resumed.last_norms is None  # transient telemetry is not checkpointed
     for t in range(7,13):
-        run(resumed,fresh,t); run(ref,q,t); same(fresh,resumed,q,ref)
+        run(resumed,fresh,t); run(ref,q,t); same(fresh,resumed,q,ref,norms=t>=9)
 
 def test_lru_cross_group_and_eviction():
     p=pairs([(2,8,12,torch.float32)]*40+[(2,12,8,torch.float32)]*41)
