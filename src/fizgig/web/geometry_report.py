@@ -6,6 +6,7 @@ import shutil
 import threading
 import time
 import zipfile
+from fizgig.web.geometry_benchmark import is_feasibility
 from pathlib import Path
 
 LOG = logging.getLogger(__name__)
@@ -37,12 +38,19 @@ def _save(root, report):
     report["updated_at"] = time.time()
     _atomic(root / REPORT, json.dumps(report, indent=2, allow_nan=False))
     lines = ["Fizgig Matrix Geometry optimizer pilot", "Status: " + report["status"],
-             "Dataset: " + report["dataset"], "", "Case | LR | Status | step ms | final validation | GPU peak GiB | RAM peak GiB"]
+             "Dataset: " + report["dataset"], "", "Case | Rank | MP | Status | updates | step ms | CUDA allocated GiB | CUDA reserved GiB | GPU peak GiB | RAM peak GiB | process shared GPU GiB | post-training validation"]
     for r in report["runs"]:
         perf = r.get("performance", {})
         val = r.get("validation", [])
-        lines.append(" | ".join(map(str, [r["case"], r["lr"], r["status"], perf.get("step_ms", "-"),
-                     val[-1]["loss"] if val else "-", perf.get("vram_peak_gb", "-"), perf.get("system_ram_peak_gib", "-")])))
+        fit = r.get("feasibility") or {}
+        config = r.get("settings", {})
+        gib = lambda key: round(fit[key] / 2**30, 3) if key in fit else "-"
+        lines.append(" | ".join(map(str, [r["case"], config.get("NETWORK_DIM", "-"),
+                     config.get("DATASET_MEGAPIXELS", "-"), r["status"], fit.get("updates", perf.get("steps", "-")),
+                     perf.get("step_ms", "-"), gib("cuda_peak_allocated_bytes"), gib("cuda_peak_reserved_bytes"),
+                     perf.get("vram_peak_gb", "-"), perf.get("system_ram_peak_gib", "-"),
+                     perf.get("process_shared_gpu_peak_gib", "-"),
+                     val[-1]["loss"] if len(val) > 1 else "-"])))
     for r in report["runs"]:
         lines.extend(["", "=" * 78, r["case"] + " | " + r["status"], "=" * 78])
         if r.get("reason"):
@@ -78,7 +86,14 @@ def create(root, dataset, configs):
 
 def parse_log(text):
     epochs, validation, feasibility = [], [], None
+    buckets = []
+    failure = None
     for line in text.splitlines():
+        bucket = re.search(r"bucket: \((\d+), (\d+)\), count: (\d+)", line)
+        if bucket:
+            buckets.append({"width": int(bucket[1]), "height": int(bucket[2]), "count": int(bucket[3])})
+        if re.search(r"CUDA out of memory|torch\.(?:cuda\.)?OutOfMemoryError|CUDA error: out of memory", line, re.I):
+            failure = "cuda_oom"
         m = re.search(r"epoch (\d+)/(\d+)\s+avr_loss=" + NUM + r"\s+step=(\d+)\s+" + NUM + r"s/step", line)
         if m:
             epochs.append({"epoch": int(m[1]), "step": int(m[4]), "loss": float(m[3]), "seconds_per_step": float(m[5])})
@@ -89,7 +104,8 @@ def parse_log(text):
         if m:
             feasibility = {"updates": int(m[1]), "cuda_peak_allocated_bytes": int(m[2]),
                            "cuda_peak_reserved_bytes": int(m[3]), "training_wall_seconds": float(m[4])}
-    return {"epochs": epochs, "validation": validation, "feasibility": feasibility}
+    return {"epochs": epochs, "validation": validation, "feasibility": feasibility,
+            "reported_buckets": buckets, "failure_kind": failure}
 
 
 def update(output, case, status, *, log_path=None, reason="", wall_seconds=None):
@@ -118,8 +134,10 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                 run["logs"].append(dest.relative_to(root).as_posix())
                 raw = "\n".join((root / f).read_text(encoding="utf-8", errors="replace") for f in run["logs"])
                 run.update(parse_log(raw))
-                if case == "polora-r64-feasibility" and status == "finished" and not run.get("feasibility"):
-                    run.update(status="failed", reason="Missing feasibility completion telemetry; do not infer GPU fit.")
+            if is_feasibility(case) and status == "finished" and not run.get("feasibility"):
+                run.update(status="failed", reason="Missing feasibility completion telemetry; do not infer GPU fit.")
+            if status == "failed" and run.get("failure_kind") == "cuda_oom":
+                run["reason"] = "CUDA out of memory (fixed settings; no automatic reduction)."
             perf = output / (".perf_" + run["name"] + ".json")
             if perf.is_file():
                 try:

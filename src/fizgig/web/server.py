@@ -5075,7 +5075,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": f"{name} is already there."}, 400)
                 os.makedirs(new)
                 return self.json({"ok": True, "path": new})
-            if path in ("/api/queue/geometry-compare", "/api/queue/geometry-feasibility"):
+            if path in ("/api/queue/geometry-compare", "/api/queue/geometry-feasibility", "/api/queue/geometry-resolution"):
                 from fizgig.web import geometry_benchmark, geometry_report
                 folder = str(b.get("image_folder") or "").strip()
                 if not os.path.isdir(folder):
@@ -5083,9 +5083,11 @@ class Handler(BaseHTTPRequestHandler):
                 if any(h.get("share") for h in (load_prefs().get("helpers") or [])):
                     return self.json({"error": "Disable shared training helpers for the matrix geometry comparison."}, 400)
                 feasibility = path == "/api/queue/geometry-feasibility"
-                group = ("geometry-r64-fit-" if feasibility else "geometry-pilot-") + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+                resolution = path == "/api/queue/geometry-resolution"
+                group = ("geometry-resolution-" if resolution else "geometry-r64-fit-" if feasibility else "geometry-pilot-") + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
                 root = os.path.join(default_output_dir(), "matrix_geometry_comparisons")
-                configs = (geometry_benchmark.feasibility_settings(group, root) if feasibility else
+                configs = (geometry_benchmark.resolution_settings(group, root) if resolution else
+                           geometry_benchmark.feasibility_settings(group, root) if feasibility else
                            geometry_benchmark.settings(group, root))
                 entries = []
                 for vals in configs:

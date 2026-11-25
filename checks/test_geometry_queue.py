@@ -41,3 +41,29 @@ def test_rank64_feasibility_is_separate(tmp_path):
     parsed = report.parse_log("[geometry-fit] complete updates=50 allocated_bytes=1024 reserved_bytes=2048 wall_seconds=12.5")
     assert parsed["feasibility"]["updates"] == 50
     assert parsed["feasibility"]["cuda_peak_reserved_bytes"] == 2048
+
+def test_resolution_queue(tmp_path):
+    configs = bench.resolution_settings("resolution", str(tmp_path))
+    assert len(configs) == 10
+    assert len({v["LORA_OUTPUT_DIR"] for v in configs}) == 10
+    assert {(v["NETWORK_DIM"], v["DATASET_MEGAPIXELS"]) for v in configs[:8]} == {
+        (rank, mp) for rank in ("16", "32") for mp in ("0.25", "0.50", "0.75", "1.00")}
+    for v in configs:
+        assert bench.is_feasibility(v["__geometry_compare"])
+        assert v["NETWORK_DIM"] == v["NETWORK_ALPHA"]
+        assert v["MAX_TRAIN_EPOCHS"] == "1" and not v["SAMPLE_ENABLED"]
+    assert configs[-2]["OPTIMIZER_ARGS"].endswith("chunk_memory_mib=128")
+    assert configs[-1]["OPTIMIZER_ARGS"].endswith("chunk_memory_mib=0")
+    assert configs[-2]["DATASET_MEGAPIXELS"] == configs[-1]["DATASET_MEGAPIXELS"] == "0.25"
+    root = tmp_path / "resolution"
+    report.create(root, "dataset", configs)
+    v = configs[0]
+    out = Path(v["LORA_OUTPUT_DIR"])
+    out.mkdir()
+    log = out / "run.log"
+    log.write_text("torch.OutOfMemoryError: CUDA out of memory.", encoding="utf-8")
+    report.update(out, v["__geometry_compare"], "failed", log_path=log)
+    data = json.loads((root / report.REPORT).read_text())
+    assert data["runs"][0]["failure_kind"] == "cuda_oom"
+    assert data["runs"][1]["status"] == "queued"
+    assert report.parse_log("bucket: (496, 496), count: 29")["reported_buckets"][0]["width"] == 496

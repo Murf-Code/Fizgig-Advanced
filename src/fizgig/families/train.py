@@ -1561,9 +1561,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     geometry_fit_steps = int((family_options or {}).get("geometry_feasibility_steps", 0) or 0)
     if geometry_fit_steps and (geometry_fit_steps != 50 or desc.key != "krea2" or finetune
                                or share_worker or str(optimizer_type).lower() != "polora"
-                               or int(network_dim) != 64 or int(max_train_epochs) != 1
+                               or int(network_dim) not in (16, 32, 64) or int(network_alpha) != int(network_dim)
+                               or int(max_train_epochs) != 1
                                or int(gradient_accumulation_steps) != 1 or resume_state_dir):
-        raise ValueError("Rank-64 geometry feasibility requires a fresh, single-epoch Krea 2 PoLoRA run, accumulation 1.")
+        raise ValueError("Geometry feasibility requires fresh rank 16/32/64 Krea 2 PoLoRA, alpha=rank, one epoch, accumulation 1.")
     driver = desc.load_driver()
     driver.set_options({k:v for k,v in (family_options or {}).items() if k != "geometry_feasibility_steps"})      # before the data: an option may shape the dataset
     _method = str((family_options or {}).get("training_method", "") or "").strip()

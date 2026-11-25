@@ -66,11 +66,35 @@ def feasibility_settings(group, output_root):
              "SAVE_STATE": False, "SAVE_STATE_ON_TRAIN_END": False}]
 
 
+# Group equal resolutions together so the second rank can reuse the latent cache.
+# Repeat the successful r64 probe with the unchunked control last (OOM is useful data).
+RESOLUTION_CASES = tuple(
+    (f"polora-r{rank}-mp{mp.replace('.', 'p')}-fit", rank, mp, 128)
+    for mp in ("0.25", "0.50", "0.75", "1.00") for rank in (16, 32)
+) + (("polora-r64-mp0p25-chunked-fit", 64, "0.25", 128),
+     ("polora-r64-mp0p25-unchunked-fit", 64, "0.25", 0))
+
+
+def is_feasibility(case):
+    return case == FEASIBILITY_CASE or case in {x[0] for x in RESOLUTION_CASES}
+
+
+def resolution_settings(group, output_root):
+    v, = feasibility_settings(group, output_root)
+    return [{**v, "__geometry_compare": case,
+             "NETWORK_DIM": str(rank), "NETWORK_ALPHA": str(rank),
+             "DATASET_MEGAPIXELS": mp,
+             "OPTIMIZER_ARGS": f"magnitude_scale=3 compile=False chunk_memory_mib={budget}",
+             "LORA_NAME": f"{group}-{case}",
+             "LORA_OUTPUT_DIR": os.path.join(output_root, group, case)}
+            for case, rank, mp, budget in RESOLUTION_CASES]
+
+
 def adjust_plan(desc, values, plan):
     case = values.get("__geometry_compare")
     if not case:
         return plan
-    if desc.key != "krea2" or case not in ({x[0] for x in CASES} | {FEASIBILITY_CASE}):
+    if desc.key != "krea2" or (case not in {x[0] for x in CASES} and not is_feasibility(case)):
         raise ValueError("Invalid Krea 2 matrix geometry comparison case.")
     if plan.problems:
         return plan
@@ -81,7 +105,7 @@ def adjust_plan(desc, values, plan):
     cmd = stages[0].cmd
     if "--holdout_file" not in cmd and "holdout_file =" not in plan.dataset_toml:
         plan.problems.append("Matrix geometry comparison requires a validation holdout.")
-    if case == FEASIBILITY_CASE:
+    if is_feasibility(case):
         cmd.extend(["--family_option", f"geometry_feasibility_steps={FEASIBILITY_STEPS}"])
     elif "--sample_prompts" not in cmd:
         plan.problems.append("Matrix geometry comparison requires usable sample prompts.")

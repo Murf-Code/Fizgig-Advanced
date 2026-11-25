@@ -83,6 +83,10 @@ class PerfWatch:
         self._n = {k: 0 for k in self._sum}
         self.vram_peak = None
         self.vram_total = None
+        self.ram_peak = None
+        self.process_rss_peak = None
+        self.shared_gpu_peak = None
+        self.vram_source = None
         self.t0 = time.time()
         self._base = self._counts()
         self.last = {}
@@ -107,6 +111,9 @@ class PerfWatch:
         try:
             import psutil
             s["cpu"] = round(psutil.cpu_percent(None), 1)
+            mem = psutil.virtual_memory()
+            s["system_ram_gib"] = (mem.total - mem.available) / 2**30
+            s["process_rss_gib"] = psutil.Process().memory_info().rss / 2**30
         except Exception:
             pass
         disk = self._disk_bytes()
@@ -125,6 +132,7 @@ class PerfWatch:
             try:
                 m = nv.nvmlDeviceGetMemoryInfo(h)
                 s["vram_gb"], s["vram_total_gb"] = round(m.used / 2 ** 30, 2), round(m.total / 2 ** 30, 2)
+                self.vram_source = "nvml_device_used"
             except Exception:
                 pass
         elif self.gpu:
@@ -132,8 +140,17 @@ class PerfWatch:
                 import torch
                 if torch.cuda.is_available():
                     s["vram_gb"] = round(torch.cuda.memory_reserved(self.device_index) / 2 ** 30, 2)
+                    self.vram_source = "torch_process_reserved"
             except Exception:
                 pass
+        if self._shared is not None:
+            shared = self._shared.read()
+            if shared is not None:
+                s["process_shared_gpu_gib"] = shared / 2**30
+        for key, attr in (("system_ram_gib", "ram_peak"), ("process_rss_gib", "process_rss_peak"),
+                          ("process_shared_gpu_gib", "shared_gpu_peak")):
+            if key in s:
+                setattr(self, attr, max(getattr(self, attr) or 0.0, s[key]))
         wait, busy, n = self._counts()
         dw, db, dn = wait - prev[2][0], busy - prev[2][1], n - prev[2][2]
         if dw + db > 0:
@@ -156,6 +173,12 @@ class PerfWatch:
     # --- the thread ----------------------------------------------------------------------------------------------
     def _loop(self):
         self._nv = _gpu_handle(self.device_index) if self.gpu else (None, None)
+        if self.gpu and os.name == "nt":
+            try:
+                from fizgig.training.windows_gpu_memory import SharedGpuMemory
+                self._shared = SharedGpuMemory()
+            except Exception:
+                logger.debug("[perf] Windows shared GPU counter unavailable", exc_info=True)
         try:
             import psutil
             psutil.cpu_percent(None)                  # the first call only primes it
@@ -171,6 +194,7 @@ class PerfWatch:
 
     def start(self):
         self._nv = (None, None)
+        self._shared = None
         self._write({"live": {}, "background_loading": self.bg})
         self._th = threading.Thread(target=self._loop, name="fizgig-perf-readout", daemon=True)
         self._th.start()
@@ -199,6 +223,13 @@ class PerfWatch:
             out["vram_peak_gb"] = self.vram_peak
             if self.vram_total:
                 out["vram_total_gb"] = self.vram_total
+        if self.vram_source:
+            out["vram_source"] = self.vram_source
+        for attr, key in (("ram_peak", "system_ram_peak_gib"), ("process_rss_peak", "process_rss_peak_gib"),
+                          ("shared_gpu_peak", "process_shared_gpu_peak_gib")):
+            value = getattr(self, attr)
+            if value is not None:
+                out[key] = round(value, 3)
         out["hint"] = hint(out)
         return out
 
@@ -207,6 +238,9 @@ class PerfWatch:
         self._stop.set()
         if self._th is not None:
             self._th.join(timeout=self.interval + 2)
+        if self._shared is not None and (self._th is None or not self._th.is_alive()):
+            self._shared.close()
+            self._shared = None
         s = self.summary()
         if s.get("steps"):
             parts = [f"data wait {round(100 * s['wait_share'])}%" if "wait_share" in s else None,
