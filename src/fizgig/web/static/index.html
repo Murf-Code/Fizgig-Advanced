@@ -2243,6 +2243,32 @@
             <div class="card-desc">How Fizgig looks on this device: a phone or another computer keeps its own.</div>
             <div class="card-content"><div class="theme-pick" id="themePick"></div></div>
           </div>
+          <div class="section-card" id="pushCard">
+            <div class="card-title">Push Notifications</div>
+            <div class="card-desc">Optional phone or desktop alerts through <a href="https://ntfy.sh/" target="_blank" rel="noopener noreferrer">ntfy.sh</a>.
+              Off by default. Install the ntfy app or use its web app and subscribe to the same topic.
+              Public topics are not private: generate a random topic and keep it secret, or use a reserved private topic with an access token.
+              Messages are sent to ntfy only when enabled; run names are omitted unless you choose to include them.</div>
+            <div class="card-content">
+              <label class="field-row"><input type="checkbox" id="pushEnabled"> Enable push notifications</label>
+              <div class="field-row"><label for="pushTopic" class="field-label">Topic:</label>
+                <input id="pushTopic" type="password" autocomplete="off" class="w-combo-lg" spellcheck="false">
+                <button class="btn" id="pushGenerate" type="button">Generate topic</button></div>
+              <div class="field-hint">Use the same topic in ntfy. Copy it from the field to subscribe; do not share it publicly.</div>
+              <div class="field-row"><label for="pushToken" class="field-label">Access token:</label>
+                <input id="pushToken" type="password" autocomplete="off" class="w-combo-lg">
+                <label><input id="pushForget" type="checkbox"> Clear saved token</label></div>
+              <label class="field-row"><input id="pushNames" type="checkbox"> Include run names in notifications</label>
+              <div class="field-hint">Notify me when:</div>
+              <div id="pushEvents"></div>
+              <div class="field-row">
+                <button class="btn btn-primary" id="pushSave" type="button">Save</button>
+                <button class="btn" id="pushTest" type="button">Send test notification</button>
+                <button class="btn" id="pushReload" type="button">Reload</button>
+                <span class="field-hint" id="pushStatus" role="status"></span>
+              </div>
+            </div>
+          </div>
           <div id="prefsForm"></div>
         </section>
       </div>
@@ -2457,5 +2483,6 @@
   <script src="/caption_thumb_rail.js" onerror="fizgigRetry(this)"></script>
   <script src="/caption_remove_bridge.js" onerror="fizgigRetry(this)"></script>
   <script src="/app.js" onerror="fizgigRetry(this)"></script>
+  <script src="/push_notifications.js" onerror="fizgigRetry(this)"></script>
 </body>
 </html>

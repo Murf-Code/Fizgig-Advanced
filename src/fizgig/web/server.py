@@ -34,7 +34,7 @@ from urllib.parse import parse_qs, urlparse
 from fizgig.dataset.masks import is_mask_file, mask_for_stem
 from fizgig.families import form, launch
 from fizgig.families.registry import get as get_family, training_families
-from fizgig.web import captions, history, oom
+from fizgig.web import captions, history, oom, push_notifications
 from fizgig.web import queue as webqueue
 from fizgig.web import prep_jobs
 from fizgig.families import refmod
@@ -1883,6 +1883,7 @@ def _oom_go(rid, do, values, tries):
     if not isinstance(r, dict) or r.get("error") or r.get("problems"):
         why = (r or {}).get("error") or "; ".join((r or {}).get("problems") or []) if isinstance(r, dict) else str(r)
         append_log(f"\nOut-of-memory recovery couldn't start the run again: {why}\n")
+        push_notifications.emit("oom", rec.get("lora"))
         webqueue.on_run_ended("failed", rec.get("lora"), _queue_starter)
 
 
@@ -2251,6 +2252,7 @@ def _run_stages(stages, out_dir):
         _run["started_at"] = time.time()
         _run["training_at"] = None             # the Training stage's start (the run summary's Training time)
         _stats["vram_peak"] = 0                # this run's peak, not the server's
+    push_notifications.emit("started", _run.get("lora"))
     for stage in stages:
         with _lock:
             if _run["state"] == "stopped":
@@ -2279,6 +2281,7 @@ def _run_stages(stages, out_dir):
             with _lock:
                 _run.update(state="failed", proc=None, ended_at=time.time())
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
+            push_notifications.emit("failed", _run.get("lora"))
             webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
             return
         if skipped:
@@ -2301,6 +2304,8 @@ def _run_stages(stages, out_dir):
             except Exception:
                 upd = None
             if upd:
+                if upd.get("kind") == "preview" and upd.get("phase") == "complete":
+                    push_notifications.emit("preview", _run.get("lora"))
                 with _lock:
                     if upd.get("kind") == "cache":      # a cache stage's count: its own bar and line
                         n, total = upd["n"], upd["total"]
@@ -2344,8 +2349,11 @@ def _run_stages(stages, out_dir):
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
             if kind and _oom_recover(kind, stage.name, mem.plan):
                 return                           # it carries on by itself: the queue waits for that run
+            push_notifications.emit("oom" if kind else "failed", _run.get("lora"))
             webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
             return
+        if "cach" in stage.name.lower():
+            push_notifications.emit("cache", _run.get("lora"))
     paused = ((os.path.exists(os.path.join(out_dir, ".pause_requested")) or _run["pause"])
               and _run.get("family") != refmod.KEY                   # a RefMod finishes in one go
               and not _run.get("early_stop"))                        # an early stop finished the run
@@ -2376,6 +2384,7 @@ def _run_stages(stages, out_dir):
         append_log("\n■ Stopped at the end of the final stage.\n")
         return
     history.end(_run.get("history_id"), "paused" if paused else "finished", _run.get("progress"))
+    push_notifications.emit("paused" if paused else "finished", _run.get("lora"))
     webqueue.on_run_ended("paused" if paused else "finished", _run.get("lora"), _queue_starter)
     append_log(("\n⏸ Restore point saved and training stopped. Resume continues from it.\n" if _run.get("save_stop")
                 else "\n⏸ Paused. Resume continues from the saved state.\n") if paused else
@@ -3709,7 +3718,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, page.encode("utf-8"), "text/html; charset=utf-8", extra=extra)
         if path == "/welcome.mp4":                  # the welcome popup's tour (it ships with Fizgig: no network)
             return self._stream(os.path.join(STATIC_DIR, "welcome_v8.mp4"), attachment=False)  # ranged: it seeks
-        if path in ("/app.js", "/caption_studio_tags.js", "/caption_studio_viz.js",
+        if path in ("/app.js", "/push_notifications.js", "/caption_studio_tags.js", "/caption_studio_viz.js",
                     "/caption_studio_learning.js",
                     "/caption_studio_selection.js", "/caption_studio_training_picks.js",
                     "/caption_theme.js", "/caption_image_perf.js", "/caption_thumb_rail.js", "/caption_remove_bridge.js", "/mask_stroke_worker.js",
@@ -3727,6 +3736,8 @@ class Handler(BaseHTTPRequestHandler):
         if not path.startswith("/api/") or not self._api_ok(qs):
             return None if path.startswith("/api/") else self.json({"error": "not found"}, 404)
 
+        if path == "/api/notifications":
+            return self.json(push_notifications.status())
         if path == "/api/schema":
             return self.json({**get_schema(ref_dit_set=bool(pref_path(load_prefs(), "minimax_ref_dit"))),
                               "logged_in": True, "outdated": _code_stamp() > _STARTED_CODE + 1})
@@ -4738,6 +4749,14 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, OSError) as e:
                 return self.json({"error": str(e)}, 400)
         b = self._body()
+        if path in ("/api/notifications", "/api/notifications/test"):
+            try:
+                if path.endswith("/test"):
+                    push_notifications.test()
+                    return self.json({"ok": True})
+                return self.json(push_notifications.configure(b))
+            except ValueError as e:
+                return self.json({"error": str(e)}, 400)
         if path.startswith("/api/helper/") or path.startswith("/api/helpers/"):
             from fizgig.web import helpers
             try:

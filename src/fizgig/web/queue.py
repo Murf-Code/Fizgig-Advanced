@@ -16,13 +16,14 @@ import threading
 import time
 import uuid
 
+from fizgig.web import push_notifications
 from fizgig.user_data import user_file  # noqa: E402  (Fizgig's own files: user_data/)
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 QUEUE_FILE = user_file("web_queue.json")
 WAIT_S = 30                                   # how often a waiting queue looks again
 
 _lock = threading.Lock()
-_q = {"items": [], "held": False, "reason": "", "waiting": "", "timer": None, "for_pause": False, "failed": []}
+_q = {"items": [], "held": False, "reason": "", "waiting": "", "timer": None, "for_pause": False, "failed": [], "batch": False}
 
 
 def _save():
@@ -44,7 +45,7 @@ def load():
         items = []
     items = [i for i in items if isinstance(i, dict) and i.get("family") and isinstance(i.get("values"), dict)]
     with _lock:
-        _q.update(items=items, held=bool(items), waiting="",
+        _q.update(items=items, held=bool(items), waiting="", batch=bool(items),
                   reason=("Your queued runs from Fizgig 7 are here: press Start queue when you want them to run."
                           if any(i.get("from_fizgig_7") for i in items) else
                           "The web UI restarted: press Start queue to carry on.") if items else "")
@@ -66,6 +67,7 @@ def add(family, values, image_folder, lora, output_dir):
             "lora": lora, "output_dir": output_dir, "queued_at": time.strftime("%Y-%m-%d %H:%M")}
     with _lock:
         _q["items"].append(item)
+        _q["batch"] = True
         _save()
     return item
 
@@ -103,7 +105,7 @@ def remove(item_id):
     with _lock:
         _q["items"] = [i for i in _q["items"] if i["id"] != item_id]
         if not _q["items"]:
-            _q.update(held=False, reason="", waiting="")
+            _q.update(held=False, reason="", waiting="", batch=False)
         _save()
 
 
@@ -165,6 +167,15 @@ def resumed():
 
 def on_run_ended(result, lora, starter):
     """A web run ended: the next one starts shortly after a finish; anything else holds the queue, saying why."""
+    if result == "stopped":
+        push_notifications.emit("stopped", lora)
+    if result in ("finished", "failed"):
+        with _lock:
+            drained = _q["batch"] and not _q["items"]
+            if drained:
+                _q["batch"] = False
+        if drained:
+            push_notifications.emit("queue_done")
     if result == "finished":
         with _lock:
             if _q["for_pause"]:              # the paused run (resumed) is done: the queue carries on
