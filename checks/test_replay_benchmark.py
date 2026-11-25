@@ -4,13 +4,13 @@ from types import SimpleNamespace
 from fizgig.web import replay_benchmark as rb
 
 
-def test_recipe_is_six_independent_runs(tmp_path):
+def test_recipe_is_eight_independent_runs(tmp_path):
     runs = rb.settings("test", str(tmp_path), 3, "a test prompt")
     assert [v["__replay_compare"] for v in runs] == [c[0] for c in rb.CASES]
-    assert len({v["LORA_NAME"] for v in runs}) == len({v["LORA_OUTPUT_DIR"] for v in runs}) == 6
-    assert [v["KREA2_SELECTIVE_BLOCK_CHECK"] for v in runs] == [False] + [True] * 5
-    assert [v["KREA2_TRAINING_METHOD"] for v in runs] == ["Global replay"] * 6
-    assert [v["LEARNING_RATE"] for v in runs] == ["0.00045"] * 6
+    assert len({v["LORA_NAME"] for v in runs}) == len({v["LORA_OUTPUT_DIR"] for v in runs}) == 8
+    assert [v["KREA2_SELECTIVE_BLOCK_CHECK"] for v in runs] == [False] + [True] * 5 + [False, False]
+    assert [v["KREA2_TRAINING_METHOD"] for v in runs] == ["Global replay"] * 8
+    assert [v["LEARNING_RATE"] for v in runs] == ["0.00045"] * 8
     varying = {"__replay_compare", "LORA_NAME", "LORA_OUTPUT_DIR", "KREA2_TRAINING_METHOD", "KREA2_SELECTIVE_BLOCK_CHECK", "LEARNING_RATE"}
     assert all({k: v for k, v in row.items() if k not in varying} ==
                {k: v for k, v in runs[0].items() if k not in varying} for row in runs)
@@ -18,7 +18,8 @@ def test_recipe_is_six_independent_runs(tmp_path):
     assert all(v["MAX_TRAIN_EPOCHS"] == "5" for v in runs)
     assert [v["__replay_compare"] for v in runs] == [
         "causal-unrestricted-lr450", "causal-gradient-lr450", "causal-random-lr450",
-        "causal-exact-lr450", "causal-block26-lr450", "causal-block13-lr450"]
+        "causal-exact-lr450", "causal-block26-lr450", "causal-block13-lr450",
+        "causal-decay1-lr450", "causal-decay10-lr450"]
     assert all(v["SEED"] == "42" and v["VALIDATION_SEED"] == "42" for v in runs)
 
 
@@ -33,7 +34,8 @@ def test_comparison_preserves_normal_adapter_targets(tmp_path):
         expected = ["python", "train.py", "--sample_prompts", "prompts.txt"]
         if values["KREA2_SELECTIVE_BLOCK_CHECK"]:
             expected += ["--family_option", "selective_strategy=" + rb.case_strategy(values["__replay_compare"])]
-        expected += ["--family_option", "replay_research=causal"]
+        expected += ["--family_option", "replay_research=causal", "--family_option",
+                     f"replay_causal_decay={rb.CAUSAL_DECAYS[values['__replay_compare']]}"]
         route = rb.CAUSAL_ROUTES[values["__replay_compare"]]
         if route:
             expected += ["--family_option", "replay_causal_route=" + route]
@@ -88,3 +90,10 @@ def test_previous_controls_remain_launchable_without_requeuing():
                                dataset_toml='holdout_file = "held.json"', console=[])
         rb.adjust_plan(desc, {"__replay_compare": case, "SAMPLE_ENABLED": True}, plan)
         assert not plan.problems
+
+
+def test_decay_controls_only_change_decay_and_keep_all_blocks(tmp_path):
+    runs = rb.settings("test", str(tmp_path))
+    assert [rb.CAUSAL_DECAYS[v["__replay_compare"]] for v in runs] == [0.01] * 6 + [1.0, 10.0]
+    assert all(not v["KREA2_SELECTIVE_BLOCK_CHECK"] for v in (runs[0], runs[-2], runs[-1]))
+    assert all(rb.case_strategy(v["__replay_compare"]) == "replay" for v in (runs[0], runs[-2], runs[-1]))

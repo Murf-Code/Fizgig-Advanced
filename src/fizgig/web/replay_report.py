@@ -38,6 +38,8 @@ def _save(root, report):
     if any(r["case"].startswith("causal-") for r in report["runs"]):
         from fizgig.krea2.replay_causal import compare_runs
         report["causal_comparisons"] = compare_runs(report["runs"])
+        from fizgig.krea2.replay_causal import compare_decay
+        report["decay_comparisons"] = compare_decay(report["runs"])
     report["updated_at"] = time.time()
     _atomic(root / REPORT, json.dumps(report, indent=2, allow_nan=False))
     lines = ["Fizgig Global Replay comparison", "Status: " + report["status"],
@@ -174,7 +176,7 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                 if status == "finished" and case.startswith("causal-"):
                     from fizgig.krea2.replay_causal import (ALL, PROBES, SOURCE, checked_mask,
                                                             expected_mask, intervention, source_schedule)
-                    from fizgig.web.replay_benchmark import CAUSAL_ROUTES
+                    from fizgig.web.replay_benchmark import CAUSAL_ROUTES, CAUSAL_DECAYS, UNRESTRICTED_CASES
                     try:
                         rows = run.get("research", [])
                         hashes = [r for r in rows if r.get("kind") == "hash"]
@@ -190,7 +192,17 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                         env = [r for r in rows if r.get("kind") == "environment"]
                         if len(env) != 1 or env[0].get("mode") != "causal" or not env[0].get("deterministic"):
                             raise ValueError("not strict deterministic causal execution")
-                        if case == "causal-unrestricted-lr450":
+                        opt = [r for r in rows if r.get("kind") == "optimizer"]
+                        decay = CAUSAL_DECAYS[case]
+                        if (len(opt) != 1 or not opt[0].get("groups")
+                                or any(g.get("weight_decay") != decay for g in opt[0]["groups"])):
+                            raise ValueError("incorrect or missing optimizer decay")
+                        for row in hashes[1:]:
+                            rates = row.get("optimizer_rates", [])
+                            if not rates or any(g.get("weight_decay") != decay for g in rates):
+                                raise ValueError("incorrect per-step decay")
+                        run["weight_decay"] = decay
+                        if case in UNRESTRICTED_CASES:
                             masks = [set(ALL) for _ in PROBES]
                         elif case == SOURCE:
                             probes = run["probes"]

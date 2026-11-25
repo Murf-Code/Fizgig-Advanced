@@ -45,3 +45,21 @@ def test_prefix_diagnostic(tmp_path):
     assert c.compare_runs([run, exact])[exact["case"]]["identical_hashes"] == 146
     exact["research"][2]["sha256"] = "different"
     assert not c.compare_runs([run, exact])[exact["case"]]["pre_intervention_hash_match"]
+
+
+def test_decay_comparison(tmp_path):
+    import copy
+    _, run, _ = fixture_report(tmp_path)
+    baseline = copy.deepcopy(run)
+    baseline["case"] = "causal-unrestricted-lr450"
+    for row in baseline["research"]:
+        if row.get("kind") == "hash" and row["step"]:
+            row["active_blocks"] = sorted(c.ALL)
+    decay = copy.deepcopy(baseline)
+    decay["case"] = "causal-decay10-lr450"
+    decay["weight_decay"] = 10.0
+    decay["research"][2]["sha256"] = "different"
+    out = c.compare_decay([baseline, decay])[decay["case"]]
+    assert out["initial_hash_match"] and out["identical_actual_masks"]
+    assert out["first_different_weight_hash_step"] == 1
+    assert decay["case"] not in c.compare_runs([run, decay])

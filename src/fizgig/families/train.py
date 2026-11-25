@@ -2549,11 +2549,32 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 logger.info(f"[optimizer] Automagic {_v}: sign window {desc.automagic_sign_window} (this family's "
                             f"default; set polarity_history in Optimizer Args to override)")
         _oargs = optimizer_args or ""
+        if research_mode == "causal":
+            # Explicit research-only controls; do not inherit stale UI optimizer args.
+            causal_decay = float((family_options or {}).get("replay_causal_decay", 0.01))
+            if (str(optimizer_type).strip().lower() != "muon"
+                    or causal_decay not in (0.01, 1.0, 10.0)
+                    or (causal_decay != 0.01 and selective_global_replay)
+                    or float(learning_rate) != 0.00045):
+                raise RuntimeError("Invalid Experiment 5B Muon weight-decay control")
+            _oargs = (f"adjust_lr_fn=match_rms_adamw weight_decay={causal_decay} "
+                      "momentum=0.95 nesterov=True ns_steps=5")
         if (desc.optimizer_weight_decay is not None and "weight_decay" not in _oargs
                 and "adam" in str(optimizer_type or "").lower()):
             _oargs = (_oargs + f" weight_decay={desc.optimizer_weight_decay:g}").strip()
         optimizer, opt_label = create_optimizer(optimizer_type, opt_params, learning_rate, _oargs,
                                                 eps_floor_8bit=desc.optimizer_eps_floor_8bit)
+    if research_mode == "causal":
+        if optimizer.__class__.__name__ not in ("Muon", "BatchedMuon") or not optimizer.param_groups:
+            raise RuntimeError("Experiment 5B requires Muon")
+        actual_groups = [{k: g.get(k) for k in ("lr", "weight_decay", "momentum", "nesterov", "ns_steps", "adjust_lr_fn")}
+                         for g in optimizer.param_groups]
+        if any(g["weight_decay"] != causal_decay or g["lr"] != 0.00045
+               or g["momentum"] != 0.95 or g["nesterov"] is not True or g["ns_steps"] != 5
+               or g["adjust_lr_fn"] != "match_rms_adamw" for g in actual_groups):
+            raise RuntimeError("Experiment 5B optimizer group settings differ from the intended control")
+        _rr.record(logger, kind="optimizer", implementation=optimizer.__class__.__name__,
+                   groups=actual_groups)
     _polora = optimizer.__class__.__name__ == "Polora"
     if _polora:
         # PoLoRA: Adaptive LR and per-image LR move its learning rate, as with every other optimizer (Min/Max are real
@@ -3548,6 +3569,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             for g in optimizer.param_groups:
                 g["lr"] = g["lr"] * m
         research_mask = _rr.active_mask(net) if research_mode else None
+        research_rates = ([{"lr": float(g["lr"]), "weight_decay": float(g["weight_decay"])}
+                           for g in optimizer.param_groups] if research_mode == "causal" else None)
         research_before = (_rr.probe_before(net) if
                            (research_mode == "telemetry" and driver.selective_probe_due)
                            or (research_mode == "causal" and (research_updates + 1) % 8 == 0)
@@ -3594,7 +3617,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 raise RuntimeError("Research optimizer-step count mismatch")
             _rr.record(logger, kind="hash", step=research_step, sha256=_rr.fingerprint(net),
                        active_blocks=research_mask, next_active_blocks=(
-                           list(driver.selective_active_blocks()) if selective_global_replay else list(range(28))))
+                           list(driver.selective_active_blocks()) if selective_global_replay else list(range(28))),
+                       **({"optimizer_rates": research_rates} if research_rates is not None else {}))
             if research_before is not None:
                 _rr.record(logger, kind="probe_telemetry", step=research_step,
                            factors=_rr.probe_after(net, research_before))

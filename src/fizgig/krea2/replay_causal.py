@@ -80,7 +80,8 @@ def compare_runs(runs):
     src = hashes(source)
     out = {}
     for run in runs:
-        if run is source or run["status"] != "finished" or not run["case"].startswith("causal-"):
+        if (run is source or run["status"] != "finished" or not run["case"].startswith("causal-")
+                or run["case"].startswith("causal-decay")):
             continue
         other = hashes(run)
         if sorted(src) != list(range(STEPS + 1)) or sorted(other) != sorted(src):
@@ -97,5 +98,36 @@ def compare_runs(runs):
             "source_block_updates": sum(len(src[s]["active_blocks"]) for s in range(1, STEPS + 1)),
             "control_block_updates": sum(len(other[s]["active_blocks"]) for s in range(1, STEPS + 1)),
             "pre_intervention_hash_match": first_hash is None or (first_mask is not None and first_hash >= first_mask),
+        }
+    return out
+
+
+def compare_decay(runs):
+    """Weight decay is an intervention at step 1, not a routing intervention."""
+    baseline = next((r for r in runs if r["case"] == "causal-unrestricted-lr450"
+                     and r["status"] == "finished"), None)
+    if baseline is None:
+        return {}
+    def hashes(run):
+        return {r["step"]: r for r in run.get("research", []) if r.get("kind") == "hash"}
+    def validations(run, kind):
+        return {r["step"]: r["loss"] for r in run.get("research", []) if r.get("kind") == kind}
+    base = hashes(baseline)
+    out = {}
+    for run in runs:
+        if not run["case"].startswith("causal-decay") or run["status"] != "finished":
+            continue
+        other = hashes(run)
+        if sorted(base) != list(range(STEPS + 1)) or sorted(other) != sorted(base):
+            continue
+        out[run["case"]] = {
+            "weight_decay": run.get("weight_decay"),
+            "initial_hash_match": base[0]["sha256"] == other[0]["sha256"],
+            "first_different_weight_hash_step": next((s for s in base if base[s]["sha256"] != other[s]["sha256"]), None),
+            "identical_actual_masks": all(base[s]["active_blocks"] == other[s]["active_blocks"] for s in base),
+            "raw_loss_difference_vs_unrestricted": {s: v - validations(baseline, "raw_validation")[s]
+                for s, v in validations(run, "raw_validation").items()},
+            "ema_loss_difference_vs_unrestricted": {s: v - validations(baseline, "ema_validation")[s]
+                for s, v in validations(run, "ema_validation").items()},
         }
     return out

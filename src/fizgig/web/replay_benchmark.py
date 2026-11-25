@@ -22,11 +22,17 @@ CAUSAL_ROUTES = {
     "causal-exact-lr450": "exact",
     "causal-block26-lr450": "block26",
     "causal-block13-lr450": "block13",
+    "causal-decay1-lr450": None,
+    "causal-decay10-lr450": None,
 }
-CASES = tuple((case, "Global replay", case != "causal-unrestricted-lr450") for case in CAUSAL_ROUTES)
+CAUSAL_DECAYS = {case: (1.0 if case == "causal-decay1-lr450" else
+                       10.0 if case == "causal-decay10-lr450" else 0.01)
+                 for case in CAUSAL_ROUTES}
+UNRESTRICTED_CASES = {"causal-unrestricted-lr450", "causal-decay1-lr450", "causal-decay10-lr450"}
+CASES = tuple((case, "Global replay", case not in UNRESTRICTED_CASES) for case in CAUSAL_ROUTES)
 
 def case_strategy(case):
-    if case == "causal-unrestricted-lr450":
+    if case in UNRESTRICTED_CASES:
         return "replay"
     if case in RESEARCH_MODES or case in CAUSAL_ROUTES:
         return "adaptive_gradient"
@@ -83,7 +89,8 @@ def adjust_plan(desc, values, plan):
     if case in RESEARCH_MODES:
         stages[0].cmd.extend(["--family_option", f"replay_research={RESEARCH_MODES[case]}"])
     if case in CAUSAL_ROUTES:
-        stages[0].cmd.extend(["--family_option", "replay_research=causal"])
+        stages[0].cmd.extend(["--family_option", "replay_research=causal",
+                              "--family_option", f"replay_causal_decay={CAUSAL_DECAYS[case]}"])
         route = CAUSAL_ROUTES[case]
         if route:
             stages[0].cmd.extend(["--family_option", f"replay_causal_route={route}"])
