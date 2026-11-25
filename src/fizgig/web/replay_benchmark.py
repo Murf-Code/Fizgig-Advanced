@@ -9,9 +9,6 @@ DEFAULT_PREVIEW_PROMPTS = "\n".join((
 ))
 EPOCHS = 5
 CASES = (
-    ("replay", "Global replay", False),
-    ("high_gradient-lr450", "Global replay", True),
-    ("random-lr450", "Global replay", True),
     ("balanced_random-lr450", "Global replay", True),
     ("static_first_half-lr450", "Global replay", True),
     ("rotational-lr450", "Global replay", True),
@@ -33,7 +30,7 @@ def settings(group, output_root, epochs=EPOCHS, prompt=""):
         "NETWORK_DIM": "32", "NETWORK_ALPHA": "32", "LEARNING_RATE": "0.00025",
         "OPTIMIZER_TYPE": "muon", "GRADIENT_ACCUMULATION": "1", "BATCH_SIZE": "1",
         "MAX_TRAIN_EPOCHS": str(epochs), "SAVE_EVERY_N_EPOCHS": "1",
-        "SEED": "43", "FAMILY_PRECISION": "INT8 (8-bit, fastest)", "BLOCKS_SWAP": "22",
+        "SEED": "42", "FAMILY_PRECISION": "INT8 (8-bit, fastest)", "BLOCKS_SWAP": "22",
         "DATASET_MEGAPIXELS": "0.25", "COMPILE_BLOCKS": "Off",
         "VALIDATION_LOSS": True, "VALIDATION_HOLDOUT": True, "VALIDATION_IMAGES": "4",
         "VALIDATION_GROUPS": "1", "VALIDATION_TIMESTEPS": "4", "VALIDATION_SEED": "42",
