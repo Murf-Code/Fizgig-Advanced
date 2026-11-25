@@ -67,3 +67,31 @@ def test_resolution_queue(tmp_path):
     assert data["runs"][0]["failure_kind"] == "cuda_oom"
     assert data["runs"][1]["status"] == "queued"
     assert report.parse_log("bucket: (496, 496), count: 29")["reported_buckets"][0]["width"] == 496
+
+
+def test_swap_queue(tmp_path):
+    configs = bench.swap_settings("speed", str(tmp_path))
+    assert [v["BLOCKS_SWAP"] for v in configs] == ["22", "20", "18", "16"]
+    assert len({v["LORA_OUTPUT_DIR"] for v in configs}) == 4
+    ref = bench.resolution_settings("reference", str(tmp_path))[0]
+    excluded = {"BLOCKS_SWAP", "__geometry_compare", "LORA_NAME", "LORA_OUTPUT_DIR"}
+    for v in configs:
+        assert bench.is_feasibility(v["__geometry_compare"])
+        assert {k: x for k, x in v.items() if k not in excluded} == {
+            k: x for k, x in ref.items() if k not in excluded}
+    root = tmp_path / "speed"
+    report.create(root, "dataset", configs)
+    for v in configs:
+        out = Path(v["LORA_OUTPUT_DIR"])
+        out.mkdir()
+        log = out / "run.log"
+        failed = v["BLOCKS_SWAP"] == "16"
+        log.write_text("torch.OutOfMemoryError: CUDA out of memory." if failed else
+                       "[geometry-fit] complete updates=29 allocated_bytes=1024 reserved_bytes=2048 wall_seconds=12.5",
+                       encoding="utf-8")
+        report.update(out, v["__geometry_compare"], "failed" if failed else "finished", log_path=log)
+    data = json.loads((root / report.REPORT).read_text())
+    assert data["status"] == "partial"
+    assert [r["settings"]["BLOCKS_SWAP"] for r in data["runs"]] == ["22", "20", "18", "16"]
+    assert data["runs"][-1]["failure_kind"] == "cuda_oom"
+    assert (root / report.BUNDLE).exists()

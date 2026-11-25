@@ -75,8 +75,24 @@ RESOLUTION_CASES = tuple(
      ("polora-r64-mp0p25-unchunked-fit", 64, "0.25", 0))
 
 
+SWAP_CASES = tuple((f"polora-r16-mp0p25-swap{swap}-fit", swap)
+                   for swap in (22, 20, 18, 16))
+
+
 def is_feasibility(case):
-    return case == FEASIBILITY_CASE or case in {x[0] for x in RESOLUTION_CASES}
+    return (case == FEASIBILITY_CASE or case in {x[0] for x in RESOLUTION_CASES}
+            or case in {x[0] for x in SWAP_CASES})
+
+
+def swap_settings(group, output_root):
+    # Same baseline optimizer, rank, data and short-run controls as resolution sweep.
+    v, = feasibility_settings(group, output_root)
+    return [{**v, "__geometry_compare": case,
+             "NETWORK_DIM": "16", "NETWORK_ALPHA": "16",
+             "DATASET_MEGAPIXELS": "0.25", "BLOCKS_SWAP": str(swap),
+             "LORA_NAME": f"{group}-{case}",
+             "LORA_OUTPUT_DIR": os.path.join(output_root, group, case)}
+            for case, swap in SWAP_CASES]
 
 
 def resolution_settings(group, output_root):
