@@ -47,7 +47,10 @@ def swap_weight_devices_no_cuda(device: torch.device, layer_to_cpu: nn.Module, l
     assert layer_to_cpu.__class__ == layer_to_cuda.__class__
 
     weight_swap_jobs = []
+    skip_cpu, skip_cuda = parked_ids(layer_to_cpu), parked_ids(layer_to_cuda)
     for module_to_cpu, module_to_cuda in zip(layer_to_cpu.modules(), layer_to_cuda.modules()):
+        if id(module_to_cpu) in skip_cpu or id(module_to_cuda) in skip_cuda:
+            continue
         if hasattr(module_to_cpu, "weight") and module_to_cpu.weight is not None:
             weight_swap_jobs.append((module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data))
 
@@ -65,8 +68,14 @@ def swap_weight_devices_no_cuda(device: torch.device, layer_to_cpu: nn.Module, l
     _synchronize_device(device)
 
 
+from fizgig.modules.offloading import block_to, parked_ids  # upstream #405
+
+
 def weighs_to_device(layer: nn.Module, device: torch.device):
+    skip = parked_ids(layer)
     for module in layer.modules():
+        if id(module) in skip:
+            continue
         if hasattr(module, "weight") and module.weight is not None and module.__class__.__name__.endswith("Linear"):
             module.weight.data = module.weight.data.to(device, non_blocking=device.type != "cpu")
 
@@ -139,8 +148,9 @@ def send_only_unfit(blocks: list[nn.Module], num_blocks: int, blocks_to_swap: in
     idx = sorted({((2 * i + 1) * num_blocks) // (2 * blocks_to_swap) for i in range(blocks_to_swap)})
     template = None
     for b in idx:
+        skip = parked_ids(blocks[b])
         ws = [m.weight for m in blocks[b].modules()
-              if hasattr(m, "weight") and m.weight is not None and m.__class__.__name__.endswith("Linear")]
+              if id(m) not in skip and hasattr(m, "weight") and m.weight is not None and m.__class__.__name__.endswith("Linear")]
         if not ws:
             return f"block {b} has no Linear weights to stream"
         for w in ws:
@@ -292,10 +302,12 @@ class Offloader:
         #         weight_swap_jobs.append((module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data))
 
         with T.section("find modules"):
-            modules_to_cpu = {k: v for k, v in layer_to_cpu.named_modules()}
+            skip_cpu, skip_cuda = parked_ids(layer_to_cpu), parked_ids(layer_to_cuda)
+            modules_to_cpu = {k: v for k, v in layer_to_cpu.named_modules() if id(v) not in skip_cpu}
             for module_to_cuda_name, module_to_cuda in layer_to_cuda.named_modules():
                 if (
-                    hasattr(module_to_cuda, "weight")
+                    id(module_to_cuda) not in skip_cuda
+                    and hasattr(module_to_cuda, "weight")
                     and module_to_cuda.weight is not None
                     and module_to_cuda.__class__.__name__.endswith("Linear")
                 ):
@@ -587,12 +599,12 @@ class ModelOffloader(Offloader):
             print(f"[{self.block_type}] Prepare block devices before forward")
 
         for b in blocks[0 : self.num_blocks - self.blocks_to_swap]:
-            b.to(self.device)
+            block_to(b, self.device)
             weighs_to_device(b, self.device)  # make sure weights are on device
 
         cpu_device = torch.device("cpu")
         for b in blocks[self.num_blocks - self.blocks_to_swap :]:
-            b.to(self.device)  # move block to device first. this makes sure that buffers (non weights) are on the device
+            block_to(b, self.device)  # move block to device first. this makes sure that buffers (non weights) are on the device
             weighs_to_device(b, cpu_device)  # make sure weights are on cpu
 
         _synchronize_device(self.device)
@@ -1016,8 +1028,9 @@ class LoRAStreamOffloader:
     def _swap_modules(self, block: nn.Module) -> list[nn.Module]:
         # same selection rule as ModelOffloader.swap_weight_devices_cuda: Linear layers with a weight
         mods = []
+        skip = parked_ids(block)
         for _, m in block.named_modules():
-            if hasattr(m, "weight") and m.weight is not None and m.__class__.__name__.endswith("Linear"):
+            if id(m) not in skip and hasattr(m, "weight") and m.weight is not None and m.__class__.__name__.endswith("Linear"):
                 mods.append(m)
         return mods
 
@@ -1247,7 +1260,7 @@ class LoRAStreamOffloader:
 
             for i, block in enumerate(blocks):
                 if not self.is_stream[i]:
-                    block.to(self.device)
+                    block_to(block, self.device)
                     weighs_to_device(block, self.device)
                     continue
                 # Place norms, scales, biases, adapters and other non-streamed
@@ -1257,7 +1270,7 @@ class LoRAStreamOffloader:
                 try:
                     for m in mods:
                         m.weight = None
-                    block.to(self.device)
+                    block_to(block, self.device)
                 finally:
                     self._bind(i, masters)
         else:
