@@ -18,3 +18,9 @@ Run: `python scripts/bench_lora_matrix_geometry.py --device cpu` from the repo r
 6. Offline rank 32/16/8 compression, preserving alpha/r scaling and testing same prompts/seeds plus held-out quality. Never overwrite original adapters. Rank reduction and better learning are different outcomes.
 
 No GPU evidence yet. The balanced-factor helper is an offline mathematical primitive, not a live optimizer. No claim of improved quality or file size.
+
+## Increment 2: scaled-gradient and spectral experiments
+
+Added four stateless synthetic controls: SGD, damped opposite-Gram scaled SGD, and both with spectral rebalancing every five steps (only full-rank FP32/64 factors). These are experimental controls, not a faithful implementation of Riemannion, RoM, Scaled AdamW, or spectral balancing with the best existing baseline. No trainer integration. Damping and cadence are hypotheses. See Zhang and Pilanci, ICML 2024, https://proceedings.mlr.press/v235/zhang24ax.html.
+
+The standalone script accepts --methods, --lrs, and --condition (target singular-value spread). Example: `python scripts/bench_lora_matrix_geometry.py --device cuda --rank 64 --condition 100 --methods sgd scaled-sgd sgd-spectral scaled-sgd-spectral --lrs 0.001 0.01 0.1`. Run multiple seeds. Synthetic controls do not establish diffusion quality. The new pytest check covers rotation equivariance, zero-up initialization, state resume, and counterexamples to the linearized cap and rank-deficient QR assumption. These counterexamples are mathematical, not proof of a particular TSD runtime failure. Production optimizer implementations remain unchanged.

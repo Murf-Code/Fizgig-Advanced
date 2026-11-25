@@ -21,6 +21,7 @@ from fizgig.training.matrix_geometry import metrics, delta_norm, balanced_factor
 from fizgig.training.muon import BatchedMuon
 from fizgig.training.lora_tsd import LoRATSD
 from fizgig.training.polora.optim import Polora
+from fizgig.training.matrix_geometry_prototypes import ScaledLoRASGD
 
 
 def validate(device):
@@ -68,7 +69,12 @@ def make_optimizer(name,a,b,lr):
         return BatchedMuon([a,b],lr=lr,weight_decay=0,adjust_lr_fn="match_rms_adamw")
     if name == "polora":
         return Polora(pairs=[(a,b)],lr=lr,compile=False,magnitude_scale=1.0)
-    return LoRATSD([(a,b)],lr=lr,balance=name=="tsd-balanced",log_every=0)
+    if name in ("sgd","scaled-sgd","sgd-spectral","scaled-sgd-spectral"):
+        return ScaledLoRASGD([(a,b)],lr=lr,scaled=name.startswith("scaled"),
+                             balance_every=5 if name.endswith("spectral") else 0)
+    if name in ("tsd-balanced","tsd-unbalanced"):
+        return LoRATSD([(a,b)],lr=lr,balance=name=="tsd-balanced",log_every=0)
+    raise ValueError(f"Unknown optimizer: {name}")
 
 
 def run(name, a0, b0, x, y, xv, yv, lr, steps):
@@ -112,9 +118,12 @@ def main():
     p.add_argument("--width",type=int,default=128)
     p.add_argument("--steps",type=int,default=40)
     p.add_argument("--seed",type=int,default=42)
+    p.add_argument("--methods",nargs="+",default=["adamw","muon","polora","tsd-balanced","tsd-unbalanced","sgd","scaled-sgd","sgd-spectral","scaled-sgd-spectral"])
+    p.add_argument("--lrs",nargs="+",type=float,default=[1e-4,1e-3,1e-2,1e-1])
+    p.add_argument("--condition",type=float,default=1.0,help="Target singular spectrum spread")
     p.add_argument("--output",type=Path,default=Path("matrix-geometry-synthetic.json"))
     args=p.parse_args()
-    if not 1<=args.rank<=args.width or args.steps<1:
+    if not 1<=args.rank<=args.width or args.steps<1 or args.condition<1 or any(lr<=0 for lr in args.lrs):
         p.error("require 1 <= rank <= width and positive steps")
     device=torch.device(args.device)
     if device.type=="cpu":
@@ -127,12 +136,16 @@ def main():
     b0=torch.zeros(w,r,device=device)
     target_a=rnd(r,w)/math.sqrt(w)
     target_b=rnd(w,r)/math.sqrt(r)
+    if args.condition>1:
+        target_a=torch.linalg.qr(rnd(w,r),mode="reduced")[0].T
+        target_b=torch.linalg.qr(rnd(w,r),mode="reduced")[0]
+        target_b=target_b * torch.logspace(0,-math.log10(args.condition),r,device=device)
     x,xv=rnd(256,w),rnd(128,w)
     y,yv=x@target_a.T@target_b.T,xv@target_a.T@target_b.T
     results=[]
     # A small LR sweep, not a claim that the rates are equivalent.
-    for name in ("adamw","muon","polora","tsd-balanced","tsd-unbalanced"):
-        for lr in (1e-4,1e-3,1e-2):
+    for name in args.methods:
+        for lr in args.lrs:
             try:
                 result=run(name,a0,b0,x,y,xv,yv,lr,args.steps)
                 print(name,lr,result["snapshots"][-1]["validation_loss"],flush=True)
@@ -142,7 +155,7 @@ def main():
             results.append(result)
     report={"schema":1,"scope":"synthetic FP32 factors; rounded-factor diagnostics also tested",
             "validation":validation,"torch":torch.__version__,"device":str(device),
-            "seed":args.seed,"rank":r,"width":w,"steps":args.steps,"results":results}
+            "seed":args.seed,"rank":r,"width":w,"steps":args.steps,"condition":args.condition,"results":results}
     args.output.write_text(json.dumps(report,indent=2,allow_nan=False),encoding="utf-8")
     print("Report:",args.output)
 
