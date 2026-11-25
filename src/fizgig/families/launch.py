@@ -1307,7 +1307,7 @@ def _state_flags(st):
 # (trainer flag, default, type). auto_reclaim_vram is "1"/"0" like the other Preferences ticks.
 RECLAIM_PREF_DEFAULTS = {"auto_reclaim_vram": "1", "reclaim_slowdown": "1.5", "reclaim_slow_steps": "20",
                          "reclaim_warmup_steps": "50", "reclaim_min_free_gb": "0.1", "reclaim_cooldown": "200",
-                         "reclaim_max_tries": "3", "send_only_block_swap": "1", "send_only_force": "0",
+                         "reclaim_max_tries": "3", "send_only_block_swap": "1", "send_only_force": "0", "pin_block_swap": "0",
                          "vram_margin_gb": "1.5", "background_loading": "1"}
 RECLAIM_SETTINGS = (
     ("reclaim_slowdown", "--reclaim_slowdown", 1.5, float),
@@ -1327,7 +1327,7 @@ def clean_reclaim_prefs(changes):
     """A Preferences change as stored: the tick as "1"/"0", each number checked (above 0; a blank box = its
     default; an int box takes 20.0 as 20). Other keys pass through. ValueError for text that isn't a number."""
     ch = dict(changes)
-    for tick in ("auto_reclaim_vram", "send_only_block_swap", "send_only_force", "background_loading"):
+    for tick in ("auto_reclaim_vram", "send_only_block_swap", "send_only_force", "background_loading", "pin_block_swap"):
         if tick in ch:
             ch[tick] = "1" if ch[tick] in (True, "1", 1, "true", "True") else "0"
     if "vram_margin_gb" in ch:                 # the Auto plan's safety margin: 0 to 8 GB, blank = 1.5

@@ -175,6 +175,11 @@ def create_offloader(block_type: str, blocks: list[nn.Module], num_blocks: int, 
     Fizgig: a send-only request the blocks cannot honour (send_only_unfit) falls back to the classic swap with a log
     line instead of failing the run.
     """
+    # A user preference applies to Krea 2 training only. Explicit caller
+    # configuration remains available to the diagnostic and inference paths.
+    training_pin = block_type == "single" and config.supports_backward and config.device.type == "cuda"
+    if training_pin:
+        from fizgig.families.quant import pin_swap_requested, pin_swap_ok
     if config.h2d_only:
         ring_size = config.ring_size
         # Experimental training-only sweep; no new persistent preference.
@@ -206,10 +211,18 @@ def create_offloader(block_type: str, blocks: list[nn.Module], num_blocks: int, 
                 config.supports_backward,
                 config.device,
                 ring_size=ring_size,
-                use_pinned_memory=config.use_pinned_memory,
+                # Advanced's host budget independently checks the actual masters and may fall back to staging.
+                use_pinned_memory=config.use_pinned_memory or (training_pin and pin_swap_requested()),
                 debug=config.debug,
             )
         logger.info(f"[block swap] send-only off for {block_type}: {why} - classic swap (copies each block back)")
+    pinned = config.use_pinned_memory
+    if training_pin and not pinned and blocks_to_swap > 0:
+        # Allow for the swapped blocks and two exchange buffers, with a RAM reserve.
+        sizes = [sum(p.numel() * p.element_size() for p in (*b.parameters(), *b.buffers())) for b in blocks]
+        gb = (sum(sorted(sizes, reverse=True)[:blocks_to_swap]) + 2 * max(sizes, default=0)) / 1e9
+        pinned = pin_swap_ok(gb)
+        logger.info("[block swap] classic pinned RAM: %s (%.2f GB budget)", "on" if pinned else "off", gb)
     return ModelOffloader(
         block_type,
         blocks,
@@ -217,7 +230,7 @@ def create_offloader(block_type: str, blocks: list[nn.Module], num_blocks: int, 
         blocks_to_swap,
         config.supports_backward,
         config.device,
-        config.use_pinned_memory,
+        pinned,
         debug=config.debug,
     )
 

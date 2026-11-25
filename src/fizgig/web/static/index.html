@@ -2269,6 +2269,15 @@
               </div>
             </div>
           </div>
+          <div class="section-card" id="streamPinCard">
+            <div class="card-title">Faster Block Swap · host memory</div>
+            <div class="card-desc">Faster Block Swap copies frozen weights to the GPU without copying them back. Direct pinning keeps swapped weights in pinned RAM instead of using staging buffers: it may help machines with abundant RAM, but can slow others down.</div>
+            <div class="card-content">
+              <label class="field-row"><input type="checkbox" id="streamPin" disabled> Prefer direct pinned RAM (Krea 2 training)</label>
+              <div class="field-hint">Off by default. Free-RAM guards can still select staged transfers. Applies next run; FIZGIG_PIN_SWAP overrides this preference.</div>
+              <span class="field-hint" id="streamPinStatus" role="status"></span>
+            </div>
+          </div>
           <div id="prefsForm"></div>
         </section>
       </div>
@@ -2484,5 +2493,6 @@
   <script src="/caption_remove_bridge.js" onerror="fizgigRetry(this)"></script>
   <script src="/app.js" onerror="fizgigRetry(this)"></script>
   <script src="/push_notifications.js" onerror="fizgigRetry(this)"></script>
+  <script src="/stream_prefs.js" onerror="fizgigRetry(this)"></script>
 </body>
 </html>
