@@ -109,19 +109,11 @@ const SampleBlur = (() => {
     box.addEventListener("change", async () => {
       const value = box.checked, previous = enabled;
       box.disabled = true;
-      if (value) setEnabled(true);
+      // Persist the opt-in before launching requests; the server refuses scans while off.
       try { await save(value); setEnabled(value); status.textContent = "Local image detection · click a blurred sample to reveal it."; }
       catch(e) { setEnabled(previous); status.textContent = e.message || "Could not save preference."; }
       finally { box.disabled = false; }
     });
   }
-  // Labels of off-DOM figures are appended once they enter the document.
-  new MutationObserver(entries => {
-    for (const entry of entries) for (const node of entry.addedNodes) {
-      if (node.nodeType !== 1) continue;
-      const imgs = [...(node.matches("img[data-sample-blur-path]") ? [node] : []), ...node.querySelectorAll("img[data-sample-blur-path]")];
-      for (const img of imgs) if (img._sampleBlurLabel && !img._sampleBlurLabel.hidden && !img._sampleBlurLabel.isConnected) img.after(img._sampleBlurLabel);
-    }
-  }).observe(document.documentElement,{childList:true,subtree:true});
   return {mark,setEnabled,wire};
 })();
