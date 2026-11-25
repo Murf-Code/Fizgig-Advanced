@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 
 import torch
 from torch.optim import Optimizer
@@ -185,6 +185,8 @@ class Polora(Optimizer):
         # The pair state lives stacked per shape group (_Group); pair_state[i] holds views into it under the
         # per-pair names, so state_dict() / load_state_dict() keep their per-pair format.
         self._groups = []
+        # Group layout changes invalidate indices; bounded across arbitrary selective masks.
+        self._chunk_indices = OrderedDict()
         self._layout = None
         self.pair_state = {}
         self._build_groups()
@@ -227,6 +229,7 @@ class Polora(Optimizer):
                         if torch.is_tensor(prev.get(k)) and prev[k].shape == v.shape:
                             v.copy_(prev[k])
             groups.append(g)
+        self._chunk_indices.clear()
         self._groups, self.pair_state, self._layout = groups, state, layout
 
     def _try_compile(self):
@@ -440,6 +443,20 @@ class Polora(Optimizer):
             return sigma_A.reshape(-1), sigma_B.reshape(-1)
         return None, None
 
+    def _chunk_index(self, group_id, group, part):
+        """Bounded cache of small device indices; no stale tensors after a layout rebuild."""
+        key = (group_id, tuple(part))
+        hit = self._chunk_indices.get(key)
+        if hit is None:
+            idx = torch.tensor(part, dtype=torch.long, device=group.M_A.device)
+            hit = (idx, torch.cat([idx, idx + len(group.idxs)]))
+            self._chunk_indices[key] = hit
+            if len(self._chunk_indices) > 512:
+                self._chunk_indices.popitem(last=False)
+        else:
+            self._chunk_indices.move_to_end(key)
+        return hit
+
     def _update(self, active=None):
         """One update over every shape group. ``active`` (None = every pair) is a per-pair list of whether that
         pair has gradients this step; a group's skipped pairs are left out of its batch, so their params and state
@@ -453,7 +470,7 @@ class Polora(Optimizer):
         # Chunk along independent pairs; no change to the optimizer equations,
         # stacked checkpoint layout, or skip semantics. Conservative estimate
         # accounts for factor-shaped workspaces and small Gram temporaries.
-        for g in self._groups:
+        for group_id, g in enumerate(self._groups):
             n = len(g.idxs)
             on = list(range(n)) if active is None else [j for j,i in enumerate(g.idxs) if active[i]]
             if not on:
@@ -468,9 +485,24 @@ class Polora(Optimizer):
                 if len(part) == n:
                     sA, sB = self._update_group(g.As, g.Bs, g.f32, g.M_A, g.M_B, g.Q, g.P, g.vA, g.vB,
                                                 lr, magnitude, log_now or record_now)
+                elif part[-1] - part[0] == len(part) - 1:
+                    # Grok round 4: the large state tensors already have contiguous
+                    # rows. Mutate views, keeping the two warm-start halves packed
+                    # exactly as in the original chunk's kernel.
+                    start, end = part[0], part[-1] + 1
+                    count = end - start
+                    vA = torch.cat((g.vA[start:end], g.vA[n+start:n+end]))
+                    vB = torch.cat((g.vB[start:end], g.vB[n+start:n+end]))
+                    sA, sB = self._update_group(g.As[start:end], g.Bs[start:end], g.f32,
+                                                g.M_A[start:end], g.M_B[start:end], g.Q[start:end], g.P[start:end],
+                                                vA, vB, lr, magnitude, log_now or record_now)
+                    g.vA[start:end].copy_(vA[:count])
+                    g.vA[n+start:n+end].copy_(vA[count:])
+                    g.vB[start:end].copy_(vB[:count])
+                    g.vB[n+start:n+end].copy_(vB[count:])
+                    del vA, vB
                 else:
-                    idx = torch.tensor(part, dtype=torch.long, device=g.M_A.device)
-                    vidx = torch.cat([idx, idx+n])
+                    idx, vidx = self._chunk_index(group_id, g, part)
                     M_A, M_B = g.M_A.index_select(0, idx), g.M_B.index_select(0, idx)
                     Q, P = g.Q.index_select(0, idx), g.P.index_select(0, idx)
                     vA, vB = g.vA.index_select(0, vidx), g.vB.index_select(0, vidx)
