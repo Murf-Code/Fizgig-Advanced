@@ -86,6 +86,7 @@ class PerfWatch:
         self.ram_peak = None
         self.process_rss_peak = None
         self.shared_gpu_peak = None
+        self._shared = None
         self.vram_source = None
         self.t0 = time.time()
         self._base = self._counts()
@@ -144,9 +145,12 @@ class PerfWatch:
             except Exception:
                 pass
         if self._shared is not None:
-            shared = self._shared.read()
-            if shared is not None:
-                s["process_shared_gpu_gib"] = shared / 2**30
+            try:
+                shared = self._shared.read()
+                if shared is not None:
+                    s["process_shared_gpu_gib"] = shared / 2**30
+            except Exception:
+                logger.debug("[perf] shared GPU memory sample failed", exc_info=True)
         for key, attr in (("system_ram_gib", "ram_peak"), ("process_rss_gib", "process_rss_peak"),
                           ("process_shared_gpu_gib", "shared_gpu_peak")):
             if key in s:
@@ -239,7 +243,10 @@ class PerfWatch:
         if self._th is not None:
             self._th.join(timeout=self.interval + 2)
         if self._shared is not None and (self._th is None or not self._th.is_alive()):
-            self._shared.close()
+            try:
+                self._shared.close()
+            except Exception:
+                logger.debug("[perf] could not close shared GPU memory query", exc_info=True)
             self._shared = None
         s = self.summary()
         if s.get("steps"):
