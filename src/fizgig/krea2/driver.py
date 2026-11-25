@@ -278,6 +278,7 @@ class Krea2Driver(FamilyDriver):
                                                      or not 1 <= self._selective_budget <= n):
             raise ValueError("Invalid selective replay strategy or budget.")
         self._selective_optimizer_steps = 0
+        self._selective_update_counts = [0] * n
         self._selective_scores = [None] * n
         self._selective_active = set(range(n))
         # each block's weights at its last probe (CPU), the start of the displacement the next probe scores
@@ -314,9 +315,9 @@ class Krea2Driver(FamilyDriver):
         if not self.selective_probe_due:
             return None
         strategy = self._selective_strategy
-        if strategy in ("random", "rotational", "static_early"):
+        if strategy in ("random", "rotational", "static_early", "balanced_random", "static_first_half"):
             return {"cosines": {}}
-        if strategy in ("high_gradient", "low_gradient", "walking_coverage"):
+        if strategy in ("high_gradient", "low_gradient", "walking_coverage", "hybrid_coverage"):
             scores = {}
             for index, params in self._selective_params_by_block.items():
                 if not all(p.requires_grad and p.grad is not None for p in params):
@@ -357,6 +358,14 @@ class Krea2Driver(FamilyDriver):
         return select_blocks("walking_coverage", self._selective_scores,
                              self._selective_budget, probe_index, walk_phase=phase)
 
+    def record_selective_gradient_update(self):
+        """Record blocks with at least one adapter gradient before the optimizer step."""
+        if self._selective_strategy == "legacy":
+            return
+        for index in self._selective_active:
+            if any(p.grad is not None for p in self._selective_params_by_block[index]):
+                self._selective_update_counts[index] += 1
+
     def finish_selective_optimizer_step(self, snapshot):
         """Score a probe and choose active blocks for the next optimizer window. Returns a status for logging."""
         if not self.selective_global_replay:
@@ -380,7 +389,8 @@ class Krea2Driver(FamilyDriver):
                 active = (self._selective_walking_blocks(step)
                           if self._selective_strategy == "walking_coverage"
                           else select_blocks(self._selective_strategy, self._selective_scores,
-                                             self._selective_budget, probe_index))
+                                             self._selective_budget, probe_index,
+                                             update_counts=self._selective_update_counts))
             self._selective_active = active or set(range(self._selective_block_count))
             self._set_selective_active_parameters()
             return {"kind": "probe", "active": len(self._selective_active), "total": self._selective_block_count,
@@ -410,7 +420,8 @@ class Krea2Driver(FamilyDriver):
                 "reactivate_every": self._selective_reactivate_every,
                 "score_decay": self._selective_score_decay,
                 "scores": list(self._selective_scores), "active_blocks": sorted(self._selective_active),
-                **({"strategy": self._selective_strategy, "budget": self._selective_budget}
+                **({"strategy": self._selective_strategy, "budget": self._selective_budget,
+                    "gradient_update_counts": list(self._selective_update_counts)}
                    if self._selective_strategy != "legacy" else {})}
 
     def load_selective_state_dict(self, state):
@@ -432,6 +443,14 @@ class Krea2Driver(FamilyDriver):
         self._selective_scores = [None if v is None else float(v) for v in scores]
         self._selective_active = active
         self._selective_optimizer_steps = max(0, int(state.get("optimizer_steps", 0)))
+        counts = state.get("gradient_update_counts")
+        if counts is None and self._selective_strategy == "hybrid_coverage":
+            raise RuntimeError("Saved hybrid replay state lacks gradient update counts.")
+        if counts is not None:
+            if (not isinstance(counts, list) or len(counts) != self._selective_block_count
+                    or any(type(v) is not int or not 0 <= v <= self._selective_optimizer_steps for v in counts)):
+                raise RuntimeError("Invalid saved selective gradient update counts.")
+            self._selective_update_counts = list(counts)
         # the anchors were taken before the resumed weights loaded: the first probe after a resume re-anchors only
         self._selective_anchor = {i: None for i in range(self._selective_block_count)}
         self._set_selective_active_parameters()

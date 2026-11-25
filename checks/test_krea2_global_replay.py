@@ -664,3 +664,33 @@ def test_walking_coverage_advances_per_update_and_preserves_probe_and_resume():
         assert d.selective_active_blocks() == [0, 2]
         for i, values in d._selective_params_by_block.items():
             assert all(p.requires_grad == (i in (0, 2)) for p in values)
+
+
+def test_hybrid_counts_gradient_bearing_blocks_and_restores_counts():
+    dit, net = _selective_tiny_dit(layers=4)
+    driver = Krea2Driver()
+    options = {"training_method": "global_replay", "selective_block_check": "1",
+               "selective_strategy": "hybrid_coverage", "selective_budget": "2"}
+    driver.set_options(options)
+    driver.configure_selective_global_replay(dit, net, warmup_updates=1, reactivate_every=3)
+    for i, values in driver._selective_params_by_block.items():
+        for p in values:
+            p.grad = torch.ones_like(p) * (4 - i)
+    snap = driver.selective_snapshot_before_step()
+    driver.record_selective_gradient_update()
+    driver.finish_selective_optimizer_step(snap)
+    chosen = set(driver.selective_active_blocks())
+    assert 0 in chosen and len(chosen) == 2
+    for i, values in driver._selective_params_by_block.items():
+        for p in values:
+            p.grad = torch.ones_like(p) if i in chosen else None
+    driver.record_selective_gradient_update()
+    driver.finish_selective_optimizer_step(None)
+    state = driver.selective_state_dict()
+    assert state["gradient_update_counts"] == [1 + int(i in chosen) for i in range(4)]
+    dit2, net2 = _selective_tiny_dit(layers=4)
+    resumed = Krea2Driver()
+    resumed.set_options(options)
+    resumed.configure_selective_global_replay(dit2, net2, warmup_updates=1, reactivate_every=3)
+    resumed.load_selective_state_dict(state)
+    assert resumed.selective_state_dict() == state

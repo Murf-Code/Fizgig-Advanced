@@ -3534,6 +3534,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             for g in optimizer.param_groups:
                 g["lr"] = g["lr"] * m
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
+        if selective_global_replay:
+            driver.record_selective_gradient_update()
         optimizer.step()
         if selective_global_replay:
             selective_status = driver.finish_selective_optimizer_step(selective_snapshot)
@@ -4422,6 +4424,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         _flush()                           # the epoch's last numbers, before the epoch-end work reads the records
         between[0] = time.time()          # the epoch-end work starts: left out of the bar's s/it (above)
         _off = ftr.epochs_done if ftr is not None else 0
+        if selective_global_replay:
+            selective_state = driver.selective_state_dict()
+            if "gradient_update_counts" in selective_state:
+                logger.info("[selective-replay] gradient_updates step=%s counts=%s",
+                            selective_state["optimizer_steps"], selective_state["gradient_update_counts"])
         logger.info(f"epoch {epoch + 1 + _off}/{max_train_epochs + _off}  avr_loss={recorder.moving_average:.4f}  "
                     f"step={global_step}  {(time.time() - t0) / max(1, steps_per_epoch):.2f}s/step  "
                     f"lr={_step_rate():.3e}  "

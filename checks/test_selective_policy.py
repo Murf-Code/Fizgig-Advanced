@@ -53,3 +53,23 @@ def test_walking_coverage_handles_changed_priorities_and_small_budgets():
         for budget in range(1, n + 1):
             for phase in range(4):
                 assert len(select_blocks("walking_coverage", [None] * n, budget, 0, walk_phase=phase)) == budget
+
+
+def test_balanced_random_covers_every_block_in_each_pair_and_preserves_rng():
+    before = random.getstate()
+    for pair in range(10):
+        a, b = [select_blocks("balanced_random", [None] * 28, 14, 2 * pair + i) for i in range(2)]
+        assert not a & b and a | b == set(range(28))
+    assert random.getstate() == before
+
+
+def test_static_first_half_and_hybrid_coverage():
+    scores = list(range(28, 0, -1))
+    counts = [0] * 28
+    for probe in range(3):
+        assert select_blocks("static_first_half", scores, 14, probe) == set(range(14))
+        chosen = select_blocks("hybrid_coverage", scores, 14, probe, update_counts=counts)
+        assert len(chosen) == 14 and set(range(7)) <= chosen
+        for i in chosen:
+            counts[i] += 7
+    assert counts == [21] * 7 + [7] * 21

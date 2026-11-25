@@ -63,3 +63,9 @@ def test_walking_rotation_records_are_separate_from_probes():
         {"next_step": 10, "active_blocks": [0, 2], "strategy": "walking_coverage"},
         {"next_step": 11, "active_blocks": [0, 3], "strategy": "walking_coverage"},
     ]
+
+
+def test_gradient_update_counts_are_parsed_separately():
+    result = rr.parse_log("INFO:[selective-replay] gradient_updates step=29 counts=[29, 12]\n")
+    assert result["gradient_updates"] == [{"step": 29, "counts": [29, 12]}]
+    assert not result["probes"] and not result["rotations"]

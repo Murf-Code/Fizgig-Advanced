@@ -10,15 +10,19 @@ DEFAULT_PREVIEW_PROMPTS = "\n".join((
 EPOCHS = 5
 CASES = (
     ("replay", "Global replay", False),
-    ("replay-lr450", "Global replay", False),
-    ("standard", "Standard", False),
-    ("standard-lr450", "Standard", False),
     ("high_gradient-lr450", "Global replay", True),
-    ("uphill-lr450", "Global replay", True),
     ("random-lr450", "Global replay", True),
-    ("static_early-lr450", "Global replay", True),
+    ("balanced_random-lr450", "Global replay", True),
+    ("static_first_half-lr450", "Global replay", True),
+    ("rotational-lr450", "Global replay", True),
+    ("hybrid_coverage-lr450", "Global replay", True),
+    ("hybrid_coverage-lr350", "Global replay", True),
     ("walking_coverage-lr450", "Global replay", True),
 )
+
+def case_strategy(case):
+    return case.removesuffix("-lr450").removesuffix("-lr350")
+
 
 def settings(group, output_root, epochs=EPOCHS, prompt=""):
     # Fixed server-side controls prevent accidental UI overrides.
@@ -29,7 +33,7 @@ def settings(group, output_root, epochs=EPOCHS, prompt=""):
         "NETWORK_DIM": "32", "NETWORK_ALPHA": "32", "LEARNING_RATE": "0.00025",
         "OPTIMIZER_TYPE": "muon", "GRADIENT_ACCUMULATION": "1", "BATCH_SIZE": "1",
         "MAX_TRAIN_EPOCHS": str(epochs), "SAVE_EVERY_N_EPOCHS": "1",
-        "SEED": "42", "FAMILY_PRECISION": "INT8 (8-bit, fastest)", "BLOCKS_SWAP": "22",
+        "SEED": "43", "FAMILY_PRECISION": "INT8 (8-bit, fastest)", "BLOCKS_SWAP": "22",
         "DATASET_MEGAPIXELS": "0.25", "COMPILE_BLOCKS": "Off",
         "VALIDATION_LOSS": True, "VALIDATION_HOLDOUT": True, "VALIDATION_IMAGES": "4",
         "VALIDATION_GROUPS": "1", "VALIDATION_TIMESTEPS": "4", "VALIDATION_SEED": "42",
@@ -39,7 +43,8 @@ def settings(group, output_root, epochs=EPOCHS, prompt=""):
         "SAMPLE_EVERY_N_EPOCHS": "1", "SAMPLE_AT_FIRST": True,
         "SAMPLE_WIDTH": "512", "SAMPLE_HEIGHT": "512", "SAMPLE_STEPS": "20",
     }
-    return [{**common, "LEARNING_RATE": "0.00045" if case.endswith("-lr450") else "0.00025",
+    return [{**common, "LEARNING_RATE": ("0.00045" if case.endswith("-lr450") else
+                                         "0.00035" if case.endswith("-lr350") else "0.00025"),
              "__replay_compare": case, "LORA_NAME": f"{group}-{case}",
              "LORA_OUTPUT_DIR": os.path.join(output_root, group, case),
              "KREA2_TRAINING_METHOD": method, "KREA2_SELECTIVE_BLOCK_CHECK": selective}
@@ -53,7 +58,7 @@ def adjust_plan(desc, values, plan):
         return plan
     from fizgig.krea2.selective_policy import STRATEGIES
     legacy = {"standard-matched", "selective", "replay", "standard"} | set(STRATEGIES)
-    if desc.key != "krea2" or case.removesuffix("-lr450") not in legacy:
+    if desc.key != "krea2" or case_strategy(case) not in legacy:
         raise ValueError("Invalid Krea 2 replay comparison case.")
     if plan.problems:
         return plan
@@ -61,7 +66,7 @@ def adjust_plan(desc, values, plan):
     if len(stages) != 1:
         plan.problems.append("Replay comparison needs exactly one normal Training stage.")
         return plan
-    strategy = case.removesuffix("-lr450")
+    strategy = case_strategy(case)
     if strategy in STRATEGIES:
         stages[0].cmd.extend(["--family_option", f"selective_strategy={strategy}",
                               "--family_option", "selective_budget=14"])

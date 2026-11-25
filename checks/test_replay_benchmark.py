@@ -8,15 +8,19 @@ def test_recipe_is_nine_independent_runs(tmp_path):
     runs = rb.settings("test", str(tmp_path), 3, "a test prompt")
     assert [v["__replay_compare"] for v in runs] == [c[0] for c in rb.CASES]
     assert len({v["LORA_NAME"] for v in runs}) == len({v["LORA_OUTPUT_DIR"] for v in runs}) == 9
-    assert [v["KREA2_SELECTIVE_BLOCK_CHECK"] for v in runs] == [False] * 4 + [True] * 5
-    assert [v["KREA2_TRAINING_METHOD"] for v in runs] == ["Global replay"] * 2 + ["Standard"] * 2 + ["Global replay"] * 5
-    assert [v["LEARNING_RATE"] for v in runs] == ["0.00025", "0.00045"] * 2 + ["0.00045"] * 5
+    assert [v["KREA2_SELECTIVE_BLOCK_CHECK"] for v in runs] == [False] + [True] * 8
+    assert [v["KREA2_TRAINING_METHOD"] for v in runs] == ["Global replay"] * 9
+    assert [v["LEARNING_RATE"] for v in runs] == ["0.00025"] + ["0.00045"] * 6 + ["0.00035", "0.00045"]
     varying = {"__replay_compare", "LORA_NAME", "LORA_OUTPUT_DIR", "KREA2_TRAINING_METHOD", "KREA2_SELECTIVE_BLOCK_CHECK", "LEARNING_RATE"}
     assert all({k: v for k, v in row.items() if k not in varying} ==
                {k: v for k, v in runs[0].items() if k not in varying} for row in runs)
     assert all(v["VALIDATION_HOLDOUT"] and v["SAMPLE_ENABLED"] for v in runs)
     assert all(v["MAX_TRAIN_EPOCHS"] == "5" for v in runs)
-    assert runs[-1]["__replay_compare"] == "walking_coverage-lr450"
+    assert [v["__replay_compare"] for v in runs] == [
+        "replay", "high_gradient-lr450", "random-lr450", "balanced_random-lr450",
+        "static_first_half-lr450", "rotational-lr450", "hybrid_coverage-lr450",
+        "hybrid_coverage-lr350", "walking_coverage-lr450"]
+    assert all(v["SEED"] == "43" and v["VALIDATION_SEED"] == "42" for v in runs)
 
 
 def test_comparison_preserves_normal_adapter_targets(tmp_path):
@@ -29,7 +33,7 @@ def test_comparison_preserves_normal_adapter_targets(tmp_path):
         assert not plan.problems
         expected = ["python", "train.py", "--sample_prompts", "prompts.txt"]
         if values["KREA2_SELECTIVE_BLOCK_CHECK"]:
-            expected += ["--family_option", "selective_strategy=" + values["__replay_compare"].removesuffix("-lr450"),
+            expected += ["--family_option", "selective_strategy=" + rb.case_strategy(values["__replay_compare"]),
                          "--family_option", "selective_budget=14"]
         assert cmd == expected
 
