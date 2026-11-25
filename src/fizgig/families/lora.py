@@ -602,10 +602,12 @@ class FamilyLoRA:
         self._frozen.pop(name, None)
 
     def move_adapter(self, name, device):
-        """Move one frozen adapter's weights (e.g. a speed LoRA parked on CPU between previews)."""
+        """Move a frozen adapter; mark CPU-parked preview adapters for block swap (#405)."""
+        parked = torch.device(device).type == "cpu"
         for w in self.wrapped.values():
             if name in w.adapters:
                 w.adapters[name].to(device)
+                w.adapters[name]._fizgig_parked = parked
 
     # ---- bake: what is live now, as one standard LoRA in the family format ------------------------
     @torch.no_grad()

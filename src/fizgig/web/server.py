@@ -463,7 +463,11 @@ SETTING_PREFS = ("lora_output_dir", "profiles_dir", "cache_dir", "input_lora_dir
 
 
 def load_prefs() -> dict:
-    return {**PREF_DEFAULTS, **_read_json(PREFS_FILE)}
+    p = {**PREF_DEFAULTS, **_read_json(PREFS_FILE)}
+    # Normalize legacy bool strings so Preferences reflects the trainer's state (upstream f246dbe80).
+    for key in ("send_only_block_swap", "pin_block_swap"):
+        p[key] = "0" if str(p.get(key, "0")).strip().lower() in ("false", "0", "off", "no", "") else "1"
+    return p
 
 
 _skey_lock = threading.Lock()
@@ -3725,7 +3729,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, page.encode("utf-8"), "text/html; charset=utf-8", extra=extra)
         if path == "/welcome.mp4":                  # the welcome popup's tour (it ships with Fizgig: no network)
             return self._stream(os.path.join(STATIC_DIR, "welcome_v8.mp4"), attachment=False)  # ranged: it seeks
-        if path in ("/app.js", "/push_notifications.js", "/caption_studio_tags.js", "/caption_studio_viz.js",
+        if path in ("/app.js", "/stream_prefs.js", "/push_notifications.js", "/caption_studio_tags.js", "/caption_studio_viz.js",
                     "/caption_studio_learning.js",
                     "/caption_studio_selection.js", "/caption_studio_training_picks.js",
                     "/caption_theme.js", "/caption_image_perf.js", "/caption_thumb_rail.js", "/caption_remove_bridge.js", "/mask_stroke_worker.js",

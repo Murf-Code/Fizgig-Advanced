@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import gc
 import logging
+import os
 import time
 from typing import Optional
 import torch
@@ -32,7 +33,7 @@ def _clean_memory_on_device(device: torch.device):
 
 def _synchronize_device(device: torch.device):
     if device.type == "cuda":
-        torch.cuda.synchronize()
+        torch.cuda.synchronize(device)
     elif device.type == "xpu":
         torch.xpu.synchronize()
     elif device.type == "mps":
@@ -46,7 +47,10 @@ def swap_weight_devices_no_cuda(device: torch.device, layer_to_cpu: nn.Module, l
     assert layer_to_cpu.__class__ == layer_to_cuda.__class__
 
     weight_swap_jobs = []
+    skip_cpu, skip_cuda = parked_ids(layer_to_cpu), parked_ids(layer_to_cuda)
     for module_to_cpu, module_to_cuda in zip(layer_to_cpu.modules(), layer_to_cuda.modules()):
+        if id(module_to_cpu) in skip_cpu or id(module_to_cuda) in skip_cuda:
+            continue
         if hasattr(module_to_cpu, "weight") and module_to_cpu.weight is not None:
             weight_swap_jobs.append((module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data))
 
@@ -64,8 +68,14 @@ def swap_weight_devices_no_cuda(device: torch.device, layer_to_cpu: nn.Module, l
     _synchronize_device(device)
 
 
+from fizgig.modules.offloading import block_to, parked_ids  # upstream #405
+
+
 def weighs_to_device(layer: nn.Module, device: torch.device):
+    skip = parked_ids(layer)
     for module in layer.modules():
+        if id(module) in skip:
+            continue
         if hasattr(module, "weight") and module.weight is not None and module.__class__.__name__.endswith("Linear"):
             module.weight.data = module.weight.data.to(device, non_blocking=device.type != "cpu")
 
@@ -138,8 +148,9 @@ def send_only_unfit(blocks: list[nn.Module], num_blocks: int, blocks_to_swap: in
     idx = sorted({((2 * i + 1) * num_blocks) // (2 * blocks_to_swap) for i in range(blocks_to_swap)})
     template = None
     for b in idx:
+        skip = parked_ids(blocks[b])
         ws = [m.weight for m in blocks[b].modules()
-              if hasattr(m, "weight") and m.weight is not None and m.__class__.__name__.endswith("Linear")]
+              if id(m) not in skip and hasattr(m, "weight") and m.weight is not None and m.__class__.__name__.endswith("Linear")]
         if not ws:
             return f"block {b} has no Linear weights to stream"
         for w in ws:
@@ -164,8 +175,31 @@ def create_offloader(block_type: str, blocks: list[nn.Module], num_blocks: int, 
     Fizgig: a send-only request the blocks cannot honour (send_only_unfit) falls back to the classic swap with a log
     line instead of failing the run.
     """
+    # A user preference applies to Krea 2 training only. Explicit caller
+    # configuration remains available to the diagnostic and inference paths.
+    training_pin = block_type == "single" and config.supports_backward and config.device.type == "cuda"
+    if training_pin:
+        from fizgig.families.quant import pin_swap_requested, pin_swap_ok
     if config.h2d_only:
-        n = min(num_blocks, blocks_to_swap + config.ring_size) if config.match_classic_vram else blocks_to_swap
+        ring_size = config.ring_size
+        # Experimental training-only sweep; no new persistent preference.
+        # Keep the existing block-weight VRAM budget: a larger ring replaces
+        # resident blocks, rather than adding unplanned device allocations.
+        override = os.environ.get("FIZGIG_EXPERIMENTAL_STREAM_RING")
+        if override is not None and config.supports_backward:
+            try:
+                requested = int(override)
+                if not 2 <= requested <= 4:
+                    raise ValueError
+                ring_size = requested
+            except ValueError:
+                logger.warning("[block swap] ignoring FIZGIG_EXPERIMENTAL_STREAM_RING=%r; use 2, 3 or 4", override)
+        if config.match_classic_vram:
+            ring_size = min(ring_size, max(1, num_blocks - blocks_to_swap))
+        if override is not None and config.supports_backward:
+            logger.info("[block swap] experimental ring: requested %s, effective %d slots (VRAM budget preserved)",
+                        override, ring_size)
+        n = min(num_blocks, blocks_to_swap + ring_size) if config.match_classic_vram else blocks_to_swap
         why = send_only_unfit(blocks, num_blocks, n)
         if why is None:
             # H2D-only streaming for frozen-base (LoRA) training: keep a CPU master, copy Host->Device only.
@@ -176,11 +210,19 @@ def create_offloader(block_type: str, blocks: list[nn.Module], num_blocks: int, 
                 n,
                 config.supports_backward,
                 config.device,
-                ring_size=config.ring_size,
-                use_pinned_memory=config.use_pinned_memory,
+                ring_size=ring_size,
+                # Advanced's host budget independently checks the actual masters and may fall back to staging.
+                use_pinned_memory=config.use_pinned_memory or (training_pin and pin_swap_requested()),
                 debug=config.debug,
             )
         logger.info(f"[block swap] send-only off for {block_type}: {why} - classic swap (copies each block back)")
+    pinned = config.use_pinned_memory
+    if training_pin and not pinned and blocks_to_swap > 0:
+        # Allow for the swapped blocks and two exchange buffers, with a RAM reserve.
+        sizes = [sum(p.numel() * p.element_size() for p in (*b.parameters(), *b.buffers())) for b in blocks]
+        gb = (sum(sorted(sizes, reverse=True)[:blocks_to_swap]) + 2 * max(sizes, default=0)) / 1e9
+        pinned = pin_swap_ok(gb)
+        logger.info("[block swap] classic pinned RAM: %s (%.2f GB budget)", "on" if pinned else "off", gb)
     return ModelOffloader(
         block_type,
         blocks,
@@ -188,7 +230,7 @@ def create_offloader(block_type: str, blocks: list[nn.Module], num_blocks: int, 
         blocks_to_swap,
         config.supports_backward,
         config.device,
-        config.use_pinned_memory,
+        pinned,
         debug=config.debug,
     )
 
@@ -273,10 +315,12 @@ class Offloader:
         #         weight_swap_jobs.append((module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data))
 
         with T.section("find modules"):
-            modules_to_cpu = {k: v for k, v in layer_to_cpu.named_modules()}
+            skip_cpu, skip_cuda = parked_ids(layer_to_cpu), parked_ids(layer_to_cuda)
+            modules_to_cpu = {k: v for k, v in layer_to_cpu.named_modules() if id(v) not in skip_cpu}
             for module_to_cuda_name, module_to_cuda in layer_to_cuda.named_modules():
                 if (
-                    hasattr(module_to_cuda, "weight")
+                    id(module_to_cuda) not in skip_cuda
+                    and hasattr(module_to_cuda, "weight")
                     and module_to_cuda.weight is not None
                     and module_to_cuda.__class__.__name__.endswith("Linear")
                 ):
@@ -568,12 +612,12 @@ class ModelOffloader(Offloader):
             print(f"[{self.block_type}] Prepare block devices before forward")
 
         for b in blocks[0 : self.num_blocks - self.blocks_to_swap]:
-            b.to(self.device)
+            block_to(b, self.device)
             weighs_to_device(b, self.device)  # make sure weights are on device
 
         cpu_device = torch.device("cpu")
         for b in blocks[self.num_blocks - self.blocks_to_swap :]:
-            b.to(self.device)  # move block to device first. this makes sure that buffers (non weights) are on the device
+            block_to(b, self.device)  # move block to device first. this makes sure that buffers (non weights) are on the device
             weighs_to_device(b, cpu_device)  # make sure weights are on cpu
 
         _synchronize_device(self.device)
@@ -626,6 +670,62 @@ class ModelOffloader(Offloader):
             block_idx_to_cuda = block_idx_to_cuda % self.num_blocks  # this works for forward-only offloading
 
         self._submit_move_blocks(blocks, block_idx_to_cpu, block_idx_to_cuda)
+
+
+@dataclass(frozen=True)
+class StreamHostPlan:
+    """Initial allocation policy, not a guarantee against later OS memory pressure."""
+    direct: bool
+    staging_slots: int
+    pinned_bytes: int
+    reserve_bytes: int
+    reason: str
+
+
+def plan_stream_host_memory(block_bytes, streaming_blocks, ring_slots, direct_requested,
+                            available_bytes, total_bytes):
+    """Budget pinned allocations independently of the GPU ring.
+
+    Reserve RAM for the OS and one temporary pageable block. Direct allocation
+    preallocates all pinned masters before changing block residency. Staged
+    allocation only pins the pool; the pageable masters replace existing model
+    storage over time. This is a conservative pinning budget, not a prediction
+    of total process RSS or Windows shared GPU memory.
+    """
+    if min(block_bytes, streaming_blocks, ring_slots) <= 0:
+        raise ValueError("Streaming memory plan requires positive block size and counts")
+    if available_bytes is None or total_bytes is None:
+        return StreamHostPlan(False, 1, block_bytes, 0,
+                              "host memory information unavailable; minimum staged pool")
+    if min(available_bytes, total_bytes) < 0:
+        raise ValueError("Host memory counters must be nonnegative")
+    reserve = max(6 * 2**30, int(total_bytes * 0.15))
+    budget = max(0, min(available_bytes, total_bytes) - reserve - block_bytes)
+    if direct_requested and block_bytes * streaming_blocks <= budget:
+        return StreamHostPlan(True, 0, block_bytes * streaming_blocks, reserve,
+                              "requested direct masters fit host pinning budget")
+    slots = min(ring_slots, budget // block_bytes)
+    if slots < 1:
+        return StreamHostPlan(False, 0, 0, reserve,
+                              "insufficient available RAM for even one pinned staging block")
+    reason = ("direct masters exceed host pinning budget; using staged transfer"
+              if direct_requested else "staged transfer")
+    if slots < ring_slots:
+        reason += "; reduced pinned pool independently of GPU ring"
+    return StreamHostPlan(False, slots, slots * block_bytes, reserve, reason)
+
+
+def _stream_host_memory():
+    try:
+        import psutil
+        vm = psutil.virtual_memory()
+        return vm.available, vm.total
+    except (ImportError, OSError, RuntimeError, AttributeError):
+        return None, None
+
+
+def _allocate_pinned_flat(nbytes, device):
+    return torch.empty(nbytes, dtype=torch.uint8, device="cpu").pin_memory(device=device)
 
 
 class _DirectCopier:
@@ -713,7 +813,7 @@ class _StagedCopier:
 
     def _ensure_staging(self, nbytes: int):
         if self._staging is None:
-            self._staging = [torch.empty(nbytes, dtype=torch.uint8).pin_memory(device=self.device) for _ in range(self.num_staging)]
+            self._staging = [_allocate_pinned_flat(nbytes, self.device) for _ in range(self.num_staging)]
             self._staging_free = [None] * self.num_staging
 
     def _run(self, dst_flat: torch.Tensor, src_flat: torch.Tensor, gate_event):
@@ -802,6 +902,13 @@ class _SyncCopier:
 
     def reset(self):
         pass
+
+
+def run_checkpointed_block(block, index, offloader, *args):
+    """Re-establish block residency on every checkpoint forward/recompute."""
+    if offloader is not None:
+        offloader.wait_for_block(index)
+    return block(*args)
 
 
 class LoRAStreamOffloader:
@@ -909,6 +1016,7 @@ class LoRAStreamOffloader:
         self.in_slot = [None] * self.B  # slot -> block_idx currently bound to this slot (or None)
         self.free_event = [None] * self.B  # slot -> cuda.Event recording when compute finished using the slot
         self._module_cache = {}  # block_idx -> [modules with swap weights]
+        self.host_memory_plan = None  # effective policy after first prepare
 
         self._wait_ctx = "fwd"  # context tag for wait/load timing ("fwd" while in the forward loop, "bwd" in hooks)
         if self.debug:
@@ -933,8 +1041,9 @@ class LoRAStreamOffloader:
     def _swap_modules(self, block: nn.Module) -> list[nn.Module]:
         # same selection rule as ModelOffloader.swap_weight_devices_cuda: Linear layers with a weight
         mods = []
+        skip = parked_ids(block)
         for _, m in block.named_modules():
-            if hasattr(m, "weight") and m.weight is not None and m.__class__.__name__.endswith("Linear"):
+            if id(m) not in skip and hasattr(m, "weight") and m.weight is not None and m.__class__.__name__.endswith("Linear"):
                 mods.append(m)
         return mods
 
@@ -1008,7 +1117,7 @@ class LoRAStreamOffloader:
 
     def _record(self):
         """The compute stream's 'done with this slot' event (None off CUDA: copies there are synchronous)."""
-        return torch.cuda.current_stream().record_event() if self.cuda_available else None
+        return torch.cuda.current_stream(self.device).record_event() if self.cuda_available else None
 
     def remove_hooks(self):
         """Detach backward hooks NOW, not at GC (see ModelOffloader.remove_hooks). Fizgig: also lets any copy still in
@@ -1021,10 +1130,110 @@ class LoRAStreamOffloader:
                 handle.remove()
             self.remove_handles = []
 
+    def retire(self):
+        """Release this offloader at a between-step replacement/disable boundary.
+
+        Restore every streamed block to its own immutable master before dropping
+        ring storage. A pinned master must be copied to pageable memory, one
+        block at a time, so a replacement's budget does not include old pins.
+        Never leave a model Parameter bound to a retired GPU ring.
+        """
+        if self.copier is None:
+            return  # already retired
+        self.remove_hooks()
+        _synchronize_device(self.device)
+        for i, master in self.cpu_master.items():
+            self._bind(i, master)
+            flat = self.cpu_flat[i]
+            if flat.is_pinned():
+                pageable = torch.empty(flat.shape, dtype=flat.dtype, device="cpu")
+                pageable.copy_(flat)
+                for p, view in zip(master, self._flat_views(pageable, [p.data for p in master])):
+                    p.data = view
+                self.cpu_flat[i] = pageable
+        self.cpu_master.clear()
+        self.cpu_flat.clear()
+        self.ring_param = None
+        self.ring_flat = None
+        self.in_slot = [None] * self.B
+        self.free_event = [None] * self.B
+        self._module_cache.clear()
+        cop = self.copier
+        cop.reset()
+        if isinstance(cop, _StagedCopier):
+            cop._pool.shutdown(wait=True)
+            cop._staging = None
+            cop._staging_free = None
+        self.copier = None
+        _clean_memory_on_device(self.device)
+
     def __del__(self):
         if getattr(self, "supports_backward", False):
             for handle in getattr(self, "remove_handles", []):
                 handle.remove()
+
+    def _preallocate_host_buffers(self):
+        """Allocate pinned storage before touching any block weights.
+
+        A direct allocation failure can safely fall back to staged; a staged
+        allocation failure can retry with fewer buffers. Never retry after
+        partial model placement, and never silently switch to classic swap
+        (which has a different host-memory footprint).
+        """
+        weights = [m.weight.data for m in self._modules(self.stream_idx[0])]
+        self._layout = self._compute_layout(weights)
+        nbytes = self._layout[1]
+        available, total = _stream_host_memory()
+        plan = plan_stream_host_memory(nbytes, self.S, self.B, self.use_pinned_memory,
+                                      available, total)
+        direct_error = False
+        if plan.direct:
+            buffers = {}
+            try:
+                for i in self.stream_idx:
+                    buffers[i] = _allocate_pinned_flat(nbytes, self.device)
+            except (RuntimeError, MemoryError):
+                buffers.clear()
+                direct_error = True
+            else:
+                self.host_memory_plan = plan
+                logger.info("[block swap] %s: %s; pinned bytes=%d", self.block_type,
+                            plan.reason, plan.pinned_bytes)
+                return buffers
+        if direct_error:
+            available, total = _stream_host_memory()
+            plan = plan_stream_host_memory(nbytes, self.S, self.B, False, available, total)
+            logger.warning("[block swap] %s: direct pin allocation failed; trying staged", self.block_type)
+
+        self.use_pinned_memory = False
+        if plan.staging_slots == 0:
+            self.host_memory_plan = plan
+            raise RuntimeError(
+                f"{self.block_type} H2D-only block swap: {plan.reason}. "
+                "Free system RAM or reduce model precision/block size; no block weights were moved."
+            )
+        for slots in range(plan.staging_slots, 0, -1):
+            copier = _StagedCopier(self.device, num_staging=slots, debug=self.debug)
+            try:
+                copier._ensure_staging(nbytes)
+            except (RuntimeError, MemoryError):
+                # No work was submitted: it is safe to destroy this pool.
+                copier._pool.shutdown(wait=True)
+                logger.warning("[block swap] %s: could not pin %d staging slot(s)", self.block_type, slots)
+                continue
+            reason = plan.reason if not direct_error else "direct pin allocation failed; staged fallback"
+            if slots != plan.staging_slots:
+                reason += "; reduced staging pool after allocation failure"
+            self.host_memory_plan = StreamHostPlan(False, slots, slots * nbytes,
+                                                    plan.reserve_bytes, reason)
+            self.copier = copier
+            logger.info("[block swap] %s: %s; pinned bytes=%d, staging=%d, GPU ring=%d",
+                        self.block_type, reason, slots * nbytes, slots, self.B)
+            return {}
+        raise RuntimeError(
+            f"{self.block_type} H2D-only block swap: cannot allocate one pinned staging block "
+            f"({nbytes / 2**20:.1f} MiB). Free system RAM and retry; no block weights were moved."
+        )
 
     def prepare_block_devices_before_forward(self, blocks: list[nn.Module]):
         if self.S == 0:
@@ -1034,37 +1243,51 @@ class LoRAStreamOffloader:
             print(f"[{self.block_type}] Prepare block devices before forward (H2D-only)")
 
         first_time = not self.cpu_master  # device placement is only needed on the very first call
+        if not first_time:
+            # Re-prepare is a phase boundary, not a normal step. All compute
+            # must have finished before clearing slot reuse events (including
+            # the tail slot which may have no subsequent H2D to gate on).
+            self.copier.sync()
+            _synchronize_device(self.device)
+        pinned_flats = self._preallocate_host_buffers() if first_time and self.cuda_available else {}
         cpu_device = torch.device("cpu")
-        for i, b in enumerate(blocks):
-            if not self.is_stream[i]:
-                if first_time:
-                    b.to(self.device)  # resident block: buffers + Linear weights on GPU permanently
-                    weighs_to_device(b, self.device)
-                continue
-
-            if first_time:
-                # move the whole block to device (buffers, norms, bias), then pull the swap weights back to
-                # the CPU into one flat (pinned) buffer per block as the persistent masters
-                b.to(self.device)
+        if first_time:
+            # Establish masters first, including blocks that were resident under
+            # a previous placement. Never round-trip CPU weights through CUDA
+            # just to build a CPU master or transiently exceed the ring budget.
+            for i in self.stream_idx:
                 mods = self._modules(i)
                 weights = [m.weight.data for m in mods]
                 if self._layout is None:
-                    self._layout = self._compute_layout(weights)  # first streaming block defines the shared layout
-                flat = torch.empty(self._layout[1], dtype=torch.uint8, device=cpu_device)
-                if self.use_pinned_memory and self.cuda_available:
-                    flat = flat.pin_memory(device=self.device)
+                    self._layout = self._compute_layout(weights)
+                flat = pinned_flats.pop(i) if i in pinned_flats else torch.empty(
+                    self._layout[1], dtype=torch.uint8, device=cpu_device)
                 master = []
                 for m, view in zip(mods, self._flat_views(flat, weights)):
-                    view.copy_(m.weight.data)  # one-time D2H into the flat master
+                    view.copy_(m.weight.data)
                     m.weight.data = view
-                    master.append(m.weight)  # keep the original Parameter object as the persistent master
+                    master.append(m.weight)
                 self.cpu_flat[i] = flat
                 self.cpu_master[i] = master
-            else:
-                # re-prepare (e.g. around in-training sampling): the non-swap parts are already on the device
-                # and the CPU masters have stayed on the CPU throughout, so just repoint weights to the masters.
-                # IMPORTANT: do NOT call b.to(device) here -- it would drag the CPU masters onto the GPU and
-                # they would never be released (every swap block would end up resident).
+                del weights  # release old device storage before placing the next block
+
+            for i, block in enumerate(blocks):
+                if not self.is_stream[i]:
+                    block_to(block, self.device)
+                    weighs_to_device(block, self.device)
+                    continue
+                # Place norms, scales, biases, adapters and other non-streamed
+                # tensors while leaving the frozen Linear masters on CPU.
+                mods = self._modules(i)
+                masters = self.cpu_master[i]
+                try:
+                    for m in mods:
+                        m.weight = None
+                    block_to(block, self.device)
+                finally:
+                    self._bind(i, masters)
+        else:
+            for i in self.stream_idx:
                 self._bind(i, self.cpu_master[i])
 
         # validate homogeneous streaming blocks (shared ring template)
@@ -1088,10 +1311,20 @@ class LoRAStreamOffloader:
         # reset transfer state and preload the first B streaming blocks. in_slot deliberately survives:
         # after a completed backward pass the ring already holds ranks 0..B-1, so these loads become
         # no-op rebinds (see _load) instead of redundant cold-start transfers.
+        # Finish queued copies before clearing their completion events, including
+        # copies from a previous preview/forward-only pass.
+        self.copier.sync()
         self.free_event = [None] * self.B
         self.copier.reset()
         for k in range(self.B):
             self._load(k, k)
+            if self.cuda_available:
+                blk = self.stream_idx[k]
+                event = self.copier.wait(blk)
+                # A retained slot needs no new transfer. Direct copies can keep
+                # an explicit completion event for that slot after reset.
+                if event is None and isinstance(self.copier, _DirectCopier):
+                    self.copier._events[blk] = self.copier.copy_stream.record_event()
 
         _synchronize_device(self.device)
         _clean_memory_on_device(self.device)
@@ -1111,12 +1344,16 @@ class LoRAStreamOffloader:
             self._load(j, slot, ctx)
         ev = self.copier.wait(block_idx)
         if ev is None:
+            # A retained/preloaded slot may have no event after reset.
+            # Non-CUDA copies are synchronous and have no copy stream.
+            if self.cuda_available:
+                torch.cuda.current_stream(self.device).wait_stream(self.copier.copy_stream)
             return
         if not self.debug:
-            torch.cuda.current_stream().wait_event(ev)  # compute waits for H2D (GPU-side, does not block CPU)
+            torch.cuda.current_stream(self.device).wait_event(ev)  # compute waits for H2D (GPU-side, does not block CPU)
             return
         # debug: measure the actual GPU stall (idle time the compute stream spends on wait_event)
-        s = torch.cuda.current_stream()
+        s = torch.cuda.current_stream(self.device)
         c = self._cur[ctx]
         c["waits"] += 1
         if not ev.query():
@@ -1162,10 +1399,17 @@ class LoRAStreamOffloader:
                 self.free_event[j % self.B] = self._record()
                 if j - self.B >= 0:
                     self._load(j - self.B, (j - self.B) % self.B, "bwd")  # same slot as rank j; evicts rank j
-            if wait_prev:
+            # The previous streamed block is not necessarily adjacent in
+            # model order (sparse swapping). Keep the adjacent resident-block
+            # hook as a second safety boundary.
+            previous = self.stream_idx[j - 1] if prefetch and j > 0 else (
+                block_index - 1 if wait_prev else None)
+            if previous is not None:
                 self._wait_ctx = "bwd"
-                self.wait_for_block(block_index - 1)  # ensure the next block to run is ready
-                self._wait_ctx = "fwd"
+                try:
+                    self.wait_for_block(previous)
+                finally:
+                    self._wait_ctx = "fwd"
             return None
 
         return backward_hook

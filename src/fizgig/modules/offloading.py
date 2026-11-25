@@ -47,11 +47,39 @@ def _synchronize_device(device: torch.device):
 # Standalone weight-transfer helpers
 # ---------------------------------------------------------------------------
 
+# Adapted from upstream Fizgig #405 (shootthesound, 5b3b8e479).
+def parked_ids(layer: nn.Module) -> set:
+    """Modules inside a CPU-parked frozen preview adapter."""
+    return {id(child) for module in layer.modules()
+            if getattr(module, "_fizgig_parked", False) for child in module.modules()}
+
+
+def block_to(layer: nn.Module, device) -> nn.Module:
+    """Move a block while leaving parked preview adapters on their current device."""
+    skip = parked_ids(layer)
+    if not skip:
+        return layer.to(device)
+    for module in layer.modules():
+        if id(module) in skip:
+            continue
+        for p in module.parameters(recurse=False):
+            p.data = p.data.to(device)
+            if p.grad is not None:
+                p.grad.data = p.grad.data.to(device)
+        for key, buf in module._buffers.items():
+            if buf is not None:
+                module._buffers[key] = buf.to(device)
+    return layer
+
+
 def _streamed_linears(layer: nn.Module):
     """{name: module} for the Linears a swap streams, keyed with LoRA wrappers' ".base" dropped, so a block whose
     Linears carry a LoRA pairs with one whose don't (#199)."""
     out = {}
+    skip = parked_ids(layer)
     for name, m in layer.named_modules():
+        if id(m) in skip:
+            continue
         if hasattr(m, "weight") and m.weight is not None and m.__class__.__name__.endswith("Linear"):
             out[name[:-5] if name.endswith(".base") else name] = m
     return out
@@ -105,7 +133,10 @@ def swap_weight_devices_no_cuda(device: torch.device, layer_to_cpu: nn.Module, l
 
 def weighs_to_device(layer: nn.Module, device: torch.device):
     """Move all Linear weights (and fp8 scale_weight buffers) in *layer* to *device*."""
+    skip = parked_ids(layer)
     for module in layer.modules():
+        if id(module) in skip:
+            continue
         if hasattr(module, "weight") and module.weight is not None and module.__class__.__name__.endswith("Linear"):
             module.weight.data = module.weight.data.to(device, non_blocking=device.type != "cpu")
             if hasattr(module, "scale_weight"):
@@ -521,12 +552,12 @@ class ModelOffloader(Offloader):
             print(f"[{self.block_type}] Prepare block devices before forward")
 
         for b in blocks[0 : self.num_blocks - self.blocks_to_swap]:
-            b.to(self.device)
+            block_to(b, self.device)
             weighs_to_device(b, self.device)  # ensure weights are on device
 
         cpu_device = torch.device("cpu")
         for b in blocks[self.num_blocks - self.blocks_to_swap :]:
-            b.to(self.device)  # move block to device first (buffers/non-weights go to device)
+            block_to(b, self.device)  # move block to device first (buffers/non-weights go to device)
             weighs_to_device(b, cpu_device)  # then move weights back to cpu
 
         _synchronize_device(self.device)

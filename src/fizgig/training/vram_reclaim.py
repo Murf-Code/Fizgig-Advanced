@@ -349,6 +349,10 @@ def _flush(device_type):
         torch.cuda.empty_cache()
 
 
+class ReclaimRestoreError(RuntimeError):
+    """A partial device restoration makes continued training unsafe."""
+
+
 @torch.no_grad()
 def reclaim(modules=(), optimizers=(), extra=(), device="cuda", staging="cpu", chunk_bytes=None, probe_windows=True):
     """Move the run's GPU tensors out and back (see the module doc). Call between optimizer steps only.
@@ -373,32 +377,49 @@ def reclaim(modules=(), optimizers=(), extra=(), device="cuda", staging="cpu", c
         avail = _host_free()
         chunk_bytes = total if avail is None or total < 0.6 * avail else max(256 * 1024 ** 2, int(0.5 * avail))
 
+    def _bind_ring(off, slot, views, flat):
+        off.ring_flat[slot] = flat
+        for p, offset, dtype, shape in views:
+            nbytes = p.numel() * p.element_size()
+            p.data = flat[offset:offset + nbytes].view(dtype).view(shape)
+
     def _move(group_list, ring_list):
-        held = []
-        for g in group_list:                   # out: a CPU copy; the GPU storage is let go
-            cpu = g[0].detach().to(staging, copy=True)
-            for t in g:
-                t.data = cpu
-            held.append((g, cpu))
-        ring_held = []
-        for off, s, views in ring_list:
-            cpu = off.ring_flat[s].to(staging, copy=True)
-            off.ring_flat[s] = cpu
-            ring_held.append((off, s, views, cpu))
-        _flush(dt)                              # the old segments go back to the driver
-        for g, cpu in held:                    # back: a fresh allocation - VRAM when the card has room
-            new = cpu.to(device, copy=True)
-            for t in g:
-                t.data = new
-        for off, s, views, cpu in ring_held:
-            new = cpu.to(device, copy=True)
-            off.ring_flat[s] = new
-            for p, offset, dtype, shape in views:
-                n = 1
-                for x in shape:
-                    n *= x
-                nbytes = n * torch.empty((), dtype=dtype).element_size()
-                p.data = new[offset:offset + nbytes].view(dtype).view(shape)
+        held, ring_held = [], []
+        try:
+            for g in group_list:
+                cpu = g[0].detach().to(staging, copy=True)
+                held.append((g, cpu))
+                for t in g:
+                    t.data = cpu
+            for off, slot, views in ring_list:
+                cpu = off.ring_flat[slot].to(staging, copy=True)
+                ring_held.append((off, slot, views, cpu))
+                # The Parameter views themselves hold the old GPU storage.
+                # Rebind them before empty_cache, not only on the way back.
+                _bind_ring(off, slot, views, cpu)
+            _flush(dt)
+        finally:
+            # Even if staging another tensor fails, restore everything already
+            # moved. If restoration itself fails, training must not proceed
+            # with a mix of CPU and GPU tensors.
+            failures = []
+            for g, cpu in held:
+                try:
+                    new = cpu.to(device, copy=True)
+                    for t in g:
+                        t.data = new
+                except Exception as exc:
+                    failures.append(exc)
+            for off, slot, views, cpu in ring_held:
+                try:
+                    _bind_ring(off, slot, views, cpu.to(device, copy=True))
+                except Exception as exc:
+                    failures.append(exc)
+            if failures:
+                raise ReclaimRestoreError(
+                    "Unable to restore all training tensors after VRAM reclaim. "
+                    "Stop training and resume from a saved state."
+                ) from failures[0]
 
     chunk, size = [], 0
     for g in groups:
@@ -407,7 +428,12 @@ def reclaim(modules=(), optimizers=(), extra=(), device="cuda", staging="cpu", c
         if size >= chunk_bytes:
             _move(chunk, [])
             chunk, size = [], 0
-    _move(chunk, rings)
+    if chunk:
+        _move(chunk, [])
+    # Reclaim each ring slot independently, bounding temporary host storage
+    # even for the experimental 3/4-slot rings.
+    for job in rings:
+        _move([], [job])
     _flush(dt)
     return {"tensors": sum(len(g) for g in groups) + sum(len(v) for _o, _s, v in rings), "bytes": total,
             "skipped": skipped, "seconds": time.time() - t_start, "before": before, "after": _mem(dt),

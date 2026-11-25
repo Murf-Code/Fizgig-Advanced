@@ -552,3 +552,30 @@ def free_vram_gb():
     if sim:
         return max(0.0, float(sim) - _SIM_OTHERS_GB - torch.cuda.memory_reserved() / 1024 ** 3)
     return torch.cuda.mem_get_info()[0] / 1024 ** 3
+
+
+# Upstream Fizgig 2a76577 / bcd6333: full pinning is opt-in, not just a free-RAM heuristic.
+def pin_swap_requested():
+    env = os.environ.get("FIZGIG_PIN_SWAP")
+    if env in ("0", "1"):
+        return env == "1"
+    try:
+        import json
+        from fizgig.user_data import PREFS_FILE
+        with open(PREFS_FILE, encoding="utf-8") as f:
+            return str(json.load(f).get("pin_block_swap", "0")).lower() in ("1", "true")
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def pin_swap_ok(pinned_gb, available_gb=None):
+    """Classic block swap's opt-in guard: leave at least 4 GB of spare RAM."""
+    if not pin_swap_requested():
+        return False
+    if available_gb is None:
+        try:
+            import psutil
+            available_gb = psutil.virtual_memory().available / 1e9
+        except (ImportError, OSError, RuntimeError):
+            return False
+    return pinned_gb > 0 and available_gb >= pinned_gb + 4
