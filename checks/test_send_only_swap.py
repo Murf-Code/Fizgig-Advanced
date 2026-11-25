@@ -46,7 +46,7 @@ def _one_thread():
 
 
 # ---- models -------------------------------------------------------------------------------------------------------
-def _wrap(blocks, names, kind):
+def _wrap(blocks, names, kind, device=CPU):
     """Fizgig's own adapters on the block Linears (families/lora.py), seeded so every model gets the same ones."""
     torch.manual_seed(123)
     for block in blocks:
@@ -54,12 +54,14 @@ def _wrap(blocks, names, kind):
             if isinstance(child, nn.Linear) and name.split(".")[-1] in names:
                 parent = block.get_submodule(name.rpartition(".")[0]) if "." in name else block
                 w = LoRALinear(child)
+                w.home = CPU  # initialize identically before moving adapters to the training device
                 if kind == "lokr":
                     w.add_lokr("lora", True, factor=4)
                     nn.init.normal_(w.adapters["lora"].lokr_w2, std=0.02)
                 else:
                     w.add("lora", 4, 4, True)
                     nn.init.normal_(w.adapters["lora"][1].weight, std=0.02)
+                w.adapters.to(device)
                 setattr(parent, name.split(".")[-1], w)
 
 
@@ -72,7 +74,7 @@ def _int8(model, blocks):
                 quant._quantize_one(m, drv, "int8", CPU)
 
 
-def _krea(mode, kind="lora", int8=False, swap=4):
+def _krea(mode, kind="lora", int8=False, swap=4, device=CPU):
     torch.manual_seed(0)
     m = SingleStreamDiT(KCFG)
     for p in m.parameters():
@@ -81,8 +83,10 @@ def _krea(mode, kind="lora", int8=False, swap=4):
     if int8:
         _int8(m, m.blocks)
     if mode != "none":
-        Krea2Driver().enable_block_swap(m, swap, "cpu", True, send_only=(mode == "send"))
-    _wrap(m.blocks, {"qkv", "q", "k", "v", "proj", "o", "out", "w1", "w2", "w3", "down", "up", "gate"}, kind)
+        Krea2Driver().enable_block_swap(m, swap, device, True, send_only=(mode == "send"))
+    else:
+        m.to(device)
+    _wrap(m.blocks, {"qkv", "q", "k", "v", "proj", "o", "out", "w1", "w2", "w3", "down", "up", "gate"}, kind, device)
     m.enable_gradient_checkpointing()
     m.train()
     return m
@@ -101,20 +105,23 @@ def _krea_batch(step, batch=2):
 
 
 def _krea_fwd(m, step):
-    img, ctx, t, pos, mask = _krea_batch(step)
+    device = m.first.weight.device
+    img, ctx, t, pos, mask = (x.to(device) for x in _krea_batch(step))
     return (m(img, ctx, t, pos, mask) - img).square().mean()
 
 
-def _moss(mode, kind="lora", swap=3):
+def _moss(mode, kind="lora", swap=3, device=CPU):
     torch.manual_seed(0)
     m = MOSSImageDiT(**MTINY)
     for p in m.parameters():
         p.data.normal_(0, 0.05)
     m.requires_grad_(False)
     if mode != "none":
-        MOSSImageDriver().enable_block_swap(m, swap, CPU, True, send_only=(mode == "send"))
+        MOSSImageDriver().enable_block_swap(m, swap, device, True, send_only=(mode == "send"))
         m.switch_block_swap_for_training()
-    _wrap(m.layers, {"q", "v", "ffn_down"}, kind)
+    else:
+        m.to(device)
+    _wrap(m.layers, {"q", "v", "ffn_down"}, kind, device)
     m.enable_gradient_checkpointing(True)
     m.train()
     return m
@@ -129,6 +136,8 @@ def _moss_fwd(m, step, batch=2):
     if batch > 1:
         mask[1, :4] = True
     t = torch.tensor([900.0, 300.0][:batch])
+    device = m.video_embedder.weight.device
+    x, t, ctx, mask = (v.to(device) for v in (x, t, ctx, mask))
     return (m(x, t, ctx, mask) - x).square().mean()
 
 
@@ -412,3 +421,335 @@ def test_reclaim_vram_moves_the_ring():
             vram_reclaim.reclaim(modules=[m], device="cpu", probe_windows=False)
             assert all(a is not b for a, b in zip(flats, m.offloader.ring_flat))
     _same(_train(m, _krea_fwd, Krea2Driver(), between), ref)
+
+
+def test_checkpoint_recompute_waits_again():
+    """A non-reentrant checkpoint must re-enter the residency wait, not just its forward."""
+    from torch.utils.checkpoint import checkpoint
+    events = []
+    off = types.SimpleNamespace(wait_for_block=lambda i: events.append(("wait", i)))
+
+    def block(x):
+        events.append(("block", 3))
+        return x.sin().square()
+
+    x = torch.randn(8, requires_grad=True)
+    checkpoint(offloading.run_checkpointed_block, block, 3, off, x, use_reentrant=False).sum().backward()
+    assert events == [("wait", 3), ("block", 3), ("wait", 3), ("block", 3)]
+
+
+def test_sparse_backward_waits_for_previous_stream_rank():
+    """The previous streaming block can be separated by a resident block."""
+    off = object.__new__(offloading.LoRAStreamOffloader)
+    off.is_stream = [True, False, True, False, True, False, True]
+    off.stream_idx = [0, 2, 4, 6]
+    off.rank = {b: j for j, b in enumerate(off.stream_idx)}
+    off.B = 2
+    off.free_event = [None, None]
+    off._record = lambda: None
+    off._wait_ctx = "fwd"
+    calls = []
+    off._load = lambda rank, slot, ctx: calls.append(("load", rank, slot, ctx))
+    off.wait_for_block = lambda i: calls.append(("wait", i, off._wait_ctx))
+    off._create_backward_hook(6)(None, None, None)
+    assert calls == [("load", 1, 1, "bwd"), ("wait", 4, "bwd")]
+    assert off._wait_ctx == "fwd"
+
+
+def _experimental_ring(monkeypatch, slots, pinned=None):
+    """Test-only override, preserving the production preference and VRAM planner."""
+    from dataclasses import replace
+    original = offloading.create_offloader
+
+    def factory(block_type, blocks, num_blocks, blocks_to_swap, config):
+        if config.h2d_only:
+            settings = {"ring_size": slots}
+            if pinned is not None:
+                settings["use_pinned_memory"] = pinned
+            config = replace(config, **settings)
+        return original(block_type, blocks, num_blocks, blocks_to_swap, config)
+
+    monkeypatch.setattr(offloading, "create_offloader", factory)
+
+
+@pytest.mark.parametrize("family", ["krea", "moss"])
+@pytest.mark.parametrize("slots", [2, 3, 4])
+def test_experimental_ring_sizes_cpu(monkeypatch, family, slots):
+    _experimental_ring(monkeypatch, slots)
+    build, fwd, drv = (_krea, _krea_fwd, Krea2Driver()) if family == "krea" else (
+        _moss, _moss_fwd, MOSSImageDriver())
+    ref = _train(build("none", swap=2), fwd, drv)
+    model = build("send", swap=2)
+    off = model.offloader
+    assert off.B == slots and off.S == 2 + slots
+    assert off.num_blocks - off.S + off.B == off.num_blocks - 2
+    _same(_train(model, fwd, drv, _val(drv, model, fwd)), ref)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires real asynchronous CUDA copies")
+@pytest.mark.parametrize("family,swap,slots,pinned", [
+    ("krea", 2, 2, False), ("krea", 6, 2, False),
+    ("moss", 2, 2, False), ("moss", 4, 2, False),
+    ("krea", 2, 3, False), ("krea", 2, 4, False),
+    ("moss", 2, 3, False), ("moss", 2, 4, False),
+    ("krea", 2, 2, True), ("krea", 2, 4, True),
+    ("moss", 2, 2, True), ("moss", 2, 4, True),
+])
+@pytest.mark.parametrize("kind", ["lora", "lokr"])
+def test_cuda_stream_sync_parity(monkeypatch, family, swap, slots, pinned, kind):
+    """Run manually on a GPU; CPU CI cannot reproduce DMA timing.
+    
+    Compare no swap, classic swap and send-only, including sparse and dense
+    layouts, multiple optimizer steps and validation transitions. Add a short
+    copy-stream delay to stress compute/copy ordering without device-wide syncs.
+    """
+    _experimental_ring(monkeypatch, slots, pinned)
+    device = torch.device("cuda")
+    build, fwd, drv = (_krea, _krea_fwd, Krea2Driver()) if family == "krea" else (
+        _moss, _moss_fwd, MOSSImageDriver())
+    baseline = build("none", kind=kind, swap=swap, device=device)
+    expected = _train(baseline, fwd, drv)
+    del baseline
+    for mode in ("classic", "send", "send"):
+        model = build(mode, kind=kind, swap=swap, device=device)
+        if mode == "send":
+            assert isinstance(model.offloader, offloading.LoRAStreamOffloader)
+            assert model.offloader.B == slots
+            assert model.offloader.num_blocks - model.offloader.S + slots == model.offloader.num_blocks - swap
+            copier = model.offloader.copier
+            original_submit = copier.submit
+
+            def delayed_submit(*args, **kwargs):
+                if hasattr(torch.cuda, "_sleep"):
+                    with torch.cuda.stream(copier.copy_stream):
+                        torch.cuda._sleep(100000)
+                return original_submit(*args, **kwargs)
+
+            copier.submit = delayed_submit
+        actual = _train(model, fwd, drv, _val(drv, model, fwd))
+        torch.cuda.synchronize(device)
+        for observed, reference in zip(actual[0], expected[0]):
+            torch.testing.assert_close(observed, reference, rtol=1e-4, atol=1e-6)
+        for observed, reference in zip(actual[1], expected[1]):
+            assert observed.keys() == reference.keys()
+            for name in reference:
+                torch.testing.assert_close(observed[name], reference[name], rtol=1e-3, atol=1e-6, msg=name)
+        assert actual[2].keys() == expected[2].keys()
+        for name in expected[2]:
+            torch.testing.assert_close(actual[2][name], expected[2][name], rtol=1e-3, atol=1e-5, msg=name)
+        model.offloader.remove_hooks()
+        del model
+
+
+def test_experimental_ring_override_respects_budget(monkeypatch):
+    monkeypatch.setenv("FIZGIG_EXPERIMENTAL_STREAM_RING", "4")
+    roomy = _krea("send", swap=2)
+    tight = _krea("send", swap=6)
+    assert roomy.offloader.B == 4 and roomy.offloader.S == 6
+    assert tight.offloader.B == 2 and tight.offloader.S == 8
+    assert roomy.offloader.num_blocks - roomy.offloader.S + roomy.offloader.B == 6
+    assert tight.offloader.num_blocks - tight.offloader.S + tight.offloader.B == 2
+    monkeypatch.setenv("FIZGIG_EXPERIMENTAL_STREAM_RING", "invalid")
+    assert _krea("send", swap=2).offloader.B == 2
+
+
+def test_swap_preference_changes_in_same_process():
+    from fizgig.families import launch
+    from fizgig.families.train import setup_parser
+    prefs = dict(launch.RECLAIM_PREF_DEFAULTS)
+    parser = setup_parser()
+    req = ["--family", "krea2", "--dit", "x", "--output_dir", "o", "--output_name", "n"]
+    for enabled in (False, True, False, True):
+        prefs.update(launch.clean_reclaim_prefs({"send_only_block_swap": enabled, "send_only_force": True}))
+        args, _ = parser.parse_known_args(req + launch.send_only_flags(prefs))
+        assert args.send_only_swap is enabled
+        assert args.send_only_force is enabled
+
+
+# ---- Host pinning budget and allocation fallback (no CUDA required) -------------
+_GIB = 2**30
+
+
+@pytest.mark.parametrize("direct,available,expected", [
+    (True, 40, (True, 0, 20)),
+    (True, 20, (False, 4, 4)),
+    (False, 20, (False, 4, 4)),
+    (False, 12, (False, 1, 1)),
+    (True, 10, (False, 0, 0)),
+])
+def test_stream_host_budget(direct, available, expected):
+    # 64 GiB host => reserve 9.6 GiB, plus a one-block transient.
+    plan = offloading.plan_stream_host_memory(_GIB, 20, 4, direct,
+                                               available * _GIB, 64 * _GIB)
+    assert (plan.direct, plan.staging_slots, plan.pinned_bytes // _GIB) == expected
+    assert plan.reserve_bytes >= 9 * _GIB
+
+
+def test_host_budget_unknown_and_invalid():
+    plan = offloading.plan_stream_host_memory(_GIB, 20, 4, True, None, None)
+    assert not plan.direct and plan.staging_slots == 1
+    assert "unavailable" in plan.reason
+    with pytest.raises(ValueError):
+        offloading.plan_stream_host_memory(0, 20, 4, False, 20 * _GIB, 64 * _GIB)
+
+
+def _fake_host_preflight(monkeypatch, direct, available=40, fail_direct=False, fail_slots=()):
+    """Exercise the actual allocation policy without initializing a CUDA stream."""
+    blocks = [nn.Sequential(nn.Linear(8, 8, bias=False)).requires_grad_(False) for _ in range(6)]
+    off = offloading.LoRAStreamOffloader("test", blocks, 6, 4, False, CPU,
+                                         ring_size=3, use_pinned_memory=direct)
+    off.cuda_available = True
+    off.device = torch.device("cuda")
+    original = [b[0].weight for b in blocks]
+    allocations = []
+    class Pool:
+        def shutdown(self, wait=True):
+            pass
+    class Staged:
+        def __init__(self, device, num_staging, debug):
+            self.slots = num_staging
+            self._pool = Pool()
+        def _ensure_staging(self, nbytes):
+            allocations.append(("staged", self.slots))
+            if self.slots in fail_slots:
+                raise RuntimeError("simulated pin failure")
+    def pinned(nbytes, device):
+        allocations.append(("direct", nbytes))
+        if fail_direct:
+            raise RuntimeError("simulated direct pin failure")
+        return torch.empty(nbytes, dtype=torch.uint8)
+    monkeypatch.setattr(offloading, "_stream_host_memory", lambda: (available * _GIB, 64 * _GIB))
+    monkeypatch.setattr(offloading, "_StagedCopier", Staged)
+    monkeypatch.setattr(offloading, "_allocate_pinned_flat", pinned)
+    return off, blocks, original, allocations
+
+
+def test_direct_preallocation_preserves_weights(monkeypatch):
+    off, blocks, original, allocations = _fake_host_preflight(monkeypatch, True)
+    flats = off._preallocate_host_buffers()
+    assert set(flats) == set(off.stream_idx)
+    assert off.host_memory_plan.direct and off.use_pinned_memory
+    assert len(allocations) == off.S
+    assert off.B == 3
+    assert all(b[0].weight is p for b, p in zip(blocks, original))
+
+
+def test_direct_pin_failure_falls_back_before_placement(monkeypatch):
+    off, blocks, original, allocations = _fake_host_preflight(monkeypatch, True, fail_direct=True,
+                                                                fail_slots=(3, 2))
+    assert off._preallocate_host_buffers() == {}
+    assert not off.use_pinned_memory and not off.host_memory_plan.direct
+    assert off.host_memory_plan.staging_slots == 1
+    assert off.B == 3  # GPU ring unchanged
+    assert allocations[-3:] == [("staged", 3), ("staged", 2), ("staged", 1)]
+    assert all(b[0].weight is p for b, p in zip(blocks, original))
+
+
+@pytest.mark.parametrize("available,fail_slots", [(5, ()), (40, (3, 2, 1))])
+def test_host_exhaustion_stops_before_placement(monkeypatch, available, fail_slots):
+    off, blocks, original, allocations = _fake_host_preflight(monkeypatch, False,
+                                                                available=available, fail_slots=fail_slots)
+    with pytest.raises(RuntimeError, match="no block weights were moved"):
+        off.prepare_block_devices_before_forward(blocks)
+    assert not off.cpu_master and off.ring_flat is None
+    assert all(b[0].weight is p and p.device.type == "cpu" for b, p in zip(blocks, original))
+
+
+@pytest.mark.parametrize("family,slots", [("krea", 2), ("krea", 3), ("krea", 4),
+                                         ("moss", 2), ("moss", 3), ("moss", 4)])
+def test_retire_restores_independent_frozen_weights(monkeypatch, family, slots):
+    monkeypatch.setenv("FIZGIG_EXPERIMENTAL_STREAM_RING", str(slots))
+    m = _krea("send", swap=2) if family == "krea" else _moss("send", swap=2)
+    off = m.offloader
+    expected = {i: [p.detach().clone() for p in params] for i, params in off.cpu_master.items()}
+    ring_ids = {id(p) for slot in off.ring_param for p in slot}
+    off.retire()
+    assert off.copier is None and off.ring_flat is None and off.ring_param is None
+    assert not off.cpu_master and not off.cpu_flat and not off.remove_handles
+    for i, weights in expected.items():
+        actual = [mod.weight for mod in off._modules(i)]
+        assert all(id(p) not in ring_ids and not p.requires_grad for p in actual)
+        assert all(torch.equal(p, w) for p, w in zip(actual, weights))
+
+
+@pytest.mark.parametrize("slots", [2, 3, 4])
+def test_moss_preview_replacement_retires_previous_ring(monkeypatch, slots):
+    monkeypatch.setenv("FIZGIG_EXPERIMENTAL_STREAM_RING", str(slots))
+    m = _moss("send", swap=2)
+    ref = _train(_moss("none"), _moss_fwd, MOSSImageDriver())
+    drv = MOSSImageDriver()
+    def between(step):
+        if step == 1:
+            old = m.offloader
+            token = drv.park_for_preview(m, CPU)
+            assert old.ring_flat is None and old.copier is None
+            parked = m.offloader
+            drv.unpark_after_preview(m, CPU, token)
+            assert parked.ring_flat is None and parked.copier is None
+            assert m.offloader.B == slots
+    _same(_train(m, _moss_fwd, drv, between), ref)
+
+
+@pytest.mark.parametrize("family", ["krea", "moss"])
+def test_resume_with_changed_ring_and_validation(monkeypatch, tmp_path, family):
+    build, fwd, drv = (_krea, _krea_fwd, Krea2Driver()) if family == "krea" else (
+        _moss, _moss_fwd, MOSSImageDriver())
+    def step(model, opt, n):
+        opt.zero_grad(set_to_none=True)
+        loss = fwd(model, n)
+        loss.backward()
+        grads = {k: p.grad.detach().clone() for k, p in _lora_params(model).items()}
+        opt.step()
+        return loss.detach().clone(), grads
+
+    baseline = build("none")
+    opt_ref = torch.optim.AdamW(list(_lora_params(baseline).values()), lr=1e-2)
+    monkeypatch.setenv("FIZGIG_EXPERIMENTAL_STREAM_RING", "2")
+    first = build("send", swap=2)
+    opt = torch.optim.AdamW(list(_lora_params(first).values()), lr=1e-2)
+    for n in range(2):
+        expected, _ = step(baseline, opt_ref, n)
+        actual, _ = step(first, opt, n)
+        assert torch.equal(actual, expected)
+    # Save only the trainable adapter weights and optimizer state, not transient
+    # base-weight ring views, exactly as an adapter resume must do.
+    path = tmp_path / "resume.pt"
+    torch.save({"adapters": {k: p.detach().clone() for k, p in _lora_params(first).items()},
+                "optimizer": opt.state_dict()}, path)
+    first.offloader.retire()
+    monkeypatch.setenv("FIZGIG_EXPERIMENTAL_STREAM_RING", "4")
+    resumed = build("send", swap=2)
+    assert resumed.offloader.B == 4
+    opt_resumed = torch.optim.AdamW(list(_lora_params(resumed).values()), lr=1e-2)
+    state = torch.load(path, weights_only=True)
+    with torch.no_grad():
+        for k, p in _lora_params(resumed).items():
+            p.copy_(state["adapters"][k])
+    opt_resumed.load_state_dict(state["optimizer"])
+    for n in range(2, 4):
+        _val(drv, resumed, fwd)(n)
+        expected, ref_grads = step(baseline, opt_ref, n)
+        actual, grads = step(resumed, opt_resumed, n)
+        assert torch.equal(actual, expected)
+        assert all(torch.equal(grads[k], ref_grads[k]) for k in grads)
+    assert all(torch.equal(p, _lora_params(baseline)[k]) for k, p in _lora_params(resumed).items())
+
+
+def test_moss_factory_fallback_does_not_leave_duplicate_hooks():
+    a = MOSSImageDiT(**MTINY).requires_grad_(False)
+    b = MOSSImageDiT(**MTINY).requires_grad_(False)
+    # Force the H2D factory to decline frozen-base streaming.
+    a.layers[2].proj.q.weight.requires_grad_(True)
+    a.enable_block_swap(2, CPU, True, send_only=True)
+    b.enable_block_swap(2, CPU, True, send_only=False)
+    assert type(a.offloader) is shared_offloading.ModelOffloader
+    assert [len(layer._backward_hooks) for layer in a.layers] == [
+        len(layer._backward_hooks) for layer in b.layers]
+
+
+def test_invalid_replacement_does_not_retire_live_offloader():
+    m = _krea("send")
+    old = m.offloader
+    with pytest.raises(AssertionError):
+        m.enable_block_swap(8, offloading.BlockSwapConfig(CPU, True, h2d_only=True))
+    assert m.offloader is old and old.ring_flat is not None

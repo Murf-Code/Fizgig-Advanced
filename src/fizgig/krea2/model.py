@@ -387,13 +387,16 @@ class SingleStreamDiT(nn.Module):
         # guard Klein has. enable_block_swap can run more than once (e.g. around
         # previews); a replaced offloader's stale hooks otherwise fire alongside the
         # new ones on the next backward -> "mat2 is on cpu" / exploding loss.
+        num_main_blocks = len(self.blocks)
+        assert 0 <= num_blocks <= num_main_blocks - 2, f"Cannot swap more than {num_main_blocks - 2} blocks. Requested {num_blocks}."
         _off = getattr(self, "offloader", None)
-        if _off is not None and hasattr(_off, "remove_hooks"):
+        if _off is not None and hasattr(_off, "retire"):
+            _off.retire()
+        elif _off is not None and hasattr(_off, "remove_hooks"):
+            _off.set_forward_only(True)  # settle outstanding classic transfers
             _off.remove_hooks()
 
         self.blocks_to_swap = num_blocks
-        num_main_blocks = len(self.blocks)
-        assert num_blocks <= num_main_blocks - 2, f"Cannot swap more than {num_main_blocks - 2} blocks. Requested {num_blocks}."
         self.offloader = create_offloader("single", self.blocks, num_main_blocks, num_blocks, config)
         print(
             f"Krea 2: Block swap enabled. Swapping {num_blocks} of {num_main_blocks} blocks "
@@ -480,18 +483,19 @@ class SingleStreamDiT(nn.Module):
         freqs = self.posemb(pos)
         attn_probe.layout((0, imglen), imglen, combined.shape[1], fulllen)    # the padded tail isn't attended
 
+        from fizgig.krea2.offloading import run_checkpointed_block
+        offloader = self.offloader if self.blocks_to_swap else None
         for index, block in enumerate(self.blocks):
-            if self.blocks_to_swap:
-                self.offloader.wait_for_block(index)
-
             if getattr(block, "_handles_checkpointing", False):
                 # torch.compile wraps blocks in a module that checkpoints itself, so the recompute
                 # is captured inside the compiled graph. Checkpointing again here would nest it.
-                combined = block(combined, tvec, freqs, attn_params)
+                combined = run_checkpointed_block(block, index, offloader, combined, tvec, freqs, attn_params)
             elif self.gradient_checkpointing and self.training:
-                combined = torch.utils.checkpoint.checkpoint(block, combined, tvec, freqs, attn_params, use_reentrant=False)
+                combined = torch.utils.checkpoint.checkpoint(
+                    run_checkpointed_block, block, index, offloader, combined, tvec, freqs, attn_params,
+                    use_reentrant=False)
             else:
-                combined = block(combined, tvec, freqs, attn_params)
+                combined = run_checkpointed_block(block, index, offloader, combined, tvec, freqs, attn_params)
 
             if self.blocks_to_swap:
                 self.offloader.submit_move_blocks_forward(self.blocks, index)

@@ -1,0 +1,3 @@
+# Stream Sync integration candidate
+
+Selective port from Advanced test/stream-sync, based on WIP 471539d. Includes checkpoint recompute and sparse backward ordering, ring and host memory lifecycle, replacement hook retirement, and fail-closed VRAM reclaim with regressions. Existing Faster Block Swap preference/defaults are preserved; no automatic calibration, profiles or experimental strategy preference. Ring sweep environment override is retained for diagnostics; normal default remains two slots. CPU CI does not validate actual CUDA transfers. Upstream PR #403 overlaps with this port; upstream #405 parked preview adapter memory fix remains a separate compatibility task.

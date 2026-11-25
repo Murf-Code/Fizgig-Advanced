@@ -184,11 +184,10 @@ class MOSSImageDiT(nn.Module):
         copy back, the CPU copy never changes) instead of the classic exchange. None keeps the mode the model was
         last given - the preview park and unpark re-enter here bare and must come back in the run's mode."""
         from fizgig.modules.offloading import ModelOffloader
-        if self.offloader is not None:
-            self.offloader.remove_hooks()       # stale backward hooks double-swap blocks ("mat2 is on cpu")
         n = len(self.layers)
         if not 0 < num_blocks <= n - 2:
             raise ValueError(f"block swap: 1..{n - 2} blocks, got {num_blocks}")
+        self._retire_block_swap()
         if send_only is None:
             send_only = getattr(self, "_send_only", False)
         self._send_only = bool(send_only)
@@ -196,9 +195,13 @@ class MOSSImageDiT(nn.Module):
         self.offloader = None
         if self._send_only:
             from fizgig.krea2.offloading import BlockSwapConfig, create_offloader
-            self.offloader = create_offloader("moss_image", list(self.layers), n, num_blocks, BlockSwapConfig(
-                torch.device(device), supports_backward=supports_backward, h2d_only=True))
+            config = BlockSwapConfig(torch.device(device), supports_backward=supports_backward, h2d_only=True)
+            self.offloader = create_offloader("moss_image", list(self.layers), n, num_blocks, config)
         if self.offloader is None or not hasattr(self.offloader, "copier"):     # classic, or send-only fell back
+            # The send-only factory may have constructed its own classic
+            # offloader (with hooks) before MOSS selects the shared variant.
+            if self.offloader is not None:
+                self.offloader.remove_hooks()
             self.offloader = ModelOffloader("moss_image", list(self.layers), n, num_blocks, supports_backward,
                                             torch.device(device))
 
@@ -216,10 +219,18 @@ class MOSSImageDiT(nn.Module):
         if self.blocks_to_swap:
             self.offloader.prepare_block_devices_before_forward(list(self.layers))
 
+    def _retire_block_swap(self):
+        off = self.offloader
+        if off is not None:
+            if hasattr(off, "retire"):
+                off.retire()
+            else:
+                off.set_forward_only(True)  # settle pending classic transfers before replacement
+                off.remove_hooks()
+            self.offloader = None
+
     def disable_block_swap(self):
-        if self.offloader is not None:
-            self.offloader.remove_hooks()
-        self.offloader = None
+        self._retire_block_swap()
         self.blocks_to_swap = 0
 
     def switch_block_swap_for_inference(self):
@@ -271,16 +282,18 @@ class MOSSImageDiT(nn.Module):
             x = torch.cat((video, text), 1)
             attn_probe.layout((0, video.shape[1]), video.shape[1], x.shape[1])
             m = mod[index:index + 1]
+            from fizgig.krea2.offloading import run_checkpointed_block
+            offloader = self.offloader if self.blocks_to_swap else None
             for i, layer in enumerate(self.layers):
-                if self.blocks_to_swap:
-                    self.offloader.wait_for_block(i)
                 if i not in skip:
                     if getattr(layer, "_handles_checkpointing", False):     # compiled: the wrapper checkpoints
-                        x = layer(x, rope, m)
+                        x = run_checkpointed_block(layer, i, offloader, x, rope, m)
                     elif torch.is_grad_enabled() and self.gradient_checkpointing:
-                        x = checkpoint(layer, x, rope, m, use_reentrant=False)
+                        x = checkpoint(run_checkpointed_block, layer, i, offloader, x, rope, m, use_reentrant=False)
                     else:
-                        x = layer(x, rope, m)
+                        x = run_checkpointed_block(layer, i, offloader, x, rope, m)
+                elif offloader is not None:
+                    offloader.wait_for_block(i)  # skipped blocks still advance residency
                 if self.blocks_to_swap:
                     self.offloader.submit_move_blocks_forward(layers, i)
             x = self.final_norm_video(x[:, :height * width].to(self.final_norm_video.weight.dtype))
@@ -325,15 +338,15 @@ class MOSSImageDiT(nn.Module):
         x = torch.cat((video, text), 1)
         attn_probe.layout((0, n), n, x.shape[1])
         layers = list(self.layers) if self.blocks_to_swap else None
+        from fizgig.krea2.offloading import run_checkpointed_block
+        offloader = self.offloader if self.blocks_to_swap else None
         for i, layer in enumerate(self.layers):
-            if self.blocks_to_swap:
-                self.offloader.wait_for_block(i)
             if getattr(layer, "_handles_checkpointing", False):
-                x = layer(x, rope, mod, key_mask)
+                x = run_checkpointed_block(layer, i, offloader, x, rope, mod, key_mask)
             elif torch.is_grad_enabled() and self.gradient_checkpointing:
-                x = checkpoint(layer, x, rope, mod, key_mask, use_reentrant=False)
+                x = checkpoint(run_checkpointed_block, layer, i, offloader, x, rope, mod, key_mask, use_reentrant=False)
             else:
-                x = layer(x, rope, mod, key_mask)
+                x = run_checkpointed_block(layer, i, offloader, x, rope, mod, key_mask)
             if self.blocks_to_swap:
                 self.offloader.submit_move_blocks_forward(layers, i)
         x = self.final_norm_video(x[:, :n].to(self.final_norm_video.weight.dtype))
