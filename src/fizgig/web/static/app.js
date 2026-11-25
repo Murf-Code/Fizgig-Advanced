@@ -86,7 +86,7 @@ async function boot() {
   S.pod = pr.pod;
   S.outputDefault = pr.output_default || "";
   S.outputPref = pr.lora_output_dir || "";
-  S.set = pr.settings || {}; S.setAbs = pr.abs || {}; S.sageAttentionOption = !!pr.sageattention_option;
+  S.set = pr.settings || {}; S.setAbs = pr.abs || {}; S.sageAttentionOption = !!pr.sageattention_option; SampleBlur.setEnabled(S.set.blur_nsfw_samples === "1");
   S.gpu = {chosen: pr.cuda_device || "", list: pr.gpus || [], envLocked: pr.gpu_env_locked};
   S.all = st.values || {};
   S.imageFolder = st.image_folder || "";
@@ -1494,7 +1494,7 @@ function renderPrefs() {
         if (e.target.dataset.sure !== "1") { e.target.dataset.sure = "1"; e.target.textContent = "Reset? Click again"; return; }
         await api("/api/prefs", {reset: true});
         const pr = await api("/api/prefs");
-        S.set = pr.settings || {}; S.setAbs = pr.abs || {}; S.sageAttentionOption = !!pr.sageattention_option;
+        S.set = pr.settings || {}; S.setAbs = pr.abs || {}; S.sageAttentionOption = !!pr.sageattention_option; SampleBlur.setEnabled(S.set.blur_nsfw_samples === "1");
         S.outputPref = pr.lora_output_dir || ""; S.outputDefault = pr.output_default;
         renderPrefs();
       }})),
@@ -3082,6 +3082,7 @@ function previewFigure(it, prompts, eager, byEpoch) {
 }
 // the family's line on how this preview was made (the run's record), shown over it in the lightbox
 function withMode(fig, it) {
+  SampleBlur.mark(fig.querySelector(":scope > img"), it.path, it.time);
   const L = S.galleryLabels;
   if (L && it.epoch != null && (!it.run || it.run === L.run)) fig._mode = L.labels[String(it.epoch)] || "";
   return fig;
@@ -4118,6 +4119,7 @@ function rvShow(i) {
   if (!F.length) return;
   S.rv.i = Math.max(0, Math.min(i, F.length - 1));
   const fr = F[S.rv.i];
+  SampleBlur.mark($("rvImg"), fr.path, fr.time);
   $("rvImg").src = rvSrc(fr.path);
   $("rvSlider").value = S.rv.i;
   $("rvEpoch").textContent = `Epoch ${fr.epoch}` + (typeof fr.sim === "number" ? `  ·  likeness ${Math.round(fr.sim * 100)}%` : "");
@@ -17993,6 +17995,7 @@ function lightboxShow(i) {
     $("lightboxCapText").value = pic.cap.ta.value;
     $("lightboxCapNote").textContent = "Changes save when you move to the next picture or close.";
   }
+  SampleBlur.mark($("lightboxImg"), pic.samplePath || "", pic.sampleTime);
   $("lightboxImg").src = pic.src;
   $("lightboxName").textContent = pic.name;
   $("lightboxMode").textContent = pic.mode || "";
@@ -18052,6 +18055,7 @@ function wireLightbox() {
       const label = cap ? [...cap.childNodes].map((n) => n.textContent).filter(Boolean).join(" · ") : "";
       const m = /_e(\d{6})_(\d{2})_/.exec((fig && fig.title) || "");     // a preview: its epoch and prompt number
       return {src: fullPicture(i.currentSrc || i.src), name: label || i.alt, cap: fig && fig._cap,
+              samplePath: i.dataset.sampleBlurPath || "", sampleTime: i.dataset.sampleBlurTime || "",
               mode: (fig && fig._mode) || "", ep: m ? Number(m[1]) : null, idx: m ? Number(m[2]) : null};
     });
     lightboxShow(imgs.indexOf(img));
@@ -18135,6 +18139,10 @@ function wire() {
   document.addEventListener("visibilitychange", catchUp);
   window.addEventListener("focus", catchUp);
   wireLightbox();
+  SampleBlur.wire(async enabled => {
+    await api("/api/prefs", {changes:{blur_nsfw_samples: enabled ? "1" : "0"}});
+    S.set.blur_nsfw_samples = enabled ? "1" : "0";
+  });
   wireStudio();
   wirePrep();
   $("presetSave").addEventListener("click", presetSaveOpen);

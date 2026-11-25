@@ -39,6 +39,12 @@
   </script>
   <link rel="stylesheet" href="/style.css" onerror="fizgigRetry(this)">
   <link rel="stylesheet" href="/caption_tagbench_theme.css" onerror="fizgigRetry(this)">
+<style>
+  img.sample-blur-pending { opacity: 0 !important; }
+  img.sample-blur-obscured { filter: blur(32px) !important; clip-path: inset(0); cursor: pointer !important; }
+  .sample-blur-label { display: block; font-size: .78rem; color: var(--text-muted, currentColor); padding: 3px 6px; text-align: center; }
+  .sample-blur-label[hidden] { display:none !important; }
+</style>
 </head>
 <body>
   <header class="window-titlebar">
@@ -977,6 +983,10 @@
             <div class="card-title">Previews so far</div>
             <div class="card-desc" id="galleryInfo">The newest first, from the current run's output folder.</div>
             <div class="field-hint tc-warn" id="galleryError"></div>
+            <div class="field-row" style="padding:0 16px 8px">
+              <label class="checkbox-label"><input type="checkbox" id="blurNsfwSamples" disabled> Blur NSFW samples</label>
+              <span class="field-hint" id="blurNsfwStatus" role="status">Local image detection · click a blurred sample to reveal it.</span>
+            </div>
             <div class="card-content">
               <div class="field-row gallery-controls" id="galleryControls" style="display:none">
                 <span class="field-label">Run:</span><select id="galleryRun" class="w-combo"></select>
@@ -2534,6 +2544,7 @@
   <script src="/caption_image_perf.js" onerror="fizgigRetry(this)"></script>
   <script src="/caption_thumb_rail.js" onerror="fizgigRetry(this)"></script>
   <script src="/caption_remove_bridge.js" onerror="fizgigRetry(this)"></script>
+  <script src="/sample_blur.js" onerror="fizgigRetry(this)"></script>
   <script src="/app.js" onerror="fizgigRetry(this)"></script>
   <script src="/push_notifications.js" onerror="fizgigRetry(this)"></script>
   <script src="/stream_prefs.js" onerror="fizgigRetry(this)"></script>

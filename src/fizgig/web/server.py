@@ -397,7 +397,7 @@ def _write_json(path, data):
 # the desktop's DEFAULT_PREFS that aren't empty: a web-only install starts where the desktop app would
 PREF_DEFAULTS = {"lora_output_dir": "output_loras", "profiles_dir": "user_data/profiles", "cache_dir": "user_data/cache",
                  "runpod_stop_when_done": "0", "inference_blocks_to_swap": "Auto (detect from GPU)",
-                 "inference_int8": "1", "inference_sageattention": "0", "lan_discovery": "1", "update_check": "1", **launch.RECLAIM_PREF_DEFAULTS}
+                 "inference_int8": "1", "inference_sageattention": "0", "lan_discovery": "1", "update_check": "1", "blur_nsfw_samples": "0", **launch.RECLAIM_PREF_DEFAULTS}
 
 
 LAST_USED_FILE = user_data.LAST_USED_FILE           # the training folder, each folder's trigger word
@@ -459,13 +459,13 @@ def set_folder_trigger(folder, word):
 
 # the Preferences settings Reset to defaults puts back (the model files are never reset)
 SETTING_PREFS = ("lora_output_dir", "profiles_dir", "cache_dir", "input_lora_dir", "input_ref_dir",
-                 "inference_blocks_to_swap", "inference_int8", "inference_sageattention", "lan_discovery", "update_check") + tuple(launch.RECLAIM_PREF_DEFAULTS)
+                 "inference_blocks_to_swap", "inference_int8", "inference_sageattention", "lan_discovery", "update_check", "blur_nsfw_samples") + tuple(launch.RECLAIM_PREF_DEFAULTS)
 
 
 def load_prefs() -> dict:
     p = {**PREF_DEFAULTS, **_read_json(PREFS_FILE)}
     # Normalize legacy bool strings so Preferences reflects the trainer's state (upstream f246dbe80).
-    for key in ("send_only_block_swap", "pin_block_swap"):
+    for key in ("send_only_block_swap", "pin_block_swap", "blur_nsfw_samples"):
         p[key] = "0" if str(p.get(key, "0")).strip().lower() in ("false", "0", "off", "no", "") else "1"
     return p
 
@@ -3731,7 +3731,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, page.encode("utf-8"), "text/html; charset=utf-8", extra=extra)
         if path == "/welcome.mp4":                  # the welcome popup's tour (it ships with Fizgig: no network)
             return self._stream(os.path.join(STATIC_DIR, "welcome_v8.mp4"), attachment=False)  # ranged: it seeks
-        if path in ("/app.js", "/stream_prefs.js", "/push_notifications.js", "/caption_studio_tags.js", "/caption_studio_viz.js",
+        if path in ("/app.js", "/sample_blur.js", "/stream_prefs.js", "/push_notifications.js", "/caption_studio_tags.js", "/caption_studio_viz.js",
                     "/caption_studio_learning.js",
                     "/caption_studio_selection.js", "/caption_studio_training_picks.js",
                     "/caption_theme.js", "/caption_image_perf.js", "/caption_thumb_rail.js", "/caption_remove_bridge.js", "/mask_stroke_worker.js",
@@ -4271,6 +4271,17 @@ class Handler(BaseHTTPRequestHandler):
             if not self._local_viewer():
                 return self.json({"unavailable": True})
             return self.json(native_pick.pick((qs.get("path") or [""])[0], (qs.get("dir") or ["1"])[0] == "1"))
+        if path == "/api/sample_safety":
+            from fizgig.web import sample_safety
+            p = (qs.get("path") or [""])[0]
+            # A display-only feature: never scan arbitrary dataset or caption paths.
+            if not load_prefs().get("blur_nsfw_samples") == "1":
+                return self.json({"state": "disabled"})
+            if (os.path.basename(os.path.dirname(os.path.abspath(p))).lower() != "sample"
+                    or not sample_info(os.path.basename(p))
+                    or os.path.splitext(p)[1].lower() not in _PIC or not os.path.isfile(p)):
+                return self.json({"state": "unknown", "reason": "Not a recognized generated image sample."})
+            return self.json(sample_safety.scan(p))
         if path == "/api/samples":
             return self._samples((qs.get("dir") or [""])[0], (qs.get("run") or [""])[0])
         if path == "/api/style":                    # the gallery's Style score (resumes the scorer when on)
@@ -5297,7 +5308,7 @@ class Handler(BaseHTTPRequestHandler):
                                                                   if k in SETTING_PREFS}}
                 if "inference_int8" in ch:
                     ch["inference_int8"] = "1" if ch["inference_int8"] in (True, "1", 1) else "0"
-                for k in ("lan_discovery", "update_check", "qt_disable_gpu", "inference_sageattention"):
+                for k in ("lan_discovery", "update_check", "qt_disable_gpu", "inference_sageattention", "blur_nsfw_samples"):
                     if k in ch:
                         ch[k] = "1" if ch[k] in (True, "1", 1) else "0"
                 ch = launch.clean_reclaim_prefs(ch)     # Training memory: "1"/"0", numbers above 0, blank = default

@@ -38,6 +38,10 @@ jobs:
           python -m pytest checks/test_krea2_calibration_lifecycle.py -k "auto_target_budget_is_four_percent or fresh_calibration_reads_family_options" -q
       - name: Stream synchronization, checkpoint and VRAM reclaim regressions
         run: python -m pytest checks/test_send_only_swap.py checks/test_vram_reclaim.py checks/test_parked_adapters_advanced.py checks/test_pin_swap_advanced.py -q
+      - name: Sample-only NSFW display regression
+        run: |
+          python -m pytest checks/test_sample_safety.py -q
+          node --check src/fizgig/web/static/sample_blur.js
       - name: Mask weights in Global Replay and H3 reference distillation
         run: |
           python -m pytest checks/test_krea2_global_replay.py -k "masked_global_replay" -q
