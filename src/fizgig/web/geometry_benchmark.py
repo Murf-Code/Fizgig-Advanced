@@ -25,7 +25,7 @@ CASES = (
 def settings(group, output_root):
     common = {
         "FAMILY_KIND": "standard", "NETWORK_TYPE": "LoRA (standard)",
-        "NETWORK_DIM": "64", "NETWORK_ALPHA": "64",
+        "NETWORK_DIM": "32", "NETWORK_ALPHA": "32",
         "GRADIENT_ACCUMULATION": "1", "BATCH_SIZE": "1",
         "MAX_TRAIN_EPOCHS": str(EPOCHS), "SAVE_EVERY_N_EPOCHS": "1",
         "SEED": "42", "FAMILY_PRECISION": "INT8 (8-bit, fastest)", "BLOCKS_SWAP": "22",

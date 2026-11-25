@@ -11,7 +11,7 @@ def test_fixed_pilot(tmp_path):
     assert len({v["LORA_OUTPUT_DIR"] for v in configs})==5
     assert {v["OPTIMIZER_TYPE"] for v in configs}=={"adamw8bit","muon","polora","lora_tsd"}
     for v in configs:
-        assert v["NETWORK_DIM"]==v["NETWORK_ALPHA"]=="64"
+        assert v["NETWORK_DIM"]==v["NETWORK_ALPHA"]=="32"
         assert v["MAX_TRAIN_EPOCHS"]=="5"
         assert v["FAMILY_EMA"]=="Off" and v["KREA2_TRAINING_METHOD"]=="Standard"
         assert v["VALIDATION_HOLDOUT"] and v["SAMPLE_AT_FIRST"]
