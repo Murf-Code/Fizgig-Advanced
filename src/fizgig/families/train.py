@@ -3382,7 +3382,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         except vram_reclaim.ReclaimRestoreError:
             # The run may contain CPU tensors that could not be restored. Do
             # not attempt another optimizer step on partially restored state.
-            logger.exception("[vram] Reclaim could not restore training state; stopping safely")
+            say(logger, "[vram] Reclaim could not restore training state; stopping safely")
+            logger.exception("VRAM reclaim restoration failed")
             raise
         except Exception as _e:              # staging failed, but all moved tensors were restored
             say(logger, f"[vram] Reclaim failed ({_e}); training goes on as it was.", logging.WARNING)
