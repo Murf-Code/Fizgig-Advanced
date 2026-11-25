@@ -6697,8 +6697,11 @@ async function maskInfo() {
     $("maskSamDrawn").checked = !!sv.maskSamDrawn;
     if (sv.maskSamInclude != null) $("maskSamInclude").value = sv.maskSamInclude;
     if (sv.maskSamExclude != null) $("maskSamExclude").value = sv.maskSamExclude;
+    $("maskRmbg").checked = !!sv.maskRmbg && !sv.maskSam;
     $("maskMethod").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
-      $("maskSam").checked = b.dataset.sam === "1"; maskSamSave(); maskShow(S.prep.maskOpts || r); }));
+      $("maskSam").checked = b.dataset.sam === "1"; $("maskRmbg").checked = b.dataset.sam === "2";
+      maskSamSave(); maskShow(S.prep.maskOpts || r); }));
+    maskRmbgInit(r, sv);
     const who = (r.who || {})[sv.maskWho] ? sv.maskWho : "photo";
     for (const [k, label] of Object.entries(r.who || {photo: "Real people (photos)"}))
       $("maskWho").append(el("button", {class: "btn" + (k === who ? " active" : ""), "data-who": k, text: label,
@@ -6762,16 +6765,26 @@ function maskSamShow(r) {
   $("maskSamBox").style.display = on && !wm ? "" : "none";
   $("maskSamWordsRow").style.display = on ? "" : "none";
   $("maskSamWords").checked = on && !wm;
-  $("maskKinds").style.display = on ? "none" : "";
-  $("maskWhoBox").style.display = on || wm ? "none" : "";
-  $("maskMethod").querySelectorAll("button").forEach((b) => b.classList.toggle("active", (b.dataset.sam === "1") === on));
+  const rb = $("maskRmbg").checked;
+  $("maskKinds").style.display = on || rb ? "none" : "";
+  $("maskWhoBox").style.display = on || wm || rb ? "none" : "";
+  $("maskMethod").querySelectorAll("button").forEach((b) => b.classList.toggle("active",
+    b.dataset.sam === (rb ? "2" : on ? "1" : "0")));
   const who = maskWho();
-  $("maskMethodHint").textContent = on ? "Meta's Segment Anything: type what to mask (\"person\", \"hair\", " +
+  $("maskMethodHint").textContent = rb ? "Bria's RMBG-3.0: a Fibo 2.0 edit that paints a soft alpha matte, the " +
+    "best at fur, hair and whiskers. No typing; it masks the whole subject. An 8B model: about 17 GB of downloads " +
+    "with the FP8 file, an NVIDIA card, and several seconds a picture. Its weights are for non-commercial use " +
+    "(CC BY-NC 4.0)." + (wm ? " Just hide the watermarks uses only the watermark detectors, either way." : "") :
+    on ? "Meta's Segment Anything: type what to mask (\"person\", \"hair\", " +
     "\"the dog\") and it finds it, with sharper edges. A 1.75 GB download, once; it runs on the GPU." :
     "Finds the person or character for you, no typing: pick who's in your pictures, then what the masks show. " +
     "Small and quick, on the CPU." + (wm ? " Just hide the watermarks uses only the watermark detectors, either way." : "");
   $("maskWhoHint").textContent = MASK_WHO_HINTS[who] || "";
   $("maskRunHint").textContent = wm ? "It runs the watermark detectors on the CPU, a fraction of a second a picture." :
+    rb ? ($("maskRmbgRefinish").checked ? "It remakes the masks from the saved mattes on the CPU, no model." :
+      "It runs on the GPU: the text encoder reads every picture first, then RMBG-3.0 paints the mattes, several " +
+      "seconds a picture (INT8 with some blocks streamed from RAM on a 12 GB card; loading it needs about 20 GB " +
+      "of free RAM). Make masks when nothing is training.") :
     on ? "It runs on the GPU, a fraction of a second a picture once loaded (several " +
     "seconds a picture without a GPU). Make masks when nothing is training." :
     who === "drawn" ? "It runs on the CPU, about half a second a picture." :
@@ -6797,12 +6810,13 @@ function maskSamShow(r) {
         " Needed once, before the first masks."}));
   }
   maskCharShow(r);
-  $("maskSamPreview").disabled = !!maskBlocked(r) || S.prep.running;
+  maskRmbgShow(r);
+  $("maskSamPreview").disabled = !!maskBlocked(r) || S.prep.running || (rb && $("maskRmbgRefinish").checked);
 }
 // the character finder's file (drawn and furry pictures): downloaded from here, like SAM 3.1
 function maskCharShow(r) {
   const ch = r.chars || {}, f = ch.fetch || {}, st = $("maskCharState");
-  const want = !$("maskSam").checked && !$("maskWmOnly").checked && maskWho() !== "photo";
+  const want = !$("maskSam").checked && !$("maskRmbg").checked && !$("maskWmOnly").checked && maskWho() !== "photo";
   st.style.display = want ? "" : "none";
   if (!want) return;
   if (f.state === "running") {
@@ -6820,10 +6834,118 @@ function maskCharShow(r) {
         " Needed once, before the first masks."}));
   }
 }
+// RMBG-3.0 on the masks card (dataset/rmbgmask.py): its model file, the edge settings, the download of what's missing
+function maskRmbgInit(r, sv) {
+  const rm = r.rmbg || {}, sel = $("maskRmbgVariant");
+  for (const [k, v] of Object.entries(rm.variants || {})) sel.append(el("option", {value: k, text: v.label}));
+  sel.value = (rm.variants || {})[sv.maskRmbgVariant] ? sv.maskRmbgVariant : (rm.default || "fp8");
+  const kind = sv.maskRmbgKind === "background" ? "background" : "subject";
+  document.querySelectorAll('input[name="maskRmbgKind"]').forEach((i) => { i.checked = i.value === kind; });
+  const edge = sv.maskRmbgEdge === "hard" ? "hard" : "soft";
+  $("maskRmbgEdge").querySelectorAll("button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.edge === edge);
+    b.addEventListener("click", () => {
+      $("maskRmbgEdge").querySelectorAll("button").forEach((x) => x.classList.toggle("active", x === b));
+      maskRmbgSave(); maskShow(S.prep.maskOpts || r); });
+  });
+  if (sv.maskRmbgThreshold != null) $("maskRmbgThresh").value = sv.maskRmbgThreshold;
+  if (sv.maskRmbgGrow != null) $("maskRmbgGrow").value = sv.maskRmbgGrow;
+  if (sv.maskRmbgFeather != null) $("maskRmbgFeather").value = sv.maskRmbgFeather;
+  if (sv.maskRmbgMp != null) $("maskRmbgMp").value = String(sv.maskRmbgMp);
+  const vals = () => {
+    $("maskRmbgThreshVal").textContent = Number($("maskRmbgThresh").value).toFixed(2);
+    $("maskRmbgGrowVal").textContent = $("maskRmbgGrow").value + " px";
+    $("maskRmbgFeatherVal").textContent = $("maskRmbgFeather").value + " px";
+  };
+  vals();
+  for (const id of ["maskRmbgThresh", "maskRmbgGrow", "maskRmbgFeather"]) {
+    $(id).addEventListener("input", vals);
+    $(id).addEventListener("change", maskRmbgSave);
+  }
+  for (const id of ["maskRmbgVariant", "maskRmbgMp", "maskRmbgRefinish"])
+    $(id).addEventListener("change", () => { maskRmbgSave(); maskShow(S.prep.maskOpts || r); });
+  document.querySelectorAll('input[name="maskRmbgKind"]').forEach((i) => i.addEventListener("change", () => {
+    $("maskWmOnly").checked = false;                  // back from Just hide the watermarks
+    S.prepSaved = {...(S.prepSaved || {}), maskWmOnly: false};
+    if (!document.querySelector('input[name="maskKind"]:checked')) {     // and the quick finder's choice with it
+      const k = document.querySelector(`input[name="maskKind"][value="${S.prepSaved.maskKind || "person"}"]`);
+      if (k) k.checked = true;
+    }
+    maskRmbgSave(); maskShow(S.prep.maskOpts || r); }));
+}
+function maskRmbgEdge() {
+  const b = $("maskRmbgEdge").querySelector("button.active");
+  return b ? b.dataset.edge : "soft";
+}
+function maskRmbgOpts() {
+  const hard = maskRmbgEdge() === "hard";
+  return {variant: $("maskRmbgVariant").value || "fp8",
+    kind: (document.querySelector('input[name="maskRmbgKind"]:checked') || {}).value || "subject",
+    threshold: hard ? Number($("maskRmbgThresh").value) : null, grow: Number($("maskRmbgGrow").value),
+    feather: Number($("maskRmbgFeather").value), megapixels: Number($("maskRmbgMp").value) || 1};
+}
+// /api/masks/make's names for them (its "kind" is the quick finder's)
+function maskRmbgRunOpts() {
+  if (!$("maskRmbg").checked) return {};
+  const o = maskRmbgOpts();
+  return {variant: o.variant, rmbg_kind: o.kind, threshold: o.threshold, grow: o.grow, feather: o.feather,
+    megapixels: o.megapixels, refinish: $("maskRmbgRefinish").checked};
+}
+function maskRmbgSave() {
+  const o = maskRmbgOpts();
+  S.prepSaved = {...(S.prepSaved || {}), maskRmbg: $("maskRmbg").checked, maskRmbgVariant: o.variant,
+    maskRmbgKind: o.kind, maskRmbgEdge: maskRmbgEdge(), maskRmbgThreshold: Number($("maskRmbgThresh").value),
+    maskRmbgGrow: o.grow, maskRmbgFeather: o.feather, maskRmbgMp: o.megapixels};
+  api("/api/state", {prep: S.prepSaved}).catch(() => {});
+}
+function maskRmbgBlocked(r) {
+  if ($("maskRmbgRefinish").checked) return "";
+  const rm = r.rmbg || {}, v = (rm.variants || {})[$("maskRmbgVariant").value] || {};
+  if (!rm.gpu) return "RMBG-3.0 needs an NVIDIA card.";
+  if ((v.missing || []).length) return "Download RMBG-3.0 first.";
+  return "";
+}
+function maskRmbgShow(r) {
+  const rb = $("maskRmbg").checked, wm = $("maskWmOnly").checked, rm = r.rmbg || {}, f = rm.fetch || {};
+  $("maskRmbgModelBox").style.display = rb && !wm ? "" : "none";
+  $("maskRmbgBox").style.display = rb ? "" : "none";
+  $("maskRmbgEdges").style.display = wm ? "none" : "";
+  if (!rb) return;
+  const kinds = [...document.querySelectorAll('input[name="maskRmbgKind"]')];
+  if (wm) kinds.forEach((i) => { i.checked = false; });
+  else if (!kinds.some((i) => i.checked))
+    kinds.forEach((i) => { i.checked = i.value === ((S.prepSaved || {}).maskRmbgKind || "subject"); });
+  const hard = maskRmbgEdge() === "hard";
+  $("maskRmbgThreshRow").style.display = hard ? "" : "none";
+  $("maskRmbgEdgeHint").textContent = hard ? "Everything the matte has at or above the threshold is learned in " +
+    "full, the rest not at all. Lower keeps more of the fur's see-through tips." :
+    "The matte as RMBG-3.0 paints it: the see-through fur and hair at its edge are learned partly (Masked " +
+    "training reads grey as part weight).";
+  const st = $("maskRmbgState"), v = (rm.variants || {})[$("maskRmbgVariant").value] || {};
+  const left = v.missing || [], gb = left.reduce((a, m) => a + m[1], 0);
+  if (f.state === "running") {
+    st.replaceChildren(`Downloading RMBG-3.0's files: ${f.gb} of ${f.of} GB …`);
+    clearTimeout(S.prep.rmbgTimer);
+    S.prep.rmbgTimer = setTimeout(maskInfo, 2000);
+  } else if (!left.length) {
+    st.replaceChildren(rm.gpu ? "RMBG-3.0, its text encoder and autoencoder are downloaded." :
+      "Downloaded, but there's no NVIDIA card here to run it. The Quick finder's Drawn or furry characters runs on " +
+      "the CPU.");
+  } else {
+    st.replaceChildren(el("button", {class: "btn btn-primary",
+      text: f.state === "failed" ? "Try the download again" : `Download RMBG-3.0 (${gb.toFixed(1)} GB)`,
+      onclick: async () => {
+        await api("/api/masks/rmbg_fetch", {variant: $("maskRmbgVariant").value}).catch((e) => { st.textContent = e.message; });
+        maskInfo(); }}), el("span", {class: "field-hint", text: f.state === "failed" ? downloadFailedText(f.error) :
+        " Needed once: " + left.map((m) => `${m[0]} (${m[1]} GB)`).join(", ") + "." +
+        (v.gated ? " Bria's repo is gated: accept its form on Hugging Face and log in first." : "")}));
+  }
+}
 // why Make masks / Preview can't go yet ("" when they can)
 function maskBlocked(r) {
   if (!r.pictures) return "No pictures in the training folder.";
   if ($("maskWmOnly").checked) return "";
+  if ($("maskRmbg").checked) return maskRmbgBlocked(r);
   if ($("maskSam").checked) return (r.sam || {}).path ? "" : "Download SAM 3.1 first.";
   const who = maskWho(), kind = (document.querySelector('input[name="maskKind"]:checked') || {}).value || "person";
   if (who !== "drawn" && !r.available) return "Needs the ai-edge-litert package (run update_fizgig).";
@@ -6832,15 +6954,17 @@ function maskBlocked(r) {
   return "";
 }
 async function maskSamPreview() {
-  const wm = $("maskWmOnly").checked, sam = $("maskSam").checked && !wm;
-  $("maskSamPrevState").textContent = wm ? "Finding watermarks …" : sam ? "Finding them (the first time loads SAM 3.1, a few seconds) …" :
+  const wm = $("maskWmOnly").checked, sam = $("maskSam").checked && !wm, rb = $("maskRmbg").checked && !wm;
+  $("maskSamPrevState").textContent = wm ? "Finding watermarks …" : rb ? "Making two mattes (it loads the text " +
+    "encoder, then RMBG-3.0: a minute or two) …" : sam ? "Finding them (the first time loads SAM 3.1, a few seconds) …" :
     "Finding them …";
   $("maskSamPreview").disabled = true;
   try {
     // two pictures not shown yet in this folder, until every one has been: then a fresh round
     if (S.prep.samShownFor !== S.imageFolder) { S.prep.samShown = []; S.prep.samShownFor = S.imageFolder; }
     const kind = (document.querySelector('input[name="maskKind"]:checked') || {}).value || "person";
-    const r = sam ? await api("/api/masks/sam_preview", {folder: S.imageFolder, include: $("maskSamInclude").value,
+    const r = rb ? await api("/api/masks/rmbg_preview", {folder: S.imageFolder, shown: S.prep.samShown,
+      ...maskRmbgOpts()}) : sam ? await api("/api/masks/sam_preview", {folder: S.imageFolder, include: $("maskSamInclude").value,
       exclude: $("maskSamExclude").value, drawn: $("maskSamDrawn").checked, shown: S.prep.samShown}) :
       await api("/api/masks/quick_preview", {folder: S.imageFolder, kind, who: maskWho(), shown: S.prep.samShown,
         wm_only: wm, overwrite: $("maskReplace").checked, wm_trace: wmTrace(), wm_score: Number($("maskWmScore").value)});
@@ -6866,7 +6990,8 @@ function maskShotCaption(p, wm) {
 function wmTrace() { return $("maskWmTrace").checked && !$("maskWmTrace").disabled; }
 function maskSamSave() {
   S.prepSaved = {...(S.prepSaved || {}), maskSam: $("maskSam").checked, maskSamInclude: $("maskSamInclude").value,
-    maskSamExclude: $("maskSamExclude").value, maskSamDrawn: $("maskSamDrawn").checked, maskWho: maskWho()};
+    maskSamExclude: $("maskSamExclude").value, maskSamDrawn: $("maskSamDrawn").checked, maskWho: maskWho(),
+    maskRmbg: $("maskRmbg").checked};
   api("/api/state", {prep: S.prepSaved}).catch(() => {});
 }
 // the kinds follow Who's in your pictures: a character's names and hints, the clothes ones off for drawn pictures
@@ -6894,11 +7019,11 @@ function maskShow(r) {
   if (wm) document.querySelectorAll('input[name="maskKind"]').forEach((i) => { i.checked = false; });
   const kind = (document.querySelector('input[name="maskKind"]:checked') || {}).value || "person";
   maskSamShow(r);
-  const sam = $("maskSam").checked, who = maskWho();
-  $("maskInfo").textContent = !r.available && !sam && !wm && who !== "drawn" ? "Making masks needs an update: run update_fizgig to add its one new " +
+  const sam = $("maskSam").checked, who = maskWho(), rb = $("maskRmbg").checked;
+  $("maskInfo").textContent = !r.available && !sam && !rb && !wm && who !== "drawn" ? "Making masks needs an update: run update_fizgig to add its one new " +
     "package (ai-edge-litert)." : r.pictures ? `${r.with_mask} of ${r.pictures} pictures have a mask.` : "";
   const subj = $("maskSubject");
-  subj.disabled = wm || !r.baselines || !r.faces || (!sam && (kind === "not_faces" || kind === "background"));
+  subj.disabled = wm || rb || !r.baselines || !r.faces || (!sam && (kind === "not_faces" || kind === "background"));
   if (subj.disabled) subj.checked = false;
   const chars = (sam ? $("maskSamDrawn").checked : who !== "photo") ? " For characters, also set the face finder and " +
     "look match to Anime/furry/drawn (under 1 · What to do, Anime/furry/drawn characters)." : "";
@@ -6919,7 +7044,8 @@ function maskShow(r) {
     "so only the letters or logo are blacked out, not the whole box. Off, or where SAM finds nothing: the whole box. " +
     "Fast on a GPU, a few seconds a picture on the CPU." :
     "Needs SAM 3.1: choose SAM 3.1 under 1 and press Download. Until then the whole box is blacked out.";
-  $("maskSubjectHint").textContent = wm ? "Not for Just hide the watermarks: nobody is looked for." : (sam ? (!r.faces ? "Needs face detection, which isn't installed here (run install_fizgig.py)." :
+  $("maskSubjectHint").textContent = wm ? "Not for Just hide the watermarks: nobody is looked for." :
+    rb ? "Not for RMBG-3.0: it masks every subject in the picture. Paint out anyone else in the mask editor." : (sam ? (!r.faces ? "Needs face detection, which isn't installed here (run install_fizgig.py)." :
     r.baselines ? "Finds your subject by their face, with the Look Filter's 3 baselines, and keeps only what's on them." :
     "Needs the Look Filter's 3 baselines: choose them and scan the folder (the last card on this tab), then come back.") :
     kind === "not_faces" ? "Not for Everything but the faces: every face is left out." :
@@ -6956,7 +7082,7 @@ async function maskRun() {
       sam: $("maskSam").checked, include: $("maskSamInclude").value, exclude: $("maskSamExclude").value,
       drawn: $("maskSamDrawn").checked, who: maskWho(), overwrite: $("maskReplace").checked,
       watermarks: $("maskWatermarks").checked, wm_only: $("maskWmOnly").checked, wm_trace: wmTrace(),
-      wm_score: Number($("maskWmScore").value)});
+      wm_score: Number($("maskWmScore").value), rmbg: $("maskRmbg").checked, ...maskRmbgRunOpts()});
     S.prep.masking = true;
     $("maskLog").textContent = ""; $("maskLog").style.display = "";
     $("prepLog").textContent = ""; S.prep.logSize = 0;

@@ -64,6 +64,21 @@ SAM 3.1 is Meta's Segment Anything model. It finds whatever you name, with sharp
 
 It runs on the GPU, a fraction of a second a picture once it has loaded; on a computer without one it takes several seconds a picture. Make masks when nothing is training. **Only my subject** works with it too.
 
+### …make soft masks that keep every bit of fur (RMBG-3.0)?
+
+Choose **RMBG-3.0: soft mattes** on the masks card. It's Bria's RMBG-3.0 background remover, run on Fizgig's own Fibo 2.0 code: the picture goes in as an edit, and in 4 steps the model paints an alpha matte, white for the subject, black for the background and grey where fur, hair or whiskers are partly see-through. It keeps the tufts and tips that the character finder and RMBG-2.0 shave off. There's nothing to type; it masks every subject in the picture.
+
+- **Model file**: **FP8 (7.6 GB)**, 1038lab's single file, is the one for RTX 30, 40 and 50 cards. **BF16 (15.1 GB)** is the full-precision file. **Bria's own repo** is gated: accept its form on Hugging Face and log in first. 1038lab's NVFP4 file can't be read by Fizgig. Press **Download RMBG-3.0** once. It also fetches Fibo 2.0's text encoder (8.9 GB) and autoencoder (0.3 GB), the same files the Fibo 2.0 family uses, so if you've set Fibo 2.0 up already they're skipped.
+- **What the masks show**: **The subject** (a character LoRA) or **Just the background** (a place or scene LoRA).
+- **Edges**: **Soft** keeps the matte as it is. Masked training reads grey as part weight, so see-through fur is learned partly. **Black and white** learns everything at or above the **Threshold** in full and the rest not at all. Lower thresholds keep more of the fur tips.
+- **Grow** widens the white by that many pixels, so fur tips and whiskers stay inside. **Feather** adds a soft edge outside the white, never eating into it.
+- **Render size**: 1 MP is Fibo 2.0's own size. 0.5 MP is quicker and lighter; the matte is scaled back to the picture's size either way.
+- Every run keeps its raw mattes in the folder's `rmbg3_mattes` sub-folder. Tick **Only remake the masks from the mattes already made** and press **Make masks** to try other edge settings in seconds, on the CPU, with no model loaded.
+
+It needs an NVIDIA card. On a 12 GB card the transformer runs in INT8 with a few blocks streamed from RAM, after the text encoder has read every picture (so the two never share the card). Loading the FP8 file decodes it to bf16 in RAM first, so it needs about 20 GB of free RAM. Expect several seconds a picture once loaded, and a minute or two to load. **Preview on 2 random pictures** loads it all too. From the command line, `python src/fizgig/scripts/rmbg3_masks.py <folder>` does the same (`--help` lists the settings; `--fallback` uses the character finder where RMBG-3.0 can't run).
+
+RMBG-3.0's weights are licensed CC BY-NC 4.0 (Bria's non-commercial terms). Masks made with them, and LoRAs trained with those masks, are for non-commercial use unless you have a licence from Bria.
+
 ### …keep only my subject when there are other people in the picture?
 
 Tick **Only my subject, when there are several people**. Fizgig finds your subject by their face, using the Look Filter's 3 baselines (the last card on the Image Prep tab: choose them and scan the folder first). The other people count as background.

@@ -258,6 +258,9 @@ class Fibo2Driver(FamilyDriver):
         for leaf, parts, rows, keep in _FUSED_SPLITS:
             if k.endswith(leaf):
                 b = k[: -len(leaf)]
+                if t.shape[0] != sum(rows) and t.shape[0] % len(rows) == 0:
+                    # an unpadded repack (1038lab's RMBG-3.0 single files: w13 is 2 x 9536, w2 9536 wide): equal parts
+                    rows = (t.shape[0] // len(rows),) * len(rows)
                 return [(b + n, p[:keep].contiguous() if keep else p)
                         for n, p in zip(parts, _split_rows(t, rows))]
         for leaf, dim, keep in _FUSED_TRIMS:
@@ -311,11 +314,12 @@ class Fibo2Driver(FamilyDriver):
                 t = f.get_tensor(k)
                 base = k[: -len(".weight")] if k.endswith(".weight") else None
                 if base and base + ".comfy_quant" in keys:
-                    # ComfyUI's int8 ConvRot build (Comfy-Org/Fibo-2.0 fibo2_dev_int8_convrot): decoded to bf16 here,
-                    # as MOSS-Image's loader decodes it; the planner's INT8 then quantises it again its own way
-                    from fizgig.minimax.convrot import dequantize_int8_convrot, parse_comfy_quant
-                    t = dequantize_int8_convrot(t, f.get_tensor(base + ".weight_scale").float().reshape(-1, 1),
-                                                parse_comfy_quant(f.get_tensor(base + ".comfy_quant")))
+                    # ComfyUI's int8 ConvRot build (Comfy-Org/Fibo-2.0 fibo2_dev_int8_convrot) or an fp8 one with a
+                    # scale per tensor (1038lab's RMBG-3.0-fp8): decoded to bf16 here, as MOSS-Image's loader decodes
+                    # it; the planner's INT8 then quantises it again its own way
+                    from fizgig.minimax.convrot import dequantize_comfy, parse_comfy_quant
+                    t = dequantize_comfy(t, f.get_tensor(base + ".weight_scale").float().reshape(-1, 1),
+                                         parse_comfy_quant(f.get_tensor(base + ".comfy_quant")))
                 for name, part in self._unfuse(k, t):
                     if self._assign(model, name, part.to(tgt)):
                         filled.add(name)

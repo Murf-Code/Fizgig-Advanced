@@ -699,19 +699,28 @@ def _heads_for(kind):
 
 
 def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who="photo", watermarks=False,
-                wm_only=False, wm_trace=""):
+                wm_only=False, wm_trace="", rmbg=None):
     """Masks for every picture in the training folder (dataset/automask.py), as a prep run: the same log and state.
     sam: {"path", "include", "exclude", "drawn"} to make them with SAM 3.1 from words instead (dataset/sammask.py).
     who: the quick finder's "Who's in your pictures" (dataset/charmask.py WHO). watermarks: Mask watermarks - after the
     masks are made, the watermark detectors' finds are painted out of each picture's mask (dataset/detectors.py).
     wm_only: Just hide the watermarks - all white with the watermarks black, no finder or SAM loaded.
-    wm_trace: SAM 3.1's file, to trace each watermark's shape inside its box ("" = the full boxes)."""
+    wm_trace: SAM 3.1's file, to trace each watermark's shape inside its box ("" = the full boxes).
+    rmbg: {"variant", "kind", "threshold", "grow", "feather", "megapixels", "refinish"} to make soft masks with
+    RMBG-3.0 instead (dataset/rmbgmask.py); refinish remakes them from the saved mattes, no model."""
     from fizgig.dataset import automask, charmask
     from fizgig.user_data import MODELS_DIR
     if not folder or not os.path.isdir(folder):
         raise ValueError("Choose the training folder on the Start tab first.")
     if wm_only:
-        sam, subject_only, watermarks = None, False, False
+        sam, subject_only, watermarks, rmbg = None, False, False, None
+    elif rmbg is not None:
+        from fizgig.dataset import rmbgmask
+        rmbgmask.settings(rmbg.get("kind") or "subject", rmbg.get("threshold"), rmbg.get("grow"), rmbg.get("feather"))
+        why = "" if rmbg.get("refinish") else rmbgmask.why_not(MODELS_DIR, rmbg.get("variant") or "fp8")
+        if why:
+            raise ValueError(why)
+        sam, subject_only = None, False
     elif sam is not None:
         if not sam.get("path"):
             raise ValueError("SAM 3.1 isn't here yet: press Download on the masks card.")
@@ -738,7 +747,9 @@ def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who
 
     def work():
         try:
-            what = "just the watermarks hidden (everything else is learned)" if wm_only else (f"with SAM 3.1, {', '.join(sam['include'])}"
+            what = "just the watermarks hidden (everything else is learned)" if wm_only else \
+                ("with RMBG-3.0 (soft mattes" + (", remade from the saved mattes" if rmbg.get("refinish") else "")
+                 + ")") if rmbg is not None else (f"with SAM 3.1, {', '.join(sam['include'])}"
                     + (f" without {', '.join(sam['exclude'])}" if sam["exclude"] else "")
                     + (" (drawn or furry characters)" if sam.get("drawn") else "")) if sam is not None \
                 else (charmask.KIND_LABELS_DRAWN[kind] if who == "drawn" else automask.KINDS[kind]).lower() \
@@ -761,6 +772,16 @@ def start_masks(folder, kind, subject_only=False, overwrite=False, sam=None, who
                     raise ValueError("no watermark detector is installed or switched on (YOLO detectors section)")
                 c = detectors.watermarks_only_folder(folder, wm, overwrite=overwrite, log=_log,
                                                      tracer=_wm_tracer(wm_trace))
+            elif rmbg is not None:
+                from fizgig.dataset import rmbgmask
+                edges = {"kind": rmbg.get("kind") or "subject", "threshold": rmbg.get("threshold"),
+                         "grow": rmbg.get("grow") or 0, "feather": rmbg.get("feather") or 0}
+                if rmbg.get("refinish"):
+                    c = rmbgmask.refinish_folder(folder, overwrite=True, log=_log, **edges)
+                else:
+                    c = rmbgmask.make_folder(folder, MODELS_DIR, variant=rmbg.get("variant") or "fp8",
+                                             overwrite=overwrite, megapixels=float(rmbg.get("megapixels") or 1.0),
+                                             log=_log, **edges)
             elif sam is not None:
                 from fizgig.dataset import sammask
                 c = sammask.make_folder(folder, sam["include"], sam["exclude"], sam["path"], overwrite=overwrite,

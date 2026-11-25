@@ -506,8 +506,10 @@
                 <div class="field-hint" id="maskInfo"></div>
                 <div class="mask-step">1. How the masks are made</div>
                 <input type="checkbox" id="maskSam" hidden>
+                <input type="checkbox" id="maskRmbg" hidden>
                 <span class="seg" id="maskMethod"><button class="btn" data-sam="0">Quick finder</button><button
-                  class="btn" data-sam="1">SAM 3.1: from words</button></span>
+                  class="btn" data-sam="1">SAM 3.1: from words</button><button
+                  class="btn" data-sam="2">RMBG-3.0: soft mattes</button></span>
                 <div class="field-hint" id="maskMethodHint"></div>
                 <div id="maskWhoBox">
                   <div class="field-row"><span class="field-label">Who's in your pictures:</span>
@@ -516,7 +518,48 @@
                   <div class="mask-sam-state" id="maskCharState" style="display:none"></div>
                 </div>
                 <div class="mask-sam-state" id="maskSamState" style="display:none"></div>
+                <div id="maskRmbgModelBox" style="display:none">
+                  <div class="field-row"><span class="field-label">Model file:</span>
+                    <select id="maskRmbgVariant"></select></div>
+                  <div class="mask-sam-state" id="maskRmbgState"></div>
+                </div>
                 <div class="mask-step">2. What the masks show</div>
+                <div id="maskRmbgBox" style="display:none">
+                  <label class="radio-label"><input type="radio" name="maskRmbgKind" value="subject" checked>
+                    The subject (the character, fur and all)</label>
+                  <div class="field-hint radio-hint">For a character LoRA: the background counts far less.</div>
+                  <label class="radio-label"><input type="radio" name="maskRmbgKind" value="background">
+                    Just the background, not the subject</label>
+                  <div class="field-hint radio-hint">For a place or scene LoRA: the subject counts far less.</div>
+                  <div id="maskRmbgEdges">
+                  <div class="field-row"><span class="field-label">Edges:</span>
+                    <span class="seg" id="maskRmbgEdge"><button class="btn" data-edge="soft">Soft (as the matte
+                      is)</button><button class="btn" data-edge="hard">Black and white</button></span></div>
+                  <div class="field-hint radio-hint" id="maskRmbgEdgeHint"></div>
+                  <div class="field-row" id="maskRmbgThreshRow"><span class="field-label">Threshold:</span>
+                    <input type="range" id="maskRmbgThresh" min="0.05" max="0.95" step="0.05" value="0.5"
+                      style="width: 50%; max-width: 50%; flex: 0 1 auto; vertical-align: middle">
+                    <span id="maskRmbgThreshVal" style="margin-left: 8px">0.50</span></div>
+                  <div class="field-row"><span class="field-label">Grow:</span>
+                    <input type="range" id="maskRmbgGrow" min="0" max="24" step="1" value="0"
+                      style="width: 50%; max-width: 50%; flex: 0 1 auto; vertical-align: middle">
+                    <span id="maskRmbgGrowVal" style="margin-left: 8px">0 px</span></div>
+                  <div class="field-row"><span class="field-label">Feather:</span>
+                    <input type="range" id="maskRmbgFeather" min="0" max="16" step="1" value="0"
+                      style="width: 50%; max-width: 50%; flex: 0 1 auto; vertical-align: middle">
+                    <span id="maskRmbgFeatherVal" style="margin-left: 8px">0 px</span></div>
+                  <div class="field-hint radio-hint">Grow widens the white so fur tips and whiskers stay inside the
+                    mask; Feather adds a soft edge outside it, never eating in. Both in the picture's own pixels.</div>
+                  <div class="field-row"><span class="field-label">Render size:</span>
+                    <select id="maskRmbgMp"><option value="1">1 MP (Fibo 2.0's own)</option>
+                      <option value="0.5">0.5 MP (quicker, lighter)</option></select></div>
+                  <label class="checkbox-label"><input type="checkbox" id="maskRmbgRefinish">
+                    Only remake the masks from the mattes already made, with these edges</label>
+                  <div class="field-hint radio-hint">Every RMBG-3.0 run keeps its raw mattes in the folder's
+                    rmbg3_mattes sub-folder. Ticked, Make masks rebuilds the masks from those on the CPU in seconds,
+                    no model loaded (it replaces the masks of the pictures that have a matte).</div>
+                  </div>
+                </div>
                 <label class="radio-label" id="maskSamWordsRow" style="display:none"><input type="radio"
                   id="maskSamWords"> What I type below</label>
                 <div id="maskSamBox" style="display:none">

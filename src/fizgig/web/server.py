@@ -508,6 +508,13 @@ def _sam_info():
             "gb": sammask.SIZE_GB, "drawn_words": sammask.DRAWN_WORDS}
 
 
+def _rmbg_info():
+    """The masks card's RMBG-3.0 line: each variant's file ("" before the download), what is still to fetch, how a
+    download is going, and whether there's a GPU to run it on."""
+    from fizgig.dataset import rmbgmask
+    return rmbgmask.info(user_data.MODELS_DIR)
+
+
 def _char_info():
     """The masks card's character finder line: the downloaded file ("" before the download) and how a download is
     going."""
@@ -4082,7 +4089,8 @@ class Handler(BaseHTTPRequestHandler):
                               "baselines": bool(prep_jobs.look_baselines(folder)) if folder else False,
                               "faces": prep_jobs.faces_available(), "sam": _sam_info(), "tagger": _tagger_info(),
                               "taggers": _taggers_info(),
-                              "chars": _char_info(), "who": charmask.WHO, "drawn_kinds": charmask.KIND_LABELS_DRAWN})
+                              "chars": _char_info(), "who": charmask.WHO, "drawn_kinds": charmask.KIND_LABELS_DRAWN,
+                              "rmbg": _rmbg_info()})
         if path == "/api/prep/summary":            # the What will happen card
             from fizgig.dataset import prep as _prep
             g = lambda k, d="": (qs.get(k) or [d])[0]
@@ -5468,6 +5476,41 @@ class Handler(BaseHTTPRequestHandler):
                 from fizgig.dataset import charmask
                 charmask.download(user_data.MODELS_DIR)
                 return self.json({"ok": True, "chars": _char_info()})
+            if path == "/api/masks/rmbg_fetch":     # RMBG-3.0 + Fibo 2.0's text encoder and autoencoder (once)
+                from fizgig.dataset import rmbgmask
+                try:
+                    rmbgmask.download(user_data.MODELS_DIR, str(b.get("variant") or rmbgmask.VARIANT_DEFAULT))
+                except ValueError as e:
+                    return self.json({"error": str(e)}, 400)
+                return self.json({"ok": True, "rmbg": _rmbg_info()})
+            if path == "/api/masks/rmbg_preview":   # RMBG-3.0 on two random pictures, nothing written
+                from fizgig.dataset import rmbgmask
+                import base64
+                import io
+                folder = str(b.get("folder") or "")
+                if not folder or not os.path.isdir(folder):
+                    return self.json({"error": "Choose the training folder on the Start tab first."}, 400)
+                captions.unload()
+                try:
+                    shots, fresh = rmbgmask.preview(folder, user_data.MODELS_DIR,
+                                                    variant=str(b.get("variant") or rmbgmask.VARIANT_DEFAULT),
+                                                    shown=b.get("shown") or [], kind=str(b.get("kind") or "subject"),
+                                                    threshold=b.get("threshold"), grow=b.get("grow") or 0,
+                                                    feather=b.get("feather") or 0,
+                                                    megapixels=float(b.get("megapixels") or rmbgmask.MEGAPIXELS))
+                except ValueError as e:
+                    return self.json({"error": str(e)}, 400)
+                except Exception as e:
+                    logger.exception("RMBG-3.0 preview")
+                    return self.json({"error": f"RMBG-3.0 couldn't run: {type(e).__name__}: {e}"}, 400)
+                pics = []
+                for name, pic, cover, found_by, note in shots:
+                    buf = io.BytesIO()
+                    pic.save(buf, "JPEG", quality=88)
+                    pics.append({"name": name, "cover": round(cover, 3), "by": found_by, "note": note,
+                                 "src": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()})
+                from fizgig.dataset import sammask
+                return self.json({"ok": True, "pictures": pics, "fresh": fresh, "of": len(sammask.pictures(folder))})
             if path == "/api/masks/stop":          # Make masks' Stop (asked twice on the page)
                 return self.json(prep_jobs.stop_masks())
             if path in ("/api/masks/quick_preview", "/api/masks/make") and b.get("wm_score") is not None:
@@ -5641,9 +5684,16 @@ class Handler(BaseHTTPRequestHandler):
                             from fizgig.dataset import sammask
                             sam = {"path": _sam_info()["path"], "include": sammask.split_words(b.get("include")),
                                    "exclude": sammask.split_words(b.get("exclude")), "drawn": bool(b.get("drawn"))}
+                        rmbg = None
+                        if b.get("rmbg") and not b.get("wm_only"):
+                            rmbg = {"variant": str(b.get("variant") or "fp8"),
+                                    "kind": str(b.get("rmbg_kind") or "subject"), "threshold": b.get("threshold"),
+                                    "grow": b.get("grow") or 0, "feather": b.get("feather") or 0,
+                                    "megapixels": b.get("megapixels") or 1.0, "refinish": bool(b.get("refinish"))}
+                            sam = None
                         return self.json(prep_jobs.start_masks(folder, str(b.get("kind") or ""),
                                                                bool(b.get("subject_only")), bool(b.get("overwrite")),
-                                                               sam=sam, who=str(b.get("who") or "photo"),
+                                                               sam=sam, who=str(b.get("who") or "photo"), rmbg=rmbg,
                                                                watermarks=bool(b.get("watermarks")),
                                                                wm_only=bool(b.get("wm_only")),
                                                                wm_trace=_sam_info()["path"] if b.get("wm_trace") else ""))

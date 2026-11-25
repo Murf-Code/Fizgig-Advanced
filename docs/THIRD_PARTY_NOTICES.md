@@ -310,6 +310,17 @@ https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter
 
 ---
 
+## Bria RMBG-3.0 (soft mattes) — CC BY-NC 4.0, non-commercial
+
+Make masks' **RMBG-3.0: soft mattes** choice runs Bria AI's RMBG-3.0 (https://huggingface.co/briaai/RMBG-3.0), a Fibo 2.0
+fine-tune, through Fizgig's own Fibo 2.0 code (ported from diffusers, Apache-2.0). The weights are **not** shipped with
+Fizgig: they are downloaded from Hugging Face when you press **Download RMBG-3.0** on the masks card, either Bria's
+own repo (gated) or 1038lab's single-file repacks (https://huggingface.co/1038lab/RMBG-3.0). They are licensed
+**CC BY-NC 4.0** (non-commercial use only); commercial use needs a separate agreement with Bria. The fixed matting
+instruction is quoted from Bria's model card. Fibo 2.0's text encoder and autoencoder come from Comfy-Org/Fibo-2.0.
+
+---
+
 ## SkyTNT anime-seg (the character finder) — Apache License 2.0
 
 Make masks' **Drawn or furry characters** and **A mix** choices run SkyTNT's anime-seg model (`isnetis.onnx`,
