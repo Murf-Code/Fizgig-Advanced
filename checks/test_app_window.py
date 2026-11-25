@@ -20,6 +20,27 @@ def test_a_bad_position_already_saved_is_ignored_at_start():
                                                                                   "x": -1800, "y": 40}   # a left monitor
 
 
+def test_webview2_failing_to_start_is_noticed_at_once():
+    """#406: pywebview only logs WebView2 failing to start and leaves a blank window; the window listens on its log
+    and gives way to the browser at once, saying why (it waited ~50 s, then blamed drawing or security software)."""
+    import logging
+    from fizgig.web import app_window as aw
+    e = aw.EngineFailed()
+    log = logging.getLogger("pywebview")
+    log.addHandler(e.handler)
+    try:
+        log.warning("something else")
+        log.error("an unrelated error")
+        assert not e.event.is_set()
+        log.error("WebView2 initialization failed with exception:\n\n Couldn't find a compatible Webview2 Runtime "
+                  "installation to host WebViews. ---> System.IO.FileNotFoundException: The system cannot find the "
+                  "file specified.\n   at Microsoft.Web.WebView2.Core.CoreWebView2Environment.MoveNext()")
+        assert e.event.is_set()
+        assert e.why == "Couldn't find a compatible Webview2 Runtime installation to host WebViews."
+    finally:
+        log.removeHandler(e.handler)
+
+
 def test_downloads_open_in_the_folder_the_last_one_went_to(tmp_path, monkeypatch):
     from fizgig.web import app_window as aw
     monkeypatch.setattr(aw, "PREFS_FILE", str(tmp_path / "prefs.json"))
