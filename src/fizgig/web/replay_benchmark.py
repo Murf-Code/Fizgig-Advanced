@@ -9,12 +9,12 @@ DEFAULT_PREVIEW_PROMPTS = "\n".join((
 ))
 EPOCHS = 5
 CASES = (
-    ("balanced_random-lr450", "Global replay", True),
-    ("static_first_half-lr450", "Global replay", True),
-    ("rotational-lr450", "Global replay", True),
-    ("hybrid_coverage-lr450", "Global replay", True),
-    ("hybrid_coverage-lr350", "Global replay", True),
-    ("walking_coverage-lr450", "Global replay", True),
+    ("adaptive_descent", "Global replay", True),
+    ("adaptive_descent-lr450", "Global replay", True),
+    ("adaptive_inverse_descent-lr450", "Global replay", True),
+    ("adaptive_gradient-lr450", "Global replay", True),
+    ("adaptive_inverse_gradient-lr450", "Global replay", True),
+    ("adaptive_random-lr450", "Global replay", True),
 )
 
 def case_strategy(case):
@@ -53,8 +53,8 @@ def adjust_plan(desc, values, plan):
     case = values.get("__replay_compare")
     if not case:
         return plan
-    from fizgig.krea2.selective_policy import STRATEGIES
-    legacy = {"standard-matched", "selective", "replay", "standard"} | set(STRATEGIES)
+    from fizgig.krea2.selective_policy import STRATEGIES, ADAPTIVE_STRATEGIES
+    legacy = {"standard-matched", "selective", "replay", "standard"} | set(STRATEGIES + ADAPTIVE_STRATEGIES)
     if desc.key != "krea2" or case_strategy(case) not in legacy:
         raise ValueError("Invalid Krea 2 replay comparison case.")
     if plan.problems:
@@ -64,9 +64,10 @@ def adjust_plan(desc, values, plan):
         plan.problems.append("Replay comparison needs exactly one normal Training stage.")
         return plan
     strategy = case_strategy(case)
-    if strategy in STRATEGIES:
-        stages[0].cmd.extend(["--family_option", f"selective_strategy={strategy}",
-                              "--family_option", "selective_budget=14"])
+    if strategy in STRATEGIES + ADAPTIVE_STRATEGIES:
+        stages[0].cmd.extend(["--family_option", f"selective_strategy={strategy}"])
+        if strategy in STRATEGIES:
+            stages[0].cmd.extend(["--family_option", "selective_budget=14"])
     if case == "standard-matched":
         cmd = stages[0].cmd
         if "--train_blocks" in cmd:

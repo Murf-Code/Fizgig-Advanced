@@ -232,7 +232,8 @@ class Krea2Driver(FamilyDriver):
         """The generic trainer must call backward_training_loss after applying its per-image scale."""
         return self.global_replay
 
-    def configure_selective_global_replay(self, dit, net, *, warmup_updates=8, reactivate_every=8, score_decay=0.5):
+    def configure_selective_global_replay(self, dit, net, *, warmup_updates=8, reactivate_every=8, score_decay=0.5,
+                                          matched_report=None):
         """Track the direction of each block's actual optimizer update and selectively compute adapter gradients.
 
         All blocks participate in the initial probe window. At each later probe update, all blocks are briefly
@@ -271,19 +272,22 @@ class Krea2Driver(FamilyDriver):
         self._selective_warmup_updates = max(1, int(warmup_updates))
         self._selective_reactivate_every = max(1, int(reactivate_every))
         self._selective_score_decay = min(0.99, max(0.0, float(score_decay)))
-        from fizgig.krea2.selective_policy import STRATEGIES
+        from fizgig.krea2.selective_policy import STRATEGIES, ADAPTIVE_STRATEGIES, load_matched_counts
         self._selective_strategy = str(self.options.get("selective_strategy") or "legacy")
         self._selective_budget = int(self.options.get("selective_budget") or max(1, n // 2))
-        if self._selective_strategy != "legacy" and (self._selective_strategy not in STRATEGIES
+        if self._selective_strategy != "legacy" and (self._selective_strategy not in STRATEGIES + ADAPTIVE_STRATEGIES
                                                      or not 1 <= self._selective_budget <= n):
             raise ValueError("Invalid selective replay strategy or budget.")
+        self._selective_matched_counts = (load_matched_counts(matched_report, n, self._selective_warmup_updates,
+                                                              self._selective_reactivate_every)
+                                         if self._selective_strategy == "adaptive_random" else None)
         self._selective_optimizer_steps = 0
         self._selective_update_counts = [0] * n
         self._selective_scores = [None] * n
         self._selective_active = set(range(n))
         # each block's weights at its last probe (CPU), the start of the displacement the next probe scores
         self._selective_anchor = ({i: self._selective_flat(by_block[i]) for i in range(n)}
-                                  if self._selective_strategy in ("legacy", "downhill", "uphill") else {})
+                                  if self._selective_strategy in ("legacy", "downhill", "uphill", "adaptive_descent", "adaptive_inverse_descent") else {})
         self._set_selective_active_parameters()
 
     @staticmethod
@@ -315,9 +319,10 @@ class Krea2Driver(FamilyDriver):
         if not self.selective_probe_due:
             return None
         strategy = self._selective_strategy
-        if strategy in ("random", "rotational", "static_early", "balanced_random", "static_first_half"):
+        if strategy in ("random", "rotational", "static_early", "balanced_random", "static_first_half", "adaptive_random"):
             return {"cosines": {}}
-        if strategy in ("high_gradient", "low_gradient", "walking_coverage", "hybrid_coverage"):
+        if strategy in ("high_gradient", "low_gradient", "walking_coverage", "hybrid_coverage",
+                        "adaptive_gradient", "adaptive_inverse_gradient"):
             scores = {}
             for index, params in self._selective_params_by_block.items():
                 if not all(p.requires_grad and p.grad is not None for p in params):
@@ -384,13 +389,22 @@ class Krea2Driver(FamilyDriver):
                 known = [(score, i) for i, score in enumerate(self._selective_scores) if score is not None]
                 active = {max(known)[1]} if known else set(range(self._selective_block_count))
             if self._selective_strategy != "legacy":
-                from fizgig.krea2.selective_policy import select_blocks
+                from fizgig.krea2.selective_policy import select_blocks, adaptive_blocks, ADAPTIVE_STRATEGIES
                 probe_index = (step - self._selective_warmup_updates) // self._selective_reactivate_every
-                active = (self._selective_walking_blocks(step)
-                          if self._selective_strategy == "walking_coverage"
-                          else select_blocks(self._selective_strategy, self._selective_scores,
-                                             self._selective_budget, probe_index,
-                                             update_counts=self._selective_update_counts))
+                if self._selective_strategy in ADAPTIVE_STRATEGIES:
+                    matched = None
+                    if self._selective_strategy == "adaptive_random":
+                        if not 0 <= probe_index < len(self._selective_matched_counts):
+                            raise RuntimeError("Adaptive Random exceeded the source probe schedule.")
+                        matched = self._selective_matched_counts[probe_index]
+                    active = adaptive_blocks(self._selective_strategy, self._selective_scores, probe_index,
+                                             matched_count=matched)
+                else:
+                    active = (self._selective_walking_blocks(step)
+                              if self._selective_strategy == "walking_coverage"
+                              else select_blocks(self._selective_strategy, self._selective_scores,
+                                                 self._selective_budget, probe_index,
+                                                 update_counts=self._selective_update_counts))
             self._selective_active = active or set(range(self._selective_block_count))
             self._set_selective_active_parameters()
             return {"kind": "probe", "active": len(self._selective_active), "total": self._selective_block_count,
@@ -421,7 +435,9 @@ class Krea2Driver(FamilyDriver):
                 "score_decay": self._selective_score_decay,
                 "scores": list(self._selective_scores), "active_blocks": sorted(self._selective_active),
                 **({"strategy": self._selective_strategy, "budget": self._selective_budget,
-                    "gradient_update_counts": list(self._selective_update_counts)}
+                    "gradient_update_counts": list(self._selective_update_counts),
+                    **({"matched_counts": self._selective_matched_counts}
+                       if self._selective_strategy == "adaptive_random" else {})}
                    if self._selective_strategy != "legacy" else {})}
 
     def load_selective_state_dict(self, state):
@@ -434,6 +450,8 @@ class Krea2Driver(FamilyDriver):
         if (state.get("strategy", "legacy") != self._selective_strategy
                 or (self._selective_strategy != "legacy" and state.get("budget") != self._selective_budget)):
             raise RuntimeError("The saved selective strategy or budget differs from this run.")
+        if self._selective_strategy == "adaptive_random" and state.get("matched_counts") != self._selective_matched_counts:
+            raise RuntimeError("The source adaptive block-count schedule differs from the saved run.")
         scores = state.get("scores")
         if not isinstance(scores, list) or len(scores) != self._selective_block_count:
             raise RuntimeError("The saved Selective global replay scores do not match the Krea 2 block count.")
@@ -444,8 +462,9 @@ class Krea2Driver(FamilyDriver):
         self._selective_active = active
         self._selective_optimizer_steps = max(0, int(state.get("optimizer_steps", 0)))
         counts = state.get("gradient_update_counts")
-        if counts is None and self._selective_strategy == "hybrid_coverage":
-            raise RuntimeError("Saved hybrid replay state lacks gradient update counts.")
+        if counts is None and self._selective_strategy in ("hybrid_coverage", "adaptive_descent",
+                "adaptive_inverse_descent", "adaptive_gradient", "adaptive_inverse_gradient", "adaptive_random"):
+            raise RuntimeError("Saved experimental replay state lacks gradient update counts.")
         if counts is not None:
             if (not isinstance(counts, list) or len(counts) != self._selective_block_count
                     or any(type(v) is not int or not 0 <= v <= self._selective_optimizer_steps for v in counts)):

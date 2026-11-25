@@ -694,3 +694,43 @@ def test_hybrid_counts_gradient_bearing_blocks_and_restores_counts():
     resumed.configure_selective_global_replay(dit2, net2, warmup_updates=1, reactivate_every=3)
     resumed.load_selective_state_dict(state)
     assert resumed.selective_state_dict() == state
+
+
+def test_adaptive_gradient_driver_can_train_every_block_and_then_suspend():
+    dit, net = _selective_tiny_dit(layers=4)
+    driver = Krea2Driver()
+    driver.set_options({"training_method": "global_replay", "selective_block_check": "1",
+                        "selective_strategy": "adaptive_gradient"})
+    driver.configure_selective_global_replay(dit, net, warmup_updates=1, reactivate_every=3)
+    assert driver.finish_selective_optimizer_step({"cosines": dict.fromkeys(range(4), 1.0)})["active"] == 4
+    assert driver.finish_selective_optimizer_step(None) is None
+    assert driver.finish_selective_optimizer_step(None)["kind"] == "reactivation"
+    assert driver.selective_probe_due
+    assert driver.finish_selective_optimizer_step({"cosines": {0: 100.0, 1: 0.0, 2: 0.0, 3: 0.0}})["active"] == 1
+    assert driver.selective_active_blocks() == [0]
+
+
+def test_adaptive_random_replays_source_counts(tmp_path):
+    import json
+    dit, net = _selective_tiny_dit(layers=4)
+    driver = Krea2Driver()
+    driver.set_options({"training_method": "global_replay", "selective_block_check": "1",
+                        "selective_strategy": "adaptive_random"})
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({"runs": [{"case": "adaptive_gradient-lr450", "status": "finished",
+        "epochs": [{"epoch": 5, "step": 4}],
+        "probes": [{"step": step, "active": count, "total": 4, "strategy": "adaptive_gradient",
+                    "active_blocks": list(range(count))} for step, count in ((1, 4), (4, 2))]}]}))
+    driver.configure_selective_global_replay(dit, net, warmup_updates=1, reactivate_every=3, matched_report=report)
+    assert driver.finish_selective_optimizer_step({"cosines": {}})["active"] == 4
+    driver.finish_selective_optimizer_step(None)
+    driver.finish_selective_optimizer_step(None)
+    assert driver.finish_selective_optimizer_step({"cosines": {}})["active"] == 2
+    state = driver.selective_state_dict()
+    assert state["matched_counts"] == [4, 2]
+    dit2, net2 = _selective_tiny_dit(layers=4)
+    resumed = Krea2Driver()
+    resumed.set_options(driver.options)
+    resumed.configure_selective_global_replay(dit2, net2, warmup_updates=1, reactivate_every=3, matched_report=report)
+    resumed.load_selective_state_dict(state)
+    assert resumed.selective_state_dict() == state

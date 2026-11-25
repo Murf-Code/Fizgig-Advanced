@@ -1,20 +1,18 @@
-# Global Replay Experiment 3 (test/global-replay-comparison)
+# Global Replay Experiment 4 — adaptive block selection
 
-Select the same Ferwildir dataset, leave Test Mode enabled and click Add to queue. Six independent runs, five epochs each. Reuse Experiment 2's existing seed-42 unrestricted replay, high-gradient and random controls rather than rerunning them. Previous Experiment 2 reports remain unchanged; old queued cases remain supported.
+Select the same Ferwildir dataset, leave Test Mode enabled and click Add to queue. Six independent LoRAs, five epochs each. Keep the queue order: Adaptive Random depends on the completed Adaptive Gradient report from this group.
 
 | Case | LR | Selection |
 | --- | --- | --- |
-| balanced_random-lr450 | 0.00045 | shuffled complementary half-block masks, one pair per two probes |
-| static_first_half-lr450 | 0.00045 | blocks 0–13 |
-| rotational-lr450 | 0.00045 | alternate even and odd blocks at probes |
-| hybrid_coverage-lr450 | 0.00045 | top seven RMS gradients + seven least gradient-updated remaining blocks |
-| hybrid_coverage-lr350 | 0.00035 | same hybrid with lower LR |
-| walking_coverage-lr450 | 0.00045 | top seven RMS gradients + seven walking coverage slots |
+| adaptive_descent | 0.00025 | original positive-descent rule, no fixed count |
+| adaptive_descent-lr450 | 0.00045 | same rule at higher LR |
+| adaptive_inverse_descent-lr450 | 0.00045 | nonpositive descent scores, no fixed count |
+| adaptive_gradient-lr450 | 0.00045 | positive smoothed gradient RMS at least 0.5 times mean known RMS |
+| adaptive_inverse_gradient-lr450 | 0.00045 | complement of the threshold on its own measured scores |
+| adaptive_random-lr450 | 0.00045 | seeded random mask with exact per-probe counts from Adaptive Gradient |
 
-All selective cases use eight-update warmup and full probes every eight optimizer updates. Static is fixed between probes, not permanently pruned. Hybrid uses cumulative gradient-bearing block updates with seeded tie-breaking, persisted across resumes. Walking Coverage rotates after each selective optimizer update, not each microbatch or probe. With priorities 0–6, the green sets are 7/10/13/16/19/22/25, 8/11/14/17/20/23/26, then 9/12/15/18/21/24/27. The phase skips full probes and is derived from saved optimizer steps. If priority changes, the walk uses the sorted remaining blocks.
+All strategies can select 1–28 blocks. Descent policies preserve the original handling of unknown scores (active); if none qualify, train the best-scoring block for that policy. Gradient policies use smoothed RMS per parameter; missing scores are not treated as evidence, and if no scores are available all blocks train until reassessment. If no measured blocks qualify, keep one highest/lowest block respectively. The threshold is an experimental 0.5× mean, not a proven criterion. All-block warmup 8 updates, full-block probes every 8 updates, score decay 0.5. Random uses seed 42 and the source's recorded counts, not its own gradient counts; it refuses to start if the source failed, was removed, or has an incomplete schedule. Do not reorder or change the dataset midway.
 
-Controls: INT8, 22 swaps, Muon, rank/alpha 32, 0.25 MP, training seed 42 (same as Experiment 2), validation seed 42 and the same holdout selection, fixed routing RNG seed 42, sample seeds 1234–1237, 512 × 512, 20 requested sampling steps, epoch 0–5. Same four locked prompts: triggered fox style, novel wolf pose, untriggered watercolor likeness, unrelated landscape. No watermark tag. Keep dataset, model and preferences unchanged.
+Fixed controls: Krea 2 Raw, INT8, 22 swaps, Muon, rank/alpha 32, 0.25 MP, train/validation seed 42, same holdout, sample seeds 1234–1237, 512 × 512, 20 requested sampling steps, epochs 0–5. Four locked prompts and automatic ZIP unchanged. 30 epochs and 144 previews. No automatic LR multiplier in this experiment; it would confound the selection comparison. Prior Random and unrestricted Replay controls are reused, not replicated.
 
-Reports include numbered probe and walking rotation records, plus cumulative per-block counts of optimizer updates with adapter gradients (not guaranteed nonzero parameter displacement). Expected total: 30 epochs, 144 preview images. Reusing prior results avoids duplicate runs but assumes identical model, dataset, hardware, and training configuration; this is not an independent-seed replication. The new per-block telemetry and any intervening implementation changes may affect timing comparisons. Standard and higher-LR unrestricted replay were evaluated in Experiment 2 and are not repeated in this coverage-focused recipe.
-
-Once all cases reach a terminal state, global-replay-results.zip contains reports, logs and sample images; weights and optimizer states are excluded.
+The report records probe masks, counts, smoothed scores, gradient-bearing updates per block, training/validation losses, wall-clock efficiency, VRAM/RAM and samples. A matched random run controls active-count exposure, not exact parameter updates. The legacy nonbenchmark policy and fixed-budget experiments remain available. Descent anchors reinitialize after resume as before; prefer uninterrupted runs for comparison.

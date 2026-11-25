@@ -2443,12 +2443,16 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             logger.info(f"[blocks] the LoRA trains {len(blocks)} of {len(known)} blocks only: {', '.join(train_blocks)}")
         net.add_trainable(network_dim, network_alpha, blocks=blocks, kind=network_type, factor=lokr_factor)
         if selective_global_replay:
-            driver.configure_selective_global_replay(dit, net, warmup_updates=8, reactivate_every=8, score_decay=0.5)
+            from fizgig.krea2.selective_policy import ADAPTIVE_STRATEGIES
+            from pathlib import Path as _ReplayPath
+            driver.configure_selective_global_replay(
+                dit, net, warmup_updates=8, reactivate_every=8, score_decay=0.5,
+                matched_report=_ReplayPath(output_dir).parent / "global-replay-report.json")
             logger.info("[selective-replay] strategy=%s budget=%s; all blocks train for the first 8 updates; "
                         "then reassess every 8 updates with a full-block probe. Block input gradients still "
                         "propagate through every block.",
                         driver._selective_strategy,
-                        driver._selective_budget if driver._selective_strategy != "legacy" else "unrestricted")
+                        driver._selective_budget if driver._selective_strategy not in ("legacy", *ADAPTIVE_STRATEGIES) else "adaptive")
         elif global_replay:
             logger.info("[global-replay] Selective block check off: all 28 blocks train on every update.")
     def render_bank():

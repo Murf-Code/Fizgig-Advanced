@@ -73,3 +73,38 @@ def test_static_first_half_and_hybrid_coverage():
         for i in chosen:
             counts[i] += 7
     assert counts == [21] * 7 + [7] * 21
+
+
+def test_adaptive_rules_allow_all_blocks_and_are_not_fixed_budget():
+    from fizgig.krea2.selective_policy import adaptive_blocks
+    assert adaptive_blocks("adaptive_descent", [1] * 28, 0) == set(range(28))
+    assert adaptive_blocks("adaptive_descent", [-1] * 28, 0) == {27}
+    assert adaptive_blocks("adaptive_descent", [1, -1, None, 0], 0) == {0, 2}
+    assert adaptive_blocks("adaptive_inverse_descent", [1, -1, None, 0], 0) == {1, 2, 3}
+    assert adaptive_blocks("adaptive_gradient", [1] * 28, 0) == set(range(28))
+    assert adaptive_blocks("adaptive_gradient", [10, 1, 1, 1], 0) == {0}
+    assert adaptive_blocks("adaptive_inverse_gradient", [10, 1, 1, 1], 0) == {1, 2, 3}
+    assert len(adaptive_blocks("adaptive_gradient", [0] * 28, 0)) == 1
+    assert len(adaptive_blocks("adaptive_inverse_gradient", [1] * 28, 0)) == 1
+    before = random.getstate()
+    for count in (1, 7, 14, 21, 28):
+        assert len(adaptive_blocks("adaptive_random", [None] * 28, 2, matched_count=count)) == count
+    assert random.getstate() == before
+
+
+def test_matched_schedule_fails_closed_on_incomplete_source(tmp_path):
+    import json
+    import pytest
+    from fizgig.krea2.selective_policy import load_matched_counts
+    report = tmp_path / "report.json"
+    run = {"case": "adaptive_gradient-lr450", "status": "finished",
+           "epochs": [{"epoch": 5, "step": 24}],
+           "probes": [{"step": step, "active": count, "total": 4,
+                       "strategy": "adaptive_gradient", "active_blocks": list(range(count))}
+                      for step, count in ((8, 4), (16, 1), (24, 3))]}
+    report.write_text(json.dumps({"runs": [run]}))
+    assert load_matched_counts(report, 4, 8, 8) == [4, 1, 3]
+    run["probes"].pop()
+    report.write_text(json.dumps({"runs": [run]}))
+    with pytest.raises(RuntimeError, match="incomplete"):
+        load_matched_counts(report, 4, 8, 8)
