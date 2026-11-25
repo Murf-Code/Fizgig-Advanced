@@ -1015,6 +1015,7 @@
                 <button class="btn btn-primary" id="btnStart">Start Training</button>
                 <button class="btn" id="btnQueue" title="Checked like Start, then lined up: it starts when the runs before it finish">Add to queue</button>
                 <button class="btn" id="btnGeometryQueue" title="Rank 16 six-way optimizer quality pilot, five epochs each">Queue optimizer comparison</button>
+                <button class="btn" id="btnGeometryRound10" title="Muon repeat and five experimental TSD variants">Test adaptive TSD</button>
                 <button class="btn" id="btnGeometryTSD" title="Short repaired LoRA-TSD balanced and unbalanced stability tests">Test LoRA-TSD stability</button>
                 <button class="btn" id="btnGeometryFit" title="PoLoRA ranks 16 and 32 at 0.25–1 MP, plus matched rank 64 controls">Test PoLoRA resolution</button>
                 <button class="btn btn-warning" id="btnPause">Pause</button>
@@ -2480,33 +2481,38 @@
     const pilot = document.getElementById("btnGeometryQueue");
     const fit = document.getElementById("btnGeometryFit");
     const tsd = document.getElementById("btnGeometryTSD");
+    const round10 = document.getElementById("btnGeometryRound10");
     const queueTest = async (mode) => {
       const feasibility = mode === "resolution";
       const short = mode === "tsd";
-      const button = short ? tsd : feasibility ? fit : pilot;
+      const adaptive = mode === "round10";
+      const button = adaptive ? round10 : short ? tsd : feasibility ? fit : pilot;
       const folder = document.getElementById("imageFolder").value.trim();
       if (!folder) { alert("Select the Krea 2 training dataset first."); return; }
-      if (!confirm(short
+      if (!confirm(adaptive
+          ? "Queue seven Round 10 experiments: two identical Muon controls and five one-ball TSD variants? Rank 16, 18 swapped blocks, 0.25 MP, five epochs, fixed holdout and previews. Experimental adaptive budget; not production validated."
+          : short
           ? "Queue two repaired LoRA-TSD stability tests (balanced and unbalanced)? Rank 16, 0.25 MP, 18 swapped blocks, one epoch or 50 updates, no previews. Run these before the longer optimizer comparison."
           : feasibility
           ? "Queue ten short PoLoRA memory tests? Ranks 16 and 32 at 0.25, 0.50, 0.75 and 1 MP, plus rank 64 chunked and unchunked at 0.25 MP. Up to 50 updates or one epoch each, no previews. OOM failures are recorded; the queue continues."
           : "Queue six rank 16 optimizer runs, five epochs each, with fixed holdout and previews? Only proceed after reviewing the short TSD stability test. CUDA parity is a separate gate.")) return;
       button.disabled = true;
       try {
-        const response = await fetch(short ? "/api/queue/geometry-tsd-fit" : feasibility ? "/api/queue/geometry-resolution" : "/api/queue/geometry-quality", {
+        const response = await fetch(adaptive ? "/api/queue/geometry-round10" : short ? "/api/queue/geometry-tsd-fit" : feasibility ? "/api/queue/geometry-resolution" : "/api/queue/geometry-quality", {
           method: "POST", headers: {"Content-Type": "application/json",
             "X-Fizgig-Token": document.querySelector('meta[name="fizgig-token"]').content},
           body: JSON.stringify({image_folder: folder})
         });
         const result = await response.json();
         if (!result.ok) throw Error(result.error || (result.problems || []).join("\n") || "Could not queue test");
-        alert((short ? "Two TSD stability tests queued." : feasibility ? "Ten PoLoRA resolution and memory tests queued." : "Six optimizer comparison runs queued.") + " Report folder:\n" + result.output);
+        alert((adaptive ? "Seven adaptive TSD comparison runs queued." : short ? "Two TSD stability tests queued." : feasibility ? "Ten PoLoRA resolution and memory tests queued." : "Six optimizer comparison runs queued.") + " Report folder:\n" + result.output);
       } catch (error) { alert(error.message); }
       finally { button.disabled = false; }
     };
     pilot.addEventListener("click", () => queueTest("quality"));
     fit.addEventListener("click", () => queueTest("resolution"));
     tsd.addEventListener("click", () => queueTest("tsd"));
+    round10.addEventListener("click", () => queueTest("round10"));
   })();
   </script>
 </body>

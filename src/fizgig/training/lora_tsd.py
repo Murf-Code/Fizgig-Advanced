@@ -20,6 +20,11 @@ magnitude_scale (Fizgig's addition, as PoLoRA's): multiplies every step and its 
 isn't swallowed by max_delta_norm. 1.0 is the reference's step. Adaptive LR and per-image LR move the group's "lr",
 so the step is lr x magnitude_scale and the effective size is magnitude_scale x image x adaptive, as with PoLoRA.
 Every log_every steps one log line gives the magnitude, the average weight change a pair and how many hit the cap.
+
+Experimental tangent controls adapted from Grok Round 10 (credit: independent audit and CPU tests).
+The warm branch retains the group LR; tangent LR scale, per-pair decay, optional rank-truncated SVD polar,
+and factor-space signal budget act only in the tangent branch. Defaults preserve the old update.
+The budget is not gauge invariant; use unbalanced matched arms for the initial experiment.
 """
 
 from __future__ import annotations
@@ -41,6 +46,41 @@ def _ns_sq(T: torch.Tensor, steps: int = 5) -> torch.Tensor:
         A = X @ X.t()
         X = a * X + (b * A + c * A @ A) @ X
     return X
+
+
+@torch.no_grad()
+def _svd_polar(T, rank_tau):
+    """FP64 core polar with a numerical-rank cutoff; no dense weight matrix."""
+    U, S, Vh = torch.linalg.svd(T.double())
+    tol = float(rank_tau) * S.max().clamp_min(1e-300)
+    return ((U * (S > tol).to(U.dtype)) @ Vh).to(T.dtype)
+
+
+_TANGENT_DEFAULTS = dict(tangent_lr_scale=1.0, polar="ns", polar_rank_tau=1e-3, tangent_decay="none",
+                         tangent_horizon=0, tangent_floor=0.0, budget="none", budget_min=0.05, budget_beta=0.99)
+
+
+def _check_tangent_options(o):
+    if not (math.isfinite(o["tangent_lr_scale"]) and o["tangent_lr_scale"] >= 0):
+        raise ValueError("tangent_lr_scale must be finite and >= 0")
+    if o["polar"] not in ("ns", "svd") or o["tangent_decay"] not in ("none", "linear", "rsqrt") or o["budget"] not in ("none", "snr", "cos"):
+        raise ValueError("invalid TSD polar, tangent decay or budget")
+    if not (0 < o["polar_rank_tau"] < 1):
+        raise ValueError("polar_rank_tau must be in (0, 1)")
+    if o["tangent_decay"] != "none" and not o["tangent_horizon"] > 0:
+        raise ValueError("a tangent decay needs tangent_horizon > 0")
+    if not (0 <= o["tangent_floor"] <= 1 and 0 < o["budget_min"] <= 1 and 0 < o["budget_beta"] < 1):
+        raise ValueError("invalid tangent floor, budget minimum or budget beta")
+
+
+def _decay_factor(kind, k, horizon, floor):
+    if kind == "linear":
+        f = 1.0 - k / horizon
+    elif kind == "rsqrt":
+        f = 1.0 / math.sqrt(1.0 + k / horizon)
+    else:
+        return 1.0
+    return max(float(floor), f)
 
 
 @torch.no_grad()
@@ -173,17 +213,26 @@ class LoRATSD(Optimizer):
 
     def __init__(self, pairs, lr: float = 5e-3, momentum: float = 0.95, ball_iters: int = 5, ns_steps: int = 5,
                  max_delta_norm: float = 0.1, ridge_eps: float = 1e-8, balance: bool = True, zero_eps: float = 1e-12,
-                 magnitude_scale: float = 1.0, log_every: int = 50):
+                 magnitude_scale: float = 1.0, log_every: int = 50, tangent_lr_scale: float = 1.0,
+                 polar: str = "ns", polar_rank_tau: float = 1e-3, tangent_decay: str = "none", tangent_horizon: int = 0,
+                 tangent_floor: float = 0.0, budget: str = "none", budget_min: float = 0.05, budget_beta: float = 0.99):
         pairs = list(pairs)
         if not pairs or any(a.ndim != 2 or b.ndim != 2 or a.shape[0] != b.shape[1]
                             or a.device != b.device or a.dtype != b.dtype for a,b in pairs):
             raise ValueError("LoRA-TSD requires compatible plain 2D factor pairs")
         if not math.isfinite(max_delta_norm) or max_delta_norm <= 0 or not math.isfinite(magnitude_scale) or magnitude_scale <= 0:
             raise ValueError("LoRA-TSD requires positive finite cap and magnitude")
+        tangent = dict(tangent_lr_scale=float(tangent_lr_scale), polar=str(polar), polar_rank_tau=float(polar_rank_tau),
+                       tangent_decay=str(tangent_decay), tangent_horizon=int(tangent_horizon),
+                       tangent_floor=float(tangent_floor), budget=str(budget), budget_min=float(budget_min),
+                       budget_beta=float(budget_beta))
+        _check_tangent_options(tangent)
+        if budget != "none" and not 0 <= momentum < 1:
+            raise ValueError("TSD adaptive budget requires momentum in [0, 1)")
         groups = [{"params": [a, b]} for a, b in pairs]
         self._adapter_scales = [1.0] * len(groups)
         super().__init__(groups, dict(lr=lr, momentum=momentum, ball_iters=int(ball_iters), ns_steps=int(ns_steps),
-                                      max_delta_norm=max_delta_norm, ridge_eps=ridge_eps))
+                                      max_delta_norm=max_delta_norm, ridge_eps=ridge_eps, **tangent))
         self.balance, self.zero_eps = bool(balance), zero_eps
         # an attribute, not a group key: a resumed state keeps the magnitude set now (and an older state has none)
         self.magnitude_scale = float(magnitude_scale)
@@ -202,6 +251,10 @@ class LoRATSD(Optimizer):
         # Restore FP32 momentum from the serialized source rather than from
         # Optimizer's parameter-dtype cast (which can lose BF16 precision).
         super().load_state_dict(state_dict)
+        for group in self.param_groups:
+            for k in _TANGENT_DEFAULTS:
+                group.setdefault(k, self.defaults[k])
+            _check_tangent_options(group)
         for old_group, new_group in zip(state_dict["param_groups"], self.param_groups):
             for old_id, p in zip(old_group["params"], new_group["params"]):
                 old = state_dict["state"].get(old_id, {}).get("momentum_buffer")
@@ -219,6 +272,49 @@ class LoRATSD(Optimizer):
         st["momentum_buffer"].mul_(mom).add_(g, alpha=1.0 - mom)
         return st["momentum_buffer"]
 
+    def _budget_update(self, group, A, gA, gB, mA, mB):
+        """Round 10 factor-space EMA of energy or directional agreement."""
+        kind = group.get("budget", "none")
+        if kind == "none":
+            return
+        st, b2 = self.state[A], group.get("budget_beta", 0.99)
+        g2 = float(gA.double().pow(2).sum() + gB.double().pow(2).sum())
+        if kind == "cos":
+            if mA is not None:
+                mg = float((mA.double() * gA.double()).sum() + (mB.double() * gB.double()).sum())
+                mn = math.sqrt(float(mA.double().pow(2).sum() + mB.double().pow(2).sum()))
+                cos = mg / (mn * math.sqrt(g2)) if mn > 0 and g2 > 0 else 0.0
+                st["tsd_cos_ema"] = b2 * st.get("tsd_cos_ema", 0.0) + (1 - b2) * cos
+                st["tsd_cos_n"] = st.get("tsd_cos_n", 0) + 1
+            return
+        st["tsd_v"] = b2 * st.get("tsd_v", 0.0) + (1 - b2) * g2
+        st["tsd_n"] = st.get("tsd_n", 0) + 1
+
+    def _budget_factor(self, group, A, mA, mB):
+        kind = group.get("budget", "none")
+        if kind == "none":
+            return 1.0
+        st, lo = self.state[A], group.get("budget_min", 0.05)
+        b2 = group.get("budget_beta", 0.99)
+        if kind == "cos":
+            n = st.get("tsd_cos_n", 0)
+            if n == 0:
+                return 1.0
+            f = st["tsd_cos_ema"] / (1 - b2 ** n)
+        else:
+            n = st.get("tsd_n", 0)
+            if n == 0:
+                return 1.0
+            beta = group["momentum"]
+            k = min(n, 10000)
+            mhat2 = float(mA.double().pow(2).sum() + mB.double().pow(2).sum()) / (1 - beta ** k) ** 2
+            vhat = st["tsd_v"] / (1 - b2 ** n)
+            c = (1 - beta) / (1 + beta) * (1 + beta ** k) / (1 - beta ** k)
+            if vhat <= 0 or c >= 1 - 1e-6:
+                return 1.0
+            f = math.sqrt(min(max((mhat2 / vhat - c) / (1 - c), 0.0), 1.0))
+        return min(1.0, max(lo, f))
+
     @torch.no_grad()
     def step(self, closure=None):
         loss = None
@@ -228,6 +324,7 @@ class LoRATSD(Optimizer):
         self._step_count += 1
         mag = self.magnitude_scale
         changes, capped, warm_pairs, unchanged_pairs = [], 0, 0, 0
+        budget_factors, tangent_factors = [], []
         for group, scale in zip(self.param_groups, self._adapter_scales):
             A, B = group["params"]
             if A.grad is None and B.grad is None:
@@ -243,6 +340,10 @@ class LoRATSD(Optimizer):
                 continue
             with torch.autocast(device_type=A.device.type, enabled=False):
                 A32, B32 = A.float(), B.float()
+                if group.get("budget", "none") != "none":
+                    pa, pb = self.state[A].get("momentum_buffer"), self.state[B].get("momentum_buffer")
+                    self._budget_update(group, A, A.grad.float(), B.grad.float(),
+                                        None if pa is None else pa.float(), None if pb is None else pb.float())
                 G_A = self._buf(A, A.grad.float(), group["momentum"])
                 G_B = self._buf(B, B.grad.float(), group["momentum"])
                 za, zb = float(A32.norm()) < self.zero_eps, float(B32.norm()) < self.zero_eps
@@ -267,8 +368,24 @@ class LoRATSD(Optimizer):
                     for _ in range(group["ball_iters"]):
                         Q_L, R_L = torch.linalg.qr(L, mode="reduced")
                         Q_R, R_R = torch.linalg.qr(R.T, mode="reduced")
-                        T_orth = _ns_sq(R_L @ R_R.T, steps=group["ns_steps"])
+                        if group.get("polar", "ns") == "svd":
+                            T_orth = _svd_polar(R_L @ R_R.T, group.get("polar_rank_tau", 1e-3))
+                        else:
+                            T_orth = _ns_sq(R_L @ R_R.T, steps=group["ns_steps"])
                         L, R = _proj_T_factored(Q_L @ T_orth, Q_R.T, U_B, V_A)
+                    st = self.state[A]
+                    k = st.get("tsd_tangent_steps", 0)
+                    budget_factor = self._budget_factor(group, A, G_A, G_B)
+                    fac = (group.get("tangent_lr_scale", 1.0)
+                           * _decay_factor(group.get("tangent_decay", "none"), k, group.get("tangent_horizon", 0),
+                                           group.get("tangent_floor", 0.0))
+                           * budget_factor)
+                    if group.get("tangent_decay", "none") != "none" or group.get("budget", "none") != "none" or "tsd_tangent_steps" in st:
+                        st["tsd_tangent_steps"] = k + 1
+                    budget_factors.append(budget_factor)
+                    tangent_factors.append(fac)
+                    if fac != 1.0:
+                        lr = lr * fac
                     dB = -lr * (L @ (R @ A32.T)) @ AAt_i
                     dA = BtB_i @ (-lr * ((B32.T @ L) @ R) - (B32.T @ dB) @ A32)
                     rebalance = self.balance
@@ -292,6 +409,11 @@ class LoRATSD(Optimizer):
             logging.getLogger("fizgig.lora_tsd").info(
                 "[geometry-tsd] update=%d max_change=%.9g warm=%d unchanged=%d shrunk=%d pairs=%d",
                 self._step_count, max(changes), warm_pairs, unchanged_pairs, capped, len(changes))
+            if budget_factors:
+                logging.getLogger("fizgig.lora_tsd").info(
+                    "[geometry-tangent] update=%d pairs=%d budget_min=%.9g budget_mean=%.9g budget_max=%.9g lr_factor_mean=%.9g change_sum=%.9g",
+                    self._step_count, len(budget_factors), min(budget_factors), sum(budget_factors)/len(budget_factors),
+                    max(budget_factors), sum(tangent_factors)/len(tangent_factors), sum(changes))
         return loss
 
 

@@ -87,7 +87,7 @@ def create(root, dataset, configs):
 def parse_log(text):
     epochs, validation, feasibility = [], [], None
     buckets = []
-    optimizer_timing, tsd_stats = [], []
+    optimizer_timing, tsd_stats, tangent_stats = [], [], []
     failure = None
     for line in text.splitlines():
         opt = re.search(r"\[geometry-opt\] update=(\d+) ms=" + NUM + r" allocated_bytes=(\d+) reserved_bytes=(\d+) alloc_retries=(\d+)", line)
@@ -96,6 +96,11 @@ def parse_log(text):
         tsd = re.search(r"\[geometry-tsd\] update=(\d+) max_change=" + NUM + r" warm=(\d+) unchanged=(\d+) shrunk=(\d+) pairs=(\d+)", line)
         if tsd:
             tsd_stats.append({"update": int(tsd[1]), "max_change": float(tsd[2]), "warm": int(tsd[3]), "unchanged": int(tsd[4]), "shrunk": int(tsd[5]), "pairs": int(tsd[6])})
+        tangent = re.search(r"\[geometry-tangent\] update=(\d+) pairs=(\d+) budget_min=" + NUM + r" budget_mean=" + NUM + r" budget_max=" + NUM + r" lr_factor_mean=" + NUM + r" change_sum=" + NUM, line)
+        if tangent:
+            tangent_stats.append({"update": int(tangent[1]), "pairs": int(tangent[2]), "budget_min": float(tangent[3]),
+                                  "budget_mean": float(tangent[4]), "budget_max": float(tangent[5]),
+                                  "lr_factor_mean": float(tangent[6]), "change_sum_all_pairs": float(tangent[7])})
         bucket = re.search(r"bucket: \((\d+), (\d+)\), count: (\d+)", line)
         if bucket:
             buckets.append({"width": int(bucket[1]), "height": int(bucket[2]), "count": int(bucket[3])})
@@ -113,7 +118,7 @@ def parse_log(text):
                            "cuda_peak_reserved_bytes": int(m[3]), "training_wall_seconds": float(m[4])}
     return {"epochs": epochs, "validation": validation, "feasibility": feasibility,
             "reported_buckets": buckets, "failure_kind": failure,
-            "optimizer_timing": optimizer_timing, "tsd_stats": tsd_stats,
+            "optimizer_timing": optimizer_timing, "tsd_stats": tsd_stats, "tangent_stats": tangent_stats,
             "optimizer_ms_mean_after_warmup": (sum(x["ms"] for x in optimizer_timing if x["update"] > 3) /
                 sum(x["update"] > 3 for x in optimizer_timing)) if any(x["update"] > 3 for x in optimizer_timing) else None}
 

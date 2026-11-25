@@ -85,3 +85,18 @@ def test_optimizer_comparison(tmp_path):
                               "[geometry-tsd] update=4 max_change=0.299 warm=2 unchanged=0 shrunk=1 pairs=264")
     assert parsed["optimizer_ms_mean_after_warmup"] == 12.5
     assert parsed["tsd_stats"][0]["warm"] == 2
+
+
+def test_round10_queue(tmp_path):
+    configs = bench.round10_settings("r10", str(tmp_path))
+    assert len(configs) == 7 and len({v["LORA_OUTPUT_DIR"] for v in configs}) == 7
+    exclude = {"__geometry_compare", "LORA_NAME", "LORA_OUTPUT_DIR"}
+    assert {k:v for k,v in configs[0].items() if k not in exclude} == {k:v for k,v in configs[1].items() if k not in exclude}
+    assert all(v["NETWORK_DIM"] == v["NETWORK_ALPHA"] == "16" and v["BLOCKS_SWAP"] == "18"
+               and v["DATASET_MEGAPIXELS"] == "0.25" and v["MAX_TRAIN_EPOCHS"] == "5"
+               and v["VALIDATION_HOLDOUT"] and v["SAMPLE_ENABLED"] for v in configs)
+    assert all("ball_iters=1" in v["OPTIMIZER_ARGS"] and "balance=False" in v["OPTIMIZER_ARGS"] for v in configs[2:])
+    assert configs[6]["OPTIMIZER_ARGS"] == configs[5]["OPTIMIZER_ARGS"] + " polar=svd"
+    parsed = report.parse_log("[geometry-tangent] update=31 pairs=264 budget_min=0.05 budget_mean=0.2 budget_max=0.9 lr_factor_mean=0.4 change_sum=1.25")
+    assert parsed["tangent_stats"][0]["budget_mean"] == 0.2
+    assert parsed["tangent_stats"][0]["change_sum_all_pairs"] == 1.25

@@ -48,7 +48,9 @@ POLORA_ONLY_KEYS = ("magnitude_scale", "curvature_beta", "beta1", "delta", "high
 # LoRA-TSD shares momentum and ns_steps with Muon: they're kept for it.
 SOAP_ONLY_KEYS = ("shampoo_beta", "precondition_frequency", "max_precond_dim", "merge_dims", "precondition_1d",
                   "normalize_grads", "data_format", "correct_bias")
-LORA_TSD_ONLY_KEYS = ("ball_iters", "max_delta_norm", "ridge_eps", "balance", "zero_eps", "log_every")
+LORA_TSD_ONLY_KEYS = ("ball_iters", "max_delta_norm", "ridge_eps", "balance", "zero_eps", "log_every",
+                      "tangent_lr_scale", "polar", "polar_rank_tau", "tangent_decay", "tangent_horizon",
+                      "tangent_floor", "budget", "budget_min", "budget_beta")
 # the Muon keys each pair-wise optimizer reads too (not stripped for it)
 _SHARED_MUON_KEYS = {"polora": ("ns_steps",), "lora_tsd": ("ns_steps", "momentum")}
 # PoLoRA's keys LoRA-TSD reads too (not stripped for it): magnitude_scale, pre-filled at 3 for both

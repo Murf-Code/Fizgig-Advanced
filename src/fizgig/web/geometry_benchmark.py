@@ -108,6 +108,28 @@ def optimizer_settings(group, output_root, short=False):
             for case, opt, lr, args in cases]
 
 
+# Round 10: matched unbalanced arms avoid the additional gauge changes of scalar balancing.
+_R10_TSD = "magnitude_scale=3 balance=False max_delta_norm=0.1 ball_iters=1 log_every=1"
+R10_CASES = (
+    ("r10-muon-a", *QUALITY_CASES[1][1:]),
+    ("r10-muon-a-repeat", *QUALITY_CASES[1][1:]),
+    ("r10-tsd-fixed", "lora_tsd", "0.005", _R10_TSD),
+    ("r10-tsd-reduced", "lora_tsd", "0.005", _R10_TSD + " tangent_lr_scale=0.1"),
+    ("r10-tsd-decay", "lora_tsd", "0.005", _R10_TSD + " tangent_lr_scale=0.3 tangent_decay=rsqrt tangent_horizon=10"),
+    ("r10-tsd-snr", "lora_tsd", "0.005", _R10_TSD + " tangent_lr_scale=2 budget=snr"),
+    ("r10-tsd-snr-svd", "lora_tsd", "0.005", _R10_TSD + " tangent_lr_scale=2 budget=snr polar=svd"),
+)
+
+
+def round10_settings(group, output_root):
+    common = optimizer_settings(group, output_root)[0]
+    return [{**common, "__geometry_compare": case, "OPTIMIZER_TYPE": opt,
+             "OPTIMIZER_ARGS": args, "LEARNING_RATE": lr,
+             "LORA_NAME": f"{group}-{case}",
+             "LORA_OUTPUT_DIR": os.path.join(output_root, group, case)}
+            for case, opt, lr, args in R10_CASES]
+
+
 def resolution_settings(group, output_root):
     v, = feasibility_settings(group, output_root)
     return [{**v, "__geometry_compare": case,
@@ -123,7 +145,7 @@ def adjust_plan(desc, values, plan):
     case = values.get("__geometry_compare")
     if not case:
         return plan
-    if desc.key != "krea2" or (case not in {x[0] for x in CASES + QUALITY_CASES} and not is_feasibility(case)):
+    if desc.key != "krea2" or (case not in {x[0] for x in CASES + QUALITY_CASES + R10_CASES} and not is_feasibility(case)):
         raise ValueError("Invalid Krea 2 matrix geometry comparison case.")
     if plan.problems:
         return plan
@@ -138,7 +160,7 @@ def adjust_plan(desc, values, plan):
         cmd.extend(["--family_option", f"geometry_feasibility_steps={FEASIBILITY_STEPS}"])
     elif "--sample_prompts" not in cmd:
         plan.problems.append("Matrix geometry comparison requires usable sample prompts.")
-    if case in {x[0] for x in QUALITY_CASES + TSD_FIT_CASES}:
+    if case in {x[0] for x in QUALITY_CASES + TSD_FIT_CASES + R10_CASES}:
         cmd.extend(["--family_option", "geometry_optimizer_timing=1"])
     if "--train_blocks" in cmd:
         plan.problems.append("Matrix geometry comparison requires unrestricted eligible blocks.")
