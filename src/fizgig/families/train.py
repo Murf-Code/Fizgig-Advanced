@@ -2553,7 +2553,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             # Explicit research-only controls; do not inherit stale UI optimizer args.
             causal_decay = float((family_options or {}).get("replay_causal_decay", 0.01))
             if (str(optimizer_type).strip().lower() != "muon"
-                    or causal_decay not in (0.01, 1.0, 10.0)
+                    or causal_decay not in (0.01, 10.0, 30.0)
                     or (causal_decay != 0.01 and selective_global_replay)
                     or float(learning_rate) != 0.00045):
                 raise RuntimeError("Invalid Experiment 5B Muon weight-decay control")
@@ -3571,8 +3571,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         research_mask = _rr.active_mask(net) if research_mode else None
         research_rates = ([{"lr": float(g["lr"]), "weight_decay": float(g["weight_decay"])}
                            for g in optimizer.param_groups] if research_mode == "causal" else None)
-        research_before = (_rr.probe_before(net) if
-                           (research_mode == "telemetry" and driver.selective_probe_due)
+        research_before = (_rr.probe_before(net, optimizer=optimizer if research_mode == "causal" else None)
+                           if (research_mode == "telemetry" and driver.selective_probe_due)
                            or (research_mode == "causal" and (research_updates + 1) % 8 == 0)
                            else None)
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None

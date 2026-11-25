@@ -1019,7 +1019,7 @@
 Ferwildir, solo, anthro, male wolf, white fur, blue and purple fur accents, spiky blue hair, blue eyes, full body, running along a beach, looking over shoulder, joyful expression
 solo, anthropomorphic male wolf, white fur, blue and purple fur accents, spiky blue hair, blue eyes, sitting in a cafe, realistic watercolor illustration, soft washes and natural lighting
 A small wooden boat on a quiet lake surrounded by autumn trees, distant mountains and soft morning light</textarea>
-                 <span class="field-hint" id="streamSyncNote" role="status">Global Replay Experiment 5B · 8 runs × 5 epochs · weight-decay controls</span>
+                 <span class="field-hint" id="streamSyncNote" role="status">Global Replay Experiment 5B · 8 runs × 5 epochs · weight-decay 10/30 controls</span>
                 <button class="btn btn-warning" id="btnPause">Pause</button>
                 <button class="btn" id="btnSampleNow" style="display:none" title="Make the previews now, after the current training step, without waiting for the epoch to end">Sample now</button>
                 <button class="btn btn-lilac is-off" id="btnImageLoss" style="display:none" title="Each training image's loss by epoch, against the rest of the dataset: which images are still being learned, which are done, and what the loss watch decided about each">Per-image loss</button>
@@ -2484,7 +2484,7 @@ A small wooden boat on a quiet lake surrounded by autumn trees, distant mountain
       const mode = document.getElementById("streamSyncMode");
       const queue = document.getElementById("btnQueue");
       const note = document.getElementById("streamSyncNote");
-      const description = "Global Replay Experiment 5B · 8 runs × 5 epochs · weight-decay controls · samples on · rank 32 · Muon · INT8 · 22 swaps";
+      const description = "Global Replay Experiment 5B · 8 runs × 5 epochs · weight-decay 10/30 controls · samples on · rank 32 · Muon · INT8 · 22 swaps";
       let busy = false;
       mode.addEventListener("change", () => {
         note.textContent = mode.checked ? description : "";

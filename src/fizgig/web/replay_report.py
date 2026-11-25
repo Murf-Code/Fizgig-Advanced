@@ -185,8 +185,17 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                         for kind in ("raw_validation", "ema_validation"):
                             if [r["step"] for r in rows if r.get("kind") == kind] != [29, 58, 87, 116, 145]:
                                 raise ValueError("missing " + kind)
-                        if [r["step"] for r in rows if r.get("kind") == "probe_telemetry"] != list(PROBES):
+                        telemetry = [r for r in rows if r.get("kind") == "probe_telemetry"]
+                        if [r["step"] for r in telemetry] != list(PROBES):
                             raise ValueError("missing probe telemetry")
+                        for probe in telemetry:
+                            factors = probe["factors"]
+                            if (len(factors) != 56 or {(f["block"], f["factor"]) for f in factors}
+                                    != {(b, k) for b in ALL for k in ("A", "B")}
+                                    or any(not {"decay_update_rms", "muon_update_rms_reconstructed",
+                                                "gradient_momentum_cosine", "momentum_agreement_matrices",
+                                                "gradient_bearing_matrices"} <= f.keys() for f in factors)):
+                                raise ValueError("incomplete expanded factor telemetry")
                         if not any(r.get("kind") == "complete" and r.get("step") == 145 for r in rows):
                             raise ValueError("missing completion marker")
                         env = [r for r in rows if r.get("kind") == "environment"]

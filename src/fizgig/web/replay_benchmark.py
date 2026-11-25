@@ -22,13 +22,13 @@ CAUSAL_ROUTES = {
     "causal-exact-lr450": "exact",
     "causal-block26-lr450": "block26",
     "causal-block13-lr450": "block13",
-    "causal-decay1-lr450": None,
     "causal-decay10-lr450": None,
+    "causal-decay30-lr450": None,
 }
-CAUSAL_DECAYS = {case: (1.0 if case == "causal-decay1-lr450" else
+CAUSAL_DECAYS = {case: (30.0 if case == "causal-decay30-lr450" else
                        10.0 if case == "causal-decay10-lr450" else 0.01)
                  for case in CAUSAL_ROUTES}
-UNRESTRICTED_CASES = {"causal-unrestricted-lr450", "causal-decay1-lr450", "causal-decay10-lr450"}
+UNRESTRICTED_CASES = {"causal-unrestricted-lr450", "causal-decay10-lr450", "causal-decay30-lr450"}
 CASES = tuple((case, "Global replay", case not in UNRESTRICTED_CASES) for case in CAUSAL_ROUTES)
 
 def case_strategy(case):

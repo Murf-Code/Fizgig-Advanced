@@ -19,7 +19,7 @@ def test_recipe_is_eight_independent_runs(tmp_path):
     assert [v["__replay_compare"] for v in runs] == [
         "causal-unrestricted-lr450", "causal-gradient-lr450", "causal-random-lr450",
         "causal-exact-lr450", "causal-block26-lr450", "causal-block13-lr450",
-        "causal-decay1-lr450", "causal-decay10-lr450"]
+        "causal-decay10-lr450", "causal-decay30-lr450"]
     assert all(v["SEED"] == "42" and v["VALIDATION_SEED"] == "42" for v in runs)
 
 
@@ -94,6 +94,6 @@ def test_previous_controls_remain_launchable_without_requeuing():
 
 def test_decay_controls_only_change_decay_and_keep_all_blocks(tmp_path):
     runs = rb.settings("test", str(tmp_path))
-    assert [rb.CAUSAL_DECAYS[v["__replay_compare"]] for v in runs] == [0.01] * 6 + [1.0, 10.0]
+    assert [rb.CAUSAL_DECAYS[v["__replay_compare"]] for v in runs] == [0.01] * 6 + [10.0, 30.0]
     assert all(not v["KREA2_SELECTIVE_BLOCK_CHECK"] for v in (runs[0], runs[-2], runs[-1]))
     assert all(rb.case_strategy(v["__replay_compare"]) == "replay" for v in (runs[0], runs[-2], runs[-1]))
