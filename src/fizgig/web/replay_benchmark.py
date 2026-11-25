@@ -8,16 +8,18 @@ DEFAULT_PREVIEW_PROMPTS = "\n".join((
     "A small wooden boat on a quiet lake surrounded by autumn trees, distant mountains and soft morning light",
 ))
 EPOCHS = 5
-CASES = (
-    ("adaptive_descent", "Global replay", True),
-    ("adaptive_descent-lr450", "Global replay", True),
-    ("adaptive_inverse_descent-lr450", "Global replay", True),
-    ("adaptive_gradient-lr450", "Global replay", True),
-    ("adaptive_inverse_gradient-lr450", "Global replay", True),
-    ("adaptive_random-lr450", "Global replay", True),
-)
+RESEARCH_MODES = {
+    "repro-normal-a-lr450": "normal",
+    "repro-normal-b-lr450": "normal",
+    "repro-strict-a-lr450": "strict",
+    "repro-strict-b-lr450": "strict",
+    "repro-strict-telemetry-lr450": "telemetry",
+}
+CASES = tuple((case, "Global replay", True) for case in RESEARCH_MODES)
 
 def case_strategy(case):
+    if case in RESEARCH_MODES:
+        return "adaptive_gradient"
     return case.removesuffix("-lr450").removesuffix("-lr350")
 
 
@@ -68,6 +70,8 @@ def adjust_plan(desc, values, plan):
         stages[0].cmd.extend(["--family_option", f"selective_strategy={strategy}"])
         if strategy in STRATEGIES:
             stages[0].cmd.extend(["--family_option", "selective_budget=14"])
+    if case in RESEARCH_MODES:
+        stages[0].cmd.extend(["--family_option", f"replay_research={RESEARCH_MODES[case]}"])
     if case == "standard-matched":
         cmd = stages[0].cmd
         if "--train_blocks" in cmd:

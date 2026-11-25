@@ -1420,7 +1420,9 @@ def train_family(family, dit_path, dataset_config, *args, **kwargs):
     hold-out set aside go back to the dataset (its list emptied: training/holdout.py). Nothing was moved or copied,
     so they never left their folder; a run killed outright leaves the list, which the next Start writes afresh."""
     try:
-        return _train_family(family, dit_path, dataset_config, *args, **kwargs)
+        from fizgig.training import replay_research as _rr
+        with _rr.execution(_rr.config(kwargs.get("family_options"))):
+            return _train_family(family, dit_path, dataset_config, *args, **kwargs)
     finally:
         from fizgig.training import perf_watch as _perf_watch
         _perf_watch.finish()                 # the readout's summary: the log and the run card
@@ -1558,6 +1560,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     if context_lora_path and finetune:
         raise RuntimeError("A Context LoRA trains a LoRA on top of another one; a fine-tune trains the base model "
                            "itself, so the two don't combine. Drop --context_lora_path.")
+    from fizgig.training import replay_research as _rr
+    research_mode = _rr.config(family_options)
+    if research_mode and (desc.key != "krea2" or resume_state_dir or finetune or share_worker):
+        raise RuntimeError("Experiment 5A needs a fresh single-GPU Krea 2 LoRA run.")
     driver = desc.load_driver()
     driver.set_options(dict(family_options or {}))      # before the data: an option may shape the dataset
     _method = str((family_options or {}).get("training_method", "") or "").strip()
@@ -1632,6 +1638,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     device = torch.device("cuda")
     quant.apply_vram_cap()          # FIZGIG_SIM_VRAM_GB: behave like a smaller card
     torch.manual_seed(seed)
+    if research_mode:
+        _rr.seed_all(int(seed))
+        _rr.environment(logger, research_mode)
     os.makedirs(output_dir, exist_ok=True)
 
     # ---- sliders: a signed dial, trained at +1 and -1 ------------------------------------------------
@@ -3537,6 +3546,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             held = [g["lr"] for g in optimizer.param_groups]        # Adam is invariant to a constant on the gradient)
             for g in optimizer.param_groups:
                 g["lr"] = g["lr"] * m
+        research_mask = _rr.active_mask(net) if research_mode else None
+        research_before = (_rr.probe_before(net) if research_mode == "telemetry"
+                           and driver.selective_probe_due else None)
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
         if selective_global_replay:
             driver.record_selective_gradient_update()
@@ -3572,6 +3584,13 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             scheduler.step()
         if ema is not None:
             ema.update()                   # after the clipped step, so the average tracks what was applied
+        if research_mode:
+            research_step = driver.selective_state_dict()["optimizer_steps"]
+            _rr.record(logger, kind="hash", step=research_step, sha256=_rr.fingerprint(net),
+                       active_blocks=research_mask, next_active_blocks=list(driver.selective_active_blocks()))
+            if research_before is not None:
+                _rr.record(logger, kind="probe_telemetry", step=research_step,
+                           factors=_rr.probe_after(net, research_before))
         pending = 0
 
     def _early_final(final, epoch):
@@ -3886,11 +3905,28 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 slow_watch.set_pass(r[2], len(validator.batches) * len(validator.ts))
         finally:
             progress.start_t += time.time() - _tv       # the bar's s/it is training speed
+        if research_mode and (failed or r is None):
+            raise RuntimeError("Experiment 5A requires a successful raw validation check.")
         if failed:
             validator = None
         if r is None:
             return
         v, per_t, sec = r
+        if research_mode:
+            _rr.record(logger, kind="raw_validation", step=step_off + global_step,
+                       loss=v, per_t=per_t, timesteps=list(validator.ts))
+            if research_mode == "telemetry":
+                if ema is None:
+                    raise RuntimeError("Experiment 5A telemetry requires EMA.")
+                ema.swap_in()
+                try:
+                    er = validator.run(driver, dit, device, net, swapped=bool(swapped))
+                    if er is None:
+                        raise RuntimeError("Experiment 5A EMA validation returned no result.")
+                    _rr.record(logger, kind="ema_validation", step=step_off + global_step,
+                               loss=er[0], per_t=er[1], timesteps=list(validator.ts))
+                finally:
+                    ema.swap_out()
         last_val[0] = v                   # adaptive LR judges on it at this epoch's end
         if _meta_best[0] is None or v < _meta_best[0]:
             _meta_best[0], _meta_best[1] = v, epoch_no
@@ -4058,6 +4094,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             else:
                 logger.info("[maps] training maps: no picture could be read from the cache - off for this run")
                 maps = None
+    if research_mode:
+        if (not selective_global_replay or driver._selective_strategy != "adaptive_gradient"
+                or steps_per_epoch != 29 or accum != 1 or max_train_epochs != 5
+                or validator is None or ema is None or validation_every_steps or int(seed) != 42):
+            raise RuntimeError("Experiment 5A requires the original 29-step, five-epoch, seed-42 adaptive gradient benchmark with EMA and epoch validation.")
+        _rr.record(logger, kind="hash", step=0, sha256=_rr.fingerprint(net), active_blocks=[])
     for epoch in (_worker_epochs() if share_worker else range(start_epoch, max_train_epochs)):
         while face_phase.get("said"):        # the boost's switches during the last epoch, each on a line of its own
             logger.info(face_phase["said"].pop(0))
@@ -4473,6 +4515,14 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         watch.boundary(epoch + 1, dit, device, parkable=not swapped)
 
         done = epoch + 1
+        if research_mode:
+            # FP32 snapshots are separate from normal EMA exports.
+            net.save(os.path.join(output_dir, f"research-raw-{done:06d}.safetensors"), dtype=torch.float32)
+            ema.swap_in()
+            try:
+                net.save(os.path.join(output_dir, f"research-ema-{done:06d}.safetensors"), dtype=torch.float32)
+            finally:
+                ema.swap_out()
         # the save schedule (the Training tab's How often to save; a fine-tune saves at whole rotations)
         cadence = done < max_train_epochs and preview_due(
             done, save_every_n_epochs, *((0, 0) if ftr is not None else (save_until_epoch, save_every_n_epochs_after)))
@@ -4528,6 +4578,16 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             anchor_losses.clear()
         if slider_prompts and done < max_train_epochs:
             slider_live(done)
+        if research_mode and done == 2:
+            if global_step != 58 or driver.selective_state_dict()["optimizer_steps"] != 58:
+                raise RuntimeError("Experiment 5A did not reach exactly 58 optimizer updates.")
+            progress.close()
+            steplog.flush()
+            final = os.path.join(output_dir, f"{output_name}.safetensors")
+            save_lora(final, done)
+            _rr.record(logger, kind="complete", step=58, planned_epochs=5)
+            logger.info(f"Training complete -> {final}")
+            return final
         if stop_now[0]:                  # early stop at an epoch's check: that epoch's own saves are done
             break
 

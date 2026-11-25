@@ -79,7 +79,13 @@ def create(root, dataset, configs):
 
 def parse_log(text):
     epochs, validation, probes, rotations, gradient_updates = [], [], [], [], []
+    research = []
     for line in text.splitlines():
+        if "[replay-research] " in line:
+            try:
+                research.append(json.loads(line.split("[replay-research] ", 1)[1]))
+            except ValueError:
+                pass
         m = re.search(r"epoch (\d+)/(\d+)\s+avr_loss=" + NUM + r"\s+step=(\d+)\s+" + NUM + r"s/step", line)
         if m:
             epochs.append({"epoch": int(m[1]), "step": int(m[4]), "loss": float(m[3]), "seconds_per_step": float(m[5])})
@@ -120,8 +126,11 @@ def parse_log(text):
                 gradient_updates.append({"step": int(m[1]), "counts": ast.literal_eval(m[2])})
             except (ValueError, SyntaxError):
                 pass
-    return {"epochs": epochs, "validation": validation, "probes": sorted(probes, key=lambda p: p["step"]),
-            "rotations": rotations, "gradient_updates": gradient_updates}
+    out = {"epochs": epochs, "validation": validation, "probes": sorted(probes, key=lambda p: p["step"]),
+           "rotations": rotations, "gradient_updates": gradient_updates}
+    if research:
+        out["research"] = research
+    return out
 
 
 def update(output, case, status, *, log_path=None, reason="", wall_seconds=None):
@@ -150,6 +159,15 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                 run["logs"].append(dest.relative_to(root).as_posix())
                 raw = "\n".join((root / f).read_text(encoding="utf-8", errors="replace") for f in run["logs"])
                 run.update(parse_log(raw))
+                if status == "finished" and case.startswith("repro-"):
+                    rows = run.get("research", [])
+                    hashes = [r.get("step") for r in rows if r.get("kind") == "hash"]
+                    checks = [r.get("step") for r in rows if r.get("kind") == "raw_validation"]
+                    ema_checks = [r.get("step") for r in rows if r.get("kind") == "ema_validation"]
+                    if (hashes != list(range(59)) or checks != [29, 58]
+                            or not any(r.get("kind") == "complete" and r.get("step") == 58 for r in rows)
+                            or (case == "repro-strict-telemetry-lr450" and ema_checks != [29, 58])):
+                        run.update(status="failed", reason="Incomplete Experiment 5A diagnostics; do not compare this run.")
             perf = output / (".perf_" + run["name"] + ".json")
             if perf.is_file():
                 try:
