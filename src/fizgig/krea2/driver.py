@@ -316,7 +316,7 @@ class Krea2Driver(FamilyDriver):
         strategy = self._selective_strategy
         if strategy in ("random", "rotational", "static_early"):
             return {"cosines": {}}
-        if strategy in ("high_gradient", "low_gradient"):
+        if strategy in ("high_gradient", "low_gradient", "walking_coverage"):
             scores = {}
             for index, params in self._selective_params_by_block.items():
                 if not all(p.requires_grad and p.grad is not None for p in params):
@@ -347,6 +347,16 @@ class Krea2Driver(FamilyDriver):
                 cosines[index] = cosine
         return {"cosines": cosines}
 
+    def _selective_walking_blocks(self, step):
+        from fizgig.krea2.selective_policy import select_blocks
+        elapsed = step - self._selective_warmup_updates
+        probe_index = elapsed // self._selective_reactivate_every
+        # Full probes do not consume a phase. The saved optimizer step
+        # determines the phase, including after checkpoint resume.
+        phase = elapsed - probe_index
+        return select_blocks("walking_coverage", self._selective_scores,
+                             self._selective_budget, probe_index, walk_phase=phase)
+
     def finish_selective_optimizer_step(self, snapshot):
         """Score a probe and choose active blocks for the next optimizer window. Returns a status for logging."""
         if not self.selective_global_replay:
@@ -367,8 +377,10 @@ class Krea2Driver(FamilyDriver):
             if self._selective_strategy != "legacy":
                 from fizgig.krea2.selective_policy import select_blocks
                 probe_index = (step - self._selective_warmup_updates) // self._selective_reactivate_every
-                active = select_blocks(self._selective_strategy, self._selective_scores,
-                                       self._selective_budget, probe_index)
+                active = (self._selective_walking_blocks(step)
+                          if self._selective_strategy == "walking_coverage"
+                          else select_blocks(self._selective_strategy, self._selective_scores,
+                                             self._selective_budget, probe_index))
             self._selective_active = active or set(range(self._selective_block_count))
             self._set_selective_active_parameters()
             return {"kind": "probe", "active": len(self._selective_active), "total": self._selective_block_count,
@@ -382,6 +394,11 @@ class Krea2Driver(FamilyDriver):
             self._selective_active = set(range(self._selective_block_count))
             self._set_selective_active_parameters()
             return {"kind": "reactivation", "active": self._selective_block_count,
+                    "total": self._selective_block_count, "scores": list(self._selective_scores)}
+        if self._selective_strategy == "walking_coverage" and step >= self._selective_warmup_updates:
+            self._selective_active = self._selective_walking_blocks(step)
+            self._set_selective_active_parameters()
+            return {"kind": "rotation", "active": len(self._selective_active),
                     "total": self._selective_block_count, "scores": list(self._selective_scores)}
         return None
 

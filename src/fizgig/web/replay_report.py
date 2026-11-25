@@ -78,7 +78,7 @@ def create(root, dataset, configs):
 
 
 def parse_log(text):
-    epochs, validation, probes = [], [], []
+    epochs, validation, probes, rotations = [], [], [], []
     for line in text.splitlines():
         m = re.search(r"epoch (\d+)/(\d+)\s+avr_loss=" + NUM + r"\s+step=(\d+)\s+" + NUM + r"s/step", line)
         if m:
@@ -108,7 +108,14 @@ def parse_log(text):
                     record.update(active_blocks=active, scores=scores, strategy=m[3])
             except (ValueError, SyntaxError):
                 pass
-    return {"epochs": epochs, "validation": validation, "probes": sorted(probes, key=lambda p: p["step"])}
+        m = re.search(r"\[selective-replay\] rotation next_step=(\d+) active_blocks=(\[.*?\]) strategy=(\w+)", line)
+        if m:
+            try:
+                rotations.append({"next_step": int(m[1]), "active_blocks": ast.literal_eval(m[2]), "strategy": m[3]})
+            except (ValueError, SyntaxError):
+                pass
+    return {"epochs": epochs, "validation": validation, "probes": sorted(probes, key=lambda p: p["step"]),
+            "rotations": rotations}
 
 
 def update(output, case, status, *, log_path=None, reason="", wall_seconds=None):

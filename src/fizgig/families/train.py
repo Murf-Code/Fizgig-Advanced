@@ -3546,6 +3546,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     logger.info("[selective-replay] active_blocks=%s scores=%s strategy=%s step=%s",
                                 driver.selective_active_blocks(), selective_status["scores"],
                                 driver._selective_strategy, driver.selective_state_dict()["optimizer_steps"])
+                elif selective_status["kind"] == "rotation":
+                    logger.info("[selective-replay] rotation next_step=%s active_blocks=%s strategy=%s",
+                                driver.selective_state_dict()["optimizer_steps"] + 1,
+                                driver.selective_active_blocks(), driver._selective_strategy)
                 else:
                     logger.info(f"[selective-replay] periodic reactivation: all "
                                 f"{selective_status['total']} blocks are active for the next probe update.")

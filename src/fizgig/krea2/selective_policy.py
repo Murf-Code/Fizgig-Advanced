@@ -2,12 +2,12 @@
 import math
 import random
 
-STRATEGIES = ("downhill", "uphill", "high_gradient", "low_gradient", "random", "rotational", "static_early")
+STRATEGIES = ("downhill", "uphill", "high_gradient", "low_gradient", "random", "rotational", "static_early", "walking_coverage")
 
 
-def select_blocks(strategy, scores, budget, probe_index, seed=42):
+def select_blocks(strategy, scores, budget, probe_index, seed=42, *, walk_phase=0):
     n = len(scores)
-    if strategy not in STRATEGIES or not 1 <= budget <= n or probe_index < 0:
+    if strategy not in STRATEGIES or not 1 <= budget <= n or probe_index < 0 or walk_phase < 0:
         raise ValueError("Invalid selective benchmark strategy, budget or probe index.")
     if strategy == "random":
         return set(random.Random(seed + probe_index).sample(range(n), budget))
@@ -22,4 +22,15 @@ def select_blocks(strategy, scores, budget, probe_index, seed=42):
         v = scores[i]
         return float(v) if v is not None and math.isfinite(v) else 0.0
     order.sort(key=value)
+    if strategy == "walking_coverage":
+        # Keep half of the budget for gradient priorities and walk the other
+        # slots through the remaining blocks in ascending order.
+        priority_count = budget // 2
+        priority = set(order[-priority_count:]) if priority_count else set()
+        remaining = sorted(set(range(n)) - priority)
+        coverage_count = budget - priority_count
+        return priority | {
+            remaining[(i * len(remaining) // coverage_count + walk_phase) % len(remaining)]
+            for i in range(coverage_count)
+        }
     return set(order[-budget:] if strategy in ("downhill", "high_gradient") else order[:budget])

@@ -50,3 +50,16 @@ def test_final_bundle_excludes_weights(tmp_path):
     rr.update(out, "a", "finished")
     with zipfile.ZipFile(root / rr.BUNDLE) as bundle:
         assert set(bundle.namelist()) == {rr.REPORT, rr.COMBINED, "a/sample/sample.png"}
+
+
+def test_walking_rotation_records_are_separate_from_probes():
+    log = ("[selective-replay] probe 8: 2/4 blocks active\n"
+           "[selective-replay] active_blocks=[0, 1] scores=[4, 3, 2, 1] strategy=walking_coverage step=8\n"
+           "steps: 9%|...| INFO:[selective-replay] rotation next_step=10 active_blocks=[0, 2] strategy=walking_coverage\n"
+           "[selective-replay] rotation next_step=11 active_blocks=[0, 3] strategy=walking_coverage\n")
+    result = rr.parse_log(log)
+    assert len(result["probes"]) == 1
+    assert result["rotations"] == [
+        {"next_step": 10, "active_blocks": [0, 2], "strategy": "walking_coverage"},
+        {"next_step": 11, "active_blocks": [0, 3], "strategy": "walking_coverage"},
+    ]

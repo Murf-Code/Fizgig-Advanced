@@ -17,6 +17,7 @@ CASES = (
     ("uphill-lr450", "Global replay", True),
     ("random-lr450", "Global replay", True),
     ("static_early-lr450", "Global replay", True),
+    ("walking_coverage-lr450", "Global replay", True),
 )
 
 def settings(group, output_root, epochs=EPOCHS, prompt=""):

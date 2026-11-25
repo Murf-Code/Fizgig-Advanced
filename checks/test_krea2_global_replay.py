@@ -626,3 +626,41 @@ def test_masked_global_replay_matches_standard_loss_gradients_and_optimizer_step
         opt.step()
     for a, b in zip(replay_params, direct_params):
         assert torch.allclose(a, b, rtol=2e-3, atol=2e-3)
+
+
+def test_walking_coverage_advances_per_update_and_preserves_probe_and_resume():
+    dit, net = _selective_tiny_dit(layers=4)
+    driver = Krea2Driver()
+    options = {"training_method": "global_replay", "selective_block_check": "1",
+               "selective_strategy": "walking_coverage", "selective_budget": "2"}
+    driver.set_options(options)
+    driver.configure_selective_global_replay(dit, net, warmup_updates=2, reactivate_every=5)
+    params = driver._selective_params_by_block
+    assert driver.finish_selective_optimizer_step(None) is None
+    for i, values in params.items():
+        for p in values:
+            p.grad = torch.ones_like(p) * (4 - i)
+    snapshot = driver.selective_snapshot_before_step()
+    assert set(snapshot["cosines"]) == set(range(4))
+    assert driver.finish_selective_optimizer_step(snapshot)["kind"] == "probe"
+    assert driver.selective_active_blocks() == [0, 1]
+    assert driver.finish_selective_optimizer_step(None)["kind"] == "rotation"
+    assert driver.selective_active_blocks() == [0, 2]
+    state = driver.selective_state_dict()
+    dit2, net2 = _selective_tiny_dit(layers=4)
+    resumed = Krea2Driver()
+    resumed.set_options(options)
+    resumed.configure_selective_global_replay(dit2, net2, warmup_updates=2, reactivate_every=5)
+    resumed.load_selective_state_dict(state)
+    for d in (driver, resumed):
+        assert d.finish_selective_optimizer_step(None)["kind"] == "rotation"
+        assert d.selective_active_blocks() == [0, 3]
+        assert d.finish_selective_optimizer_step(None)["kind"] == "rotation"
+        assert d.selective_active_blocks() == [0, 1]
+        assert d.finish_selective_optimizer_step(None)["kind"] == "reactivation"
+        assert d.selective_probe_due
+        assert d.selective_active_blocks() == [0, 1, 2, 3]
+        assert d.finish_selective_optimizer_step(snapshot)["kind"] == "probe"
+        assert d.selective_active_blocks() == [0, 2]
+        for i, values in d._selective_params_by_block.items():
+            assert all(p.requires_grad == (i in (0, 2)) for p in values)

@@ -27,3 +27,29 @@ def test_unknown_and_tied_scores_are_budgeted():
 def test_static_early_is_fixed():
     for probe in range(10):
         assert select_blocks("static_early", [None] * 28, 14, probe) == set(range(13)) | {27}
+
+
+def test_walking_coverage_exact_three_phase_cycle():
+    scores = list(range(28, 0, -1))
+    priority = set(range(7))
+    before = random.getstate()
+    coverage = []
+    for phase in range(6):
+        chosen = select_blocks("walking_coverage", scores, 14, 0, walk_phase=phase)
+        assert chosen == priority | set(range(7 + phase % 3, 28, 3))
+        coverage.append(chosen - priority)
+    assert set.union(*coverage[:3]) == set(range(7, 28))
+    assert sum(map(len, coverage[:3])) == 21
+    assert random.getstate() == before
+
+
+def test_walking_coverage_handles_changed_priorities_and_small_budgets():
+    scores = [i if i % 2 else -i for i in range(28)]
+    priority = {15, 17, 19, 21, 23, 25, 27}
+    for phase in range(3):
+        chosen = select_blocks("walking_coverage", scores, 14, 2, walk_phase=phase)
+        assert len(chosen) == 14 and priority <= chosen
+    for n in range(1, 12):
+        for budget in range(1, n + 1):
+            for phase in range(4):
+                assert len(select_blocks("walking_coverage", [None] * n, budget, 0, walk_phase=phase)) == budget
