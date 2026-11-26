@@ -4,6 +4,7 @@ The rates are starting points from existing Fizgig recipes, not calibrated optim
 This is a one-seed feasibility pilot, not a definitive optimizer ranking.
 """
 import os
+from fizgig.web import memory_benchmark
 
 DEFAULT_PREVIEW_PROMPTS = "\n".join((
     "Ferwildir, anthropomorphic red fox, female, full body, wearing a green traveling cloak, standing on a stone bridge above a forest stream, expressive eyes, detailed fur",
@@ -91,7 +92,7 @@ TSD_FIT_CASES = tuple(("fit-" + case, opt, lr, args)
 
 def is_feasibility(case):
     return (case == FEASIBILITY_CASE or case in {x[0] for x in RESOLUTION_CASES}
-            or case in {x[0] for x in TSD_FIT_CASES})
+            or case in {x[0] for x in TSD_FIT_CASES} or case in memory_benchmark.CASE_MAP)
 
 
 def optimizer_settings(group, output_root, short=False):
@@ -152,6 +153,11 @@ def muon_me_settings(group, output_root):
             for case, opt, lr, args, swap, epochs in MUON_ME_CASES]
 
 
+def memory_settings(group, output_root):
+    common = next(v for v in muon_me_settings(group, output_root) if v['__geometry_compare'] == 'muon-me-chunk128')
+    return memory_benchmark.settings(group, output_root, common)
+
+
 def resolution_settings(group, output_root):
     v, = feasibility_settings(group, output_root)
     return [{**v, "__geometry_compare": case,
@@ -178,7 +184,9 @@ def adjust_plan(desc, values, plan):
     cmd = stages[0].cmd
     if "--holdout_file" not in cmd and "holdout_file =" not in plan.dataset_toml:
         plan.problems.append("Matrix geometry comparison requires a validation holdout.")
-    if is_feasibility(case):
+    if case in memory_benchmark.CASE_MAP:
+        memory_benchmark.apply_flags(cmd, case)
+    elif is_feasibility(case):
         cmd.extend(["--family_option", f"geometry_feasibility_steps={FEASIBILITY_STEPS}"])
     elif "--sample_prompts" not in cmd:
         plan.problems.append("Matrix geometry comparison requires usable sample prompts.")

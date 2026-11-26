@@ -7,6 +7,7 @@ import threading
 import time
 import zipfile
 from fizgig.web.geometry_benchmark import is_feasibility
+from fizgig.web import memory_benchmark
 from pathlib import Path
 
 LOG = logging.getLogger(__name__)
@@ -55,6 +56,10 @@ def _save(root, report):
         lines.extend(["", "=" * 78, r["case"] + " | " + r["status"], "=" * 78])
         if r.get("reason"):
             lines.append(r["reason"])
+        if r.get("memory_phase_peaks_bytes"):
+            lines.append("Memory phase peaks (allocated/reserved bytes): " + json.dumps(r["memory_phase_peaks_bytes"], sort_keys=True))
+        if r.get("memory_states"):
+            lines.append("Last memory inventory: " + json.dumps(r["memory_states"][-1], sort_keys=True))
         for f in r.get("logs", []):
             try:
                 lines.append((root / f).read_text(encoding="utf-8", errors="replace"))
@@ -116,7 +121,7 @@ def parse_log(text):
         if m:
             feasibility = {"updates": int(m[1]), "cuda_peak_allocated_bytes": int(m[2]),
                            "cuda_peak_reserved_bytes": int(m[3]), "training_wall_seconds": float(m[4])}
-    return {"epochs": epochs, "validation": validation, "feasibility": feasibility,
+    return {**memory_benchmark.parse_memory_log(text), "epochs": epochs, "validation": validation, "feasibility": feasibility,
             "reported_buckets": buckets, "failure_kind": failure,
             "optimizer_timing": optimizer_timing, "tsd_stats": tsd_stats, "tangent_stats": tangent_stats,
             "optimizer_ms_mean_after_warmup": (sum(x["ms"] for x in optimizer_timing if x["update"] > 3) /
@@ -151,6 +156,10 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                 run.update(parse_log(raw))
             if is_feasibility(case) and status == "finished" and not run.get("feasibility"):
                 run.update(status="failed", reason="Missing feasibility completion telemetry; do not infer GPU fit.")
+            if case in memory_benchmark.CASE_MAP and run["status"] == "finished":
+                problem = memory_benchmark.verify_memory_run(case, run)
+                if problem:
+                    run.update(status="failed", reason=problem)
             if status == "failed" and run.get("failure_kind") == "cuda_oom":
                 run["reason"] = "CUDA out of memory (fixed settings; no automatic reduction)."
             perf = output / (".perf_" + run["name"] + ".json")
