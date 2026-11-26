@@ -28,7 +28,7 @@ def test_scaling():
     m=metrics(case('near'),[2.,4.],[1.,2.],[1.,2.]); assert m['base_mse']==2.5
 
 def test_shape_reject():
-    with pytest.raises(ValueError): metrics(case(),[[1.],[2.]],[1.,2.],[1.,2.])
+    with pytest.raises(ValueError): metrics(case(),[[1.],[2.]],[1.,2.],[1.,2.],[1.,2.])
 @pytest.mark.parametrize('bad',[np.nan,np.inf,-np.inf])
 def test_nonfinite(bad):
     with pytest.raises(ValueError): metrics(case(),[bad],[1.],[1.],[1.])
