@@ -43,6 +43,14 @@ def _save(root, report):
     if any(r["case"].startswith("calibration-") for r in report["runs"]):
         report["experiment"] = "5C"
         report["calibration_summary"] = calibration_summary(report["runs"])
+    multi = [r for r in report["runs"] if r["case"].startswith("movement-multi-")]
+    if multi:
+        report["experiment"] = "6C.2k-D"
+        panels = {q["panel_hash"] for r in multi for q in r.get("movement_multi", {}).get("probes", [])}
+        report["movement_multi_summary"] = {"completed_probes": sum(
+            len(r.get("movement_multi", {}).get("probes", [])) for r in multi),
+            "same_panel_across_seeds": len(panels) == 1 if all(r["status"] == "finished" for r in multi) else None,
+            "scope": "development_target_only"}
     report["updated_at"] = time.time()
     _atomic(root / REPORT, json.dumps(report, indent=2, allow_nan=False))
     lines = ["Fizgig Global Replay comparison", "Status: " + report["status"],
@@ -69,7 +77,8 @@ def _save(root, report):
                 bundle.write(root / name, name)
             for run in report["runs"]:
                 diagnostics = [f"{run['output']}/{name}" for name in
-                               ("movement-pilot.json", "movement-isolation.json", "movement-dual.json")]
+                               ("movement-pilot.json", "movement-isolation.json", "movement-dual.json",
+                                "movement-dual-step04.json", "movement-dual-step08.json", "movement-dual-step12.json")]
                 for name in dict.fromkeys(run.get("samples", []) + run.get("logs", []) + diagnostics):
                     path = root / name
                     if path.is_file():
@@ -202,39 +211,55 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                             or not any(r.get("kind") == "complete" and r.get("step") == 58 for r in rows)
                             or (case == "repro-strict-telemetry-lr450" and ema_checks != [29, 58])):
                         run.update(status="failed", reason="Incomplete Experiment 5A diagnostics; do not compare this run.")
-                if status == "finished" and case == "movement-dual-lr450":
+                if status == "finished" and (case == "movement-dual-lr450" or case in
+                        ("movement-multi-seed42-lr450", "movement-multi-seed43-lr450")):
                     try:
-                        pilot = _read_json(output / "movement-dual.json")
+                        multi = case.startswith("movement-multi-")
+                        probe_steps = (4, 8, 12) if multi else (8,)
                         rows = run.get("research", [])
                         hashes = [r["step"] for r in rows if r.get("kind") == "hash"]
                         completed = [r for r in rows if r.get("kind") == "complete"]
                         markers = [r for r in rows if r.get("kind") == "movement_dual"]
-                        expected = {"uniform", "static26", "static13", "adaptive_low_rms", "adaptive_movement"}
-                        matching = pilot["matching"]
-                        aliases = pilot["aliases"]
-                        geometry = pilot["endpoint_geometry"]
-                        names = set(aliases.values())
-                        count = 4 * len(pilot["probe_units"])
-                        if (pilot["status"] != "completed" or pilot["step"] != 8
-                                or pilot["experiment"] != "6C.2k-C" or not pilot["integrity_passed"]
-                                or pilot["scope"] != "development_target_only"
-                                or pilot["parent_rollback"] != "exact_registered_state"
-                                or not matching["matched"] or set(matching["arms"]) != expected
-                                or set(aliases) != expected | {"decay", "quarter", "half", "full"}
-                                or set(geometry) != names or not count
-                                or set(pilot["evaluators"]) != {"native", "weight_only"}
-                                or any(not v["decay_repeat_exact"] or set(v["restored"]) != names
-                                       or set(v["arms"]) != names
-                                       or any(len(a["rows"]) != count for a in v["arms"].values())
-                                       for v in pilot["evaluators"].values())
-                                or max(geometry[aliases[n]]["fp32"] for n in expected)
-                                   - min(geometry[aliases[n]]["fp32"] for n in expected) > matching["tolerance"]
-                                or len(completed) != 1 or not 8 <= completed[0]["step"] <= 40
-                                or hashes != list(range(completed[0]["step"] + 1))
-                                or len(markers) != 1 or markers[0]["step"] != 8):
-                            raise ValueError("incomplete dual diagnostics")
-                        run["movement_dual"] = {"report": "movement-dual.json",
-                            "integrity": True, "matched": True, "unique_endpoints": len(names)}
+                        probes = []
+                        for probe_step in probe_steps:
+                            filename = f"movement-dual-step{probe_step:02d}.json" if multi else "movement-dual.json"
+                            pilot = _read_json(output / filename)
+                            expected = {"uniform", "static26", "static13", "adaptive_low_rms", "adaptive_movement"}
+                            matching = pilot["matching"]
+                            aliases = pilot["aliases"]
+                            geometry = pilot["endpoint_geometry"]
+                            names = set(aliases.values())
+                            count = 4 * len(pilot["probe_units"])
+                            if (pilot["status"] != "completed" or pilot["step"] != probe_step
+                                    or pilot["experiment"] != "6C.2k-C" or not pilot["integrity_passed"]
+                                    or pilot["scope"] != "development_target_only"
+                                    or pilot["parent_rollback"] != "exact_registered_state"
+                                    or not matching["matched"] or set(matching["arms"]) != expected
+                                    or set(aliases) != expected | {"decay", "quarter", "half", "full"}
+                                    or set(geometry) != names or not count
+                                    or set(pilot["evaluators"]) != {"native", "weight_only"}
+                                    or any(not v["decay_repeat_exact"] or set(v["restored"]) != names
+                                           or set(v["arms"]) != names
+                                           or any(len(a["rows"]) != count for a in v["arms"].values())
+                                           for v in pilot["evaluators"].values())
+                                    or max(geometry[aliases[n]]["fp32"] for n in expected)
+                                       - min(geometry[aliases[n]]["fp32"] for n in expected) > matching["tolerance"]
+                                    or len(completed) != 1 or not max(probe_steps) <= completed[0]["step"] <= 40
+                                    or hashes != list(range(completed[0]["step"] + 1))
+                                    or [m["step"] for m in markers] != list(probe_steps)
+                                    or any(m.get("status") != "completed" or not m.get("integrity")
+                                           or not m.get("matched") or m.get("rollback") != "exact_registered_state" for m in markers)):
+                                raise ValueError("incomplete dual diagnostics")
+                            probes.append({"report": filename, "step": probe_step,
+                                "panel_hash": pilot["panel_hash"], "selected_blocks": pilot["selected_blocks"],
+                                "unique_endpoints": len(names), "integrity": True, "matched": True})
+                        if len({q["panel_hash"] for q in probes}) != 1:
+                            raise ValueError("evaluation panel changed between checkpoints")
+                        if multi:
+                            run["movement_multi"] = {"probes": probes, "integrity": True, "matched": True}
+                        else:
+                            run["movement_dual"] = {"report": "movement-dual.json",
+                                "integrity": True, "matched": True, "unique_endpoints": len(names)}
                     except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
                         run.update(status="failed", reason="Invalid movement dual diagnostics: " + str(exc))
                 if status == "finished" and case == "movement-isolation-lr450":

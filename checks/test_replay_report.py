@@ -100,3 +100,19 @@ def test_dual_failed_bundle_includes_report(tmp_path):
     with zipfile.ZipFile(root / rr.BUNDLE) as bundle:
         assert set(bundle.namelist()) == {rr.REPORT, rr.COMBINED,
             "movement-dual-lr450/movement-dual.json"}
+
+
+def test_multi_partial_bundle_includes_each_probe(tmp_path):
+    import zipfile
+    root = tmp_path / "comparison"
+    case = "movement-multi-seed42-lr450"
+    rr.create(root, "dataset", [{"__replay_compare": case,
+              "LORA_NAME": "multi", "LEARNING_RATE": "0.00045"}])
+    out = root / case
+    out.mkdir()
+    for step in (4, 8):
+        (out / f"movement-dual-step{step:02d}.json").write_text('{"status":"failed"}')
+    rr.update(out, case, "failed")
+    with zipfile.ZipFile(root / rr.BUNDLE) as bundle:
+        assert set(bundle.namelist()) == {rr.REPORT, rr.COMBINED,
+            f"{case}/movement-dual-step04.json", f"{case}/movement-dual-step08.json"}

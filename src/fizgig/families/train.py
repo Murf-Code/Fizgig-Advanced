@@ -1566,6 +1566,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     movement_pilot_step = int((family_options or {}).get("movement_pilot_step", 0) or 0)
     movement_isolation = str((family_options or {}).get("movement_isolation", "0")) == "1"
     movement_dual = str((family_options or {}).get("movement_dual", "0")) == "1"
+    movement_dual_multi = str((family_options or {}).get("movement_dual_multi", "0")) == "1"
+    if movement_dual_multi and not movement_dual:
+        raise RuntimeError("Multi-checkpoint evaluation requires dual evaluation.")
+    movement_probe_steps = (4, 8, 12) if movement_dual_multi else ((movement_pilot_step,) if movement_pilot_step else ())
     if movement_dual and movement_isolation:
         raise RuntimeError("Cannot combine movement isolation and dual evaluation.")
     if (movement_isolation or movement_dual) and not movement_pilot_step:
@@ -3583,11 +3587,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             held = [g["lr"] for g in optimizer.param_groups]        # Adam is invariant to a constant on the gradient)
             for g in optimizer.param_groups:
                 g["lr"] = g["lr"] * m
-        if movement_pilot_step and research_updates + 1 == movement_pilot_step:
+        if research_updates + 1 in movement_probe_steps:
+            probe_step = research_updates + 1
             from fizgig.training.replay_live import run_pilot
             logger.info("[movement-pilot] Starting %s at update %s",
                         "6C.2k-C dual evaluation" if movement_dual else ("6C.2k-B numerical isolation" if movement_isolation else "development-only movement sensitivity fork"),
-                        movement_pilot_step)
+                        probe_step)
             pilot_report = run_pilot(
                 driver=driver, dit=dit, net=net, optimizer=optimizer, validator=validator,
                 device=device, swapped=bool(swapped), generators=(gen,),
@@ -3597,10 +3602,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                              "shadow": ema.shadow, "backup": ema._backup} if ema is not None else None),
                     "pending": pending, "research_updates": research_updates,
                     "driver_options": dict(driver.options)},
-                output=os.path.join(output_dir, "movement-dual.json" if movement_dual else ("movement-isolation.json" if movement_isolation else "movement-pilot.json")),
-                step=movement_pilot_step, isolation=movement_isolation, dual=movement_dual)
+                output=os.path.join(output_dir, f"movement-dual-step{probe_step:02d}.json" if movement_dual_multi else ("movement-dual.json" if movement_dual else ("movement-isolation.json" if movement_isolation else "movement-pilot.json"))),
+                step=probe_step, isolation=movement_isolation, dual=movement_dual)
             if movement_dual:
-                _rr.record(logger, kind="movement_dual", step=movement_pilot_step,
+                _rr.record(logger, kind="movement_dual", step=probe_step,
                            status=pilot_report["status"], integrity=pilot_report["integrity_passed"],
                            matched=pilot_report["matching"]["matched"], rollback=pilot_report["parent_rollback"])
             elif movement_isolation:
@@ -4171,11 +4176,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     if research_mode:
         if movement_pilot_step:
             if (not global_replay or selective_global_replay or accum != 1 or bsz != 1
-                    or max_train_epochs != 1 or not 8 <= steps_per_epoch <= 40
+                    or max_train_epochs != 1 or not max(movement_probe_steps) <= steps_per_epoch <= 40
                     or validator is None or not validator.ready or ema is None
                     or not set(validator.wanted) <= set(val_held) or len(validator.ts) != 4
-                    or validation_every_steps or int(seed) != 42):
-                raise RuntimeError("Movement sensitivity needs 8-40 training steps, one epoch, unrestricted Global Replay, cached hold-outs and seed 42.")
+                    or validation_every_steps or int(seed) not in ((42, 43) if movement_dual_multi else (42,))):
+                raise RuntimeError("Movement sensitivity needs all planned probe steps (up to 40), one epoch, unrestricted Global Replay, cached hold-outs and the fixed training seed.")
         elif (not global_replay or steps_per_epoch != 29 or accum != 1 or max_train_epochs != 5
                 or validator is None or ema is None or validation_every_steps or int(seed) != 42
                 or (research_mode not in ("causal", "calibration") and not selective_global_replay)
