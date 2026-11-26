@@ -72,6 +72,8 @@ def main():
     p.add_argument("mode",choices=("train","evaluate"))
     p.add_argument("--repo",type=Path,required=True)
     p.add_argument("--archive",type=Path)
+    p.add_argument("--case",default="legacy")
+    p.add_argument("--stock-trace",type=Path)
     p.add_argument("--attempt-result",type=Path)
     p.add_argument("--dit",type=Path)
     p.add_argument("--snapshot",type=Path)
@@ -89,11 +91,19 @@ def main():
     from fizgig.families import quant
     if a.mode=="train":
         # parse_known_args keeps everything after the explicit delimiter.
-        if not a.archive or tail[:1]!=["--"] or "--finetune" in tail or "--resume" in tail:
+        if tail[:1]!=["--"] or "--finetune" in tail or "--resume" in tail:
             p.error("expected archive and fresh LoRA trainer arguments after --")
         from fizgig.families import train
         original=quant.load_base
-        quant.load_base=compact_loader(a.archive,original)
+        if a.archive:
+            quant.load_base=compact_loader(a.archive,original)
+        observer=None
+        if a.case!="legacy":
+            from research_trace import Trace
+            if a.case!="stock" and not a.stock_trace:
+                raise ValueError("paired stock trace required")
+            observer=Trace(a.case,a.stock_trace)
+            train._LITTLEBIT_TRACE=observer
         # Record allocator maxima across the trainer's per-epoch resets.
         from fit_queue import atomic_json, OOM_EXIT
         started = time.monotonic()
@@ -111,6 +121,8 @@ def main():
         try:
             sys.argv=[sys.argv[0],*tail[1:]]
             train.main()
+            if observer is not None:
+                observer.finish()
             metrics["status"] = "finished"
         except torch.cuda.OutOfMemoryError as exc:
             metrics.update(status="cuda_oom", error=str(exc))
@@ -125,6 +137,7 @@ def main():
             finally:
                 torch.cuda.reset_peak_memory_stats = reset
                 quant.load_base = original
+                train._LITTLEBIT_TRACE=None
                 metrics["seconds"] = time.monotonic()-started
                 if a.attempt_result:
                     atomic_json(a.attempt_result,metrics)

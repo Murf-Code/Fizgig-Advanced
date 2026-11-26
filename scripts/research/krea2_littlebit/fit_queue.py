@@ -57,11 +57,12 @@ def run_sweep(command, out, launch=subprocess.run):
     work = out / "fit_attempts"
     work.mkdir(exist_ok=False)
     report = out / "fit-report.json"
-    info = {"schedule": list(SWAP_STEPS), "attempts": [], "selected_swaps": None,
+    schedule = (0,) if "--precision" in original and arg(original,"--precision")=="nf4" else SWAP_STEPS
+    info = {"schedule": list(schedule), "attempts": [], "selected_swaps": None,
             "status": "running"}
     atomic_json(report, info)
     try:
-        for swaps in SWAP_STEPS:
+        for swaps in schedule:
             folder = work / f"swap-{swaps:02d}"
             folder.mkdir()
             attempt_hold = folder / "holdout.json"
@@ -133,15 +134,21 @@ def run_sweep(command, out, launch=subprocess.run):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", type=Path, required=True)
-    p.add_argument("--archive", type=Path, required=True)
+    p.add_argument("--archive", type=Path)
+    p.add_argument("--case", default="legacy")
+    p.add_argument("--stock-trace", type=Path)
     argv = sys.argv[1:]
     cut = argv.index("--")
     a = p.parse_args(argv[:cut])
     args = argv[cut+1:]
     sys.path.insert(0, str(a.repo.resolve() / "src"))
     runner = Path(__file__).with_name("native_runner.py")
-    command = [sys.executable, str(runner), "train", "--repo", str(a.repo),
-               "--archive", str(a.archive), "--", *args]
+    command = [sys.executable, str(runner), "train", "--repo", str(a.repo), "--case", a.case]
+    if a.archive:
+        command += ["--archive",str(a.archive)]
+    if a.stock_trace:
+        command += ["--stock-trace",str(a.stock_trace)]
+    command += ["--",*args]
     sys.exit(run_sweep(command, arg(args, "--output_dir")))
 
 

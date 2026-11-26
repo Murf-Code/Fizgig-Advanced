@@ -54,6 +54,9 @@ from fizgig.utils.upright import open_upright
 
 logger = logging.getLogger(__name__)
 
+# Set only inside the process-isolated research worker, never normal training.
+_LITTLEBIT_TRACE = None
+
 ADAPTER = "training_adapter"
 CONTEXT = "context"
 SPEED = "speed_lora"
@@ -1632,6 +1635,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     device = torch.device("cuda")
     quant.apply_vram_cap()          # FIZGIG_SIM_VRAM_GB: behave like a smaller card
     torch.manual_seed(seed)
+    if _LITTLEBIT_TRACE is not None:
+        _LITTLEBIT_TRACE.seed(seed)
     os.makedirs(output_dir, exist_ok=True)
 
     # ---- sliders: a signed dial, trained at +1 and -1 ------------------------------------------------
@@ -1940,7 +1945,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     _reg_capped = bool(_reg_resume.capped(group, reg_per_epoch))
     _reg_limit(group, reg_per_epoch, say=True, quota_mode=_reg_mode)
     loader = DataLoader(group, batch_size=1, shuffle=True, num_workers=0,
-                        collate_fn=(lambda b: b[0]) if slider_prompts else _Collator(shared_epoch, group))
+                        collate_fn=(lambda b: b[0]) if slider_prompts else _Collator(shared_epoch, group),
+                        **({"generator": torch.Generator().manual_seed(seed+104729)} if _LITTLEBIT_TRACE is not None else {}))
     # Background loading (training/prefetch.py): the next batches are read from the cache while the GPU trains -
     # the same batches in the same order. Its timing feeds the CPU / GPU / disk readout either way.
     from fizgig.training import prefetch as _prefetch
@@ -2479,7 +2485,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 raise RuntimeError(f"--train_blocks: {', '.join(unknown)} are not {desc.display_name} blocks")
             blocks = set(train_blocks)
             logger.info(f"[blocks] the LoRA trains {len(blocks)} of {len(known)} blocks only: {', '.join(train_blocks)}")
+        if _LITTLEBIT_TRACE is not None:
+            _LITTLEBIT_TRACE.seed(seed+2718)
         net.add_trainable(network_dim, network_alpha, blocks=blocks, kind=network_type, factor=lokr_factor)
+        if _LITTLEBIT_TRACE is not None:
+            _LITTLEBIT_TRACE.start(net,output_dir,seed)
         if selective_global_replay:
             driver.configure_selective_global_replay(dit, net, warmup_updates=8, reactivate_every=8, score_decay=0.5)
             logger.info("[selective-replay] all blocks train for the first 8 optimizer updates; then each block's "
@@ -3583,6 +3593,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             for g in optimizer.param_groups:
                 g["lr"] = g["lr"] * m
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
+        if _LITTLEBIT_TRACE is not None:
+            _LITTLEBIT_TRACE.pre_update()
         optimizer.step()
         if selective_global_replay:
             selective_status = driver.finish_selective_optimizer_step(selective_snapshot)
@@ -4304,6 +4316,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     # step's forward and backward, so the backward stops at the first trained block and they get no grad
                     _frozen_now = _step_freeze(driver.step_frozen_blocks(batch))
                     _lm = _loss_mask(batch)
+                    if _LITTLEBIT_TRACE is not None:
+                        _LITTLEBIT_TRACE.begin(batch,latents,cond,gen)
                     loss, _info = driver.training_loss(dit, latents, cond, gen, min_t=min_timestep, max_t=max_timestep,
                                                        **({"refs": refs} if refs else {}),
                                                        **({"loss_mask": _lm} if _lm is not None else {}),
@@ -4358,6 +4372,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 _update()
             step_clock["t"] += time.time() - _t_step
             global_step += 1
+            _littlebit_limit = _LITTLEBIT_TRACE.end(_info,loss) if _LITTLEBIT_TRACE is not None else False
             if test_cap and global_step >= test_cap[1]:
                 _apply_test_vram_cap(*test_cap)
                 test_cap = None
@@ -4447,6 +4462,13 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                                  lr=f"{_step_rate(raw=True):.2e}",
                                  **({"gn": f"{last_gn[0]:.3f}"} if last_gn[0] is not None else {}), refresh=False)
             progress.update(1)
+            if _littlebit_limit:
+                _flush()
+                steplog.flush()
+                progress.close()
+                final = os.path.join(output_dir, f"{output_name}.safetensors")
+                save_lora(final, epoch+1)
+                return final
             if stop_now[0]:                    # early stop at a check every N steps
                 break
 
