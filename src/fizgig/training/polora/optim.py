@@ -363,6 +363,12 @@ class Polora(Optimizer):
         pairs' ``(sigma_A, sigma_B)`` when ``want_sigmas``, else ``(None, None)``."""
         cb = self.curvature_beta
         b1, eps = self.beta1, self.epsilon
+        def check(stage, *tensors):
+            if getattr(self, "nan_diagnostic", False):
+                for t in tensors:
+                    if not bool(torch.isfinite(t).all()):
+                        raise RuntimeError(f"[nan-diagnostic] PoLoRA {stage}: nonfinite tensor {tuple(t.shape)} "
+                                           f"at optimizer step {self._step_count}, pair shape {tuple(As[0].shape)}")
         f32 = torch.float32
         n = len(As)
         gA, gB = [A.grad for A in As], [B.grad for B in Bs]
@@ -392,6 +398,7 @@ class Polora(Optimizer):
                                  eps=self.delta, eps_relative=True, floor=self.epsilon)
         C_A_isqrt = self._kernel("_invsqrt_fn", self._sym(C_A), nsteps=self.higham_iters,
                                  eps=self.delta, eps_relative=True, floor=self.epsilon)
+        check("inverse-square-root", C_B_isqrt, C_A_isqrt)
         C_B_inv = C_B_isqrt @ C_B_isqrt
         C_A_inv = C_A_isqrt @ C_A_isqrt
 
@@ -402,12 +409,15 @@ class Polora(Optimizer):
         # Whiten -> polar -> unwhiten (D_A / D_B written under A / B for the sigma_max call).
         zA = (C_B_isqrt @ M_hat_A) * Q_isqrt.unsqueeze(1)
         zB = (M_hat_B @ C_A_isqrt) * P_isqrt.unsqueeze(-1)
+        check("whitened momentum", zA, zB)
         zA = self._polar_batched(zA)
         zB = self._polar_batched(zB)
+        check("polar", zA, zB)
         D_A = torch.mul(C_B_isqrt @ zA, Q_isqrt.unsqueeze(1), out=WA[n:])
         D_B = torch.mul(zB @ C_A_isqrt, P_isqrt.unsqueeze(-1), out=WB[n:])
 
         sWA, vA_new, sWB, vB_new = self._kernel("_smax_fn", WA, vA, WB, vB)
+        check("spectral norm", sWA, sWB, vA_new, vB_new)
         vA.copy_(vA_new)
         vB.copy_(vB_new)
         sigma_A, sigma_DA = sWA[:n], sWA[n:]
@@ -418,12 +428,14 @@ class Polora(Optimizer):
         dA = -(rho / sigma_DA.clamp_min(eps)).view(-1, 1, 1) * D_A
         dB = -(rho / sigma_DB.clamp_min(eps)).view(-1, 1, 1) * D_B
 
+        check("factor delta", dA, dB)
         # Preconditioner update: each diagonal accumulates the gradient
         # whitened by the inverse of the other side's r x r matrix.
         r = G_A.shape[1]
         Q.mul_(cb).add_((G_A * (C_B_inv @ G_A)).sum(dim=1), alpha=(1.0 - cb) / r)
         P.mul_(cb).add_((G_B * (G_B @ C_A_inv)).sum(dim=2), alpha=(1.0 - cb) / r)
 
+        check("optimizer state", Q, P, M_A, M_B)
         # write back: every pair of the group at once, then its grads zeroed
         if not f32_group:
             dA, dB = dA.to(As[0].dtype), dB.to(Bs[0].dtype)
