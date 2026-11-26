@@ -1558,6 +1558,17 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     if context_lora_path and finetune:
         raise RuntimeError("A Context LoRA trains a LoRA on top of another one; a fine-tune trains the base model "
                            "itself, so the two don't combine. Drop --context_lora_path.")
+    _nan_diag = str((family_options or {}).get("polora_diagnostic", "")) == "1"
+    if _nan_diag:
+        import sys
+        import importlib.metadata
+        try:
+            _triton_version = importlib.metadata.version("triton")
+        except importlib.metadata.PackageNotFoundError:
+            _triton_version = "not installed"
+        logger.info("[nan-diagnostic] Python %s; torch %s; CUDA build %s; Triton %s; GPU %s; capability %s",
+                    sys.version.split()[0], torch.__version__, torch.version.cuda, _triton_version,
+                    torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0))
     driver = desc.load_driver()
     driver.set_options(dict(family_options or {}))      # before the data: an option may shape the dataset
     _method = str((family_options or {}).get("training_method", "") or "").strip()
@@ -2540,6 +2551,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         optimizer, opt_label = create_optimizer(optimizer_type, opt_params, learning_rate, _oargs,
                                                 eps_floor_8bit=desc.optimizer_eps_floor_8bit)
     _polora = optimizer.__class__.__name__ == "Polora"
+    if _nan_diag and _polora:
+        optimizer.nan_diagnostic = True
+        optimizer.log_norms_every = 1
     if _polora:
         # PoLoRA: Adaptive LR and per-image LR move its learning rate, as with every other optimizer (Min/Max are real
         # rates; magnitude_scale stays as set); the LR scheduler stands down. Its factor sizes go to the graph and,
@@ -3521,8 +3535,22 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             pending = 0                    # every parameter already stepped from its own gradient hook
             lr_acc.clear()
             return
+        if _nan_diag:
+            # Check before clipping and before PoLoRA can change any weights.
+            _grads = [p.grad for p in params if p.grad is not None]
+            if not _grads:
+                raise RuntimeError("[nan-diagnostic] no gradients before optimizer update")
+            _norms = torch.stack([g.detach().float().norm() for g in _grads])
+            if not bool(torch.isfinite(_norms).all()):
+                _bad = [(j, tuple(p.shape)) for j, p in enumerate(params)
+                        if p.grad is not None and not bool(torch.isfinite(p.grad).all())]
+                raise RuntimeError(f"[nan-diagnostic] nonfinite gradient BEFORE optimizer at step {global_step + 1}; "
+                                   f"parameter indices/shapes: {_bad[:12]} (empty means norm overflow)")
+            if global_step < 3:
+                logger.info("[nan-diagnostic] step %d pre-update gradient norm %.7g",
+                            global_step + 1, _norms.norm().item())
         if max_grad_norm:
-            pre = torch.nn.utils.clip_grad_norm_(params, max_grad_norm)
+            pre = torch.nn.utils.clip_grad_norm_(params, max_grad_norm, error_if_nonfinite=_nan_diag)
             _later(_gn_done, gn=pre, clip=bool(adaptive is not None and adaptive.clip_signal))   # read next step
         m = sum(lr_acc) / len(lr_acc) if lr_acc else 1.0
         lr_acc.clear()
@@ -3534,6 +3562,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 g["lr"] = g["lr"] * m
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
         optimizer.step()
+        if _nan_diag:
+            _norms = torch.stack([p.detach().float().norm() for p in params])
+            if not bool(torch.isfinite(_norms).all()):
+                raise RuntimeError(f"[nan-diagnostic] nonfinite adapter parameters AFTER optimizer at step {global_step + 1}")
+            if global_step < 3:
+                logger.info("[nan-diagnostic] step %d post-update parameters finite", global_step + 1)
         if selective_global_replay:
             selective_status = driver.finish_selective_optimizer_step(selective_snapshot)
             if selective_status is not None:
@@ -4259,6 +4293,14 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                                                        **({"loss_mask": _lm} if _lm is not None else {}),
                                                        **({"prior": prior} if prior is not None and _lm is not None
                                                           else {}))
+                if _nan_diag:
+                    if not bool(torch.isfinite(loss).all()):
+                        raise RuntimeError(f"[nan-diagnostic] nonfinite FORWARD loss at step {global_step + 1}; "
+                                           f"items={batch.get('item_keys')}, shape={tuple(latents.shape)}")
+                    if global_step < 3:
+                        logger.info("[nan-diagnostic] step %d forward loss %.7g; items=%s; shape=%s",
+                                    global_step + 1, loss.detach().float().mean().item(),
+                                    batch.get("item_keys"), tuple(latents.shape))
                 if "lr_mult" in _info and lr_acc:
                     lr_acc[-1] *= _info["lr_mult"]     # where the step landed (the H3 noise-band LR)
                 if pending == 0 and optimizer is not None:
