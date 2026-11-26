@@ -1,0 +1,81 @@
+{
+  "source": "user console summary; not original report",
+  "benchmark_commit": "dc0fb89e5961556934b1b2653ace454bf81bd168",
+  "rank": 64,
+  "cases": [
+    {
+      "name": "reference",
+      "budget_mib": null,
+      "status": "finished",
+      "median_warm_ms": 65.98434999978053,
+      "peak_extra_warm_allocated": 1424133632,
+      "peak_total_allocated": 4281677824,
+      "peak_total_reserved": 4640997376,
+      "finite": true
+    },
+    {
+      "name": "reference-repeat",
+      "budget_mib": null,
+      "status": "finished",
+      "median_warm_ms": 66.21289999748114,
+      "peak_extra_warm_allocated": 1424133632,
+      "peak_total_allocated": 4281677824,
+      "peak_total_reserved": 4640997376,
+      "finite": true,
+      "parity": {
+        "weight_bitwise_equal": true,
+        "momentum_bitwise_equal": true,
+        "max_abs_weight_difference": 0,
+        "relative_weight_difference_to_reference_displacement": 0
+      }
+    },
+    {
+      "name": "shape-local",
+      "budget_mib": 0,
+      "status": "finished",
+      "median_warm_ms": 65.89005000205361,
+      "peak_extra_warm_allocated": 787087360,
+      "peak_total_allocated": 3643386368,
+      "peak_total_reserved": 4037017600,
+      "finite": true,
+      "parity": {
+        "weight_bitwise_equal": true,
+        "momentum_bitwise_equal": true,
+        "max_abs_weight_difference": 0,
+        "relative_weight_difference_to_reference_displacement": 0
+      }
+    },
+    {
+      "name": "chunk-128",
+      "budget_mib": 128,
+      "status": "finished",
+      "median_warm_ms": 56.95824999929755,
+      "peak_extra_warm_allocated": 62914560,
+      "peak_total_allocated": 2909252096,
+      "peak_total_reserved": 2982150144,
+      "finite": true,
+      "parity": {
+        "weight_bitwise_equal": false,
+        "momentum_bitwise_equal": true,
+        "max_abs_weight_difference": 0.000006123678758740425,
+        "relative_weight_difference_to_reference_displacement": 0.000945464545931539
+      }
+    },
+    {
+      "name": "chunk-32",
+      "budget_mib": 32,
+      "status": "finished",
+      "median_warm_ms": 221.11089999816613,
+      "peak_extra_warm_allocated": 27410432,
+      "peak_total_allocated": 2884954624,
+      "peak_total_reserved": 2915041280,
+      "finite": true,
+      "parity": {
+        "weight_bitwise_equal": false,
+        "momentum_bitwise_equal": true,
+        "max_abs_weight_difference": 0.0000059318263083696365,
+        "relative_weight_difference_to_reference_displacement": 0.0013796876972391866
+      }
+    }
+  ]
+}
