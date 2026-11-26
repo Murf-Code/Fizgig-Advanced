@@ -200,6 +200,25 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                             or not any(r.get("kind") == "complete" and r.get("step") == 58 for r in rows)
                             or (case == "repro-strict-telemetry-lr450" and ema_checks != [29, 58])):
                         run.update(status="failed", reason="Incomplete Experiment 5A diagnostics; do not compare this run.")
+                if status == "finished" and case == "movement-sensitivity-lr450":
+                    try:
+                        pilot = _read_json(output / "movement-pilot.json")
+                        rows = run.get("research", [])
+                        hashes = [r["step"] for r in rows if r.get("kind") == "hash"]
+                        completed = [r for r in rows if r.get("kind") == "complete"]
+                        markers = [r for r in rows if r.get("kind") == "movement_pilot"]
+                        if (pilot["status"] != "completed" or pilot["step"] != 8
+                                or pilot["scope"] != "development_target_only"
+                                or pilot["parent_rollback"] != "exact_registered_state"
+                                or set(pilot["sweep"]) != {"0.0", "0.25", "0.5", "1.0"}
+                                or len(completed) != 1 or not 8 <= completed[0]["step"] <= 40
+                                or hashes != list(range(completed[0]["step"] + 1))
+                                or len(markers) != 1 or markers[0]["step"] != 8):
+                            raise ValueError("incomplete pilot diagnostics")
+                        run["movement_pilot"] = {"report": "movement-pilot.json",
+                            "matched": pilot["matching"]["matched"], "repeat_exact": pilot["repeat_exact"]}
+                    except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+                        run.update(status="failed", reason="Invalid movement pilot diagnostics: " + str(exc))
                 if status == "finished" and case.startswith(("causal-", "calibration-")):
                     from fizgig.krea2.replay_causal import (ALL, PROBES, SOURCE, checked_mask,
                                                             expected_mask, intervention, source_schedule)

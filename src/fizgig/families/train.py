@@ -1563,6 +1563,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     from fizgig.training import replay_research as _rr
     research_mode = _rr.config(family_options)
     research_updates = 0
+    movement_pilot_step = int((family_options or {}).get("movement_pilot_step", 0) or 0)
+    if movement_pilot_step and (movement_pilot_step != 8 or research_mode != "calibration"):
+        raise RuntimeError("Movement sensitivity requires strict calibration and fork at update 8.")
     if research_mode and (desc.key != "krea2" or resume_state_dir or finetune or share_worker):
         raise RuntimeError("Experiment 5A needs a fresh single-GPU Krea 2 LoRA run.")
     driver = desc.load_driver()
@@ -3574,13 +3577,28 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             held = [g["lr"] for g in optimizer.param_groups]        # Adam is invariant to a constant on the gradient)
             for g in optimizer.param_groups:
                 g["lr"] = g["lr"] * m
+        if movement_pilot_step and research_updates + 1 == movement_pilot_step:
+            from fizgig.training.replay_live import run_pilot
+            logger.info("[movement-pilot] Starting development-only movement sensitivity fork at update %s", movement_pilot_step)
+            pilot_report = run_pilot(
+                driver=driver, dit=dit, net=net, optimizer=optimizer, validator=validator,
+                device=device, swapped=bool(swapped), generators=(gen,),
+                read_extra_state=lambda: {
+                    "scheduler": scheduler.state_dict() if scheduler is not None else None,
+                    "ema": ema.state_dict() if ema is not None else None,
+                    "pending": pending, "research_updates": research_updates,
+                    "driver_options": dict(driver.options)},
+                output=os.path.join(output_dir, "movement-pilot.json"), step=movement_pilot_step)
+            _rr.record(logger, kind="movement_pilot", step=movement_pilot_step,
+                       status=pilot_report["status"], matched=pilot_report["matching"]["matched"],
+                       repeat_exact=pilot_report["repeat_exact"], rollback=pilot_report["parent_rollback"])
         research_mask = _rr.active_mask(net) if research_mode else None
         research_rates = ([{"lr": float(g["lr"]), "weight_decay": float(g["weight_decay"])}
                            for g in optimizer.param_groups] if research_mode in ("causal", "calibration") else None)
         research_before = (_rr.probe_before(net, optimizer=optimizer if research_mode in ("causal", "calibration") else None)
                            if (research_mode == "telemetry" and driver.selective_probe_due)
                            or (research_mode in ("causal", "calibration") and (research_updates + 1) % 8 == 0)
-                           else None)
+                           else None) if not movement_pilot_step else None
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
         if selective_global_replay:
             driver.record_selective_gradient_update()
@@ -4132,7 +4150,14 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 logger.info("[maps] training maps: no picture could be read from the cache - off for this run")
                 maps = None
     if research_mode:
-        if (not global_replay or steps_per_epoch != 29 or accum != 1 or max_train_epochs != 5
+        if movement_pilot_step:
+            if (not global_replay or selective_global_replay or accum != 1 or bsz != 1
+                    or max_train_epochs != 1 or not 8 <= steps_per_epoch <= 40
+                    or validator is None or not validator.ready or ema is None
+                    or not set(validator.wanted) <= set(val_held) or len(validator.ts) != 4
+                    or validation_every_steps or int(seed) != 42):
+                raise RuntimeError("Movement sensitivity needs 8-40 training steps, one epoch, unrestricted Global Replay, cached hold-outs and seed 42.")
+        elif (not global_replay or steps_per_epoch != 29 or accum != 1 or max_train_epochs != 5
                 or validator is None or ema is None or validation_every_steps or int(seed) != 42
                 or (research_mode not in ("causal", "calibration") and not selective_global_replay)
                 or (selective_global_replay and driver._selective_strategy not in
@@ -4676,9 +4701,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     if save_state_on_train_end:
         state(max_train_epochs)
     if research_mode in ("causal", "calibration"):
-        if global_step != 145 or research_updates != 145:
-            raise RuntimeError("Replay research did not complete exactly 145 updates")
-        _rr.record(logger, kind="complete", step=145, planned_epochs=5)
+        expected_updates = steps_per_epoch if movement_pilot_step else 145
+        if global_step != expected_updates or research_updates != expected_updates:
+            raise RuntimeError("Replay research did not complete the planned optimizer updates")
+        _rr.record(logger, kind="complete", step=expected_updates, planned_epochs=1 if movement_pilot_step else 5)
     logger.info(f"Training complete -> {final}")
     return final
 

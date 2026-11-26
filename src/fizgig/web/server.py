@@ -5141,7 +5141,7 @@ class Handler(BaseHTTPRequestHandler):
                 group = "replay-compare-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
                 root = os.path.join(default_output_dir(), "replay_comparisons")
                 try:
-                    configs = replay_benchmark.settings(group, root)
+                    configs = replay_benchmark.pilot_settings(group, root)
                 except (ValueError, TypeError) as exc:
                     return self.json({"error": str(exc)}, 400)
                 entries = []

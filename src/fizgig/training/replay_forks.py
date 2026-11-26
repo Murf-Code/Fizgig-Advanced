@@ -6,6 +6,7 @@ The context restores the parent on exit; it never advances EMA or the selector.
 from contextlib import contextmanager
 from dataclasses import dataclass
 import copy
+import hashlib
 import math
 import random
 
@@ -80,7 +81,8 @@ class Fork:
     Only use inside capture(). Scoring must be forward-only: no optimizer,
     gradient, EMA, routing or model-state mutations. No concurrent training.
     """
-    def __init__(self, pairs, optimizer, rng):
+    def __init__(self, pairs, optimizer, rng, compact=False):
+        self.compact = compact
         self.pairs = tuple(pairs)
         self.optimizer = optimizer
         self.rng = rng
@@ -112,7 +114,12 @@ class Fork:
         self.groups.append((ps, float(alpha), foreach))
         for p, update in zip(ps, updates):
             self.decayed[p] = _cpu(p)
-            self.direction[p] = _cpu(update)
+            u = _cpu(update)
+            if self.compact and u.dtype == torch.float32:
+                compressed = u.bfloat16()
+                if _bits_equal(compressed.float(), u):
+                    u = compressed
+            self.direction[p] = u
             self.alpha[p] = float(alpha)
 
     @torch.no_grad()
@@ -175,7 +182,7 @@ class Fork:
 
 
 @contextmanager
-def capture(pairs, optimizer, *, generators=()):
+def capture(pairs, optimizer, *, generators=(), compact=False):
     """Native step exactly once, audit replay parity, roll back on every exit.
 
     Optimizer state is common to all candidate endpoints. This is NOT disk
@@ -185,15 +192,21 @@ def capture(pairs, optimizer, *, generators=()):
     if type(optimizer) not in (BatchedMuon, Muon):
         raise TypeError('only Fizgig native Muon implementations are supported')
     rng = RNGSnapshot(generators)
-    fork = Fork(pairs, optimizer, rng)
+    fork = Fork(pairs, optimizer, rng, compact=compact)
     incoming = _clone_cpu(optimizer.state_dict())
     try:
         optimizer.step(proposal_sink=fork.observe)
         if set(fork.direction) != set(fork.parent):
             raise RuntimeError('incomplete full-block native proposal')
-        native = {p: _cpu(p) for p in fork.parent}
+        def endpoint_hash(p):
+            cpu = p.detach().cpu().contiguous()
+            return hashlib.sha256(memoryview(cpu.view(torch.uint8).numpy()).cast('B')).digest()
+        if compact:
+            native = {p: endpoint_hash(p) for p in fork.parent}
+        else:
+            native = {p: _cpu(p) for p in fork.parent}
         fork.apply({b: 1.0 for b in set(fork.block.values())})
-        if any(not _bits_equal(_cpu(p), old) for p, old in native.items()):
+        if any((endpoint_hash(p) != old if compact else not _bits_equal(_cpu(p), old)) for p, old in native.items()):
             raise RuntimeError('native commit replay is not bitwise identical')
         del native
         fork.reset_weights()
