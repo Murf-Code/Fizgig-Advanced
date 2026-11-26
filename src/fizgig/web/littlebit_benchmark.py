@@ -1,4 +1,4 @@
-"""Fixed Krea2 frozen-base comparison; external, separately licensed codec pilot."""
+"""Fixed Krea2 frozen-base comparison; in-tree independent codec."""
 import hashlib
 import json
 import os
@@ -12,16 +12,6 @@ CASES = {"stock": ("int8", 0), "q6": ("q6", 128), "q4": ("q4", 128),
          "littlebit2-r1024": ("littlebit2", 1024)}
 EPOCHS = 5
 SWAPS = 22
-PILOT_FILES = {
-    "NOTICE.md": "9db932b249db4e4b120a07a1d0fb837665bcbac400ab67838ba8873e98b03a95",
-    "Samsung-LICENSE.txt": "3711f963c05d0be80d53e5923308a6dee31b203da23435c9cfb7c7b6e4dd5e19",
-    "compact.py": "c2dce638a574c9f48225fcab00b23f0dfd650b8e253713430d84cea3af76c162",
-    "compress.py": "72e063efcb323e20e0781b800f95bd658127ec05a7c685237995a249cdf51c7b",
-    "evaluate_stock.py": "c5db551a12f5c9fe485f822f2f05ead48941459420b00fd3e56047e115961789",
-    "littlebit.py": "d4345bab3e20f43da9a61761ed18a08eb11664c309e0ca06ea53a99e21ee125d",
-    "train_compact.py": "d401d9ef136eb93e4018e934afa693a0c41d15d6b7c88116165795d99226a107",
-    "transfer_layer.py": "6ee119a01f371629b891cf236258081057d48eb216501163fe94410e3d4d435b",
-}
 COMMON = {
     "FAMILY_KIND": "standard", "NETWORK_TYPE": "LoRA (standard)",
     "KREA2_TRAINING_METHOD": "Standard", "KREA2_SELECTIVE_BLOCK_CHECK": False,
@@ -44,17 +34,9 @@ def sha(path):
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
-def verify_pilot(path):
-    path = Path(path).resolve()
-    for name, expected in PILOT_FILES.items():
-        if not (path / name).is_file() or sha(path / name) != expected:
-            raise ValueError(f"Extract the supplied unmodified krea2-littlebit-pilot-v2 ZIP; mismatch: {name}")
-    return path
-
-
-def settings(root, pilot):
+def settings(root):
     root = Path(root).resolve()
-    return [{**COMMON, "__littlebit_case": case, "__littlebit_pilot": str(pilot),
+    return [{**COMMON, "__littlebit_case": case,
              "LORA_NAME": root.name + "-" + case, "LORA_OUTPUT_DIR": str(root / case)}
             for case in CASES]
 
@@ -74,7 +56,6 @@ def adjust_plan(desc, values, plan, repo, resume=False):
             raise ValueError("LittleBit comparisons must be fresh Krea2 runs; resume is not supported.")
         if any(values.get(k) != v for k,v in COMMON.items()):
             raise ValueError("LittleBit comparison settings are fixed. Remove and queue again.")
-        pilot = verify_pilot(values.get("__littlebit_pilot", ""))
         stages = [s for s in plan.stages if s.name == "Training"]
         if len(stages) != 1:
             raise ValueError("Expected one native Training stage.")
@@ -110,16 +91,16 @@ def adjust_plan(desc, values, plan, repo, resume=False):
             raise ValueError("Invalid comparison output identity.")
         archive = out / "compact.safetensors"
         prepare = Path(repo) / "scripts/research/krea2_littlebit/prepare_case.py"
-        prep_cmd = [cmd[0],str(prepare),"--pilot",str(pilot),"--raw",str(raw),
+        prep_cmd = [cmd[0],str(prepare),"--raw",str(raw),
                     "--case",case,"--out",str(out),"--dataset",arg(cmd,"--dataset_config")]
         from fizgig.families.launch import Stage
         plan.stages.insert(0, Stage("LittleBit projection screen",prep_cmd))
         if case != "stock":
             stock_name = root.name + "-stock"
             stock = root / "stock"
-            stage.cmd = [cmd[0],str(pilot/"train_compact.py"),"--repo",str(repo),"--archive",str(archive),"--",*cmd[2:]]
+            stage.cmd = [cmd[0],str(prepare.with_name("native_runner.py")),"train","--repo",str(repo),"--archive",str(archive),"--",*cmd[2:]]
             plan.stages.append(Stage("Stock-base transfer validation", [
-                cmd[0],str(pilot/"evaluate_stock.py"),"--repo",str(repo),"--dit",str(raw),
+                cmd[0],str(prepare.with_name("native_runner.py")),"evaluate","--repo",str(repo),"--dit",str(raw),
                 "--snapshot",str(stock/f".fizgig_val_{stock_name}.pt"),
                 "--stock-lora",str(stock/f"{stock_name}.safetensors"),
                 "--compressed-lora",str(out/f"{name}.safetensors"),

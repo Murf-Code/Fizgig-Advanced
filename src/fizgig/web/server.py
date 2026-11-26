@@ -5015,10 +5015,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": "Select a Krea2 image dataset on Start."}, 400)
                 if any(h.get("share") for h in (load_prefs().get("helpers") or [])):
                     return self.json({"error": "Disable shared training helpers for the comparison."}, 400)
-                pilot = lb.verify_pilot(str(b.get("pilot") or ""))
                 group = "littlebit-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
                 root = os.path.join(default_output_dir(), "littlebit_comparisons", group)
-                configs = lb.settings(root, pilot)
+                configs = lb.settings(root)
                 entries = []
                 for vals in configs:
                     _, inputs, plan = _plan("krea2", vals, folder)

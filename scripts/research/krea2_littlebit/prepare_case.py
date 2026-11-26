@@ -17,7 +17,7 @@ from screen import evaluate, compare
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    for k in ("pilot","raw","out","dataset"):
+    for k in ("raw","out","dataset"):
         p.add_argument("--"+k,type=Path,required=True)
     p.add_argument("--case",choices=tuple(bench.CASES),required=True)
     a=p.parse_args()
@@ -28,11 +28,7 @@ def main():
     result={"case":a.case,"status":"checking","gate":"synthetic rows, native INT8 reference",
             "threshold":0.05,"seeds":[42,314159],"rows":64,"projections":{}}
     try:
-        pilot=bench.verify_pilot(a.pilot)
-        sys.path.insert(0,str(pilot))
-        from compress import ELIGIBLE, MODULES, FORMAT, convert
-        from compact import encode, linear, validate
-        from transfer_layer import stock_layer, import_file
+        from native_codec import ELIGIBLE, MODULES, FORMAT, convert, encode, linear, validate, stock_layer, import_file
         int8=import_file("littlebit_queue_int8",REPO/"src/fizgig/modules/int8_train.py")
         torch.set_num_threads(4)
         hold=Path(tomllib.loads(a.dataset.read_text(encoding="utf-8"))["general"]["holdout_file"])
@@ -73,7 +69,7 @@ def main():
                     key=f"blocks.{block}.{suffix}.weight"
                     w=f.get_tensor(key)
                     m,n=w.shape
-                    if (codec in ("q4","q6") and n%64) or (codec.startswith("littlebit") and rank//2>min(m,n)):
+                    if (codec in ("q4","q6") and n%64) or (codec.startswith("littlebit") and rank>min(m,n)):
                         rows.append({"key":key,"reason":"incompatible dimensions"})
                         good=False
                         break
@@ -109,7 +105,7 @@ def main():
             result["status"]="rejected"
             print("No uniform projection family passed; training deliberately skipped.",flush=True)
             return 3
-        if shutil.disk_usage(a.out).free < a.raw.stat().st_size+2*1024**3:
+        if shutil.disk_usage(a.out).free < sum(v["packed_bytes"] for v in totals.values())+2*1024**3:
             raise ValueError("Insufficient disk space for a separate compact archive")
         archive=a.out/"compact.safetensors"
         specs=convert(a.raw,archive,accepted,codec,rank,64)

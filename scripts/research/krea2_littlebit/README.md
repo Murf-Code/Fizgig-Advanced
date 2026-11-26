@@ -178,3 +178,21 @@ Do not mistake archive bytes or selected weight bytes for total GPU memory.
 No Windows/CUDA end-to-end execution has been performed here. First test
 is a feasibility and quantitative stock-transfer experiment, not an image
 quality comparison.
+
+## Milestone 4 — independent built-in experiment (supersedes pilot-folder queue instructions)
+
+LittleBit Test Mode now uses native_codec.py and native_runner.py in this repository.
+No external ZIP, download, checksum allowlist, or directory picker is required for
+the web queue. The earlier separately licensed pilot is retained only as historical
+evidence and for the old standalone screen/adaptive scripts. New candidates are
+independently written, paper-inspired simplified variants: single balanced SVD path,
+binary factors with per-latent magnitude estimates, and an optional eight-iteration
+joint orthogonal Procrustes rotation. These are not exact LittleBit/LittleBit-2
+reproductions; they omit the reference residual path, QAT and optimized kernels.
+Q4/Q6 are independent grouped bit-plane codecs. Only packed projections are written
+to disk; the normal source supplies the remaining weights via Fizgig's streaming
+loader. Classic swap requires uniform layouts. The stock gate, fixed settings and
+stock-base transfer report are preserved. Re-run all candidates from scratch; old
+pilot metrics are not interchangeable with this experiment. Prior code was inspected,
+so this is not a claim of a formal clean-room implementation or legal clearance.
+No real model or Windows/CUDA runtime verification at this change.

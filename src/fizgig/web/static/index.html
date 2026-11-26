@@ -1053,10 +1053,6 @@
                 <button class="btn btn-primary" id="btnStart">Start Training</button>
                 <button class="btn" id="btnQueue" title="Checked like Start, then lined up: it starts when the runs before it finish">Add to queue</button>
                 <label title="Krea2 Raw only; fixed research comparison"><input type="checkbox" id="littlebitMode"> LittleBit Test Mode</label>
-                <span id="littlebitOptions" hidden>
-                  <input type="text" id="littlebitPilot" placeholder="Extracted LittleBit pilot folder" aria-label="LittleBit pilot folder">
-                  <button class="btn" data-pick="littlebitPilot" data-dir="1">Choose…</button>
-                </span>
                 <span id="littlebitNote" role="status"></span>
                 <button class="btn btn-warning" id="btnPause">Pause</button>
                 <button class="btn" id="btnSampleNow" style="display:none" title="Make the previews now, after the current training step, without waiting for the epoch to end">Sample now</button>
@@ -2558,23 +2554,22 @@
 <script>
 (function(){
  const mode=document.getElementById("littlebitMode"), queue=document.getElementById("btnQueue"),
-       options=document.getElementById("littlebitOptions"), note=document.getElementById("littlebitNote");
+       note=document.getElementById("littlebitNote");
  let busy=false;
  mode.addEventListener("change",()=>{
-   options.hidden=!mode.checked;
    note.textContent=mode.checked?"Krea2 · INT8 control + 5 compression candidates · up to 5 epochs each · rank 32 · Muon · 22 swaps · projection gate first":"";
  });
  document.addEventListener("click",async event=>{
    if(!mode.checked || !queue.contains(event.target))return;
    event.preventDefault();event.stopImmediatePropagation();
    if(busy)return;
-   const folder=document.getElementById("imageFolder").value.trim(),pilot=document.getElementById("littlebitPilot").value.trim();
-   if(!folder||!pilot){note.textContent="Select your dataset and the extracted LittleBit pilot folder.";return;}
+   const folder=document.getElementById("imageFolder").value.trim();
+   if(!folder){note.textContent="Select your Krea2 dataset.";return;}
    busy=true;mode.disabled=true;queue.disabled=true;
    try{
      const response=await fetch("/api/queue/littlebit",{method:"POST",headers:{"Content-Type":"application/json",
        "X-Fizgig-Token":document.querySelector('meta[name="fizgig-token"]').content},
-       body:JSON.stringify({image_folder:folder,pilot:pilot})});
+       body:JSON.stringify({image_folder:folder})});
      const result=await response.json();
      if(!result.ok)throw new Error(result.error||(result.problems||[]).join("; ")||"Could not queue test");
      note.textContent=result.ids.length+" fixed cases queued. Report: "+result.report;
