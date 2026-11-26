@@ -1269,7 +1269,21 @@ def _plan(family_key, values, image_folder, resume="", ft_continue=None, models=
                       resuming=True)
     if resume or ft_continue or str(values.get("RESUME_TRAINING") or "").strip():
         inputs["recache"] = _size_changed(name, out_dir, values)
-    return desc, inputs, launch.plan(desc, inputs)
+    plan = launch.plan(desc, inputs)
+    if values.get("__polora_diagnostic"):
+        from fizgig.web import polora_diagnostic
+        case = values["__polora_diagnostic"]
+        if family_key != "krea2" or case not in {row[0] for row in polora_diagnostic.CASES}:
+            plan.problems.append("Invalid PoLoRA diagnostic case.")
+        elif not plan.problems:
+            stages = [s for s in plan.stages if s.name == "Training"]
+            if len(stages) != 1:
+                plan.problems.append("PoLoRA diagnostic needs one Training stage.")
+            else:
+                stages[0].cmd.extend(["--family_option", "polora_diagnostic=1"])
+                plan.console.append(f"[nan-diagnostic] {case}: one epoch; finite checks enabled.")
+        return desc, inputs, plan
+    return desc, inputs, plan
 
 
 _SIZE_KEYS = ("DATASET_MEGAPIXELS", "CLIP_MEGAPIXELS")
@@ -2253,6 +2267,7 @@ def _run_stages(stages, out_dir):
         _run["started_at"] = time.time()
         _run["training_at"] = None             # the Training stage's start (the run summary's Training time)
         _stats["vram_peak"] = 0                # this run's peak, not the server's
+    diag_case = (_run.get("values") or {}).get("__polora_diagnostic")
     for stage in stages:
         with _lock:
             if _run["state"] == "stopped":
@@ -2292,6 +2307,12 @@ def _run_stages(stages, out_dir):
             return
         mem = oom.Watch()                       # GPU / system-RAM messages, and the Auto plan the trainer chose
         for line in proc.stdout:
+            if diag_case:
+                try:
+                    with open(os.path.join(out_dir, "diagnostic.log"), "a", encoding="utf-8") as f:
+                        f.write(line)
+                except OSError:
+                    pass
             append_log(line)
             _es = early_stop_note(line)
             if _es:
@@ -2328,6 +2349,12 @@ def _run_stages(stages, out_dir):
                         if upd.get("kind") == "training":
                             history.feed_loss(_run.get("history_id"), upd.get("epoch"), upd.get("average_loss_text"))
         ret = proc.wait()
+        if diag_case:
+            try:
+                with open(os.path.join(out_dir, "diagnostic.log"), "a", encoding="utf-8") as f:
+                    f.write(f"\\n[nan-diagnostic] {stage.name} exit code {ret}\\n")
+            except OSError:
+                pass
         with _lock:
             stopped = _run["state"] == "stopped"
         if stopped:
@@ -2344,7 +2371,7 @@ def _run_stages(stages, out_dir):
             with _lock:
                 _run.update(state="failed", proc=None, ended_at=time.time())
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
-            if kind and _oom_recover(kind, stage.name, mem.plan):
+            if kind and not (_run.get("values") or {}).get("__polora_diagnostic") and _oom_recover(kind, stage.name, mem.plan):
                 return                           # it carries on by itself: the queue waits for that run
             webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
             return
@@ -5042,6 +5069,38 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": f"{name} is already there."}, 400)
                 os.makedirs(new)
                 return self.json({"ok": True, "path": new})
+            if path == "/api/queue/polora-diagnostic":
+                from fizgig.web import polora_diagnostic
+                folder = str(b.get("image_folder") or "").strip()
+                if not os.path.isdir(folder):
+                    return self.json({"error": "Select your Krea 2 training dataset first."}, 400)
+                if b.get("family") != "krea2":
+                    return self.json({"error": "Select Krea 2 first."}, 400)
+                if any(h.get("share") for h in (load_prefs().get("helpers") or [])):
+                    return self.json({"error": "Disable shared training helpers for this diagnostic."}, 400)
+                group = "polora-nan-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+                root = os.path.join(default_output_dir(), "polora_diagnostics")
+                configs = polora_diagnostic.settings(group, root)
+                entries = []
+                for vals in configs:
+                    _, inputs, plan = _plan("krea2", vals, folder)
+                    if plan.problems:
+                        return self.json({"problems": [vals["__polora_diagnostic"] + ": " + p for p in plan.problems]}, 400)
+                    out, name = inputs["LORA_OUTPUT_DIR"], inputs["LORA_NAME"]
+                    if os.path.exists(out) or name_taken(vals, inputs) or webqueue.clashes(out, name):
+                        return self.json({"error": "Diagnostic output already exists."}, 400)
+                    entries.append(("krea2", vals, folder, name, out))
+                output = os.path.join(root, group)
+                os.makedirs(output, exist_ok=False)
+                with open(os.path.join(output, "diagnostic-settings.json"), "w", encoding="utf-8") as f:
+                    json.dump({"dataset": folder, "cases": configs}, f, indent=2)
+                items = webqueue.add_many(entries)
+                with _lock:
+                    idle = not (_run["proc"] is not None and _run["proc"].poll() is None) and (
+                        _run["state"] not in ("starting", "running", "paused"))
+                if idle and not webqueue.status()["held"]:
+                    webqueue.start_next(_queue_starter)
+                return self.json({"ok": True, "ids": [i["id"] for i in items], "output": output})
             if path in ("/api/queue/add", "/api/queue/update"):   # Add to queue (or a queued run edited): checked
                 fam, vals, folder = b.get("family", ""), b.get("values") or {}, b.get("image_folder") or ""  # like Start
                 editing = str(b.get("id") or "") if path == "/api/queue/update" else ""
