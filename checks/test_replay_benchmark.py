@@ -100,3 +100,21 @@ def test_calibration_controls_keep_all_blocks_until_selective_arms(tmp_path):
     # Historical 5B queues retain their exact route and decay mappings.
     assert rb.CAUSAL_DECAYS["causal-decay10-lr450"] == 10.0
     assert rb.CAUSAL_DECAYS["causal-decay30-lr450"] == 30.0
+
+
+def test_movement_pilot_single_run(tmp_path):
+    runs = rb.pilot_settings("pilot", str(tmp_path))
+    assert len(runs) == 1
+    v = runs[0]
+    assert v["__replay_compare"] == rb.MOVEMENT_PILOT_CASE
+    assert v["MAX_TRAIN_EPOCHS"] == "1" and v["LEARNING_RATE"] == "0.00045"
+    assert v["VALIDATION_HOLDOUT"] and not v["SAMPLE_ENABLED"]
+    assert not v["KREA2_SELECTIVE_BLOCK_CHECK"]
+    cmd = ["python", "train.py"]
+    plan = SimpleNamespace(problems=[], stages=[SimpleNamespace(name="Training", cmd=cmd)],
+                           dataset_toml='holdout_file = "held.json"', console=[])
+    rb.adjust_plan(SimpleNamespace(key="krea2", n_blocks=28), v, plan)
+    assert not plan.problems
+    assert cmd[-6:] == ["--family_option", "replay_research=calibration",
+                        "--family_option", "replay_calibration_lr=0.00045",
+                        "--family_option", "movement_pilot_step=8"]

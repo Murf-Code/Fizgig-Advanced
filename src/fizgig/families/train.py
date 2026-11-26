@@ -3585,7 +3585,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 device=device, swapped=bool(swapped), generators=(gen,),
                 read_extra_state=lambda: {
                     "scheduler": scheduler.state_dict() if scheduler is not None else None,
-                    "ema": ema.state_dict() if ema is not None else None,
+                    "ema": ({"n": ema.n, "decay": ema.decay, "ramp": ema.ramp,
+                             "shadow": ema.shadow, "backup": ema._backup} if ema is not None else None),
                     "pending": pending, "research_updates": research_updates,
                     "driver_options": dict(driver.options)},
                 output=os.path.join(output_dir, "movement-pilot.json"), step=movement_pilot_step)
