@@ -196,3 +196,6 @@ stock-base transfer report are preserved. Re-run all candidates from scratch; ol
 pilot metrics are not interchangeable with this experiment. Prior code was inspected,
 so this is not a claim of a formal clean-room implementation or legal clearance.
 No real model or Windows/CUDA runtime verification at this change.
+
+Remove any old ZIP-based queue entries before creating a new comparison.
+The version guard blocks outdated saved queues rather than mixing implementations.

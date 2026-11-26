@@ -76,7 +76,10 @@ def main():
     p.add_argument("--compressed-lora",type=Path)
     p.add_argument("--out",type=Path)
     p.add_argument("--swaps",type=int,default=22)
-    a,tail=p.parse_known_args()
+    argv=sys.argv[1:]
+    cut=argv.index("--") if "--" in argv else len(argv)
+    a=p.parse_args(argv[:cut])
+    tail=argv[cut:]
     sys.path.insert(0,str(a.repo.resolve()/"src"))
     from fizgig.families import quant
     if a.mode=="train":

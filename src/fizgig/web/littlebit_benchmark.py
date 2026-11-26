@@ -10,6 +10,7 @@ import zipfile
 CASES = {"stock": ("int8", 0), "q6": ("q6", 128), "q4": ("q4", 128),
          "littlebit-r512": ("littlebit", 512), "littlebit2-r512": ("littlebit2", 512),
          "littlebit2-r1024": ("littlebit2", 1024)}
+IMPLEMENTATION = "independent-v1"
 EPOCHS = 5
 SWAPS = 22
 COMMON = {
@@ -36,7 +37,7 @@ def sha(path):
 
 def settings(root):
     root = Path(root).resolve()
-    return [{**COMMON, "__littlebit_case": case,
+    return [{**COMMON, "__littlebit_case": case, "__littlebit_impl": IMPLEMENTATION,
              "LORA_NAME": root.name + "-" + case, "LORA_OUTPUT_DIR": str(root / case)}
             for case in CASES]
 
@@ -52,6 +53,8 @@ def adjust_plan(desc, values, plan, repo, resume=False):
     if not case or plan.problems:
         return plan
     try:
+        if values.get("__littlebit_impl") != IMPLEMENTATION:
+            raise ValueError("Old LittleBit queue version; remove the old entries and queue a fresh comparison.")
         if resume or desc.key != "krea2" or case not in CASES:
             raise ValueError("LittleBit comparisons must be fresh Krea2 runs; resume is not supported.")
         if any(values.get(k) != v for k,v in COMMON.items()):
@@ -120,7 +123,7 @@ def atomic_json(path, data):
 def create(root, folder, configs):
     root = Path(root)
     root.mkdir(parents=True,exist_ok=False)
-    atomic_json(root/"littlebit-report.json",{"dataset":folder,"scope":"research feasibility",
+    atomic_json(root/"littlebit-report.json",{"dataset":folder,"scope":"research feasibility","implementation":IMPLEMENTATION,
         "cases":{v["__littlebit_case"]:{"status":"queued","settings":v} for v in configs}})
 
 
