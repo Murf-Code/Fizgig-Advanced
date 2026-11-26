@@ -2,6 +2,7 @@
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import sys
 import time
@@ -109,6 +110,7 @@ def main():
         from fit_queue import atomic_json, OOM_EXIT
         started = time.monotonic()
         metrics = {"status":"running", "peak_allocated_bytes":0, "peak_reserved_bytes":0}
+        monitor=None
         reset = torch.cuda.reset_peak_memory_stats
         def collect(device=None):
             if torch.cuda.is_initialized():
@@ -120,6 +122,19 @@ def main():
         torch.cuda.reset_peak_memory_stats = tracking_reset
         rc = 0
         try:
+            if observer is not None:
+                # Avoid treating WDDM paging beyond physical VRAM as GPU fit.
+                # This caps the PyTorch allocator, not all driver allocations.
+                free,total=torch.cuda.mem_get_info()
+                metrics.update(initial_free_bytes=free,physical_vram_bytes=total)
+                if not os.environ.get("FIZGIG_SIM_VRAM_GB"):
+                    budget=max(1,int(free-512*1024**2))
+                    torch.cuda.set_per_process_memory_fraction(min(1.0,budget/total))
+                    metrics["allocator_budget_bytes"]=budget
+                else:
+                    metrics["allocator_budget_source"]="existing FIZGIG_SIM_VRAM_GB"
+                from wddm_memory import WddmMemory
+                monitor=WddmMemory()
             sys.argv=[sys.argv[0],*tail[1:]]
             train.main()
             if observer is not None:
@@ -139,6 +154,8 @@ def main():
                 torch.cuda.reset_peak_memory_stats = reset
                 quant.load_base = original
                 train._LITTLEBIT_TRACE=None
+                if monitor is not None:
+                    metrics["wddm_memory"]=monitor.stop()
                 metrics["seconds"] = time.monotonic()-started
                 if a.attempt_result:
                     atomic_json(a.attempt_result,metrics)
