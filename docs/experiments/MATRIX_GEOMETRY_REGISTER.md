@@ -48,3 +48,6 @@ Keep source, tests, raw results and failure logs together. No checkpoint binarie
 
 ### Muon-ME closed-loop queue
 Opt-in factory key `muon_me`, default chunk budget 128 MiB, fixed 22-swap rank-64 quality arms (five epochs) and two one-epoch rank-64 16-swap stretch arms. Earlier rank-16 16-swap and rank-64 22-swap PoLoRA results are separate, not proof of the combined setting. No compressed momentum or adaptive policy included. Preserve OOM failures. The VRAM planner conservatively uses the original Muon estimates until full-training data arrive.
+
+### Muon-ME closed-loop results
+Six runs completed. See [full training results](MUON_ME_TRAINING_RESULTS_20261125.md). ME128 faster optimizer, modest sampled full-training memory improvement, no proven quality difference. Rank64/16 swap completes but severe shared-memory pressure and 7.24x slowdown versus own 22 swap arm. Next phase-resolved profiling and activation/state-memory experiments, not a repeat of this queue.
