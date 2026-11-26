@@ -45,9 +45,9 @@ def apply_flags(cmd,case):
 
 
 def parse_memory_log(text):
-    result={'memory_phases':[],'memory_states':[],'memory_config':[]}
+    result={'memory_phases':[],'memory_states':[],'memory_config':[],'memory_losses':[]}
     for line in text.splitlines():
-        for marker,key in (('[geometry-memory] ','memory_phases'),('[geometry-memory-state] ','memory_states'),('[geometry-memory-config] ','memory_config')):
+        for marker,key in (('[geometry-memory] ','memory_phases'),('[geometry-memory-state] ','memory_states'),('[geometry-memory-config] ','memory_config'),('[geometry-memory-loss] ','memory_losses')):
             if marker not in line:continue
             try:
                 value,_=json.JSONDecoder().raw_decode(line.split(marker,1)[1])

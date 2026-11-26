@@ -340,7 +340,9 @@ def append_log(text: str):
         f = _run_log["file"]
         if f is None or text == LOG_CLEAR:
             return
-        if _BAR.search(text) and "100%|" not in text:
+        # A tqdm redraw can share a physical line with structured research telemetry.
+        # Never throttle these records, even when a progress bar precedes them.
+        if _BAR.search(text) and "100%|" not in text and "[geometry-" not in text:
             if time.time() - _run_log["bar_at"] < 60:
                 return
             _run_log["bar_at"] = time.time()

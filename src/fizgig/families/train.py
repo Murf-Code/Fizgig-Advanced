@@ -2582,8 +2582,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         from fizgig.families.lora import TRAINABLE
         names = {id(p): f"{name}.{suffix}" for name, w in net.wrapped.items() if TRAINABLE in w.adapters
                  for suffix, p in w.adapters[TRAINABLE].named_parameters()}
-        for group in optimizer.param_groups:
-            group["param_names"] = [names[id(p)] for p in group["params"]]
+        # Do not shadow the dataset group used by Watch and the training loop.
+        for opt_group in optimizer.param_groups:
+            opt_group["param_names"] = [names[id(p)] for p in opt_group["params"]]
     if optimizer.__class__.__name__ == "LoRATSD":
         from fizgig.families.lora import TRAINABLE
         scales = {id(w.adapters[TRAINABLE][0].weight): w.scales[TRAINABLE]
@@ -4320,7 +4321,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             else:
                 if _many:
                     _frozen_now = _step_freeze(driver.step_frozen_blocks(batch))
-                    loss, _info = _batch_loss(batch, latents)
+                    with _memory_phase("forward", global_step + 1):
+                        loss, _info = _batch_loss(batch, latents)
                 else:
                     cond = driver.batch_cond(batch, device)
                     # caption dropout: this step's draw from the step number, so a resumed run drops the same steps
@@ -4404,6 +4406,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                      _t=_info.get("t", 0.5), _c=_cur, _kept=(_kept if not slider and _many and _wb is not None else None),
                      _rate=_step_rate(), _ready=(pending == 0)):
                 recorder.add(epoch=_e, step=_i, loss=lv)
+                if memory_fit:
+                    # Already materialized by the deferred callback; no extra CUDA synchronization.
+                    logger.info("[geometry-memory-loss] %s", json.dumps({"step": _g, "loss": float(lv), "items": len(_keys or [])}, separators=(",", ":")))
                 if best_tracker is not None and best_checkpoint_mode == "train":
                     candidate = best_tracker.training(lv, step_off + _g, ready=_ready)
                     if candidate is not None:
