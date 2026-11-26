@@ -86,3 +86,17 @@ def test_failed_pilot_bundle_includes_diagnostics(tmp_path):
         assert set(bundle.namelist()) == {rr.REPORT, rr.COMBINED,
             "movement-isolation-lr450/movement-isolation.json",
             "movement-isolation-lr450/movement-pilot.json"}
+
+
+def test_dual_failed_bundle_includes_report(tmp_path):
+    import zipfile
+    root = tmp_path / "comparison"
+    rr.create(root, "dataset", [{"__replay_compare": "movement-dual-lr450",
+              "LORA_NAME": "dual", "LEARNING_RATE": "0.00045"}])
+    out = root / "movement-dual-lr450"
+    out.mkdir()
+    (out / "movement-dual.json").write_text('{"status":"failed"}')
+    rr.update(out, "movement-dual-lr450", "failed")
+    with zipfile.ZipFile(root / rr.BUNDLE) as bundle:
+        assert set(bundle.namelist()) == {rr.REPORT, rr.COMBINED,
+            "movement-dual-lr450/movement-dual.json"}

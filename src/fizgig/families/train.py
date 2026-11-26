@@ -1565,7 +1565,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     research_updates = 0
     movement_pilot_step = int((family_options or {}).get("movement_pilot_step", 0) or 0)
     movement_isolation = str((family_options or {}).get("movement_isolation", "0")) == "1"
-    if movement_isolation and not movement_pilot_step:
+    movement_dual = str((family_options or {}).get("movement_dual", "0")) == "1"
+    if movement_dual and movement_isolation:
+        raise RuntimeError("Cannot combine movement isolation and dual evaluation.")
+    if (movement_isolation or movement_dual) and not movement_pilot_step:
         raise RuntimeError("Numerical isolation requires the movement pilot boundary.")
     if movement_pilot_step and (movement_pilot_step != 8 or research_mode != "calibration"):
         raise RuntimeError("Movement sensitivity requires strict calibration and fork at update 8.")
@@ -3583,7 +3586,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if movement_pilot_step and research_updates + 1 == movement_pilot_step:
             from fizgig.training.replay_live import run_pilot
             logger.info("[movement-pilot] Starting %s at update %s",
-                        "6C.2k-B numerical isolation" if movement_isolation else "development-only movement sensitivity fork",
+                        "6C.2k-C dual evaluation" if movement_dual else ("6C.2k-B numerical isolation" if movement_isolation else "development-only movement sensitivity fork"),
                         movement_pilot_step)
             pilot_report = run_pilot(
                 driver=driver, dit=dit, net=net, optimizer=optimizer, validator=validator,
@@ -3594,9 +3597,13 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                              "shadow": ema.shadow, "backup": ema._backup} if ema is not None else None),
                     "pending": pending, "research_updates": research_updates,
                     "driver_options": dict(driver.options)},
-                output=os.path.join(output_dir, "movement-isolation.json" if movement_isolation else "movement-pilot.json"),
-                step=movement_pilot_step, isolation=movement_isolation)
-            if movement_isolation:
+                output=os.path.join(output_dir, "movement-dual.json" if movement_dual else ("movement-isolation.json" if movement_isolation else "movement-pilot.json")),
+                step=movement_pilot_step, isolation=movement_isolation, dual=movement_dual)
+            if movement_dual:
+                _rr.record(logger, kind="movement_dual", step=movement_pilot_step,
+                           status=pilot_report["status"], integrity=pilot_report["integrity_passed"],
+                           matched=pilot_report["matching"]["matched"], rollback=pilot_report["parent_rollback"])
+            elif movement_isolation:
                 _rr.record(logger, kind="movement_isolation", step=movement_pilot_step,
                            status=pilot_report["status"], integrity=pilot_report["integrity_passed"],
                            rollback=pilot_report["parent_rollback"])

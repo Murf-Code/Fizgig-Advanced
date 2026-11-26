@@ -57,7 +57,7 @@ def _score(predict, panel, parent, base):
 
 
 def run_pilot(*, driver, dit, net, optimizer, validator, device, swapped, generators,
-              read_extra_state, output, step, pairs=None, patchify=None, isolation=False):
+              read_extra_state, output, step, pairs=None, patchify=None, isolation=False, dual=False):
     """One common full-block proposal, uniform sensitivity sweep + matched allocations.
     Fail closed: any contamination/error must abort the parent training run.
     No semantic claim, statistical gate, or automatic production policy.
@@ -154,35 +154,39 @@ def run_pilot(*, driver, dit, net, optimizer, validator, device, swapped, genera
             try:
                 if swapped: driver.block_swap_mode(dit,inference=True)
                 dit.eval()
-                fork.reset_weights(); fork.rng.restore()
-                parent=panel_guard(lambda:[predict(x) for _,x,_ in panel])
-                repeat=panel_guard(lambda:[predict(x) for _,x,_ in panel])
-                for n in sorted(trainable):net.wrapped[n].scales[TRAINABLE]=0.
-                try:base=panel_guard(lambda:[predict(x) for _,x,_ in panel])
-                finally:
-                    for n,w in net.wrapped.items():w.scales.clear();w.scales.update(scales[n])
-                report['reference_hash']=digest((parent,base))
-                report['repeat_parent']=[{'unit':c.unit,'timestep':c.timestep,
-                    'max_abs':float(abs(array(a)-array(b)).max()),
-                    'mse':float(((array(a)-array(b))**2).mean()),
-                    'bitwise_equal':digest(a)==digest(b)} for (c,_,_),a,b in zip(panel,parent,repeat)]
-                for m in (.0,.25,.5,1.):
-                    multipliers={b:m for b in scores}
-                    achieved,shares=fork.achieved(multipliers);verify_endpoint(fork,multipliers)
-                    rows=panel_guard(lambda:_score(predict,panel,parent,base))
-                    report['sweep'][str(m)]={'achieved':achieved,'depth':depth_shares(shares),'rows':rows}
-                report['repeat_exact']=all(r['bitwise_equal'] for r in report['repeat_parent'])
-                matched=(match(fork,alloc,minimum=1e-12,atol=1e-12,rtol=.001,max_initial_dip=.01)
-                         if report['repeat_exact'] else {'matched':False,'reason':'identical-parent replay was not exact'})
-                report['matching']=matched
-                if matched['matched']:
-                    actuals=[]
-                    for name,arm in matched['arms'].items():
-                        achieved,shares=fork.achieved(arm['multipliers']);verify_endpoint(fork,arm['multipliers']);actuals.append(achieved)
-                        if abs(achieved-matched['target'])>matched['tolerance'] or abs(achieved-arm['achieved'])>matched['tolerance']:
-                            raise RuntimeError('matched endpoint outside tolerance')
-                        report['arms'][name]={'achieved':achieved,'depth':depth_shares(shares),'rows':panel_guard(lambda:_score(predict,panel,parent,base))}
-                    if max(actuals)-min(actuals)>matched['tolerance']:raise RuntimeError('pairwise movement mismatch')
+                if dual:
+                    from .replay_dual import evaluate_dual
+                    evaluate_dual(fork,net,scores,panel,predict,panel_guard,report,lambda:_atomic_json(output,report))
+                else:
+                    fork.reset_weights(); fork.rng.restore()
+                    parent=panel_guard(lambda:[predict(x) for _,x,_ in panel])
+                    repeat=panel_guard(lambda:[predict(x) for _,x,_ in panel])
+                    for n in sorted(trainable):net.wrapped[n].scales[TRAINABLE]=0.
+                    try:base=panel_guard(lambda:[predict(x) for _,x,_ in panel])
+                    finally:
+                        for n,w in net.wrapped.items():w.scales.clear();w.scales.update(scales[n])
+                    report['reference_hash']=digest((parent,base))
+                    report['repeat_parent']=[{'unit':c.unit,'timestep':c.timestep,
+                        'max_abs':float(abs(array(a)-array(b)).max()),
+                        'mse':float(((array(a)-array(b))**2).mean()),
+                        'bitwise_equal':digest(a)==digest(b)} for (c,_,_),a,b in zip(panel,parent,repeat)]
+                    for m in (.0,.25,.5,1.):
+                        multipliers={b:m for b in scores}
+                        achieved,shares=fork.achieved(multipliers);verify_endpoint(fork,multipliers)
+                        rows=panel_guard(lambda:_score(predict,panel,parent,base))
+                        report['sweep'][str(m)]={'achieved':achieved,'depth':depth_shares(shares),'rows':rows}
+                    report['repeat_exact']=all(r['bitwise_equal'] for r in report['repeat_parent'])
+                    matched=(match(fork,alloc,minimum=1e-12,atol=1e-12,rtol=.001,max_initial_dip=.01)
+                             if report['repeat_exact'] else {'matched':False,'reason':'identical-parent replay was not exact'})
+                    report['matching']=matched
+                    if matched['matched']:
+                        actuals=[]
+                        for name,arm in matched['arms'].items():
+                            achieved,shares=fork.achieved(arm['multipliers']);verify_endpoint(fork,arm['multipliers']);actuals.append(achieved)
+                            if abs(achieved-matched['target'])>matched['tolerance'] or abs(achieved-arm['achieved'])>matched['tolerance']:
+                                raise RuntimeError('matched endpoint outside tolerance')
+                            report['arms'][name]={'achieved':achieved,'depth':depth_shares(shares),'rows':panel_guard(lambda:_score(predict,panel,parent,base))}
+                        if max(actuals)-min(actuals)>matched['tolerance']:raise RuntimeError('pairwise movement mismatch')
             finally:
                 for n,w in net.wrapped.items():w.scales.clear();w.scales.update(scales[n])
                 if swapped: driver.block_swap_mode(dit,inference=False)
