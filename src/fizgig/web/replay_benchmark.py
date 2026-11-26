@@ -39,8 +39,18 @@ CALIBRATION_CASES = {
     "calibration-random-lr450": ("0.00045", "random"),
     "calibration-gradient-lr450": ("0.00045", "adaptive_gradient"),
 }
+# New queue is a short independent benchmark, not a continuation of 5C.
+SHORT_CASES = {
+    "calibration-short-unrestricted-lr300": ("0.00030", "replay"),
+    "calibration-short-unrestricted-lr450": ("0.00045", "replay"),
+    "calibration-short-gradient-lr450": ("0.00045", "adaptive_gradient"),
+}
+CALIBRATION_CASES.update(SHORT_CASES)
 CASES = tuple((case, "Global replay", strategy != "replay")
-              for case, (_, strategy) in CALIBRATION_CASES.items())
+              for case, (_, strategy) in SHORT_CASES.items())
+SHORT_MIN_STEPS = 8
+SHORT_MAX_STEPS = 20
+SHORT_FREE_BYTES = 8 * 1024**3
 
 def case_strategy(case):
     if case in CALIBRATION_CASES:
@@ -60,7 +70,8 @@ def settings(group, output_root, epochs=EPOCHS, prompt=""):
         "FAMILY_KIND": "standard", "NETWORK_TYPE": "LoRA (standard)",
         "NETWORK_DIM": "32", "NETWORK_ALPHA": "32", "LEARNING_RATE": "0.00025",
         "OPTIMIZER_TYPE": "muon", "GRADIENT_ACCUMULATION": "1", "BATCH_SIZE": "1",
-        "MAX_TRAIN_EPOCHS": str(epochs), "SAVE_EVERY_N_EPOCHS": "1",
+        "MAX_TRAIN_EPOCHS": str(epochs), "SAVE_EVERY_N_EPOCHS": "5",
+        "SAVE_STATE": False, "SAVE_STATE_ON_TRAIN_END": False,
         "SEED": "42", "FAMILY_PRECISION": "INT8 (8-bit, fastest)", "BLOCKS_SWAP": "22",
         "DATASET_MEGAPIXELS": "0.25", "COMPILE_BLOCKS": "Off",
         "VALIDATION_LOSS": True, "VALIDATION_HOLDOUT": True, "VALIDATION_IMAGES": "4",
@@ -107,6 +118,11 @@ def adjust_plan(desc, values, plan):
             raise ValueError("Experiment 5C queue settings differ from the fixed recipe.")
         stages[0].cmd.extend(["--family_option", "replay_research=calibration",
                               "--family_option", f"replay_calibration_lr={expected_lr}"])
+        if case in SHORT_CASES:
+            if (values.get("MAX_TRAIN_EPOCHS") != "5" or values.get("SAVE_STATE") is not False
+                    or values.get("SAVE_STATE_ON_TRAIN_END") is not False):
+                raise ValueError("Short retest requires five epochs and no resume-state exports.")
+            stages[0].cmd.extend(["--family_option", "replay_short=1"])
     if case in CAUSAL_ROUTES:
         stages[0].cmd.extend(["--family_option", "replay_research=causal",
                               "--family_option", f"replay_causal_decay={CAUSAL_DECAYS[case]}"])

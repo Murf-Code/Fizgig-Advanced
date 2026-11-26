@@ -1306,7 +1306,11 @@ def _plan(family_key, values, image_folder, resume="", ft_continue=None, models=
         desc, values, models={**{k: pref_path(prefs, k) for k in form.model_keys(desc)}, **(models or {})},
         python=sys.executable,
         repo_dir=BASE_DIR, image_folder=str(image_folder or "").strip(),
-        cache_root=pref_path(prefs, "cache_dir"), samples_dir=os.path.join(out_dir, "sample"),
+        cache_root=(os.path.join(pref_path(prefs, "cache_dir"), "replay-short",
+                                 os.path.basename(os.path.dirname(out_dir)))
+                    if str(values.get("__replay_compare", "")).startswith("calibration-short-")
+                    else pref_path(prefs, "cache_dir")),
+        samples_dir=os.path.join(out_dir, "sample"),
         inference_int8=str(prefs.get("inference_int8", "")).strip() in ("1", "True", "true"),
         vram_reclaim={k: prefs.get(k, d) for k, d in launch.RECLAIM_PREF_DEFAULTS.items()},
         captioner=captioner if captioner and os.path.isfile(captioner) else "",
@@ -5141,8 +5145,11 @@ class Handler(BaseHTTPRequestHandler):
                 group = "replay-compare-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
                 root = os.path.join(default_output_dir(), "replay_comparisons")
                 try:
+                    os.makedirs(root, exist_ok=True)
+                    if shutil.disk_usage(root).free < replay_benchmark.SHORT_FREE_BYTES:
+                        return self.json({"error": "Short retest requires at least 8 GiB free on the output drive."}, 400)
                     configs = replay_benchmark.settings(group, root)
-                except (ValueError, TypeError) as exc:
+                except (ValueError, TypeError, OSError) as exc:
                     return self.json({"error": str(exc)}, 400)
                 entries = []
                 for vals in configs:

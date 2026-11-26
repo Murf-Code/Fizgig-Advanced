@@ -41,7 +41,8 @@ def _save(root, report):
         from fizgig.krea2.replay_causal import compare_decay
         report["decay_comparisons"] = compare_decay(report["runs"])
     if any(r["case"].startswith("calibration-") for r in report["runs"]):
-        report["experiment"] = "5C"
+        report["experiment"] = ("5D-short" if any(r["case"].startswith("calibration-short-")
+                                                   for r in report["runs"]) else "5C")
         report["calibration_summary"] = calibration_summary(report["runs"])
     report["updated_at"] = time.time()
     _atomic(root / REPORT, json.dumps(report, indent=2, allow_nan=False))
@@ -204,21 +205,40 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                     from fizgig.krea2.replay_causal import (ALL, PROBES, SOURCE, checked_mask,
                                                             expected_mask, intervention, source_schedule)
                     from fizgig.web.replay_benchmark import (CAUSAL_ROUTES, CAUSAL_DECAYS, UNRESTRICTED_CASES,
-                                                             CALIBRATION_CASES)
+                                                             CALIBRATION_CASES, SHORT_CASES,
+                                                             SHORT_MIN_STEPS, SHORT_MAX_STEPS)
                     from fizgig.krea2.selective_policy import select_blocks
                     try:
                         calibration = case in CALIBRATION_CASES
                         expected_lr = float(CALIBRATION_CASES[case][0]) if calibration else 0.00045
                         strategy = CALIBRATION_CASES[case][1] if calibration else "adaptive_gradient"
                         rows = run.get("research", [])
+                        short = case in SHORT_CASES
+                        steps_per_epoch = 29
+                        if short:
+                            recipe = [r for r in rows if r.get("kind") == "short_recipe"]
+                            if (len(recipe) != 1 or recipe[0].get("planned_epochs") != 5
+                                    or type(recipe[0].get("steps_per_epoch")) is not int
+                                    or not SHORT_MIN_STEPS <= recipe[0]["steps_per_epoch"] <= SHORT_MAX_STEPS
+                                    or not recipe[0].get("holdout_names")):
+                                raise ValueError("missing or invalid short-retest recipe")
+                            steps_per_epoch = recipe[0]["steps_per_epoch"]
+                            for other in report["runs"]:
+                                if other is run or other["status"] != "finished" or other["case"] not in SHORT_CASES:
+                                    continue
+                                other_recipe = [x for x in other.get("research", []) if x.get("kind") == "short_recipe"]
+                                if other_recipe != recipe:
+                                    raise ValueError("short-retest dataset/holdout counts differ across arms")
+                        steps = steps_per_epoch * 5
+                        probe_steps = tuple(range(8, steps + 1, 8)) if short else PROBES
                         hashes = [r for r in rows if r.get("kind") == "hash"]
-                        if [r["step"] for r in hashes] != list(range(146)):
+                        if [r["step"] for r in hashes] != list(range(steps + 1)):
                             raise ValueError("missing fingerprints")
                         for kind in ("raw_validation", "ema_validation"):
-                            if [r["step"] for r in rows if r.get("kind") == kind] != [29, 58, 87, 116, 145]:
+                            if [r["step"] for r in rows if r.get("kind") == kind] != [steps_per_epoch * i for i in range(1, 6)]:
                                 raise ValueError("missing " + kind)
                         telemetry = [r for r in rows if r.get("kind") == "probe_telemetry"]
-                        if [r["step"] for r in telemetry] != list(PROBES):
+                        if [r["step"] for r in telemetry] != list(probe_steps):
                             raise ValueError("missing probe telemetry")
                         for probe in telemetry:
                             factors = probe["factors"]
@@ -228,7 +248,7 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                                                 "gradient_momentum_cosine", "momentum_agreement_matrices",
                                                 "gradient_bearing_matrices"} <= f.keys() for f in factors)):
                                 raise ValueError("incomplete expanded factor telemetry")
-                        if not any(r.get("kind") == "complete" and r.get("step") == 145 for r in rows):
+                        if not any(r.get("kind") == "complete" and r.get("step") == steps for r in rows):
                             raise ValueError("missing completion marker")
                         env = [r for r in rows if r.get("kind") == "environment"]
                         if len(env) != 1 or env[0].get("mode") != ("calibration" if calibration else "causal") or not env[0].get("deterministic"):
@@ -247,10 +267,10 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                                 raise ValueError("incorrect per-step decay")
                         run["weight_decay"] = decay
                         if case in UNRESTRICTED_CASES or (calibration and strategy == "replay"):
-                            masks = [set(ALL) for _ in PROBES]
+                            masks = [set(ALL) for _ in probe_steps]
                         elif case == SOURCE or calibration:
                             probes = run["probes"]
-                            if [p["step"] for p in probes] != list(PROBES):
+                            if [p["step"] for p in probes] != list(probe_steps):
                                 raise ValueError("missing source probes")
                             masks = [checked_mask(p["active_blocks"]) for p in probes]
                             if any(p["active"] != len(mask) or p["total"] != 28

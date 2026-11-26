@@ -1563,6 +1563,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     from fizgig.training import replay_research as _rr
     research_mode = _rr.config(family_options)
     research_updates = 0
+    research_short = str((family_options or {}).get("replay_short", "")) == "1"
+    if research_short and research_mode != "calibration":
+        raise RuntimeError("Short replay retest requires deterministic calibration mode.")
     if research_mode and (desc.key != "krea2" or resume_state_dir or finetune or share_worker):
         raise RuntimeError("Experiment 5A needs a fresh single-GPU Krea 2 LoRA run.")
     driver = desc.load_driver()
@@ -1966,6 +1969,15 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             low_iter[0] = iter(low_loader)
             return next(low_iter[0])
     steps_per_epoch = len(loader)
+    if research_short:
+        from fizgig.web.replay_benchmark import SHORT_MIN_STEPS, SHORT_MAX_STEPS
+        if (not SHORT_MIN_STEPS <= steps_per_epoch <= SHORT_MAX_STEPS or not holdout_list
+                or not val_held or len(val_held) != len(holdout_list.get("paths") or [])
+                or save_state or save_state_on_train_end or max_train_epochs != 5):
+            raise RuntimeError("Short retest needs 8–20 training batches after holdout, complete holdout caches, five epochs and no resume states.")
+        _rr.record(logger, kind="short_recipe", steps_per_epoch=steps_per_epoch,
+                   planned_epochs=5, training_items=int(group.num_train_items),
+                   holdout_names=sorted(holdout_list.get("names") or []))
     logger.info(f"{desc.display_name} training: {group.num_train_items} items, {max_train_epochs} epochs, "
                 f"{steps_per_epoch} steps/epoch")
     _launch = uuid.uuid4().hex[:12]      # this launch: a re-run of the same name is a new training share
@@ -4132,7 +4144,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 logger.info("[maps] training maps: no picture could be read from the cache - off for this run")
                 maps = None
     if research_mode:
-        if (not global_replay or steps_per_epoch != 29 or accum != 1 or max_train_epochs != 5
+        if (not global_replay or (not research_short and steps_per_epoch != 29) or accum != 1 or max_train_epochs != 5
                 or validator is None or ema is None or validation_every_steps or int(seed) != 42
                 or (research_mode not in ("causal", "calibration") and not selective_global_replay)
                 or (selective_global_replay and driver._selective_strategy not in
@@ -4563,12 +4575,23 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         watch.boundary(epoch + 1, dit, device, parkable=not swapped)
 
         done = epoch + 1
-        if research_mode:
-            # FP32 snapshots are separate from normal EMA exports.
-            net.save(os.path.join(output_dir, f"research-raw-{done:06d}.safetensors"), dtype=torch.float32)
+        if research_mode and (not research_short or done == max_train_epochs):
+            # Short retest keeps only final research factors; loss and samples still cover every epoch.
+            if research_short and shutil.disk_usage(output_dir).free < 2 * 1024**3:
+                raise RuntimeError("Short retest needs 2 GiB free for final research/export files.")
+            def _research_save(kind):
+                path = os.path.join(output_dir, f"research-{kind}-{done:06d}.safetensors")
+                tmp = path + ".part"
+                try:
+                    net.save(tmp, dtype=torch.float32)
+                    os.replace(tmp, path)
+                finally:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+            _research_save("raw")
             ema.swap_in()
             try:
-                net.save(os.path.join(output_dir, f"research-ema-{done:06d}.safetensors"), dtype=torch.float32)
+                _research_save("ema")
             finally:
                 ema.swap_out()
         # the save schedule (the Training tab's How often to save; a fine-tune saves at whole rotations)
@@ -4676,9 +4699,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     if save_state_on_train_end:
         state(max_train_epochs)
     if research_mode in ("causal", "calibration"):
-        if global_step != 145 or research_updates != 145:
-            raise RuntimeError("Replay research did not complete exactly 145 updates")
-        _rr.record(logger, kind="complete", step=145, planned_epochs=5)
+        expected_steps = steps_per_epoch * 5 if research_short else 145
+        if global_step != expected_steps or research_updates != expected_steps:
+            raise RuntimeError(f"Replay research did not complete exactly {expected_steps} updates")
+        _rr.record(logger, kind="complete", step=expected_steps, planned_epochs=5)
     logger.info(f"Training complete -> {final}")
     return final
 
