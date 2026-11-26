@@ -35,7 +35,7 @@ def publish(archive,payload,specs,source_hash):
 def mixed(root,out,result):
     choices={suffix:[{"codec":"int8","bytes":sum(result["int8_sizes"][f"blocks.{i}.{suffix}.weight"] for i in range(28)), "error":0.0}] for suffix in MODULES}
     for case in bench.CASES:
-        if case in ("stock","nf4","mixed"): continue
+        if case in ("stock","stock-repeat","nf4","mixed"): continue
         record=bench.read_json(root/case/"prepare.json")
         if not record or record.get("status")!="ready": continue
         if any(record.get(k)!=result[k] for k in ("holdout_sha256","raw_sha256","calibration_sha256")):
@@ -109,6 +109,10 @@ def main():
         if a.case in ("nf4","stock-repeat"):
             result["status"]="native_control"; return 0
         if a.case=="mixed": return mixed(root,a.out,result)
+        if a.case=="q6-had":
+            repeat=bench.read_json(root/"stock-repeat"/"repeatability.json")
+            if not repeat or repeat.get("status")!="completed":
+                result["status"]="blocked"; raise ValueError("stock repeatability report required")
         name,rank=bench.CASES[a.case]
         if name in HQQ|HYBRID:
             from fizgig.minimax.hqq4 import hqq_available

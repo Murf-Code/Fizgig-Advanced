@@ -82,7 +82,7 @@ def main():
     p.add_argument("--compressed-lora",type=Path)
     p.add_argument("--out",type=Path)
     p.add_argument("--swaps",type=int,default=22)
-    p.add_argument("--deployment",choices=("int8","bf16"),default="int8")
+    p.add_argument("--deployment",choices=("int8","bf16","compact"),default="int8")
     p.add_argument("--split",choices=("development","confirmation","all"),default="development")
     p.add_argument("--paired-horizons",action="store_true")
     argv=sys.argv[1:]
@@ -191,7 +191,11 @@ def main():
     driver=get("krea2").load_driver()
     driver.set_options({})
     device=torch.device("cuda:0")
-    model,swapped=quant.load_base(driver,str(a.dit),device,a.deployment,a.swaps)
+    if a.deployment=="compact":
+        if not a.archive: raise ValueError("compact evaluation needs training archive")
+        model,swapped=compact_loader(a.archive,quant.load_base)(driver,str(a.dit),device,"int8",a.swaps)
+    else:
+        model,swapped=quant.load_base(driver,str(a.dit),device,a.deployment,a.swaps)
     net=FamilyLoRA(model,driver,device=device)
     # net.targets was built before wrappers replaced the original Linear modules.
     expected=set(driver.lora_target_names(None))

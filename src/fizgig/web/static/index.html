@@ -2557,7 +2557,7 @@
        note=document.getElementById("littlebitNote");
  let busy=false;
  mode.addEventListener("change",()=>{
-   note.textContent=mode.checked?"Krea2 · 8 short cases · 1 epoch or 200 updates · rank 32 · Muon · all resident first · real calibration · INT8 + Raw BF16 development scoring":"";
+   note.textContent=mode.checked?"Krea2 · V5 GPU smoke · CUDA equivalence first · INT8 + repeat + Q6 Hadamard · common swaps · three-base scoring":"";
  });
  document.addEventListener("click",async event=>{
    if(!mode.checked || !queue.contains(event.target))return;

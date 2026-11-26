@@ -12,7 +12,9 @@ CASES = {"stock": ("int8", 0), "nf4": ("nf4", 0),
          "q6": ("q6", 0), "q6-had": ("q6-had", 0),
          "q4-had": ("q4-had", 0), "hqq-had": ("hqq-had", 0),
          "lb2-r512-hqq": ("lb2-hqq", 512), "mixed": ("mixed", 0)}
-IMPLEMENTATION = "independent-v4-paired-development"
+CASES["stock-repeat"] = ("int8",0)
+SMOKE_CASES=("stock","stock-repeat","q6-had")
+IMPLEMENTATION = "independent-v5-gpu-smoke"
 EPOCHS = 1
 SWAPS = 22  # fixed deployment evaluation only; all training starts resident
 RAW_SWAPS = 26
@@ -39,13 +41,13 @@ def sha(path):
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
-def settings(root):
+def settings(root,full=False):
     root = Path(root).resolve()
     return [{**COMMON, "__littlebit_case": case, "__littlebit_impl": IMPLEMENTATION,
              "BLOCKS_SWAP": "0",
              "FAMILY_PRECISION": "4-bit NF4 (smallest)" if case=="nf4" else "INT8 (8-bit, fastest)",
              "LORA_NAME": root.name + "-" + case, "LORA_OUTPUT_DIR": str(root / case)}
-            for case in CASES]
+            for case in (tuple(CASES) if full else SMOKE_CASES)]
 
 
 def arg(cmd, flag):
@@ -122,23 +124,33 @@ def adjust_plan(desc, values, plan, repo, resume=False):
                     "--case",case,"--out",str(out),"--dataset",arg(cmd,"--dataset_config")]
         from fizgig.families.launch import Stage
         plan.stages.insert(0, Stage("LittleBit projection screen",prep_cmd))
+        if case=="stock":
+            plan.stages.insert(0,Stage("CUDA packed swap equivalence", [cmd[0],str(prepare.with_name("cuda_equivalence.py")),
+                "--repo",str(repo),"--out",str(out/"cuda-equivalence.json")]))
         stock_name = root.name + "-stock"
         stock = root / "stock"
         worker = [cmd[0],str(prepare.with_name("fit_queue.py")),"--repo",str(repo),"--case",case]
-        if case not in ("stock","nf4"):
+        if case not in ("stock","stock-repeat","nf4"):
             worker += ["--archive",str(archive)]
         if case != "stock":
             worker += ["--stock-trace",str(stock/"trace.json")]
+        if case in ("stock-repeat","q6-had"):
+            worker += ["--match-stock-swaps",str(stock/"fit-report.json")]
         stage.cmd = [*worker,"--",*cmd[2:]]
-        if case != "stock":
-            for deployment,swaps,filename in (("int8",SWAPS,"transfer.json"),("bf16",RAW_SWAPS,"transfer-bf16.json")):
+        if case=="stock-repeat":
+            plan.stages.append(Stage("Stock repeatability report",[cmd[0],str(prepare.with_name("repeat_report.py")),
+                "--stock",str(stock),"--repeat",str(out),"--out",str(out/"repeatability.json")]))
+        if case not in ("stock","stock-repeat"):
+            deployments=[("int8",SWAPS,"transfer.json"),("bf16",RAW_SWAPS,"transfer-bf16.json")]
+            if case=="q6-had": deployments.append(("compact",SWAPS,"transfer-compact.json"))
+            for deployment,swaps,filename in deployments:
                 plan.stages.append(Stage(f"Development transfer on {deployment}", [
                     cmd[0],str(prepare.with_name("native_runner.py")),"evaluate","--repo",str(repo),"--dit",str(raw),
                     "--snapshot",str(stock/f".fizgig_val_{stock_name}.pt"),
                     "--stock-lora",str(stock/f"{stock_name}.safetensors"),
                     "--compressed-lora",str(out/f"{name}.safetensors"),
                     "--out",str(out/filename),"--deployment",deployment,"--swaps",str(swaps),
-                    "--split","development","--paired-horizons"]))
+                    "--split","development","--paired-horizons",*(["--archive",str(archive)] if deployment=="compact" else [])]))
         plan.console.append(f"[LittleBit test] {case}: one epoch or 200 updates; resident first; NF4 cannot swap; no retention cutoff.")
     except (ValueError, OSError, TypeError) as e:
         plan.problems.append(str(e))
@@ -183,6 +195,9 @@ def update(values, status, log=None):
     entry["status"] = status
     entry["transfer"] = read_json(out/"transfer.json")
     entry["transfer_bf16"] = read_json(out/"transfer-bf16.json")
+    entry["transfer_compact"] = read_json(out/"transfer-compact.json")
+    entry["cuda_equivalence"] = read_json(out/"cuda-equivalence.json")
+    entry["repeatability"] = read_json(out/"repeatability.json")
     entry["trace"] = read_json(out/"trace.json")
     entry["fit"] = read_json(out/"fit-report.json")
     entry["selected_swaps"] = (entry["fit"] or {}).get("selected_swaps")
@@ -209,7 +224,7 @@ def update(values, status, log=None):
         with zipfile.ZipFile(root/"littlebit-results.zip","w",zipfile.ZIP_DEFLATED) as z:
             for p in (report,root/"littlebit-comparison.log"):
                 z.write(p,p.name)
-            for label in CASES:
+            for label in data["cases"]:
                 for p in (root/label).glob("*"):
                     if p.is_file() and p.suffix in (".json",".log"):
                         z.write(p,str(p.relative_to(root)))

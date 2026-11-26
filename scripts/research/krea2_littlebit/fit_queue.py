@@ -31,7 +31,7 @@ def atomic_json(path, value):
     os.replace(tmp, path)
 
 
-def run_sweep(command, out, launch=subprocess.run):
+def run_sweep(command, out, launch=subprocess.run, schedule=None):
     """Train from scratch at each tested swap count; retry only explicit CUDA OOM.
 
     command invokes the native worker and ends in -- followed by trainer flags.
@@ -57,7 +57,11 @@ def run_sweep(command, out, launch=subprocess.run):
     work = out / "fit_attempts"
     work.mkdir(exist_ok=False)
     report = out / "fit-report.json"
-    schedule = (0,) if "--precision" in original and arg(original,"--precision")=="nf4" else SWAP_STEPS
+    if schedule is None:
+        schedule = (0,) if "--precision" in original and arg(original,"--precision")=="nf4" else SWAP_STEPS
+    if not schedule or any(n not in SWAP_STEPS for n in schedule):
+        raise ValueError("invalid tested swap schedule")
+    (work/"holdout-original.json").write_bytes(hold_bytes)
     info = {"schedule": list(schedule), "attempts": [], "selected_swaps": None,
             "status": "running"}
     atomic_json(report, info)
@@ -140,6 +144,7 @@ def main():
     p.add_argument("--archive", type=Path)
     p.add_argument("--case", default="legacy")
     p.add_argument("--stock-trace", type=Path)
+    p.add_argument("--match-stock-swaps",type=Path)
     argv = sys.argv[1:]
     cut = argv.index("--")
     a = p.parse_args(argv[:cut])
@@ -152,7 +157,13 @@ def main():
     if a.stock_trace:
         command += ["--stock-trace",str(a.stock_trace)]
     command += ["--",*args]
-    sys.exit(run_sweep(command, arg(args, "--output_dir")))
+    schedule=None
+    if a.match_stock_swaps:
+        ref=json.loads(a.match_stock_swaps.read_text(encoding="utf-8"))
+        if ref.get("status")!="finished" or ref.get("selected_swaps") not in SWAP_STEPS:
+            raise ValueError("completed stock fit report required")
+        schedule=(ref["selected_swaps"],)
+    sys.exit(run_sweep(command, arg(args, "--output_dir"),schedule=schedule))
 
 
 if __name__ == "__main__":
