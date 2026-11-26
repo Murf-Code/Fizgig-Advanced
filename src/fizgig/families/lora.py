@@ -669,11 +669,11 @@ class FamilyLoRA:
         return sd
 
     def save(self, path, metadata=None, dtype=torch.bfloat16):
-        from safetensors.torch import save_file
+        from fizgig.training.numerical_safety import save_finite_safetensors
         sd = self.state_dict(dtype)
         if self.desc.lora.save_fused:
             sd = self.driver.export_lora_state_dict(sd)
-        save_file(sd, path, metadata={k: str(v) for k, v in (metadata or {}).items()})
+        save_finite_safetensors(sd, path, metadata={k: str(v) for k, v in (metadata or {}).items()})
 
     @torch.no_grad()
     def load_trainable(self, path):
