@@ -344,7 +344,9 @@ def _load_state(state_dir, net, optimizer, device, arch, untagged_own=False, dri
         meta = json.load(f)
     meta["own_state"] = meta.get("architecture") == arch or (untagged_own and "architecture" not in meta)
     if meta["own_state"]:
-        sd = torch.load(os.path.join(state_dir, "optimizer.pt"), map_location=device)
+        # Compressed state restores directly from CPU, avoiding a second full GPU checkpoint payload.
+        compressed = optimizer.__class__.__name__ == "CompressedMuonME"
+        sd = torch.load(os.path.join(state_dir, "optimizer.pt"), map_location="cpu" if compressed else device)
         perm = _legacy_perm(driver, net) if (driver is not None and "architecture" not in meta) else None
         if perm is not None:            # an older trainer's order: each moment back onto its own tensor
             sd["state"] = {perm[int(k)]: v for k, v in sd["state"].items()}
@@ -353,6 +355,8 @@ def _load_state(state_dir, net, optimizer, device, arch, untagged_own=False, dri
         # another Optimizer Type than the run trained with (#246): its saved moments don't fit this one, so the LoRA's
         # weights carry on with a fresh optimizer (a state from before the type was saved: as its groups tell)
         was, now = meta.get("optimizer"), optimizer.__class__.__name__
+        if was and was != now and "CompressedMuonME" in (was, now):
+            raise ValueError("resume compressed Muon-ME with the original momentum storage format")
         if was and was != now:
             why = f"it trained with {was}, and this resume uses {now}"
         elif len(sd.get("param_groups") or []) != len(optimizer.param_groups):
@@ -387,11 +391,16 @@ def _preview_vram(tag, reset_peak=False):
     try:
         if not torch.cuda.is_available():
             return
+        from fizgig.training.memory_telemetry import active_probe
+        probe = active_probe()
         if reset_peak:
-            torch.cuda.reset_peak_memory_stats()
+            if probe is not None and probe.active == "preview":
+                probe.preview_reset()
+            else:
+                torch.cuda.reset_peak_memory_stats()
         a = torch.cuda.memory_allocated() / 1024 ** 3
         r = torch.cuda.memory_reserved() / 1024 ** 3
-        pk = torch.cuda.max_memory_reserved() / 1024 ** 3
+        pk = (probe.preview_peaks()[1] if probe is not None and probe.active == "preview" else torch.cuda.max_memory_reserved()) / 1024 ** 3
         PREVIEW_PEAK_GB[0] = max(PREVIEW_PEAK_GB[0], pk)
         f = torch.cuda.mem_get_info()[0] / 1024 ** 3
         logger.info(f"[preview-vram] {tag}: allocated {a:.2f} GB, reserved {r:.2f} GB (peak {pk:.2f} GB), "
@@ -1561,14 +1570,22 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     geometry_fit_steps = int((family_options or {}).get("geometry_feasibility_steps", 0) or 0)
     geometry_timing = str((family_options or {}).get("geometry_optimizer_timing", "")) == "1"
     geometry_updates = 0
-    if geometry_fit_steps and (geometry_fit_steps != 50 or desc.key != "krea2" or finetune
-                               or share_worker or str(optimizer_type).lower() not in ("polora", "lora_tsd")
+    memory_mode = str((family_options or {}).get("geometry_memory_phase", "off")).lower()
+    activation_mib = int((family_options or {}).get("geometry_activation_mib", 0) or 0)
+    host_floor_mib = int((family_options or {}).get("geometry_host_floor_mib", 6144) or 6144)
+    memory_h2d = str((family_options or {}).get("geometry_memory_require_h2d", "0")) == "1"
+    if memory_mode not in ("off", "passive", "peaks") or not 0 <= activation_mib <= 4096 or host_floor_mib < 1024:
+        raise ValueError("invalid geometry memory options")
+    memory_research = memory_mode != "off" or activation_mib > 0 or memory_h2d
+    memory_fit = memory_research and geometry_fit_steps == 20 and str(optimizer_type).lower() == "muon_me"
+    if geometry_fit_steps and ((not memory_fit and (geometry_fit_steps != 50 or str(optimizer_type).lower() not in ("polora", "lora_tsd"))) or desc.key != "krea2" or finetune
+                               or share_worker
                                or int(network_dim) not in (16, 32, 64) or int(network_alpha) != int(network_dim)
                                or int(max_train_epochs) != 1
                                or int(gradient_accumulation_steps) != 1 or resume_state_dir):
         raise ValueError("Geometry feasibility requires fresh rank 16/32/64 Krea 2 PoLoRA or LoRA-TSD, alpha=rank, one epoch, accumulation 1.")
     driver = desc.load_driver()
-    driver.set_options({k:v for k,v in (family_options or {}).items() if k not in ("geometry_feasibility_steps", "geometry_optimizer_timing")})      # before the data: an option may shape the dataset
+    driver.set_options({k:v for k,v in (family_options or {}).items() if k not in ("geometry_feasibility_steps", "geometry_optimizer_timing", "geometry_memory_phase", "geometry_activation_mib", "geometry_host_floor_mib", "geometry_memory_require_h2d")})      # before the data: an option may shape the dataset
     _method = str((family_options or {}).get("training_method", "") or "").strip()
     if desc.key == "krea2" and _method and not getattr(driver, "global_replay", False):
         # a method from the test build that was not kept (Blockwise flow, Residual-path hybrid): train Standard
@@ -1577,6 +1594,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         driver.options.pop("training_method", None)
     global_replay = bool(desc.key == "krea2" and getattr(driver, "global_replay", False))
     selective_global_replay = bool(global_replay and getattr(driver, "selective_global_replay", False))
+    if memory_research and (desc.key != "krea2" or global_replay or finetune or slider_pairs or slider_prompts or dop or share_worker is not None or str(network_type).lower() != "lora" or train_blocks or int(gradient_accumulation_steps) != 1):
+        raise ValueError("memory research requires standard unrestricted Krea 2 LoRA, accumulation 1, no DOP or helper")
     if global_replay:
         unsupported = []
         if str(network_type or "lora").lower() != "lora":
@@ -1897,6 +1916,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     if slider:
         driver.slider_setup(group)           # e.g. H3: still previews unless the pairs are clips
     bsz = max((int(getattr(ds, "batch_size", 1) or 1) for ds in group.datasets), default=1)   # a prompt slider has none
+    if memory_research and bsz != 1:
+        raise ValueError("memory research requires batch 1")
     if global_replay and bsz != 1:
         raise RuntimeError("Krea 2 Global replay needs Batch Size = 1. Use gradient accumulation "
                            "for an effective batch instead.")
@@ -2156,6 +2177,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     if do_compile:          # the partial figures are compiled with the checkpoint outside the graph
                         do_compile = "outside"
     gradient_checkpointing = bool(gradient_checkpointing)
+    if memory_research and (do_compile or not gradient_checkpointing or gc_off_blocks):
+        raise ValueError("memory research requires eager full gradient checkpointing")
 
     # ---- optional Krea 2 calibration: before the full DiT/VAE occupy VRAM -----------------------------
     calibration_info = _prepare_krea2_direction_edit(
@@ -2328,6 +2351,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         send_only = send_only_plan(send_only_swap, blocks_to_swap, precision, gradient_checkpointing, gc_off_blocks,
                                    finetune, wont_help="" if send_only_force else send_only_wont_help(blocks_to_swap, _mp))
     dit, swapped = quant.load_base(driver, dit_path, device, precision, blocks_to_swap, send_only=send_only)
+    if memory_research:
+        actual_offloader = type(getattr(dit, "offloader", None)).__name__
+        logger.info("[geometry-memory-config] %s", json.dumps(dict(mode=memory_mode, activation_mib=activation_mib, host_floor_mib=host_floor_mib, offloader=actual_offloader, swap=blocks_to_swap, checkpointing=gradient_checkpointing)))
+        if memory_h2d and actual_offloader != "LoRAStreamOffloader":
+            raise RuntimeError("memory research requires actual H2D-only offloader; fallback would invalidate comparison")
     if int8_rotated_backward:            # experimental, opt-in (modules/int8_train.py): an INT8 backward too
         from fizgig.modules import int8_train as _i8
         if precision == "int8" and not getattr(driver, "int8_weight_only", False):
@@ -2341,6 +2369,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     if gradient_checkpointing:
         driver.enable_gradient_checkpointing(dit, True)
         dit.gc_off_blocks = gc_off_blocks       # the compiled blocks / H3's loop leave the last ones un-checkpointed
+    if activation_mib:
+        dit.enable_activation_offload(activation_mib * 2**20, host_floor_mib * 2**20)
     net = FamilyLoRA(dit, driver, device=device)
     driver.prepare_training(dit, group, net)
     if calibration_info and calibration_info.get("lora") and os.path.isfile(calibration_info["lora"]):
@@ -2548,6 +2578,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             _oargs = (_oargs + f" weight_decay={desc.optimizer_weight_decay:g}").strip()
         optimizer, opt_label = create_optimizer(optimizer_type, opt_params, learning_rate, _oargs,
                                                 eps_floor_8bit=desc.optimizer_eps_floor_8bit)
+    if optimizer.__class__.__name__ == "CompressedMuonME":
+        from fizgig.families.lora import TRAINABLE
+        names = {id(p): f"{name}.{suffix}" for name, w in net.wrapped.items() if TRAINABLE in w.adapters
+                 for suffix, p in w.adapters[TRAINABLE].named_parameters()}
+        for group in optimizer.param_groups:
+            group["param_names"] = [names[id(p)] for p in group["params"]]
     if optimizer.__class__.__name__ == "LoRATSD":
         from fizgig.families.lora import TRAINABLE
         scales = {id(w.adapters[TRAINABLE][0].weight): w.scales[TRAINABLE]
@@ -2945,6 +2981,13 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     previews_off = [False]
 
     _train_peak = [0.0]                      # training's own reserved peak over the epochs so far
+    from contextlib import nullcontext
+    from fizgig.training.memory_telemetry import PhaseTelemetry, CudaCounters, optimizer_inventory
+    memory_probe = PhaseTelemetry(CudaCounters(device), memory_mode) if memory_mode != 'off' else None
+    def _memory_phase(name, step):
+        return memory_probe.phase(name, step) if memory_probe is not None else nullcontext()
+    def _memory_training_peaks():
+        return memory_probe.training_peaks() if memory_probe is not None else (torch.cuda.max_memory_allocated(device), torch.cuda.max_memory_reserved(device))
 
     def _vram_record():
         """What the plan said against what this run held - training's peak and its previews' (vram_plan.record)."""
@@ -2971,7 +3014,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if encoded is None or previews_off[0]:
             return
         if torch.cuda.is_available():         # training's peak so far, before the preview resets the counter
-            _train_peak[0] = max(_train_peak[0], torch.cuda.max_memory_reserved() / 1024 ** 3)
+            _train_peak[0] = max(_train_peak[0], _memory_training_peaks()[1] / 1024 ** 3)
+        with _memory_phase("preview", epoch):
+            _run_memory_preview(epoch)
+
+    def _run_memory_preview(epoch):
         parked = []
         try:
             if desc.preview_park_optimizer and optimizer is not None:
@@ -4172,7 +4219,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if between[0] is not None:          # the last epoch's end work (saves, checks, previews, the next epoch's
             progress.start_t += time.time() - between[0]   # set-up) out of the bar's s/it: training speed only
             between[0] = None
-        torch.cuda.reset_peak_memory_stats()
+        if memory_probe is not None:
+            memory_probe.epoch_reset()
+        else:
+            torch.cuda.reset_peak_memory_stats()
         t0 = time.time()
         _theirs = (_share_split(seed, epoch + 1, _share_keys, share_now[0]["frac"]) if share_now[0] is not None
                    else None)                       # the helper's images this epoch (both sides draw the same)
@@ -4282,11 +4332,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     # step's forward and backward, so the backward stops at the first trained block and they get no grad
                     _frozen_now = _step_freeze(driver.step_frozen_blocks(batch))
                     _lm = _loss_mask(batch)
-                    loss, _info = driver.training_loss(dit, latents, cond, gen, min_t=min_timestep, max_t=max_timestep,
-                                                       **({"refs": refs} if refs else {}),
-                                                       **({"loss_mask": _lm} if _lm is not None else {}),
-                                                       **({"prior": prior} if prior is not None and _lm is not None
-                                                          else {}))
+                    with _memory_phase("forward", global_step + 1):
+                        loss, _info = driver.training_loss(dit, latents, cond, gen, min_t=min_timestep, max_t=max_timestep,
+                                                           **({"refs": refs} if refs else {}),
+                                                           **({"loss_mask": _lm} if _lm is not None else {}),
+                                                           **({"prior": prior} if prior is not None and _lm is not None
+                                                              else {}))
                 if "lr_mult" in _info and lr_acc:
                     lr_acc[-1] *= _info["lr_mult"]     # where the step landed (the H3 noise-band LR)
                 if pending == 0 and optimizer is not None:
@@ -4321,7 +4372,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                         raise RuntimeError("Global replay does not support batched loss weighting.")
                     driver.backward_training_loss(float(mult) / (accum if accum > 1 else 1))
                 else:
-                    (_scaled / accum if accum > 1 else _scaled).backward()
+                    with _memory_phase("backward", global_step + 1):
+                        (_scaled / accum if accum > 1 else _scaled).backward()
                 if _dc is not None and ftr is None:
                     dop_sum[0] += _dop_step(driver, dit, net, latents, _dc, gen, weight=dop_weight,
                                             min_t=min_timestep, max_t=max_timestep, accum=accum,
@@ -4331,7 +4383,16 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     _p.requires_grad_(True)
             pending += 1
             if pending >= accum:
-                _update()
+                with _memory_phase("optimizer", global_step + 1):
+                    _update()
+                if memory_research:
+                    info = optimizer_inventory(optimizer)
+                    ab = getattr(dit, "activation_offload_budget", None)
+                    if ab is not None:
+                        info["activation"] = {k:getattr(ab,k) for k in ("cap","live","peak","accepted","skipped","layout_skipped")}
+                    info["step"] = global_step + 1
+                    info["weight_transfers"] = dict(getattr(getattr(dit, "offloader", None), "transfers", {}))
+                    logger.info("[geometry-memory-state] %s", json.dumps(info, separators=(",",":")))
             step_clock["t"] += time.time() - _t_step
             global_step += 1
             if test_cap and global_step >= test_cap[1]:
@@ -4427,8 +4488,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 _flush()
                 steplog.flush()
                 torch.cuda.synchronize(device)
-                allocated = torch.cuda.max_memory_allocated(device)
-                reserved = torch.cuda.max_memory_reserved(device)
+                allocated, reserved = _memory_training_peaks()
                 if geometry_updates != min(geometry_fit_steps, steps_per_epoch):
                     raise RuntimeError(f"Geometry fit expected {min(geometry_fit_steps, steps_per_epoch)} optimizer calls, got {geometry_updates}")
                 logger.info("[geometry-fit] complete updates=%d allocated_bytes=%d reserved_bytes=%d wall_seconds=%.3f",
@@ -4461,8 +4521,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     f"lr={_step_rate():.3e}  "
                     + (f"({automagic4_detail(optimizer)})  " if automagic4_detail(optimizer) else "")
                     + (f"({group_rates(optimizer)})  " if optimizer is not None and group_rates(optimizer) else "") +
-                    f"peak VRAM {torch.cuda.max_memory_reserved() / 1024 ** 3:.1f} GB")
-        _train_peak[0] = max(_train_peak[0], torch.cuda.max_memory_reserved() / 1024 ** 3
+                    f"peak VRAM {_memory_training_peaks()[1] / 1024 ** 3:.1f} GB")
+        _train_peak[0] = max(_train_peak[0], _memory_training_peaks()[1] / 1024 ** 3
                              if torch.cuda.is_available() else 0.0)
         _vram_record()
         steplog.flush()

@@ -365,6 +365,7 @@ class SingleStreamDiT(nn.Module):
 
         # musubi training hooks
         self.gradient_checkpointing = False
+        self.activation_offload_budget = None
         self.blocks_to_swap = 0
         self.offloader = None
 
@@ -374,6 +375,15 @@ class SingleStreamDiT(nn.Module):
 
     def disable_gradient_checkpointing(self):
         self.gradient_checkpointing = False
+        self.activation_offload_budget = None
+
+    def enable_activation_offload(self, cap_bytes, host_floor_bytes):
+        if not self.gradient_checkpointing:
+            raise RuntimeError('activation offload requires gradient checkpointing')
+        import psutil
+        from fizgig.training.activation_offload import HostBudget
+        self.activation_offload_budget = HostBudget(cap_bytes, host_floor_bytes=host_floor_bytes,
+                                                     available=lambda: psutil.virtual_memory().available)
 
     # Block swap (CPU offloading of the main SingleStreamBlocks). Mirrors the other
     # musubi architectures: the trainer calls enable_block_swap + move_to_device_except_swap_blocks
@@ -484,12 +494,19 @@ class SingleStreamDiT(nn.Module):
             if self.blocks_to_swap:
                 self.offloader.wait_for_block(index)
 
+            if self.activation_offload_budget is not None and getattr(block, "_handles_checkpointing", False):
+                raise RuntimeError("activation offload cannot nest compiled checkpoints")
             if getattr(block, "_handles_checkpointing", False):
                 # torch.compile wraps blocks in a module that checkpoints itself, so the recompute
                 # is captured inside the compiled graph. Checkpointing again here would nest it.
                 combined = block(combined, tvec, freqs, attn_params)
             elif self.gradient_checkpointing and self.training:
-                combined = torch.utils.checkpoint.checkpoint(block, combined, tvec, freqs, attn_params, use_reentrant=False)
+                if self.activation_offload_budget is not None:
+                    from fizgig.training.activation_offload import checkpoint_bounded
+                    combined = checkpoint_bounded(block, combined, tvec, freqs, attn_params,
+                                                  budget=self.activation_offload_budget)
+                else:
+                    combined = torch.utils.checkpoint.checkpoint(block, combined, tvec, freqs, attn_params, use_reentrant=False)
             else:
                 combined = block(combined, tvec, freqs, attn_params)
 
