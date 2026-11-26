@@ -17,7 +17,7 @@ def settings(group, root):
         "NETWORK_DIM": "8", "NETWORK_ALPHA": "8", "GRADIENT_ACCUMULATION": "1",
         "BATCH_SIZE": "1", "MAX_GRAD_NORM": "1.0", "MAX_TRAIN_EPOCHS": "1",
         "SAVE_EVERY_N_EPOCHS": "1", "SAVE_STATE": False, "SAVE_STATE_ON_TRAIN_END": False,
-        "SEED": "42", "DATASET_MEGAPIXELS": "0.98", "ENABLE_BUCKET": True,
+        "SEED": "42", "DATASET_MEGAPIXELS": "1.0", "ENABLE_BUCKET": True,
         "BUCKET_NO_UPSCALE": True, "DATASET_CAPTION_EXT": ".txt", "ENABLE_CACHE": True,
         "TAG_SHUFFLE": True, "TAG_KEEP_FIRST": "1", "TAG_VARIANTS": "4",
         "MASK_FLOOR": "0.1 (recommended)", "MASK_PRIOR": "Off", "FAMILY_EMA": "0.98 (recommended)",
