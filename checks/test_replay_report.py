@@ -116,3 +116,18 @@ def test_multi_partial_bundle_includes_each_probe(tmp_path):
     with zipfile.ZipFile(root / rr.BUNDLE) as bundle:
         assert set(bundle.namelist()) == {rr.REPORT, rr.COMBINED,
             f"{case}/movement-dual-step04.json", f"{case}/movement-dual-step08.json"}
+
+
+def test_history_partial_bundle(tmp_path):
+    import zipfile
+    root = tmp_path / "comparison"
+    case = "history-seed42-lr450"
+    rr.create(root, "dataset", [{"__replay_compare": case,
+              "LORA_NAME": "history", "LEARNING_RATE": "0.00045"}])
+    out = root / case
+    out.mkdir()
+    (out / "historical-reversion.json").write_text('{"status":"failed"}')
+    rr.update(out, case, "failed")
+    with zipfile.ZipFile(root / rr.BUNDLE) as bundle:
+        assert set(bundle.namelist()) == {rr.REPORT, rr.COMBINED,
+            f"{case}/historical-reversion.json"}

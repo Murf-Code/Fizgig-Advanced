@@ -51,6 +51,13 @@ def _save(root, report):
             len(r.get("movement_multi", {}).get("probes", [])) for r in multi),
             "same_panel_across_seeds": len(panels) == 1 if all(r["status"] == "finished" for r in multi) else None,
             "scope": "development_target_only"}
+    history = [r for r in report["runs"] if r["case"].startswith("history-")]
+    if history:
+        report["experiment"] = "6F.2"
+        panels = {r["historical_reversion"]["panel_hash"] for r in history if "historical_reversion" in r}
+        report["history_summary"] = {"completed_runs": sum("historical_reversion" in r for r in history),
+            "same_panel_across_seeds": len(panels) == 1 if all(r["status"] == "finished" for r in history) else None,
+            "scope": "development_target_only"}
     report["updated_at"] = time.time()
     _atomic(root / REPORT, json.dumps(report, indent=2, allow_nan=False))
     lines = ["Fizgig Global Replay comparison", "Status: " + report["status"],
@@ -78,7 +85,7 @@ def _save(root, report):
             for run in report["runs"]:
                 diagnostics = [f"{run['output']}/{name}" for name in
                                ("movement-pilot.json", "movement-isolation.json", "movement-dual.json",
-                                "movement-dual-step04.json", "movement-dual-step08.json", "movement-dual-step12.json")]
+                                "movement-dual-step04.json", "movement-dual-step08.json", "movement-dual-step12.json", "historical-reversion.json")]
                 for name in dict.fromkeys(run.get("samples", []) + run.get("logs", []) + diagnostics):
                     path = root / name
                     if path.is_file():
@@ -262,6 +269,42 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                                 "integrity": True, "matched": True, "unique_endpoints": len(names)}
                     except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
                         run.update(status="failed", reason="Invalid movement dual diagnostics: " + str(exc))
+                if status == "finished" and case in ("history-seed42-lr450", "history-seed43-lr450"):
+                    try:
+                        h = _read_json(output / "historical-reversion.json")
+                        rows = run.get("research", [])
+                        hashes = [r["step"] for r in rows if r.get("kind") == "hash"]
+                        completed = [r for r in rows if r.get("kind") == "complete"]
+                        captures = [r for r in rows if r.get("kind") == "historical_capture"]
+                        markers = [r for r in rows if r.get("kind") == "historical_reversion"]
+                        primary = {f"block{b:02d}" for b in range(28)} | {"all_early"} | {f"half{b:02d}" for b in (13, 17, 26)}
+                        matched_names = {f"uniform_{n}" for n in ("block13", "block17", "block26", "half13", "half17", "half26")}
+                        expected = primary | matched_names
+                        count = 4 * len(h["probe_units"])
+                        if (h["experiment"] != "6F.2" or h["status"] != "completed" or h["step"] != 12
+                                or h["source_step"] != 3 or h["parent_step"] != 11 or not h["integrity_passed"]
+                                or h["scope"] != "development_target_only" or h["semantic_preservation"]
+                                or h["parent_rollback"] != "exact_registered_state"
+                                or set(h["geometry"]) != expected or set(h["matching"]) != matched_names
+                                or not all(m["matched"] for m in h["matching"].values()) or not count
+                                or set(h["evaluators"]) != {"native", "weight_only"}
+                                or any(set(v["arms"]) != expected or set(v["restored"]) != expected
+                                       or not v["repeat_exact"] or not v["reversion_repeat_exact"]
+                                       or any(len(a["rows"]) != count for a in v["arms"].values())
+                                       for v in h["evaluators"].values())
+                                or len(captures) != 1 or captures[0]["step"] != 3
+                                or captures[0]["sha256"] != h["source_hash"]
+                                or len(markers) != 1 or markers[0]["step"] != 12
+                                or markers[0]["source_hash"] != h["source_hash"]
+                                or not markers[0]["integrity"] or markers[0]["status"] != "completed"
+                                or markers[0]["rollback"] != "exact_registered_state"
+                                or len(completed) != 1 or not 12 <= completed[0]["step"] <= 40
+                                or hashes != list(range(completed[0]["step"] + 1))):
+                            raise ValueError("incomplete historical reversion diagnostics")
+                        run["historical_reversion"] = {"report": "historical-reversion.json",
+                            "panel_hash": h["panel_hash"], "integrity": True, "arms": len(expected)}
+                    except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+                        run.update(status="failed", reason="Invalid historical reversion diagnostics: " + str(exc))
                 if status == "finished" and case == "movement-isolation-lr450":
                     try:
                         pilot = _read_json(output / "movement-isolation.json")

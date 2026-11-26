@@ -46,9 +46,10 @@ MOVEMENT_PILOT_CASE = "movement-sensitivity-lr450"
 MOVEMENT_ISOLATION_CASE = "movement-isolation-lr450"
 MOVEMENT_DUAL_CASE = "movement-dual-lr450"
 MOVEMENT_MULTI_CASES = {"movement-multi-seed42-lr450": "42", "movement-multi-seed43-lr450": "43"}
+HISTORY_CASES = {"history-seed42-lr450": "42", "history-seed43-lr450": "43"}
 
 def case_strategy(case):
-    if case in (MOVEMENT_PILOT_CASE, MOVEMENT_ISOLATION_CASE, MOVEMENT_DUAL_CASE) or case in MOVEMENT_MULTI_CASES:
+    if case in (MOVEMENT_PILOT_CASE, MOVEMENT_ISOLATION_CASE, MOVEMENT_DUAL_CASE) or case in MOVEMENT_MULTI_CASES or case in HISTORY_CASES:
         return "replay"
     if case in CALIBRATION_CASES:
         return CALIBRATION_CASES[case][1]
@@ -116,6 +117,14 @@ def multi_settings(group, output_root):
             for case, seed in MOVEMENT_MULTI_CASES.items()]
 
 
+def history_settings(group, output_root):
+    v = pilot_settings(group, output_root)[0]
+    return [{**v, "__replay_compare": case, "SEED": seed,
+             "LORA_NAME": f"{group}-{case}",
+             "LORA_OUTPUT_DIR": os.path.join(output_root, group, case)}
+            for case, seed in HISTORY_CASES.items()]
+
+
 def adjust_plan(desc, values, plan):
     """Validate the fixed comparison; keep legacy queued matched controls runnable."""
     case = values.get("__replay_compare")
@@ -136,14 +145,18 @@ def adjust_plan(desc, values, plan):
         stages[0].cmd.extend(["--family_option", f"selective_strategy={strategy}"])
         if strategy in STRATEGIES:
             stages[0].cmd.extend(["--family_option", "selective_budget=14"])
-    if case in (MOVEMENT_PILOT_CASE, MOVEMENT_ISOLATION_CASE, MOVEMENT_DUAL_CASE) or case in MOVEMENT_MULTI_CASES:
+    if case in (MOVEMENT_PILOT_CASE, MOVEMENT_ISOLATION_CASE, MOVEMENT_DUAL_CASE) or case in MOVEMENT_MULTI_CASES or case in HISTORY_CASES:
         if (values.get("LEARNING_RATE") != "0.00045" or values.get("MAX_TRAIN_EPOCHS") != "1"
                 or values.get("KREA2_SELECTIVE_BLOCK_CHECK") or values.get("SAMPLE_ENABLED")):
             raise ValueError("Movement sensitivity settings differ from the fixed recipe.")
         stages[0].cmd.extend(["--family_option", "replay_research=calibration",
                               "--family_option", "replay_calibration_lr=0.00045",
                               "--family_option", "movement_pilot_step=8"])
-        if case in MOVEMENT_MULTI_CASES:
+        if case in HISTORY_CASES:
+            if values.get("SEED") != HISTORY_CASES[case] or values.get("VALIDATION_SEED") != "42":
+                raise ValueError("Historical reversion requires fixed training and validation seeds.")
+            stages[0].cmd.extend(["--family_option", "movement_history=1"])
+        elif case in MOVEMENT_MULTI_CASES:
             if values.get("SEED") != MOVEMENT_MULTI_CASES[case] or values.get("VALIDATION_SEED") != "42":
                 raise ValueError("Multi-checkpoint training and validation seeds differ from fixed recipe.")
             stages[0].cmd.extend(["--family_option", "movement_dual=1",
