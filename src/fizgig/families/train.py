@@ -1560,7 +1560,6 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                            "itself, so the two don't combine. Drop --context_lora_path.")
     _nan_diag = str((family_options or {}).get("polora_diagnostic", "")) == "1"
     if _nan_diag:
-        import sys
         import importlib.metadata
         try:
             _triton_version = importlib.metadata.version("triton")
