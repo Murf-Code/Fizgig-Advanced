@@ -45,6 +45,8 @@ from fizgig.training.adaptive_lr import AdaptiveLR  # noqa: E402
 from fizgig.training.resume_lr import resume_lr  # noqa: E402
 from fizgig.training.metadata import (build_metadata, training_metadata, bucket_resolutions, latest_sample_image, refresh_checkpoint_thumbnail,  # noqa: E402
                                       resolve_title, sample_for_epoch, thumbnail_data_uri)
+from fizgig.training.numerical_safety import (NumericalError, checked_clip_grad_norm, require_finite,  # noqa: E402
+    require_finite_tensors, require_finite_score, save_finite_safetensors, tensor_leaves)
 from fizgig.training.train_utils import LossRecorder, prune_state_dirs, validate_output_name  # noqa: E402
 from fizgig.training.step_log import StepLog, take_request  # noqa: E402
 from fizgig.training import vram_reclaim  # noqa: E402
@@ -236,6 +238,12 @@ def _save_state(output_dir, output_name, net, optimizer, *, epoch, global_step, 
     """folder_epoch: the number in the folder's name when it isn't `epoch` - a Save & stop restore point mid-epoch is
     named after the epoch in progress (so it is the newest), while its training_state.json says the epochs done."""
     state_dir = os.path.join(output_dir, f"{output_name}-{epoch if folder_epoch is None else folder_epoch:06d}-state")
+    # Validate before touching an existing restore point or its completion marker.
+    require_finite_tensors(enumerate(net.parameters()), "resume adapter")
+    opt_state = optimizer.state_dict()
+    require_finite_tensors(tensor_leaves(opt_state), "resume optimizer")
+    ema_state = ema.state_dict() if ema is not None else None
+    require_finite_tensors(tensor_leaves(ema_state), "resume EMA")
     os.makedirs(state_dir, exist_ok=True)
     try:                     # rewriting a folder (an epoch's end over its Save & stop point): not complete until the end
         os.remove(os.path.join(state_dir, "training_state.json"))
@@ -251,9 +259,9 @@ def _save_state(output_dir, output_name, net, optimizer, *, epoch, global_step, 
             shutil.copyfile(calibration_path, saved_calibration)
     elif os.path.isfile(saved_calibration):
         os.remove(saved_calibration)
-    torch.save(optimizer.state_dict(), os.path.join(state_dir, "optimizer.pt"))
+    torch.save(opt_state, os.path.join(state_dir, "optimizer.pt"))
     if ema is not None:
-        torch.save(ema.state_dict(), os.path.join(state_dir, "ema.pt"))
+        torch.save(ema_state, os.path.join(state_dir, "ema.pt"))
     rng = {"torch": torch.get_rng_state()}
     if torch.cuda.is_available():
         rng["cuda"] = torch.cuda.get_rng_state_all()
@@ -776,10 +784,12 @@ def _prompt_slider_step(driver, dit, net, latents, enc, gen, *, guidance, min_t,
         for m in (1.0, -1.0):
             net.set_trainable_multiplier(m)
             loss = F.mse_loss(driver.predict(dit, state, n_c).float(), v_n + m * delta)
+            require_finite(loss, "prompt slider loss")
             (0.5 * loss).backward()
             total += 0.5 * loss.item()
             if v_a is not None:          # its own forward and backward, so the peak is one prediction's, as before
                 a_loss = F.mse_loss(driver.predict(dit, state, anchor).float(), v_a)
+                require_finite(a_loss, "prompt slider anchor loss")
                 (0.5 * float(anchor_weight) * a_loss).backward()
                 a_total = (a_total or 0.0) + 0.5 * a_loss.item()
     finally:
@@ -943,7 +953,9 @@ def _dop_step(driver, dit, net, latents, cond, gen, *, weight, min_t, max_t, acc
         if swapped:
             driver.block_swap_mode(dit, inference=False)
     loss = F.mse_loss(driver.predict(dit, state, cond).float(), target)
-    (loss * weight / accum).backward()
+    scaled = loss * weight / accum
+    require_finite(scaled, "DOP loss")
+    scaled.backward()
     return loss.item()
 
 
@@ -1406,6 +1418,7 @@ def _baseline(validator, adaptive, datasets, steplog, step, epoch, run):
     if failed or r is None:
         return False
     v, per_t, sec = r
+    require_finite_score(v, "baseline validation loss")
     steplog.add_validation(step, epoch, v, per_t, sec, seg=validator.seg, groups=getattr(validator, "last_groups", None))
     logger.info(f"[validation] step {step} (baseline): loss {v:.5f}  "
                 f"[{', '.join(f't{t:.2f} {x:.4f}' for t, x in zip(validator.ts, per_t))}]  "
@@ -1631,6 +1644,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     "this off.")
     device = torch.device("cuda")
     quant.apply_vram_cap()          # FIZGIG_SIM_VRAM_GB: behave like a smaller card
+    random.seed(seed)  # dataset blueprint uses Python RNG; saved mid-epoch seeds still override it
     torch.manual_seed(seed)
     os.makedirs(output_dir, exist_ok=True)
 
@@ -2952,7 +2966,6 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             ema.swap_in()
         try:
             if calibration_active and net.has(CALIBRATION) and ftr is None:
-                from safetensors.torch import save_file
                 from fizgig.families.lora import TRAINABLE as _TRAINABLE
                 baked, ranks = net.bake([_TRAINABLE, CALIBRATION], dtype=torch.bfloat16)
                 if desc.lora.save_fused:
@@ -2961,7 +2974,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 merged_rank = max(ranks.values() or [int(network_dim)])
                 md["ss_network_dim"] = str(merged_rank)
                 md["ss_network_alpha"] = str(merged_rank)
-                save_file(baked, path, metadata={k: str(v) for k, v in md.items()})
+                save_finite_safetensors(baked, path, metadata={k: str(v) for k, v in md.items()})
             else:
                 net.save(path, metadata(epoch))
         finally:
@@ -3352,6 +3365,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                                                               "names": holdout_list.get("names") or []}}
                                       if holdout_list else {})})
                 return True
+            except NumericalError:
+                raise  # numerical failure is not an intermittent disk error
             except (OSError, RuntimeError) as e:
                 if attempt == 2 and mid is not None:
                     shutil.rmtree(os.path.join(output_dir, f"{output_name}-{epoch + 1:06d}-state"),
@@ -3571,8 +3586,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             pending = 0                    # every parameter already stepped from its own gradient hook
             lr_acc.clear()
             return
+        pre = checked_clip_grad_norm(params, max_grad_norm, f"step {global_step + 1}")
         if max_grad_norm:
-            pre = torch.nn.utils.clip_grad_norm_(params, max_grad_norm)
             _later(_gn_done, gn=pre, clip=bool(adaptive is not None and adaptive.clip_signal))   # read next step
         m = sum(lr_acc) / len(lr_acc) if lr_acc else 1.0
         lr_acc.clear()
@@ -3604,6 +3619,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 _pf_seen[0] = _pn["step"]
                 steplog.add_polora(step_off + global_step, 0.5 * (_pn["sigma_A"] + _pn["sigma_B"]), _pn["magnitude"])
         driver.after_optimizer_step()
+        if ftr is None:
+            require_finite_tensors(enumerate(params), f"adapter after optimizer at step {global_step + 1}")
         if scheduler is not None and not catching[0]:
             scheduler.step()
         if ema is not None:
@@ -3657,6 +3674,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             _tp = time.time()
             try:
                 ok = state(epoch, required=True, mid=mid)
+            except NumericalError:
+                raise
             except Exception as e:          # a full disk, a locked file: the run goes on, it doesn't stop unsaved
                 ok, why = False, f"saving it failed: {e}"
             else:
@@ -3891,6 +3910,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         try:
             save_lora(tmp, epoch_no)
             os.replace(tmp, best_auto_path)
+        except NumericalError:
+            raise
         except (OSError, RuntimeError) as exc:
             logger.warning(f"[best checkpoint] couldn't save best LoRA ({exc}); keeping the previous one")
             return False
@@ -3927,6 +3948,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if r is None:
             return
         v, per_t, sec = r
+        require_finite_score(v, f"validation loss at step {global_step}")
         last_val[0] = v                   # adaptive LR judges on it at this epoch's end
         if _meta_best[0] is None or v < _meta_best[0]:
             _meta_best[0], _meta_best[1] = v, epoch_no
@@ -4248,6 +4270,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             _t_step = time.time()
             if i == 0:
                 step_clock["dirty"] = True     # an epoch's first step carries its start-up work
+            _where = f"step {global_step + 1}, items={batch.get('item_keys')}"
+            require_finite_tensors(tensor_leaves(batch), f"cached batch ({_where})")
             latents = batch["latents"].to(device)
             # a batched step only when this step really holds more than one item: a single-item bucket in a batched
             # run (an H3 clip or voice, which always train alone, or a bucket's last picture) takes the one-item path
@@ -4281,6 +4305,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                                                               max_t=max_timestep, diff_ref=b,
                                                               diff_weight=slider_diff_weight,
                                                               **({"loss_mask": _lm} if _lm is not None else {}))
+                            require_finite(_pl, f"image-pair slider loss ({_where})")
                             (0.5 * _pl).backward()
                             _l += 0.5 * _pl.item()
                     finally:
@@ -4311,6 +4336,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                                                           and not any(side_by_side(k) for k in
                                                                       batch.get("item_keys") or [])
                                                           else {}))
+                require_finite(loss, f"forward loss ({_where})")
                 if "lr_mult" in _info and lr_acc:
                     lr_acc[-1] *= _info["lr_mult"]     # where the step landed (the H3 noise-band LR)
                 if pending == 0 and optimizer is not None:
@@ -4340,6 +4366,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     _dc = None
                 if ftr is not None and ftr.fused is not None:
                     ftr.fused.scale = lr_acc[-1] if lr_acc else 1.0   # each weight steps in this backward's hooks
+                require_finite(_scaled, f"weighted loss ({_where})")
                 if getattr(driver, "manual_loss_backward", False):
                     if _wb is not None:
                         raise RuntimeError("Global replay does not support batched loss weighting.")
