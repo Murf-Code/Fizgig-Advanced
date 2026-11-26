@@ -2493,7 +2493,7 @@
       const folder = document.getElementById("imageFolder").value.trim();
       if (!folder) { alert("Select the Krea 2 training dataset first."); return; }
       if (!confirm(memory
-          ? "Queue six rank-64 Muon comparisons? Four at 22 swapped blocks for three epochs (reference, repeat, shape-local, 128 MiB), then two one-epoch stress tests at 16 swapped blocks. Fixed 0.25 MP, holdout and previews. OOM is recorded, not automatically recovered."
+          ? "Queue six rank-64 Muon comparisons? Four at 22 swapped blocks for five epochs (reference, repeat, shape-local, 128 MiB), then two one-epoch stress tests at 16 swapped blocks. Fixed 0.25 MP, holdout and previews. OOM is recorded, not automatically recovered."
           : adaptive
           ? "Queue seven Round 10 experiments: two identical Muon controls and five one-ball TSD variants? Rank 16, 18 swapped blocks, 0.25 MP, five epochs, fixed holdout and previews. Experimental adaptive budget; not production validated."
           : short

@@ -132,10 +132,10 @@ def round10_settings(group, output_root):
 
 # Matched real-training quality arms, followed by deliberate memory-pressure arms.
 MUON_ME_CASES = (
-    ("muon-me-reference", *QUALITY_CASES[1][1:], 22, 3),
-    ("muon-me-reference-repeat", *QUALITY_CASES[1][1:], 22, 3),
-    ("muon-me-shape-local", "muon_me", QUALITY_CASES[1][2], QUALITY_CASES[1][3] + " chunk_memory_mib=0", 22, 3),
-    ("muon-me-chunk128", "muon_me", QUALITY_CASES[1][2], QUALITY_CASES[1][3] + " chunk_memory_mib=128", 22, 3),
+    ("muon-me-reference", *QUALITY_CASES[1][1:], 22, 5),
+    ("muon-me-reference-repeat", *QUALITY_CASES[1][1:], 22, 5),
+    ("muon-me-shape-local", "muon_me", QUALITY_CASES[1][2], QUALITY_CASES[1][3] + " chunk_memory_mib=0", 22, 5),
+    ("muon-me-chunk128", "muon_me", QUALITY_CASES[1][2], QUALITY_CASES[1][3] + " chunk_memory_mib=128", 22, 5),
     ("muon-me-swap16-chunk128", "muon_me", QUALITY_CASES[1][2], QUALITY_CASES[1][3] + " chunk_memory_mib=128", 16, 1),
     ("muon-me-swap16-reference", *QUALITY_CASES[1][1:], 16, 1),
 )

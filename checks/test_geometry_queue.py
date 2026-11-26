@@ -109,7 +109,7 @@ def test_muon_me_queue(tmp_path):
     assert all({k:v for k,v in x.items() if k not in exclude} == {k:v for k,v in configs[0].items() if k not in exclude} for x in configs[:4])
     assert all(v["NETWORK_DIM"] == v["NETWORK_ALPHA"] == "64" and v["DATASET_MEGAPIXELS"] == "0.25" and v["VALIDATION_HOLDOUT"] and v["SAMPLE_ENABLED"] for v in configs)
     assert [v["BLOCKS_SWAP"] for v in configs] == ["22"]*4 + ["16"]*2
-    assert [v["MAX_TRAIN_EPOCHS"] for v in configs] == ["3"]*4 + ["1"]*2
+    assert [v["MAX_TRAIN_EPOCHS"] for v in configs] == ["5"]*4 + ["1"]*2
     assert configs[2]["OPTIMIZER_ARGS"].endswith("chunk_memory_mib=0")
     assert configs[3]["OPTIMIZER_ARGS"].endswith("chunk_memory_mib=128")
     for v in configs:
