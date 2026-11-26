@@ -38,3 +38,23 @@ def test_multiplier_and_skipped_state(cls):
     assert data[1][0][1]==pytest.approx(math.sqrt(2)*data[0][0][1])
     assert torch.equal(data[0][1],data[1][1])
     assert multiplier("compensated",14)==math.sqrt(2)
+
+
+def test_full_ema_for_initially_suspended_factors():
+    from fizgig.training.ema import EMAWeights
+    a,b=[torch.nn.Parameter(torch.tensor([1.])) for _ in range(2)]
+    b.requires_grad_(False)
+    class Network:
+        def parameters(self):
+            return [a,b]
+    ema=EMAWeights(Network(),.98,include_inactive=True)
+    assert len(ema.params)==2
+    with torch.no_grad():
+        b.requires_grad_(True)
+        b.add_(2.)
+    ema.update()
+    raw=b.clone()
+    ema.swap_in()
+    assert 1 < b.item() < 3
+    ema.swap_out()
+    assert torch.equal(b,raw)

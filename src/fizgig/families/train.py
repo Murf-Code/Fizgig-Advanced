@@ -2670,12 +2670,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         from fizgig.training.ema import EMAWeights
         _total = max(1, int(group.num_train_items) * max(1, int(max_train_epochs)))
         ema_decay = min(0.995, max(0.5, 1.0 - 4.0 / _total))
-        ema = EMAWeights(net, ema_decay, ramp=2)
+        ema = EMAWeights(net, ema_decay, ramp=2, include_inactive=bool(final_mode))
         logger.info(f"[ema] SHORT-RUN mode: {_total} steps -> decay {ema_decay:.3f} (window ~ a quarter of the run), "
                     f"fast ramp - checkpoints and previews use the average")
     elif ema_decay and float(ema_decay) > 0:
         from fizgig.training.ema import EMAWeights
-        ema = EMAWeights(net, float(ema_decay))
+        ema = EMAWeights(net, float(ema_decay), include_inactive=bool(final_mode))
         logger.info(f"[ema] ON at decay {float(ema_decay):g} - checkpoints and previews use the running average")
 
     start_epoch = global_step = 0
@@ -4273,9 +4273,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     or not set(validator.wanted) <= set(val_held) or len(validator.wanted) != 2
                     or len(validator.ts) != 4 or int(validator.seed) != 42 or validation_every_steps
                     or len(pairs) != 224 or set(p.block for p in pairs) != set(range(28))
+                    or len(ema.params) != 448 or set(ema.params) != set(net.parameters())
                     or selective_global_replay != (final_mode != "full")
                     or (selective_global_replay and driver._selective_strategy != expected_strategy)):
-                raise RuntimeError("7G needs fixed 13-step, five-epoch, paired-seed recipe")
+                raise RuntimeError("7G needs fixed 13-step, five-epoch, paired-seed recipe and full-factor EMA")
+            _rr.record(logger, kind="final_ema", factors=len(ema.params), decay=ema.decay, ramp=ema.ramp)
         elif allocation_mode is not None:
             from fizgig.training.replay_forks import network_pairs
             pairs = network_pairs(net)

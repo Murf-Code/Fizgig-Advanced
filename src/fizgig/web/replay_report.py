@@ -327,6 +327,9 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                                     or (mode=="full" and active!=set(range(28)))
                                     or (mode in ("balanced","compensated") and active!=active_blocks(28,a["step"],seed==43))):
                                 raise ValueError("invalid final mask or multiplier")
+                        ema_rows = [r for r in rows if r.get("kind")=="final_ema"]
+                        if len(ema_rows)!=1 or ema_rows[0]["factors"]!=448:
+                            raise ValueError("missing full-factor EMA coverage")
                         vals = {}
                         for kind in ("raw_validation","ema_validation"):
                             v = [r for r in rows if r.get("kind")==kind]
