@@ -57,3 +57,22 @@ def test_format_mismatch_and_dtype():
     b=CompressedMuonME([p],momentum_storage='bf16')
     with pytest.raises(ValueError):b.load_state_dict(a.state_dict())
     with pytest.raises(ValueError):CompressedMuonME([torch.nn.Parameter(p.bfloat16())])
+
+@pytest.mark.parametrize('mode',['bf16','int8','splitmax'])
+def test_krea2_rank64_largest_factor(mode):
+    from fizgig.training.memory_budget import ScratchBudgetError
+    from fizgig.web.memory_benchmark import CHUNK_MEMORY_MIB
+    # Krea 2 tproj.1 is 6144 -> 6*6144. The LoRA up factor is 36864 x 64.
+    p=torch.nn.Parameter(torch.zeros(36864,64))
+    p.grad=torch.full_like(p,.01)
+    low=CompressedMuonME([p],momentum_storage=mode,chunk_memory_mib=128)
+    with pytest.raises(ScratchBudgetError,match=r'36864.*128.00 MiB'):
+        low.validate_scratch_budget()
+    with pytest.raises(ScratchBudgetError):low.step()
+    assert not low.state and p.count_nonzero()==0
+    opt=CompressedMuonME([p],momentum_storage=mode,chunk_memory_mib=CHUNK_MEMORY_MIB)
+    opt.validate_scratch_budget()
+    opt.step()
+    opt.step()
+    assert torch.isfinite(p).all() and p.count_nonzero()>0
+    assert sum(v.numel()*v.element_size() for v in opt.state[p].values() if torch.is_tensor(v))==state_bytes(p.shape,mode,64)

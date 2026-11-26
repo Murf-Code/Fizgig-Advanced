@@ -111,6 +111,8 @@ def parse_log(text):
             buckets.append({"width": int(bucket[1]), "height": int(bucket[2]), "count": int(bucket[3])})
         if re.search(r"CUDA out of memory|torch\.(?:cuda\.)?OutOfMemoryError|CUDA error: out of memory", line, re.I):
             failure = "cuda_oom"
+        if re.search(r"\bScratchBudgetError:", line):
+            failure = "scratch_budget"
         m = re.search(r"epoch (\d+)/(\d+)\s+avr_loss=" + NUM + r"\s+step=(\d+)\s+" + NUM + r"s/step", line)
         if m:
             epochs.append({"epoch": int(m[1]), "step": int(m[4]), "loss": float(m[3]), "seconds_per_step": float(m[5])})
@@ -162,6 +164,8 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                     run.update(status="failed", reason=problem)
             if status == "failed" and run.get("failure_kind") == "cuda_oom":
                 run["reason"] = "CUDA out of memory (fixed settings; no automatic reduction)."
+            if status == "failed" and run.get("failure_kind") == "scratch_budget":
+                run["reason"] = "Optimizer scratch-budget preflight refused the configuration; not an allocation failure."
             perf = output / (".perf_" + run["name"] + ".json")
             if perf.is_file():
                 try:

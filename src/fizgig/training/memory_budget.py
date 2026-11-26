@@ -10,6 +10,9 @@ import math
 
 MIB = 2**20
 
+class ScratchBudgetError(MemoryError):
+    """Policy refusal, not an allocation failure or system RAM exhaustion."""
+
 @dataclass(frozen=True)
 class ScratchGroup:
     key: int
@@ -56,7 +59,7 @@ class MemoryBudget:
         caps=tuple(min(selected,g.ceiling_bytes) for g in groups)
         if any(g.bytes_each>cap for g,cap in zip(groups,caps)):
             self.last_plan=None
-            raise MemoryError('memory preflight: a single matrix/pair exceeds the safe estimated scratch allowance; no update started')
+            raise ScratchBudgetError('memory preflight: a single matrix/pair exceeds the safe estimated scratch allowance; no update started')
         chunks=tuple(min(g.count,cap//g.bytes_each) for g,cap in zip(groups,caps))
         self.last_plan=BudgetPlan(int(free_bytes),int(pending_state_bytes),int(outstanding_bytes),self.reserve_bytes,safe,selected,chunks,caps)
         return self.last_plan

@@ -2585,6 +2585,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         # Do not shadow the dataset group used by Watch and the training loop.
         for opt_group in optimizer.param_groups:
             opt_group["param_names"] = [names[id(p)] for p in opt_group["params"]]
+        optimizer.validate_scratch_budget()
     if optimizer.__class__.__name__ == "LoRATSD":
         from fizgig.families.lora import TRAINABLE
         scales = {id(w.adapters[TRAINABLE][0].weight): w.scales[TRAINABLE]

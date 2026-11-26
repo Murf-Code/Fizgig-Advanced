@@ -8,6 +8,7 @@ from collections import defaultdict
 from numbers import Real
 import torch
 from .muon_me import MuonME, ns, adjusted_lr, scratch_per_matrix
+from .memory_budget import ScratchBudgetError
 
 MODES = ('bf16', 'int8', 'splitmax')
 VERSION = 1
@@ -158,6 +159,21 @@ class CompressedMuonME(MuonME):
         # Replacement overlap is conservatively budgeted even on a cold step.
         return cost, 0 if self.state.get(p) else payload
 
+    @staticmethod
+    def _require_one(shape, cost, cap, mode):
+        if cost > cap:
+            raise ScratchBudgetError(f"{mode} momentum, factor {tuple(shape)}: estimated single-factor scratch "
+                                     f"{cost/MIB:.2f} MiB exceeds allowance {cap/MIB:.2f} MiB; no update started")
+
+    def validate_scratch_budget(self):
+        """Check actual factor shapes before training; no gradient or CUDA allocation needed."""
+        for g in self.param_groups:
+            self._validate_group(g)
+            cap = int(g['chunk_memory_mib']*MIB)
+            for p in g['params']:
+                cost, _ = self._memory_item(p,g)
+                self._require_one(p.shape,cost,cap,g['momentum_storage'])
+
     @torch.no_grad()
     def step(self, closure=None):
         loss = None
@@ -175,9 +191,9 @@ class CompressedMuonME(MuonME):
                 by[(tuple(p.shape),p.device)].append(p)
             for (shape,device), ps in by.items():
                 cost,_=self._memory_item(ps[0],g)
-                chunk = caps.get((id(g),device),int(g['chunk_memory_mib']*MIB))//cost
-                if chunk < 1:
-                    raise MemoryError('one compressed Muon matrix exceeds estimated chunk budget')
+                cap = caps.get((id(g),device),int(g['chunk_memory_mib']*MIB))
+                self._require_one(shape,cost,cap,g['momentum_storage'])
+                chunk = cap//cost
                 plans.append((g,shape,ps,chunk))
         for g,shape,ps,chunk in plans:
             mode,b = g['momentum_storage'],g['momentum_block']

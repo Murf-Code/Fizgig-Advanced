@@ -7,6 +7,7 @@ def test_matched_settings_and_flags(tmp_path):
     exclude={'__geometry_compare','LORA_NAME','LORA_OUTPUT_DIR','OPTIMIZER_ARGS'}
     assert all({k:v for k,v in x.items() if k not in exclude}=={k:v for k,v in c[0].items() if k not in exclude} for x in c)
     for x in c:
+        assert [a for a in x["OPTIMIZER_ARGS"].split() if a.startswith("chunk_memory_mib=")]==["chunk_memory_mib=192"]
         cmd=['python','--compile_blocks','auto','--no-send_only_swap','--gradient_checkpointing','auto','--batch_size_auto']
         m.apply_flags(cmd,x['__geometry_compare'])
         assert cmd.count('--compile_blocks')==1 and cmd[cmd.index('--compile_blocks')+1]=='off'

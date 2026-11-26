@@ -3,6 +3,7 @@ import os
 import json
 
 STEPS = 20
+CHUNK_MEMORY_MIB = 192
 CASES = (
     ('memory-fp32-control', 'fp32', 0),
     ('memory-bf16', 'bf16', 0),
@@ -16,7 +17,8 @@ CASE_MAP = {name:(storage, activation) for name,storage,activation in CASES}
 def settings(group, output_root, common):
     result=[]
     for case, storage, activation in CASES:
-        args=common['OPTIMIZER_ARGS']
+        args=' '.join(arg for arg in common['OPTIMIZER_ARGS'].split() if not arg.startswith('chunk_memory_mib='))
+        args += f' chunk_memory_mib={CHUNK_MEMORY_MIB}'
         if storage!='fp32': args += f' momentum_storage={storage} momentum_block=64'
         result.append({**common,'__geometry_compare':case,'OPTIMIZER_TYPE':'muon_me',
                        'OPTIMIZER_ARGS':args,'LORA_NAME':f'{group}-{case}',
