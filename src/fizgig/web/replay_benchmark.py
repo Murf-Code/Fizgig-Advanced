@@ -43,9 +43,10 @@ CASES = tuple((case, "Global replay", strategy != "replay")
               for case, (_, strategy) in CALIBRATION_CASES.items())
 
 MOVEMENT_PILOT_CASE = "movement-sensitivity-lr450"
+MOVEMENT_ISOLATION_CASE = "movement-isolation-lr450"
 
 def case_strategy(case):
-    if case == MOVEMENT_PILOT_CASE:
+    if case in (MOVEMENT_PILOT_CASE, MOVEMENT_ISOLATION_CASE):
         return "replay"
     if case in CALIBRATION_CASES:
         return CALIBRATION_CASES[case][1]
@@ -93,6 +94,12 @@ def pilot_settings(group, output_root):
              "SAVE_STATE": False, "SAVE_STATE_ON_TRAIN_END": False,
              "SAMPLE_ENABLED": False, "SAMPLE_AT_FIRST": False}]
 
+def isolation_settings(group, output_root):
+    v = pilot_settings(group, output_root)[0]
+    case = MOVEMENT_ISOLATION_CASE
+    return [{**v, "__replay_compare": case, "LORA_NAME": f"{group}-{case}",
+             "LORA_OUTPUT_DIR": os.path.join(output_root, group, case)}]
+
 def adjust_plan(desc, values, plan):
     """Validate the fixed comparison; keep legacy queued matched controls runnable."""
     case = values.get("__replay_compare")
@@ -113,13 +120,15 @@ def adjust_plan(desc, values, plan):
         stages[0].cmd.extend(["--family_option", f"selective_strategy={strategy}"])
         if strategy in STRATEGIES:
             stages[0].cmd.extend(["--family_option", "selective_budget=14"])
-    if case == MOVEMENT_PILOT_CASE:
+    if case in (MOVEMENT_PILOT_CASE, MOVEMENT_ISOLATION_CASE):
         if (values.get("LEARNING_RATE") != "0.00045" or values.get("MAX_TRAIN_EPOCHS") != "1"
                 or values.get("KREA2_SELECTIVE_BLOCK_CHECK") or values.get("SAMPLE_ENABLED")):
             raise ValueError("Movement sensitivity settings differ from the fixed recipe.")
         stages[0].cmd.extend(["--family_option", "replay_research=calibration",
                               "--family_option", "replay_calibration_lr=0.00045",
                               "--family_option", "movement_pilot_step=8"])
+        if case == MOVEMENT_ISOLATION_CASE:
+            stages[0].cmd.extend(["--family_option", "movement_isolation=1"])
     if case in RESEARCH_MODES:
         stages[0].cmd.extend(["--family_option", f"replay_research={RESEARCH_MODES[case]}"])
     if case in CALIBRATION_CASES:

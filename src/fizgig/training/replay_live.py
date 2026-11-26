@@ -57,7 +57,7 @@ def _score(predict, panel, parent, base):
 
 
 def run_pilot(*, driver, dit, net, optimizer, validator, device, swapped, generators,
-              read_extra_state, output, step, pairs=None, patchify=None):
+              read_extra_state, output, step, pairs=None, patchify=None, isolation=False):
     """One common full-block proposal, uniform sensitivity sweep + matched allocations.
     Fail closed: any contamination/error must abort the parent training run.
     No semantic claim, statistical gate, or automatic production policy.
@@ -91,7 +91,7 @@ def run_pilot(*, driver, dit, net, optimizer, validator, device, swapped, genera
     output=Path(output); scratch=output.parent
     # Payload ~1.4 GiB for warm rank 32; allow overhead and other ranks.
     factor_bytes=sum(p.numel()*p.element_size() for pair in pairs for p in (pair.A,pair.B))
-    if shutil.disk_usage(scratch).free < max(3*1024**3,6*factor_bytes):
+    if not isolation and shutil.disk_usage(scratch).free < max(3*1024**3,6*factor_bytes):
         raise RuntimeError('insufficient scratch disk for movement pilot')
     report={'schema':1,'step':int(step),'scope':'development_target_only','status':'started',
             'semantic_preservation':False,'probe_units':list(validator.wanted),
@@ -134,6 +134,22 @@ def run_pilot(*, driver, dit, net, optimizer, validator, device, swapped, genera
             if h!=_state(pairs,optimizer,generators,net,dit,read_extra_state) or lock!=digest(panel_values(panel)):
                 raise RuntimeError('live pilot state or panel mutation')
             return result
+        if isolation:
+            from .replay_isolation import isolate
+            try:
+                if swapped:driver.block_swap_mode(dit,inference=True)
+                dit.eval()
+                isolate(pairs=pairs,optimizer=optimizer,net=net,dit=dit,panel=panel,predict=predict,
+                        guard=panel_guard,report=report,save=lambda:_atomic_json(output,report))
+            finally:
+                for n,w in net.wrapped.items():w.scales.clear();w.scales.update(scales[n])
+                if swapped:driver.block_swap_mode(dit,inference=False)
+                for m,was in modes:m.training=was
+            if before!=_state(pairs,optimizer,generators,net,dit,read_extra_state):
+                raise RuntimeError('isolation parent rollback audit failed')
+            report.update(status='completed',parent_rollback='exact_registered_state')
+            _atomic_json(output,report)
+            return report
         with disk_capture(pairs,optimizer,generators=generators,scratch=scratch) as fork:
             try:
                 if swapped: driver.block_swap_mode(dit,inference=True)

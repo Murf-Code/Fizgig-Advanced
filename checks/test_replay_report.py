@@ -69,3 +69,20 @@ def test_gradient_update_counts_are_parsed_separately():
     result = rr.parse_log("INFO:[selective-replay] gradient_updates step=29 counts=[29, 12]\n")
     assert result["gradient_updates"] == [{"step": 29, "counts": [29, 12]}]
     assert not result["probes"] and not result["rotations"]
+
+
+def test_failed_pilot_bundle_includes_diagnostics(tmp_path):
+    import zipfile
+    root = tmp_path / "comparison"
+    rr.create(root, "dataset", [{"__replay_compare": "movement-isolation-lr450",
+              "LORA_NAME": "isolate", "LEARNING_RATE": "0.00045"}])
+    out = root / "movement-isolation-lr450"
+    out.mkdir()
+    (out / "movement-isolation.json").write_text('{"status":"failed"}')
+    (out / "movement-pilot.json").write_text('{}')
+    (out / "weights.safetensors").write_bytes(b"not exported")
+    rr.update(out, "movement-isolation-lr450", "failed")
+    with zipfile.ZipFile(root / rr.BUNDLE) as bundle:
+        assert set(bundle.namelist()) == {rr.REPORT, rr.COMBINED,
+            "movement-isolation-lr450/movement-isolation.json",
+            "movement-isolation-lr450/movement-pilot.json"}

@@ -23,8 +23,9 @@ def movement(a, b, c, d, scale):
 @contextmanager
 def precision(net, weight_only, fp32_lora):
     from fizgig.families.lora import TRAINABLE
-    changed=[];missing=object()
+    changed=[];missing=object();old_precision=torch.get_float32_matmul_precision()
     try:
+        if fp32_lora:torch.set_float32_matmul_precision("highest")
         for w in net.wrapped.values():
             if TRAINABLE not in w.adapters: continue
             if weight_only:
@@ -46,6 +47,7 @@ def precision(net, weight_only, fp32_lora):
         for m,fn in reversed(changed):
             if fn is missing:del m.forward
             else:m.forward=fn
+        if fp32_lora:torch.set_float32_matmul_precision(old_precision)
 
 
 def compare(panel, candidate, parent, base=None):

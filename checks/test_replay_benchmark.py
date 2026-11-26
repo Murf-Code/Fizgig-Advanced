@@ -118,3 +118,17 @@ def test_movement_pilot_single_run(tmp_path):
     assert cmd[-6:] == ["--family_option", "replay_research=calibration",
                         "--family_option", "replay_calibration_lr=0.00045",
                         "--family_option", "movement_pilot_step=8"]
+
+
+def test_isolation_queue_recipe(tmp_path):
+    v = rb.isolation_settings("isolate", str(tmp_path))[0]
+    assert v["__replay_compare"] == rb.MOVEMENT_ISOLATION_CASE
+    assert v["MAX_TRAIN_EPOCHS"] == "1" and not v["SAMPLE_ENABLED"]
+    assert not v["KREA2_SELECTIVE_BLOCK_CHECK"]
+    cmd = ["python", "train.py"]
+    plan = SimpleNamespace(problems=[], stages=[SimpleNamespace(name="Training", cmd=cmd)],
+                           dataset_toml='holdout_file = "held.json"', console=[])
+    rb.adjust_plan(SimpleNamespace(key="krea2", n_blocks=28), v, plan)
+    assert not plan.problems
+    assert cmd[-4:] == ["--family_option", "movement_pilot_step=8",
+                        "--family_option", "movement_isolation=1"]

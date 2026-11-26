@@ -68,7 +68,9 @@ def _save(root, report):
             for name in (REPORT, COMBINED):
                 bundle.write(root / name, name)
             for run in report["runs"]:
-                for name in run.get("samples", []) + run.get("logs", []):
+                diagnostics = [f"{run['output']}/{name}" for name in
+                               ("movement-pilot.json", "movement-isolation.json")]
+                for name in dict.fromkeys(run.get("samples", []) + run.get("logs", []) + diagnostics):
                     path = root / name
                     if path.is_file():
                         bundle.write(path, name)
@@ -200,6 +202,32 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                             or not any(r.get("kind") == "complete" and r.get("step") == 58 for r in rows)
                             or (case == "repro-strict-telemetry-lr450" and ema_checks != [29, 58])):
                         run.update(status="failed", reason="Incomplete Experiment 5A diagnostics; do not compare this run.")
+                if status == "finished" and case == "movement-isolation-lr450":
+                    try:
+                        pilot = _read_json(output / "movement-isolation.json")
+                        rows = run.get("research", [])
+                        hashes = [r["step"] for r in rows if r.get("kind") == "hash"]
+                        completed = [r for r in rows if r.get("kind") == "complete"]
+                        markers = [r for r in rows if r.get("kind") == "movement_isolation"]
+                        required = {"repeat", "exact_rewrite", "after_decay", "after_base",
+                                    "repeat_decay_reversed", "final_native_parent", "weight_only_restored",
+                                    "fp32_lora_restored", "combined_restored", "after_precision_modes",
+                                    "after_strength", "after_trace"}
+                        if (pilot["status"] != "completed" or pilot["step"] != 8
+                                or pilot["experiment"] != "6C.2k-B" or not pilot["integrity_passed"]
+                                or pilot["parent_rollback"] != "exact_registered_state"
+                                or not required <= set(pilot["integrity"])
+                                or not all(pilot["integrity"][k] and all(r["equal"] for r in pilot["integrity"][k]) for k in required)
+                                or len(pilot["factor_rounding"]) != 224
+                                or set(pilot["precision"]) != {"weight_only", "fp32_lora", "combined"}
+                                or not pilot["trace"] or len(completed) != 1 or not 8 <= completed[0]["step"] <= 40
+                                or hashes != list(range(completed[0]["step"] + 1))
+                                or len(markers) != 1 or markers[0]["step"] != 8):
+                            raise ValueError("incomplete isolation diagnostics")
+                        run["movement_isolation"] = {"report": "movement-isolation.json",
+                            "integrity": True, "trace_valid": all(x["matches_uninstrumented"] for x in pilot["trace"])}
+                    except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+                        run.update(status="failed", reason="Invalid movement isolation diagnostics: " + str(exc))
                 if status == "finished" and case == "movement-sensitivity-lr450":
                     try:
                         pilot = _read_json(output / "movement-pilot.json")

@@ -1564,6 +1564,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     research_mode = _rr.config(family_options)
     research_updates = 0
     movement_pilot_step = int((family_options or {}).get("movement_pilot_step", 0) or 0)
+    movement_isolation = str((family_options or {}).get("movement_isolation", "0")) == "1"
+    if movement_isolation and not movement_pilot_step:
+        raise RuntimeError("Numerical isolation requires the movement pilot boundary.")
     if movement_pilot_step and (movement_pilot_step != 8 or research_mode != "calibration"):
         raise RuntimeError("Movement sensitivity requires strict calibration and fork at update 8.")
     if research_mode and (desc.key != "krea2" or resume_state_dir or finetune or share_worker):
@@ -3579,7 +3582,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 g["lr"] = g["lr"] * m
         if movement_pilot_step and research_updates + 1 == movement_pilot_step:
             from fizgig.training.replay_live import run_pilot
-            logger.info("[movement-pilot] Starting development-only movement sensitivity fork at update %s", movement_pilot_step)
+            logger.info("[movement-pilot] Starting %s at update %s",
+                        "6C.2k-B numerical isolation" if movement_isolation else "development-only movement sensitivity fork",
+                        movement_pilot_step)
             pilot_report = run_pilot(
                 driver=driver, dit=dit, net=net, optimizer=optimizer, validator=validator,
                 device=device, swapped=bool(swapped), generators=(gen,),
@@ -3589,10 +3594,16 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                              "shadow": ema.shadow, "backup": ema._backup} if ema is not None else None),
                     "pending": pending, "research_updates": research_updates,
                     "driver_options": dict(driver.options)},
-                output=os.path.join(output_dir, "movement-pilot.json"), step=movement_pilot_step)
-            _rr.record(logger, kind="movement_pilot", step=movement_pilot_step,
-                       status=pilot_report["status"], matched=pilot_report["matching"]["matched"],
-                       repeat_exact=pilot_report["repeat_exact"], rollback=pilot_report["parent_rollback"])
+                output=os.path.join(output_dir, "movement-isolation.json" if movement_isolation else "movement-pilot.json"),
+                step=movement_pilot_step, isolation=movement_isolation)
+            if movement_isolation:
+                _rr.record(logger, kind="movement_isolation", step=movement_pilot_step,
+                           status=pilot_report["status"], integrity=pilot_report["integrity_passed"],
+                           rollback=pilot_report["parent_rollback"])
+            else:
+                _rr.record(logger, kind="movement_pilot", step=movement_pilot_step,
+                           status=pilot_report["status"], matched=pilot_report["matching"]["matched"],
+                           repeat_exact=pilot_report["repeat_exact"], rollback=pilot_report["parent_rollback"])
         research_mask = _rr.active_mask(net) if research_mode else None
         research_rates = ([{"lr": float(g["lr"]), "weight_decay": float(g["weight_decay"])}
                            for g in optimizer.param_groups] if research_mode in ("causal", "calibration") else None)
