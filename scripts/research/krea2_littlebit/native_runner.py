@@ -155,7 +155,10 @@ def main():
                 quant.load_base = original
                 train._LITTLEBIT_TRACE=None
                 if monitor is not None:
-                    metrics["wddm_memory"]=monitor.stop()
+                    try:
+                        metrics["wddm_memory"]=monitor.stop()
+                    except Exception as exc:
+                        metrics["wddm_memory"]={"status":"unavailable","reason":str(exc)}
                 metrics["seconds"] = time.monotonic()-started
                 if a.attempt_result:
                     atomic_json(a.attempt_result,metrics)

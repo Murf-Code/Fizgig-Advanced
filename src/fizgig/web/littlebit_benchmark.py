@@ -19,6 +19,7 @@ RAW_SWAPS = 26
 COMMON = {
     "FAMILY_KIND": "standard", "NETWORK_TYPE": "LoRA (standard)",
     "KREA2_TRAINING_METHOD": "Standard", "KREA2_SELECTIVE_BLOCK_CHECK": False,
+    "KREA2_DIRECTION_EDIT": False,
     "NETWORK_DIM": "32", "NETWORK_ALPHA": "32", "LEARNING_RATE": "0.00025",
     "OPTIMIZER_TYPE": "muon", "GRADIENT_ACCUMULATION": "1", "BATCH_SIZE": "1",
     "MAX_TRAIN_EPOCHS": str(EPOCHS), "SAVE_EVERY_N_EPOCHS": "1",
@@ -83,7 +84,9 @@ def adjust_plan(desc, values, plan, repo, resume=False):
                 raise ValueError(f"Unexpected resolved trainer setting: {flag}")
         if any(x in cmd for x in ("--finetune","--resume","--adaptive_lr","--training_adapter",
                                   "--context_lora_path","--sample_prompts","--save_state",
-                                  "--save_state_on_train_end","--int8_rotated_backward")):
+                                  "--save_state_on_train_end","--int8_rotated_backward",
+                                  "--train_blocks","--masked_training","--stage_dataset_config","--share_worker",
+                                  "--slider_pairs","--slider_prompts","--network_type")):
             raise ValueError("Conflicting trainer option in LittleBit comparison.")
         if not tomllib.loads(plan.dataset_toml).get("general",{}).get("holdout_file"):
             raise ValueError("Comparison needs an actual validation holdout. Use a larger dataset.")

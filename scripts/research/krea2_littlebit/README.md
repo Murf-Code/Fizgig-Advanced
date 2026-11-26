@@ -261,3 +261,16 @@ relative error cutoff; stricter than an empirical LoRA gain criterion.
 All arms start at zero swap except stock at 22; OOM retries unchanged.
 Reports now include per-probe cosine and bytes per original weight.
 New archive format; requeue rather than resume old comparisons.
+
+## Milestone 7 — paired real-model development protocol (current queue)
+
+This supersedes the 18-arm five-epoch recipe and its universal 5% gate.
+See [PEER_REVIEW_V4.md](PEER_REVIEW_V4.md) for the current protocol,
+exact verification status, limitations, and questions for independent
+review. LittleBit Test Mode queues eight short cases, starts every
+supported base resident, captures real training signals from the stock
+control, and evaluates matched adapter snapshots on both native INT8
+and original Raw BF16. Native NF4 is a separate non-swappable control.
+There is no required learning-retention percentage. Confirmation scoring
+and five-epoch promotion are intentionally separate future decisions.
+Old queue entries must be removed before testing this version.
