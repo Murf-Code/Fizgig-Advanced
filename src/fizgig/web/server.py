@@ -2337,7 +2337,7 @@ def _run_stages(stages, out_dir):
 
 
 def _run_stages_impl(stages, out_dir, ended):
-    from fizgig.training.progress import TrainingProgressTracker
+    from fizgig.training.progress import TrainingProgressTracker, diagnostic_progress_dict
     append_log(f"\n=== Fizgig run, {datetime.datetime.now():%Y-%m-%d %H:%M:%S} ===\n")
     with _lock:
         _run["state"] = "running"
@@ -2401,6 +2401,10 @@ def _run_stages_impl(stages, out_dir, ended):
                         n, total = upd["n"], upd["total"]
                         _run["progress"] = {**_progress_dict({}), "percent": 100.0 * n / total if total else 0.0,
                                             "note": f"Caching {upd['what']}: {n} of {total}"}
+                    elif upd.get("kind") == "diagnostic":
+                        p = _run.get("progress") or _progress_dict({})
+                        case = (_run.get("values") or {}).get("__replay_compare")
+                        _run["progress"] = diagnostic_progress_dict(p, upd, case if isinstance(case, str) else None)
                     elif upd.get("kind") == "preview":
                         p = dict(_run.get("progress") or _progress_dict({}))
                         p["note"] = {"start": "Making previews…", "complete": ""}.get(upd.get("phase"), "")

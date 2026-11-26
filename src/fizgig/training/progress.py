@@ -7,8 +7,10 @@ not require a second progress-reporting path inside its training loop.
 
 from __future__ import annotations
 
+import json
 import math
 import re
+import time
 
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -147,6 +149,66 @@ def parse_preview_phase(line: str):
     return None
 
 
+class DiagnosticProgress:
+    """Count finished work units, not optimizer steps. ETA covers this phase only."""
+    def __init__(self, phase: str, total: int, *, clock=time.monotonic, emit=print):
+        if total <= 0:
+            raise ValueError("diagnostic progress requires positive total")
+        self.phase, self.total, self.done = phase, total, 0
+        self._clock, self._emit, self._started = clock, emit, clock()
+
+    def _report(self, label):
+        elapsed = max(0., self._clock() - self._started)
+        eta = elapsed / self.done * (self.total - self.done) if self.done >= 3 else None
+        payload = dict(phase=self.phase, done=self.done, total=self.total,
+                       label=label, elapsed=elapsed, eta_seconds=eta)
+        self._emit("[diagnostic-progress] " + json.dumps(payload), flush=True)
+
+    def begin(self, label):
+        self._report(label)
+
+    def advance(self, label):
+        if self.done >= self.total:
+            raise ValueError("diagnostic progress exceeded declared total")
+        self.done += 1
+        self._report(label)
+
+
+def parse_diagnostic_progress_line(line: str):
+    marker = "[diagnostic-progress] "
+    if marker not in line:
+        return None
+    try:
+        data = json.loads(line.split(marker, 1)[1].strip())
+        phase, label = data["phase"], data["label"]
+        done, total, eta = data["done"], data["total"], data["eta_seconds"]
+        elapsed = data["elapsed"]
+        if (not isinstance(phase, str) or not phase or not isinstance(label, str)
+                or type(done) is not int or type(total) is not int or not 0 <= done <= total
+                or total <= 0 or not isinstance(elapsed, (int, float))
+                or not math.isfinite(elapsed) or elapsed < 0
+                or (eta is not None and (not isinstance(eta, (int, float))
+                    or not math.isfinite(eta) or eta < 0))):
+            return None
+    except (ValueError, TypeError, KeyError):
+        return None
+    return {"kind": "diagnostic", "phase": phase, "label": label, "done": done,
+            "total": total, "eta_text": _format_eta(eta) if eta is not None else "",
+            "elapsed_text": _format_eta(elapsed)}
+
+
+def diagnostic_progress_dict(previous, update, case=None):
+    """Phase bar and ETA are explicitly separate from the optimizer step count."""
+    done, total = update["done"], update["total"]
+    prefix = f"{case} · " if case else ""
+    eta = f" · ~{update['eta_text']} phase left" if update["eta_text"] else ""
+    return {**previous, "percent": 100.0 * done / total, "eta": update["eta_text"],
+            "speed": "", "note": (f"{prefix}{update['phase']} · {done}/{total} "
+            f"({100.0 * done / total:.1f}%) · {update['label']}{eta}"),
+            "diagnostic": {"phase": update["phase"], "done": done, "total": total,
+                           "label": update["label"], "elapsed": update["elapsed_text"]}}
+
+
 class TrainingProgressTracker:
     """Convert the unmodified trainers' console output into GUI-ready state."""
 
@@ -165,6 +227,9 @@ class TrainingProgressTracker:
 
     def consume(self, line: str):
         """Return an update dictionary for a relevant line, otherwise ``None``."""
+        diagnostic = parse_diagnostic_progress_line(line)
+        if diagnostic is not None:
+            return diagnostic
         start = _EPOCH_START_RE.search(line)
         if start:
             epoch, epochs = int(start["epoch"]), int(start["epochs"])

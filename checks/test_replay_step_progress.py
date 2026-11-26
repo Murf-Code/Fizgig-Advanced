@@ -46,3 +46,35 @@ def test_missing_rate_does_not_accept_unrelated_progress_bars():
     assert parse_tqdm_progress_line("sampling: 5/8 [00:10<?, ?it/s]") is None
     assert parse_tqdm_progress_line("steps: 1/10 [?]")["step"] == 1
     assert parse_tqdm_progress_line("steps: 1/10 [00:10<?, ?it/s]")["step"] == 1
+
+
+def test_diagnostic_progress_counts_completed_panels_and_preserves_training_step():
+    from fizgig.training.progress import DiagnosticProgress, diagnostic_progress_dict
+    now = [0.]
+    lines = []
+    p = DiagnosticProgress("6F.2 evaluation panels", 5, clock=lambda: now[0],
+                           emit=lambda line, **kw: lines.append(line))
+    tracker = TrainingProgressTracker(1)
+    tracker.consume("[training-progress] epoch 1/1 start step 0/13, 0/13 in epoch")
+    p.begin("native parent")
+    upd = tracker.consume(lines[-1])
+    assert upd["done"] == 0 and upd["eta_text"] == ""
+    for i in range(3):
+        now[0] += 10
+        p.advance("panel complete")
+    upd = tracker.consume(lines[-1])
+    assert upd["done"] == 3 and upd["eta_text"] == "00:20"
+    display = diagnostic_progress_dict({"step": 11, "total_steps": 13, "loss": "0.18"}, upd, "seed42")
+    assert display["percent"] == 60 and display["step"] == 11 and display["total_steps"] == 13
+    assert "seed42" in display["note"] and "phase left" in display["note"]
+    for i in range(2):
+        now[0] += 10
+        p.advance("complete")
+    assert tracker.consume(lines[-1])["done"] == 5
+    assert tracker.consume("steps: 92%| | 12/13 [05:01<?, ?it/s]")["step"] == 12
+
+
+def test_invalid_diagnostic_progress_is_not_rendered():
+    from fizgig.training.progress import parse_diagnostic_progress_line
+    for bad in ('{}', '[]', '{"phase":"x","done":9,"total":1,"label":"y","elapsed":1,"eta_seconds":null}'):
+        assert parse_diagnostic_progress_line("[diagnostic-progress] " + bad) is None

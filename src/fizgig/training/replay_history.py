@@ -8,6 +8,7 @@ import torch
 
 from .replay_forks import network_pairs, MovementCurve
 from .replay_diagnostics import digest
+from .progress import DiagnosticProgress
 from .replay_isolation import movement, precision, compare
 
 log = logging.getLogger(__name__)
@@ -110,14 +111,19 @@ def evaluate_history(*, pairs, net, history, panel, predict, guard, report, save
             raise ValueError("nonfinite historical movement")
         return {"fp32":math.sqrt(fp),"bf16":math.sqrt(bf),"endpoint_hash":h,"multipliers":ms}
 
+    evaluation_progress = None
+
     def forward(label, reverse=False):
+        evaluation_progress.begin(label)
         log.info("[historical-reversion] %s (%d cases)",label,len(panel))
         def run():
             out=[None]*len(panel)
             for i in (reversed(range(len(panel))) if reverse else range(len(panel))):
                 out[i]=predict(panel[i][1]).detach().cpu().clone()
             return out
-        return guard(run)
+        out = guard(run)
+        evaluation_progress.advance(label + " complete")
+        return out
 
     def require(a,b,label):
         if digest(a)!=digest(b):raise RuntimeError("historical prediction restore mismatch: "+label)
@@ -129,9 +135,13 @@ def evaluate_history(*, pairs, net, history, panel, predict, guard, report, save
         candidates={f"block{b:02d}":allocation(b) for b in sorted(blocks)}
         candidates["all_early"]=allocation()
         candidates.update({f"half{b:02d}":allocation(b,.5) for b in FOCUS})
+        geometry_progress = DiagnosticProgress("6F.2 movement geometry", len(candidates) + 2*len(FOCUS))
         log.info("[historical-reversion] measuring %d predeclared reversion endpoints",len(candidates))
         for name,ms in candidates.items():
+            geometry_progress.begin(name)
             report["geometry"][name]=geometry(ms)
+            geometry_progress.advance(name + " measured")
+        geometry_progress.begin("building uniform control geometry")
         cores=[core(p,parent[p.name],earlier[p.name][:2]) for p in pairs]
         curve=MovementCurve(cores,{b:1. for b in blocks})
         # Search a bracket on the continuous polynomial, then verify actual FP32 endpoint.
@@ -147,6 +157,7 @@ def evaluate_history(*, pairs, net, history, panel, predict, guard, report, save
                 if curve.norm(mid)<target:lo=mid
                 else:hi=mid
             label="uniform_"+name
+            geometry_progress.begin(label)
             candidates[label]=allocation(fraction=(lo+hi)/2)
             g=geometry(candidates[label]);report["geometry"][label]=g
             gap=abs(g["fp32"]-target)
@@ -154,6 +165,10 @@ def evaluate_history(*, pairs, net, history, panel, predict, guard, report, save
                                        "tolerance":tol,"matched":gap<=tol}
             save()
             if gap>tol:raise RuntimeError("historical movement match failed: "+label)
+            geometry_progress.advance(label + " matched")
+        # Each precision has 4 reference panels, 2 per candidate, and 2 final
+        # repeat/restore panels; one last panel verifies the precision switch.
+        evaluation_progress = DiagnosticProgress("6F.2 evaluation panels", 2*(4+2*len(candidates)+2)+1)
         restore();native_parent=None
         for mode,wo in (("native",False),("weight_only",True)):
             with (precision_context(net,True,False) if wo else nullcontext()):
