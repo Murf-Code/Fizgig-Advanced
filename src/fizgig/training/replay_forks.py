@@ -225,7 +225,14 @@ class MovementCurve:
     def norm(self, c):
         return math.sqrt(sum(float(np.square(C+c*L+c*c*Q).sum()) for C,L,Q in self.parts))
 
-    def first_increasing_end(self):
+    def increasing_interval(self, max_initial_dip=0.):
+        """First increasing interval, optionally after a bounded initial dip in c.
+
+        The caller must still require a target above norm(0).
+        max_initial_dip is a multiplier bound, not a displacement tolerance.
+        """
+        if not math.isfinite(max_initial_dip) or not 0 <= max_initial_dip <= .01:
+            raise ValueError('initial dip bound must be in [0, 0.01]')
         d = self.coeff[1:] * np.arange(1,5)
         scale = np.max(np.abs(d))
         if scale == 0:
@@ -233,16 +240,27 @@ class MovementCurve:
         d = d/scale
         roots = np.polynomial.polynomial.polyroots(np.trim_zeros(d, 'b'))
         cuts = sorted({0.,1.,*(float(r.real) for r in roots if abs(r.imag) <= 1e-9 and 0 < r.real < 1)})
+        start = None
         for lo,hi in zip(cuts,cuts[1:]):
             sign = np.polynomial.polynomial.polyval((lo+hi)/2,d)
-            if sign <= 0:
-                if lo == 0:
-                    raise ValueError('movement initially decreases or is unresolved')
-                return lo
-        return 1.
+            if sign > 0:
+                if start is None:
+                    if lo > max_initial_dip:
+                        raise ValueError('movement initially decreases beyond permitted multiplier')
+                    start = lo
+            elif start is not None:
+                return start, lo
+            elif max_initial_dip == 0.:
+                raise ValueError('movement initially decreases or is unresolved')
+        if start is None:
+            raise ValueError('no increasing movement interval')
+        return start, 1.
 
-    def solve(self, target, end):
-        lo,hi = 0.,end
+    def first_increasing_end(self):
+        return self.increasing_interval()[1]
+
+    def solve(self, target, end, start=0.):
+        lo,hi = start,end
         if not self.norm(lo) <= target <= self.norm(hi):
             raise ValueError('unreachable movement budget')
         for _ in range(60):
@@ -254,7 +272,7 @@ class MovementCurve:
         return (lo+hi)/2
 
 
-def match(fork, allocations, *, minimum, atol, rtol):
+def match(fork, allocations, *, minimum, atol, rtol, max_initial_dip=0.):
     """Lock candidates before evaluation; return explicit unmatched reason.
 
     Bounded precision repair searches movement only, never evaluation losses.
@@ -265,7 +283,8 @@ def match(fork, allocations, *, minimum, atol, rtol):
     try:
         cores = fork.cores()
         curves = {n: MovementCurve(cores,w) for n,w in allocations.items()}
-        ends = {n: f.first_increasing_end() for n,f in curves.items()}
+        intervals = {n: f.increasing_interval(max_initial_dip) for n,f in curves.items()}
+        ends = {n: interval[1] for n,interval in intervals.items()}
         upper = {n: f.norm(ends[n]) for n,f in curves.items()}
         lower = max(f.norm(0) for f in curves.values())
         limiter = min(upper,key=upper.get)
@@ -280,7 +299,7 @@ def match(fork, allocations, *, minimum, atol, rtol):
                 raise ValueError('nonfinite committed movement')
             return {'scale':c,'multipliers':multipliers,'achieved':actual,'block_squared_movement':shares}
         for n,f in curves.items():
-            rows[n] = measure(n,f.solve(target,ends[n]))
+            rows[n] = measure(n,f.solve(target,ends[n],intervals[n][0]))
         def gap():
             vals = [r['achieved'] for r in rows.values()]
             return max(vals)-min(vals)
@@ -289,12 +308,13 @@ def match(fork, allocations, *, minimum, atol, rtol):
             for n,row in list(rows.items()):
                 c = row['scale']
                 for offset in (-1e-6,1e-6,-1e-5,1e-5,-1e-4,1e-4,-1e-3,1e-3):
-                    candidate = measure(n,min(ends[n],max(0.,c+offset)))
+                    candidate = measure(n,min(ends[n],max(intervals[n][0],c+offset)))
                     if abs(candidate['achieved']-target) < abs(rows[n]['achieved']-target):
                         rows[n] = candidate
         ok = gap() <= tolerance and min(r['achieved'] for r in rows.values()) > minimum
         return {'matched':ok,'reason':None if ok else 'committed movement mismatch or below floor',
-                'target':target,'limiter':limiter,'gap':gap(),'tolerance':tolerance,'arms':rows}
+                'target':target,'limiter':limiter,'gap':gap(),'tolerance':tolerance,'arms':rows,
+                'increasing_intervals':intervals,'max_initial_dip':max_initial_dip}
     except (ValueError, np.linalg.LinAlgError) as exc:
         return {'matched':False,'reason':str(exc)}
     finally:

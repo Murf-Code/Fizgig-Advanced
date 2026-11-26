@@ -81,3 +81,28 @@ def test_exception_restores_parent_and_empty_state():
             raise RuntimeError('scoring failed')
     assert torch.equal(A,torch.ones_like(A)) and torch.equal(B,torch.zeros_like(B))
     assert not opt.state
+
+
+def test_optin_bounded_initial_dip():
+    f = MovementCurve([(0,np.array([1.,0.]),np.array([-.001,1.]),np.array([0.,0.]))],{0:1.})
+    with pytest.raises(ValueError):
+        f.first_increasing_end()
+    lo,hi = f.increasing_interval(.01)
+    assert lo == pytest.approx(.001/1.000001)
+    assert hi == 1.
+    x = f.solve(1.1,hi,lo)
+    assert f.norm(x) == pytest.approx(1.1)
+    assert x > lo
+
+
+def test_optin_deep_dip_rejected():
+    f = MovementCurve([(0,np.array([1.,0.]),np.array([-.2,1.]),np.array([0.,0.]))],{0:1.})
+    with pytest.raises(ValueError):
+        f.increasing_interval(.01)
+    with pytest.raises(ValueError):
+        f.increasing_interval(.02)
+
+
+def test_optin_preserves_cancellation_boundary():
+    f = MovementCurve([(0,np.array([0.]),np.array([-6.]),np.array([9.]))],{0:1.})
+    assert f.increasing_interval(.01) == pytest.approx((0.,1/3))
