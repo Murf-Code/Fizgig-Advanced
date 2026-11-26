@@ -151,12 +151,20 @@ class CompressedMuonME(MuonME):
             new[p] = {k:(v.to(device=p.device,copy=True) if torch.is_tensor(v) else tuple(v)) for k,v in st.items()}
         self.__setstate__({'state':new,'param_groups':groups})
 
+    def _memory_item(self,p,g):
+        shape=p.shape;mode=g['momentum_storage'];block=g['momentum_block']
+        payload=state_bytes(shape,mode,block)
+        cost=scratch_per_matrix(shape,4,g['nesterov'])+48*(_blocks(shape,block)*block)+payload
+        # Replacement overlap is conservatively budgeted even on a cold step.
+        return cost, 0 if self.state.get(p) else payload
+
     @torch.no_grad()
     def step(self, closure=None):
         loss = None
         if closure is not None:
             with torch.enable_grad(): loss = closure()
         plans = []
+        caps=self._memory_caps()
         for g in self.param_groups:
             self._validate_group(g)
             by = defaultdict(list)
@@ -165,11 +173,9 @@ class CompressedMuonME(MuonME):
                 if p.grad.is_sparse or p.grad.dtype != torch.float32 or p.grad.shape != p.shape:
                     raise ValueError('unsupported compressed Muon gradient')
                 by[(tuple(p.shape),p.device)].append(p)
-            for (shape,_), ps in by.items():
-                # Include FP32 reconstruction, codec temporaries, padding and
-                # replacement payload in addition to baseline NS scratch.
-                cost = scratch_per_matrix(shape,4,g['nesterov']) + 48*(_blocks(shape,g['momentum_block'])*g['momentum_block']) + state_bytes(shape,g['momentum_storage'],g['momentum_block'])
-                chunk = int(g['chunk_memory_mib']*MIB)//cost
+            for (shape,device), ps in by.items():
+                cost,_=self._memory_item(ps[0],g)
+                chunk = caps.get((id(g),device),int(g['chunk_memory_mib']*MIB))//cost
                 if chunk < 1:
                     raise MemoryError('one compressed Muon matrix exceeds estimated chunk budget')
                 plans.append((g,shape,ps,chunk))
