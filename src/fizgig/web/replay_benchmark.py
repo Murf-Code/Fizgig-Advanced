@@ -149,6 +149,7 @@ def final_settings(group, output_root):
     v = next(x for x in settings(group, output_root)
              if x["__replay_compare"] == "calibration-unrestricted-lr450")
     return [{**v, "__replay_compare":case, "SEED":seed,
+             "FAMILY_EMA":"0.98 (recommended)",
              "SAVE_STATE":False, "SAVE_STATE_ON_TRAIN_END":False,
              "KREA2_SELECTIVE_BLOCK_CHECK":mode != "full",
              "LORA_NAME":f"{group}-{case}",
