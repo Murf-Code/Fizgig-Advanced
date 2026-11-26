@@ -2487,7 +2487,7 @@
           note.textContent = "Select Krea 2 and the original training dataset.";
           return;
         }
-        if (!window.confirm("Queue seven fresh one-epoch Krea 2 diagnostic runs? Uses fixed rank 8, 0.98 MP, and the selected dataset. Failed runs advance automatically.")) return;
+        if (!window.confirm("Queue seven fresh one-epoch Krea 2 diagnostic runs? Uses fixed rank 8, 1 MP (992 px nominal), and the selected dataset. Failed runs advance automatically.")) return;
         btn.disabled = true;
         try {
           const response = await fetch("/api/queue/polora-diagnostic", {
