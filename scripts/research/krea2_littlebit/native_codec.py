@@ -3,7 +3,8 @@
 References: Lee et al., LittleBit (NeurIPS 2025); Lee & Kim, LittleBit-2
 (ICML 2026). This is a simplified experiment, not their implementation:
 one SVD path, per-latent magnitude estimates, optional joint rotation.
-No borrowed Samsung code, SmoothSign, residual path, or binary CUDA kernel.
+No borrowed Samsung code, SmoothSign, or binary CUDA kernel. Geometry variants
+add independent Hadamard, fitted scales and Fizgig's HQQ residual codec.
 """
 import fnmatch
 import hashlib
@@ -15,8 +16,9 @@ import torch
 import torch.nn.functional as F
 from safetensors import safe_open
 from safetensors.torch import save_file
+import geometry_codec as geometry
 
-FORMAT = "fizgig-independent-compact-v1"
+FORMAT = "fizgig-independent-compact-v2"
 MODULES = ("attn.wq","attn.wk","attn.wv","attn.gate","attn.wo","mlp.up","mlp.gate","mlp.down")
 ELIGIBLE = {f"blocks.{i}.{name}.weight" for i in range(28) for name in MODULES}
 
@@ -69,6 +71,19 @@ def _bf(p):
 
 
 def encode(weight, codec, rank=128, group=64, qat_steps=0):
+    if codec in geometry.EXTRA:
+        if qat_steps or weight.ndim != 2 or not weight.is_floating_point() or not torch.isfinite(weight).all():
+            raise ValueError('geometry codecs require finite floating matrices and no QAT')
+        return geometry.encode(weight,codec,rank,group,_pack,_encode_original,factors)
+    latent = codec in ('littlebit-had','littlebit2-had')
+    if latent:
+        codec = codec.removesuffix('-had')
+        if rank % geometry.HAD:
+            raise ValueError('latent rank must divide into Hadamard groups')
+    return _encode_original(weight,codec,rank,group,qat_steps,latent_hadamard=latent)
+
+
+def _encode_original(weight, codec, rank=128, group=64, qat_steps=0, latent_hadamard=False):
     if qat_steps:
         raise ValueError("local QAT is not implemented in the independent codec")
     if weight.ndim != 2 or not weight.is_floating_point() or not torch.isfinite(weight).all():
@@ -100,11 +115,15 @@ def encode(weight, codec, rank=128, group=64, qat_steps=0):
     right = v[:,:rank]*root
     if codec=="svd":
         return torch.cat((_bytes(right.T.bfloat16()),_bytes(left.bfloat16()))),dict(spec,rank=rank)
+    if latent_hadamard and codec=="littlebit":
+        left,right = geometry.hadamard(left),geometry.hadamard(right)
     if codec=="littlebit2":
         # Solve orthogonal Procrustes for joint balanced factors, with a
         # deterministic fixed iteration budget. The rotation is not stored.
         z = torch.cat((left,right),0)
         rotation = torch.eye(rank,device=z.device,dtype=z.dtype)
+        if latent_hadamard:
+            rotation = geometry.hadamard(rotation)
         for _ in range(8):
             target = torch.where(z@rotation>=0,1.,-1.)
             l,_,rh = torch.linalg.svd(z.T@target,full_matrices=False)
@@ -114,10 +133,12 @@ def encode(weight, codec, rank=128, group=64, qat_steps=0):
     a,b = right.T.contiguous(),left.contiguous()
     scales = torch.cat((a.abs().mean(1),b.abs().mean(0))).bfloat16()
     payload = torch.cat((_pack(a>=0,1),_pack(b>=0,1),_bytes(scales)))
-    return payload,dict(spec,rank=rank)
+    return payload,dict(spec,rank=rank,latent_hadamard=latent_hadamard)
 
 
 def validate(p,s):
+    if s["codec"] in geometry.EXTRA:
+        return geometry.validate(p,s,validate)
     m,n = s["shape"]
     c = s["codec"]
     if min(m,n)<=0 or p.dtype!=torch.uint8 or p.ndim!=1:
@@ -168,6 +189,8 @@ class Frozen(torch.autograd.Function):
     def forward(ctx,x,p,s):
         ctx.save_for_backward(p)
         ctx.spec=s
+        if s["codec"] in geometry.EXTRA:
+            return geometry.forward(x,p,s,_unpack,factors)
         if s["codec"] not in ("q4","q6"):
             a,b=factors(p,s,x.dtype)
             return F.linear(F.linear(x,a),b)
@@ -179,6 +202,8 @@ class Frozen(torch.autograd.Function):
     def backward(ctx,dy):
         p,=ctx.saved_tensors
         s=ctx.spec
+        if s["codec"] in geometry.EXTRA:
+            return geometry.backward(dy,p,s,_unpack,factors),None,None
         if s["codec"] not in ("q4","q6"):
             a,b=factors(p,s,dy.dtype)
             dx=(dy@b)@a

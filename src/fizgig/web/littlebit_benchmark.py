@@ -9,8 +9,15 @@ import zipfile
 
 CASES = {"stock": ("int8", 0), "q6": ("q6", 128), "q4": ("q4", 128),
          "littlebit-r512": ("littlebit", 512), "littlebit2-r512": ("littlebit2", 512),
-         "littlebit2-r1024": ("littlebit2", 1024)}
-IMPLEMENTATION = "independent-v2-residency"
+         "littlebit2-r1024": ("littlebit2", 1024),
+         "q6-had": ("q6-had", 0), "q4-had": ("q4-had", 0),
+         "q6-opt": ("q6-opt", 0), "q4-opt": ("q4-opt", 0),
+         "q6-opt-had": ("q6-opt-had", 0), "q4-opt-had": ("q4-opt-had", 0),
+         "hqq": ("hqq", 0), "hqq-had": ("hqq-had", 0),
+         "littlebit-r512-had": ("littlebit-had", 512),
+         "littlebit2-r512-had": ("littlebit2-had", 512),
+         "lb2-r512-hqq": ("lb2-hqq", 512), "lb2-r512-hqq-had": ("lb2-hqq-had", 512)}
+IMPLEMENTATION = "independent-v3-geometry"
 EPOCHS = 5
 SWAPS = 22
 COMMON = {

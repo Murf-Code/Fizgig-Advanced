@@ -30,6 +30,7 @@ def main():
             "threshold":0.05,"seeds":[42,314159],"rows":64,"projections":{}}
     try:
         from native_codec import ELIGIBLE, MODULES, FORMAT, convert, encode, linear, validate, stock_layer, import_file
+        from geometry_codec import compatible, HQQ, HYBRID
         int8=import_file("littlebit_queue_int8",REPO/"src/fizgig/modules/int8_train.py")
         torch.set_num_threads(4)
         hold=Path(tomllib.loads(a.dataset.read_text(encoding="utf-8"))["general"]["holdout_file"])
@@ -63,6 +64,12 @@ def main():
         if any(prior.get(k)!=result[k] for k in ("holdout_sha256","raw_sha256")):
             raise ValueError("Raw checkpoint or validation holdout changed between cases")
         codec,rank=bench.CASES[a.case]
+        if codec in HQQ | HYBRID:
+            from fizgig.minimax.hqq4 import hqq_available
+            if not hqq_available():
+                result["status"]="blocked"
+                raise ValueError("HQQ dependency unavailable: run the Fizgig updater to install hqq==0.2.8.post1")
+        result.update(codec=codec,rank=rank)
         accepted=[]
         totals={}
         with safe_open(str(a.raw),framework="pt",device="cpu") as f:
@@ -74,7 +81,7 @@ def main():
                     key=f"blocks.{block}.{suffix}.weight"
                     w=f.get_tensor(key)
                     m,n=w.shape
-                    if (codec in ("q4","q6") and n%64) or (codec.startswith("littlebit") and rank>min(m,n)):
+                    if not compatible(codec,m,n,rank):
                         rows.append({"key":key,"reason":"incompatible dimensions"})
                         good=False
                         break
@@ -83,7 +90,8 @@ def main():
                     native=stock_layer(w,int8)
                     stock_bytes=native.weight.nbytes+native._int8_wscale.nbytes
                     packed_bytes=pck.nbytes
-                    row={"key":key,"packed_bytes":packed_bytes,"int8_bytes":stock_bytes,"probes":[]}
+                    row={"key":key,"packed_bytes":packed_bytes,"int8_bytes":stock_bytes,
+                         "bytes_per_weight":packed_bytes/(m*n),"probes":[]}
                     rows.append(row)
                     good=packed_bytes<stock_bytes
                     for seed in result["seeds"]:
@@ -92,9 +100,10 @@ def main():
                         dy=torch.randn(64,m,generator=g).bfloat16()
                         y,dx=evaluate(lambda t:linear(t,pck,spec),x,dy)
                         ref,rdx=evaluate(native,x,dy)
-                        fw=compare(y,ref)["relative_error"]
-                        bw=compare(dx,rdx)["relative_error"]
-                        row["probes"].append({"seed":seed,"forward":fw,"backward":bw})
+                        forward,backward=compare(y,ref),compare(dx,rdx)
+                        fw,bw=forward["relative_error"],backward["relative_error"]
+                        row["probes"].append({"seed":seed,"forward":fw,"backward":bw,
+                                              "forward_cosine":forward["cosine"],"backward_cosine":backward["cosine"]})
                         good=good and fw is not None and bw is not None and fw<=0.05 and bw<=0.05
                     print(key,codec,"pass" if good else "reject",row["probes"],flush=True)
                     del w,pck,native

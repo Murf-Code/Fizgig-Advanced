@@ -224,3 +224,40 @@ actual selected storage savings from the projection gate. The user-supplied
 zero-swap success, retries, non-OOM failure, exhausted retries, isolation of
 outputs and unchanged holdout across attempts. Real CUDA behavior remains
 unverified. Remove old queue entries and start a fresh comparison.
+
+## Milestone 6 — geometry and residual codec experiments
+
+18 queue arms (one stock control plus 17 compressed candidates), version
+independent-v3-geometry. Keep the original six arms as controls and add:
+- Q4/Q6 with normalized 64-wide Hadamard, with fitted symmetric BF16 group
+  scales, and with both. The fitted scale search retains the best actual
+  quantized L2 objective per group; unchanged packed storage.
+- HQQ group 8 with compressed scale/zero metadata, with and without a
+  Hadamard transform on each 64 input coordinates. Reuses the actual
+  upstream Fizgig solver/dequantizer (src/fizgig/minimax/hqq4.py, credit
+  rintic-13, issue #102, upstream 85c2043bd6fdc6b0e8e34404bd8e15a04c4bdea6).
+  The HQQ package is already pinned in requirements.txt; missing HQQ
+  marks those arms blocked with the updater instruction.
+- LittleBit rank 512 and LittleBit-2 rank 512 with a block-Hadamard latent
+  basis (direct rotation for LB1; initial Procrustes rotation for LB2).
+  No additional stored parameters for this initialization.
+- LB2 rank 512 plus HQQ residual, with and without input Hadamard on the
+  residual. Fit against the actual decoded binary factors, not the
+  unquantized truncated SVD. Store both payloads and count every byte.
+  Hybrid costs more than HQQ alone; no claim of equal-budget improvement
+  across these methods. Paired rotated/unrotated variants have equal
+  storage. Gate retains INT8 fallback for rejected projection families.
+
+Hadamard is its own inverse. Only frozen-base activation computation is
+rotated; backward maps input cotangents back and normal trainable LoRA
+remains in the original coordinate system. Use tiled unpack/dequantize
+and float32 accumulation across tiles for the new variants. No fused
+CUDA kernel or speed promise. CPU geometry tests cover rotation, fitting,
+packed length, forward/backward across a partial tile, and hybrid
+composition with a mock HQQ backend; real HQQ solver integration tests
+require installed hqq. Full Krea2 CUDA execution, transfer quality and
+speed remain unverified. Gate still uses the same 5% forward/backward
+relative error cutoff; stricter than an empirical LoRA gain criterion.
+All arms start at zero swap except stock at 22; OOM retries unchanged.
+Reports now include per-probe cosine and bytes per original weight.
+New archive format; requeue rather than resume old comparisons.
