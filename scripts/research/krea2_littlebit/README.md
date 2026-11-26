@@ -274,3 +274,46 @@ and original Raw BF16. Native NF4 is a separate non-swappable control.
 There is no required learning-retention percentage. Confirmation scoring
 and five-epoch promotion are intentionally separate future decisions.
 Old queue entries must be removed before testing this version.
+
+## Milestone 8 — V5 focused GPU smoke (default)
+
+This supersedes the V4 eight-arm default after Grok and Astra Round 2
+reviews. The former codec arms are retained (settings(root, full=True)),
+but the UI defaults to three cases: INT8 stock, INT8 repeat and Q6 Hadamard.
+
+- CUDA preflight before full training: actual reduced-width 28-block Krea2,
+  distinct random packed weights, two rank-4 Muon updates, resident twice
+  and classic 22 swaps. Compare model output, input gradient, one projection's
+  output/input gradient in every block, factor gradients and effective BA.
+  Report numerical differences per tensor, fail on swap differences beyond
+  max(1e-5 relative L2, 3x resident repeat) and 1e-7 absolute L2.
+  This is a numerical guard, not a learning threshold.
+- Stock and repeat capture only valid tokens from the actual padded mask:
+  up to eight image and eight text, redistribute unused slots; record
+  exact indices and counts. This stratified sampling is not a population
+  average. Do not select by cotangent magnitude. Undefined probe ratios
+  are recorded; a projection needs at least one usable probe.
+- Full stock tries 0,4,8,12,16,20,22,24,26 on OOM. Repeat and Q6 train at
+  the stock's successful count (no automatic change in the paired quality
+  arms). The repeat checks input/capture indices and records all captured
+  tensor, named horizon export/gradient and loss differences.
+- Score both exports and no adapter on INT8, original Raw BF16 and the
+  actual compact archive (same fallback layout). Aggregate effective
+  adapter action across all stock captures including the actual final export.
+- Separate timing after quality: fresh native processes, 16 updates max,
+  four warmup updates, same seed/dataset; no activation capture, trace
+  hashes or gradient/step adapter saves. Lightweight synchronized compute
+  interval (not end-to-end throughput). First time stock and Q6 at common
+  swaps, then try Q6 at lower counts, reusing common if all lower OOM.
+  Report per-step timings, item/timestep pairing, memory counters and
+  fit attempts. Timing errors are not interpreted as quality failures.
+- No fixed retention gate, no automatic five-epoch promotion. Actual full
+  CUDA, Windows memory counter sampling and performance integration must
+  still be validated. Report file: littlebit-results.zip.
+
+Astra independently reported 38/38 LittleBit CPU tests on V4 (including
+real HQQ), 64/65 supplementary tests (one unrelated UI assertion), and
+bit-identical 448/448 captured tensors per update on a reduced 28-block
+model, with synthetic random weights. The actual Krea2 attention key and
+MLP up matrices showed lower Q6 Hadamard error at equal bytes. These are
+reviewer-reported V4 results, not newly measured V5 results.

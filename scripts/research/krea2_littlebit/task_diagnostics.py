@@ -32,9 +32,13 @@ def movement(stock,candidate,calibration=None):
         row={"stock_norm":sn,"candidate_norm":cn,"difference_norm":dn,
              "effective_update_cosine":max(-1.,min(1.,cosine)) if cosine is not None else None}
         key=k+".weight.x"
-        if calibration is not None and key in calibration.keys():
-            x=calibration.get_tensor(key).float()
+        readers=calibration if isinstance(calibration,(list,tuple)) else ([calibration] if calibration is not None else [])
+        rows=[f.get_tensor(key).float() for f in readers if key in f.keys()]
+        if rows:
+            x=torch.cat(rows)
             row["on_stock_calibration_rows"]=vector_compare((x@a.T)@b.T,(x@c.T)@d.T)
+            row["calibration_captures"]=len(rows)
+            row["calibration_rows"]=len(x)
         out[k]=row
     return out
 

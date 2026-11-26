@@ -100,7 +100,11 @@ def main():
         if a.archive:
             quant.load_base=compact_loader(a.archive,original)
         observer=None
-        if a.case!="legacy":
+        if a.case=="timing":
+            from timing_trace import TimingTrace
+            observer=TimingTrace()
+            train._LITTLEBIT_TRACE=observer
+        elif a.case!="legacy":
             from research_trace import Trace
             if a.case!="stock" and not a.stock_trace:
                 raise ValueError("paired stock trace required")
@@ -126,7 +130,8 @@ def main():
                 # Avoid treating WDDM paging beyond physical VRAM as GPU fit.
                 # This caps the PyTorch allocator, not all driver allocations.
                 free,total=torch.cuda.mem_get_info()
-                metrics.update(initial_free_bytes=free,physical_vram_bytes=total)
+                metrics.update(initial_free_bytes=free,physical_vram_bytes=total,
+                               device_name=torch.cuda.get_device_name(),torch_version=torch.__version__)
                 if not os.environ.get("FIZGIG_SIM_VRAM_GB"):
                     budget=max(1,int(free-512*1024**2))
                     torch.cuda.set_per_process_memory_fraction(min(1.0,budget/total))
@@ -243,8 +248,9 @@ def main():
             raise ValueError("different optimizer trajectories' input schedule")
         if set(st["checkpoints"])!=set(ct["checkpoints"]):
             raise ValueError("missing matched horizons")
-        calibration_path=sroot/st["calibration"][0]["file"]
-        with safe_open(str(calibration_path),framework="pt",device="cpu") as cf:
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            cf=[stack.enter_context(safe_open(str(sroot/r["file"]),framework="pt",device="cpu")) for r in st["calibration"]]
             for step in sorted(st["checkpoints"],key=int):
                 row=pair(sroot/st["checkpoints"][step],croot/ct["checkpoints"][step],
                          geometry=a.deployment=="int8",calibration=cf)
@@ -253,12 +259,9 @@ def main():
                     row["task_factor_gradients"]=gradients(sroot/filename,croot/filename,expected)
                     row["gradient_scope"]="pre-clipping factor gradients; step 1 same initialization, later steps different adapter states"
                 horizons[step]=row
+            # Final export is scored independently and geometry uses all stock captures.
+            result=pair(a.stock_lora,a.compressed_lora,geometry=a.deployment=="int8",calibration=cf)
         final_step=str(st["completed_updates"])
-        if final_step in horizons:
-            # Final saved file must still be loaded and checked. It is not assumed identical.
-            result=pair(a.stock_lora,a.compressed_lora)
-        else:
-            result=pair(a.stock_lora,a.compressed_lora,geometry=a.deployment=="int8")
         result["completed_updates"]=int(final_step)
     else:
         result=pair(a.stock_lora,a.compressed_lora)

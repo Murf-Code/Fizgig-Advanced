@@ -47,7 +47,7 @@ def settings(root,full=False):
              "BLOCKS_SWAP": "0",
              "FAMILY_PRECISION": "4-bit NF4 (smallest)" if case=="nf4" else "INT8 (8-bit, fastest)",
              "LORA_NAME": root.name + "-" + case, "LORA_OUTPUT_DIR": str(root / case)}
-            for case in (tuple(CASES) if full else SMOKE_CASES)]
+            for case in (("stock","stock-repeat",*(k for k in CASES if k not in ("stock","stock-repeat"))) if full else SMOKE_CASES)]
 
 
 def arg(cmd, flag):
@@ -151,7 +151,11 @@ def adjust_plan(desc, values, plan, repo, resume=False):
                     "--compressed-lora",str(out/f"{name}.safetensors"),
                     "--out",str(out/filename),"--deployment",deployment,"--swaps",str(swaps),
                     "--split","development","--paired-horizons",*(["--archive",str(archive)] if deployment=="compact" else [])]))
-        plan.console.append(f"[LittleBit test] {case}: one epoch or 200 updates; resident first; NF4 cannot swap; no retention cutoff.")
+        if case=="q6-had":
+            plan.stages.append(Stage("Separate common-swap and residency timing", [
+                cmd[0],str(prepare.with_name("performance.py")),"--repo",str(repo),"--archive",str(archive),
+                "--stock",str(stock),"--candidate",str(out),"--out",str(out/"clean-performance.json"),"--",*cmd[2:]]))
+        plan.console.append(f"[LittleBit test] {case}: one epoch or 200 updates; matched common swaps for Q6; no retention cutoff.")
     except (ValueError, OSError, TypeError) as e:
         plan.problems.append(str(e))
     return plan
@@ -198,6 +202,7 @@ def update(values, status, log=None):
     entry["transfer_compact"] = read_json(out/"transfer-compact.json")
     entry["cuda_equivalence"] = read_json(out/"cuda-equivalence.json")
     entry["repeatability"] = read_json(out/"repeatability.json")
+    entry["clean_performance"] = read_json(out/"clean-performance.json")
     entry["trace"] = read_json(out/"trace.json")
     entry["fit"] = read_json(out/"fit-report.json")
     entry["selected_swaps"] = (entry["fit"] or {}).get("selected_swaps")
@@ -215,6 +220,10 @@ def update(values, status, log=None):
             lines.append(json.dumps(row["transfer"],indent=2)+"\n")
         if row.get("transfer_bf16"):
             lines.append(json.dumps(row["transfer_bf16"],indent=2)+"\n")
+        if row.get("transfer_compact"):
+            lines.append(json.dumps(row["transfer_compact"],indent=2)+"\n")
+        if row.get("clean_performance"):
+            lines.append(json.dumps(row["clean_performance"],indent=2)+"\n")
         p = root/label/"run.log"
         if p.is_file():
             lines.append(p.read_text(encoding="utf-8",errors="replace")+"\n")
