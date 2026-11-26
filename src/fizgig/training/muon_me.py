@@ -43,6 +43,8 @@ class MuonME(torch.optim.Optimizer):
         super().__init__(params,dict(lr=lr,weight_decay=weight_decay,momentum=momentum,nesterov=nesterov,ns_coefficients=ns_coefficients,eps=eps,ns_steps=ns_steps,adjust_lr_fn=adjust_lr_fn,chunk_memory_mib=chunk_memory_mib))
         if any(p.ndim!=2 for g in self.param_groups for p in g['params']): raise ValueError('2D only')
     def load_state_dict(self,state_dict):
+        if any(g.get("momentum_storage", "fp32") != "fp32" for g in state_dict["param_groups"]):
+            raise ValueError("compressed Muon-ME checkpoint requires its original momentum storage mode")
         super().load_state_dict(state_dict)
         for g in self.param_groups: g.setdefault('chunk_memory_mib',self.defaults['chunk_memory_mib'])
     @torch.no_grad()

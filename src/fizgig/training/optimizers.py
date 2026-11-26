@@ -517,7 +517,12 @@ def create_optimizer(name: str, params, lr: float, args_str: str = "",
                     if (params_list and isinstance(params_list[0], dict)) else params_list)
             if key == "muon_me":
                 from fizgig.training.muon_me import MuonME
-                opt = MuonME(params_list, lr=lr, **kwargs)
+                storage = kwargs.pop("momentum_storage", "fp32")
+                if storage == "fp32":
+                    opt = MuonME(params_list, lr=lr, **kwargs)
+                else:
+                    from fizgig.training.muon_me_compressed import CompressedMuonME
+                    opt = CompressedMuonME(params_list, lr=lr, momentum_storage=storage, **kwargs)
             elif all(getattr(p, "ndim", 0) == 2 for p in flat):
                 # torch.optim.Muon's update with the per-matrix work batched (a LoRA's hundreds of small matrices
                 # made its per-parameter loop a third of a MOSS step, #221)

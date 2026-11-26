@@ -1,0 +1,5 @@
+# Memory architecture integration (experimental)
+
+Independent of Global Replay. Default Muon-ME remains unchanged. Opt in with `momentum_storage=bf16`, `momentum_storage=int8 momentum_block=64`, or `momentum_storage=splitmax momentum_block=64` in Muon-ME optimizer arguments. FP32 factors required; arithmetic uses reconstructed FP32 state. Strict positive chunk budget; estimate excludes backend workspace and allocator residency. Direct compressed-state restoration validates shape, codec and payload before publication; matching parameter order required (names checked if present). Changing storage on resume is rejected; old/new packed states may overlap during restore. A partial failed update must not be retried.
+
+CPU verification: 9 regression tests passed under PyTorch 2.10 CPU using the new module and a transcribed baseline Muon-ME implementation. Tested first step, resume, dtype, payload size, outlier/padding, malformed records and preflight. Factory integration and full trainer are not yet executed. No CUDA evidence or production recommendation. Finite checking adds one host sync per chunk in compressed modes; measure it.
