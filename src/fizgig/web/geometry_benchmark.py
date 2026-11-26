@@ -130,6 +130,28 @@ def round10_settings(group, output_root):
             for case, opt, lr, args in R10_CASES]
 
 
+# Matched real-training quality arms, followed by deliberate memory-pressure arms.
+MUON_ME_CASES = (
+    ("muon-me-reference", *QUALITY_CASES[1][1:], 22, 3),
+    ("muon-me-reference-repeat", *QUALITY_CASES[1][1:], 22, 3),
+    ("muon-me-shape-local", "muon_me", QUALITY_CASES[1][2], QUALITY_CASES[1][3] + " chunk_memory_mib=0", 22, 3),
+    ("muon-me-chunk128", "muon_me", QUALITY_CASES[1][2], QUALITY_CASES[1][3] + " chunk_memory_mib=128", 22, 3),
+    ("muon-me-swap16-chunk128", "muon_me", QUALITY_CASES[1][2], QUALITY_CASES[1][3] + " chunk_memory_mib=128", 16, 1),
+    ("muon-me-swap16-reference", *QUALITY_CASES[1][1:], 16, 1),
+)
+
+
+def muon_me_settings(group, output_root):
+    common = optimizer_settings(group, output_root)[0]
+    return [{**common, "__geometry_compare": case, "OPTIMIZER_TYPE": opt,
+             "OPTIMIZER_ARGS": args, "LEARNING_RATE": lr,
+             "NETWORK_DIM": "64", "NETWORK_ALPHA": "64", "BLOCKS_SWAP": str(swap),
+             "MAX_TRAIN_EPOCHS": str(epochs),
+             "LORA_NAME": f"{group}-{case}",
+             "LORA_OUTPUT_DIR": os.path.join(output_root, group, case)}
+            for case, opt, lr, args, swap, epochs in MUON_ME_CASES]
+
+
 def resolution_settings(group, output_root):
     v, = feasibility_settings(group, output_root)
     return [{**v, "__geometry_compare": case,
@@ -145,7 +167,7 @@ def adjust_plan(desc, values, plan):
     case = values.get("__geometry_compare")
     if not case:
         return plan
-    if desc.key != "krea2" or (case not in {x[0] for x in CASES + QUALITY_CASES + R10_CASES} and not is_feasibility(case)):
+    if desc.key != "krea2" or (case not in {x[0] for x in CASES + QUALITY_CASES + R10_CASES + MUON_ME_CASES} and not is_feasibility(case)):
         raise ValueError("Invalid Krea 2 matrix geometry comparison case.")
     if plan.problems:
         return plan
@@ -160,7 +182,7 @@ def adjust_plan(desc, values, plan):
         cmd.extend(["--family_option", f"geometry_feasibility_steps={FEASIBILITY_STEPS}"])
     elif "--sample_prompts" not in cmd:
         plan.problems.append("Matrix geometry comparison requires usable sample prompts.")
-    if case in {x[0] for x in QUALITY_CASES + TSD_FIT_CASES + R10_CASES}:
+    if case in {x[0] for x in QUALITY_CASES + TSD_FIT_CASES + R10_CASES + MUON_ME_CASES}:
         cmd.extend(["--family_option", "geometry_optimizer_timing=1"])
     if "--train_blocks" in cmd:
         plan.problems.append("Matrix geometry comparison requires unrestricted eligible blocks.")

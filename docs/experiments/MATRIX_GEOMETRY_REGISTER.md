@@ -45,3 +45,6 @@ Keep source, tests, raw results and failure logs together. No checkpoint binarie
 3. Keep Muon and AdamW8bit reference, identical data/seed/holdout and sample prompts; repeat controls to estimate noise. Do not repeat interrupted AdamW unnecessarily.
 4. Test actual 0.75–1 MP inputs, not merely target resolution settings. Cross-family validation and standard LoRA export remain outstanding.
 5. No automatic production enablement until numerical, resume, CUDA and quality gates pass.
+
+### Muon-ME closed-loop queue
+Opt-in factory key `muon_me`, default chunk budget 128 MiB, fixed 22-swap rank-64 quality arms (three epochs) and two one-epoch rank-64 16-swap stretch arms. Earlier rank-16 16-swap and rank-64 22-swap PoLoRA results are separate, not proof of the combined setting. No compressed momentum or adaptive policy included. Preserve OOM failures. The VRAM planner conservatively uses the original Muon estimates until full-training data arrive.

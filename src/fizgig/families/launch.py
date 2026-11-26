@@ -2203,7 +2203,7 @@ def prodigy(inputs):
 
 
 def muon(inputs):
-    return _s(inputs.get("OPTIMIZER_TYPE")).lower() == "muon"
+    return _s(inputs.get("OPTIMIZER_TYPE")).lower() in ("muon", "muon_me")
 
 
 def _dop_folders(st):

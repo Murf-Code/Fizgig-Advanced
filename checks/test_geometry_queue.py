@@ -100,3 +100,19 @@ def test_round10_queue(tmp_path):
     parsed = report.parse_log("[geometry-tangent] update=31 pairs=264 budget_min=0.05 budget_mean=0.2 budget_max=0.9 lr_factor_mean=0.4 change_sum=1.25")
     assert parsed["tangent_stats"][0]["budget_mean"] == 0.2
     assert parsed["tangent_stats"][0]["change_sum_all_pairs"] == 1.25
+
+def test_muon_me_queue(tmp_path):
+    from types import SimpleNamespace
+    configs = bench.muon_me_settings("me", str(tmp_path))
+    assert len(configs) == 6 and len({v["LORA_OUTPUT_DIR"] for v in configs}) == 6
+    exclude = {"__geometry_compare", "LORA_NAME", "LORA_OUTPUT_DIR", "OPTIMIZER_TYPE", "OPTIMIZER_ARGS"}
+    assert all({k:v for k,v in x.items() if k not in exclude} == {k:v for k,v in configs[0].items() if k not in exclude} for x in configs[:4])
+    assert all(v["NETWORK_DIM"] == v["NETWORK_ALPHA"] == "64" and v["DATASET_MEGAPIXELS"] == "0.25" and v["VALIDATION_HOLDOUT"] and v["SAMPLE_ENABLED"] for v in configs)
+    assert [v["BLOCKS_SWAP"] for v in configs] == ["22"]*4 + ["16"]*2
+    assert [v["MAX_TRAIN_EPOCHS"] for v in configs] == ["3"]*4 + ["1"]*2
+    assert configs[2]["OPTIMIZER_ARGS"].endswith("chunk_memory_mib=0")
+    assert configs[3]["OPTIMIZER_ARGS"].endswith("chunk_memory_mib=128")
+    for v in configs:
+        plan = SimpleNamespace(problems=[], stages=[SimpleNamespace(name="Training",cmd=["--holdout_file","holdout","--sample_prompts","prompts"])],dataset_toml="",console=[])
+        bench.adjust_plan(SimpleNamespace(key="krea2"),v,plan)
+        assert not plan.problems and "geometry_optimizer_timing=1" in plan.stages[0].cmd

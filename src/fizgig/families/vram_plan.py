@@ -37,7 +37,7 @@ LEARN_VERSION = 2                            # history entries before this (no b
 KEEP_RUNS = 5                                # recent runs remembered per key
 # optimizer state per trained weight, bytes, beyond its own value and gradient (fp32 LoRA weights: 4 + 4)
 STATE_BYTES = {"adamw": 8, "adamw8bit": 2, "pagedadamw8bit": 2, "ademamix8bit": 3, "pagedademamix8bit": 3,
-               "lion8bit": 1, "prodigy": 16, "muon": 4, "polora": 8, "automagic3": 6, "automagic4": 8, "soap": 8,
+               "lion8bit": 1, "prodigy": 16, "muon": 4, "muon_me": 4, "polora": 8, "automagic3": 6, "automagic4": 8, "soap": 8,
                "lora_tsd": 4, "cmuon": 4, "adafactor": 1}
 UNKNOWN_STATE_BYTES = 8                      # a module.path.ClassName optimizer: planned like AdamW
 SOAP_MAX_PRECOND = 10000                     # SOAP's max_precond_dim: wider sides get no matrix
@@ -85,7 +85,7 @@ def adapter_gb(shapes, rank, optimizer) -> float:
 # the optimizers that stack each shape group of same-sized weights and step it as one (PoLoRA and LoRA-TSD in fp32,
 # Muon in bf16) - the largest group is the peak; "tensor" for the per-weight ones (fused AdamW, the 8-bit ones,
 # Prodigy, Automagic, SOAP) - the largest single weight is.
-STEP_BYTES = {"polora": (24, "group"), "lora_tsd": (16, "group"), "muon": (6, "group"), "cmuon": (6, "group"),
+STEP_BYTES = {"polora": (24, "group"), "lora_tsd": (16, "group"), "muon": (6, "group"), "muon_me": (6, "group"), "cmuon": (6, "group"),
               "adamw": (8, "tensor"), "adamw8bit": (8, "tensor"), "pagedadamw8bit": (8, "tensor"),
               "ademamix8bit": (8, "tensor"), "pagedademamix8bit": (8, "tensor"), "lion8bit": (4, "tensor"),
               "prodigy": (12, "tensor"), "automagic3": (8, "tensor"), "automagic4": (8, "tensor"),

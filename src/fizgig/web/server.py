@@ -5075,7 +5075,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": f"{name} is already there."}, 400)
                 os.makedirs(new)
                 return self.json({"ok": True, "path": new})
-            if path in ("/api/queue/geometry-compare", "/api/queue/geometry-feasibility", "/api/queue/geometry-resolution", "/api/queue/geometry-tsd-fit", "/api/queue/geometry-quality", "/api/queue/geometry-round10"):
+            if path in ("/api/queue/geometry-compare", "/api/queue/geometry-feasibility", "/api/queue/geometry-resolution", "/api/queue/geometry-tsd-fit", "/api/queue/geometry-quality", "/api/queue/geometry-round10", "/api/queue/geometry-muon-me"):
                 from fizgig.web import geometry_benchmark, geometry_report
                 folder = str(b.get("image_folder") or "").strip()
                 if not os.path.isdir(folder):
@@ -5087,9 +5087,11 @@ class Handler(BaseHTTPRequestHandler):
                 tsd_fit = path == "/api/queue/geometry-tsd-fit"
                 quality = path == "/api/queue/geometry-quality"
                 round10 = path == "/api/queue/geometry-round10"
-                group = ("geometry-round10-" if round10 else "geometry-tsd-fit-" if tsd_fit else "geometry-quality-" if quality else "geometry-resolution-" if resolution else "geometry-r64-fit-" if feasibility else "geometry-pilot-") + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+                muon_me = path == "/api/queue/geometry-muon-me"
+                group = ("geometry-muon-me-" if muon_me else "geometry-round10-" if round10 else "geometry-tsd-fit-" if tsd_fit else "geometry-quality-" if quality else "geometry-resolution-" if resolution else "geometry-r64-fit-" if feasibility else "geometry-pilot-") + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
                 root = os.path.join(default_output_dir(), "matrix_geometry_comparisons")
-                configs = (geometry_benchmark.round10_settings(group, root) if round10 else
+                configs = (geometry_benchmark.muon_me_settings(group, root) if muon_me else
+                           geometry_benchmark.round10_settings(group, root) if round10 else
                            geometry_benchmark.optimizer_settings(group, root, short=tsd_fit) if tsd_fit or quality else
                            geometry_benchmark.resolution_settings(group, root) if resolution else
                            geometry_benchmark.feasibility_settings(group, root) if feasibility else

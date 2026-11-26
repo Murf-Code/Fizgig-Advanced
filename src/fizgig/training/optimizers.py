@@ -54,7 +54,7 @@ LORA_TSD_ONLY_KEYS = ("ball_iters", "max_delta_norm", "ridge_eps", "balance", "z
 # the Muon keys each pair-wise optimizer reads too (not stripped for it)
 _SHARED_MUON_KEYS = {"polora": ("ns_steps",), "lora_tsd": ("ns_steps", "momentum")}
 # PoLoRA's keys LoRA-TSD reads too (not stripped for it): magnitude_scale, pre-filled at 3 for both
-SHARED_POLORA_KEYS = {"lora_tsd": ("magnitude_scale",)}
+SHARED_POLORA_KEYS = {"lora_tsd": ("magnitude_scale",), "muon_me": ("chunk_memory_mib",)}
 
 
 def _strip_keys(raw: str, default_str: str, only_keys: tuple[str, ...]) -> str:
@@ -93,7 +93,7 @@ def strip_polora_args(raw: str, to: str = "") -> str:
 
 
 # they never fall back to AdamW (#292)
-NEW_OPTIMIZERS = ("prodigy", "muon", "automagic4", "polora", "soap", "lora_tsd")
+NEW_OPTIMIZERS = ("prodigy", "muon", "muon_me", "automagic4", "polora", "soap", "lora_tsd")
 PAIR_OPTIMIZERS = ("polora", "lora_tsd")     # trained as (down, up) pairs: polora_pairs(net), plain LoRA only
 
 # name -> (import to test, one-line description shown in the GUI/CLI help)
@@ -136,6 +136,7 @@ _CATALOG = {
                                             "locked to 1.0 (a multiplier)"),
     "muon":               (None,           "Muon — orthogonalized momentum, step size matched to AdamW's, so AdamW's "
                                             "learning rates apply"),
+    "muon_me":            (None, "Muon-ME (experimental) — bounded shape-local/chunked Muon for 2D LoRA factors; default chunk_memory_mib=128; same LR as Muon"),
     # SOAP, vendored (fizgig/training/soap.py, MIT): Adam in the eigenbasis of Shampoo's preconditioner. A test option
     # for the smaller models' LoRAs (Anima, SDXL) - two preconditioner matrices per weight, refreshed every 10 steps.
     "soap":               (None,           "SOAP - Adam run in Shampoo's eigenbasis; AdamW's learning rates apply. "
@@ -449,7 +450,7 @@ def create_optimizer(name: str, params, lr: float, args_str: str = "",
     MiniMax H3 workaround and every other family keeps the library default. See the note below.
     """
     name = (name or DEFAULT_OPTIMIZER).strip()
-    if name.lower() not in ("muon", "prodigy") and (args_str or "").strip() in (MUON_DEFAULT_ARGS, PRODIGY_DEFAULT_ARGS):
+    if name.lower() not in ("muon", "muon_me", "prodigy") and (args_str or "").strip() in (MUON_DEFAULT_ARGS, PRODIGY_DEFAULT_ARGS):
         # Muon's / Prodigy's own default args left over from a preset (every picture preset is on Muon): they'd make
         # this optimizer fail to build and fall back to plain AdamW - they don't belong to it, so they're dropped
         logger.info("[optimizer] %s: ignoring the Optimizer Args left from Muon / Prodigy (%s)", name, args_str.strip())
@@ -457,7 +458,7 @@ def create_optimizer(name: str, params, lr: float, args_str: str = "",
     kwargs = parse_optimizer_args(args_str)
     key = name.lower()
     is_prodigy = key == "prodigy" or key.endswith(".prodigy")
-    is_muon = key == "muon" or key.endswith(".muon")
+    is_muon = key in ("muon", "muon_me") or key.endswith(".muon")
     if is_prodigy and lr < 0.1:
         logger.info("[optimizer] Prodigy expects lr=1.0 as a multiplier (got %.2e) — using lr=1.0", lr)
         lr = 1.0
@@ -508,13 +509,16 @@ def create_optimizer(name: str, params, lr: float, args_str: str = "",
                 kwargs.setdefault(k, v)
             from fizgig.training.prodigy import Prodigy        # the vendored copy only, never a package
             opt = Prodigy(params_list, lr=lr, **kwargs)
-        elif key == "muon":
+        elif key in ("muon", "muon_me"):
             for k, v in (("adjust_lr_fn", "match_rms_adamw"), ("weight_decay", 0.01),
                          ("momentum", 0.95), ("nesterov", True), ("ns_steps", 5)):
                 kwargs.setdefault(k, v)
             flat = ([p for g in params_list for p in g.get("params", ())]
                     if (params_list and isinstance(params_list[0], dict)) else params_list)
-            if all(getattr(p, "ndim", 0) == 2 for p in flat):
+            if key == "muon_me":
+                from fizgig.training.muon_me import MuonME
+                opt = MuonME(params_list, lr=lr, **kwargs)
+            elif all(getattr(p, "ndim", 0) == 2 for p in flat):
                 # torch.optim.Muon's update with the per-matrix work batched (a LoRA's hundreds of small matrices
                 # made its per-parameter loop a third of a MOSS step, #221)
                 from fizgig.training.muon import BatchedMuon
