@@ -181,3 +181,19 @@ def test_history_queue_recipe(tmp_path):
         assert not plan.problems
         assert cmd[-4:] == ["--family_option", "movement_pilot_step=8",
                             "--family_option", "movement_history=1"]
+
+
+def test_predictor_queue_recipe(tmp_path):
+    configs = rb.predictor_settings("predictors", str(tmp_path))
+    assert [v["SEED"] for v in configs] == ["42", "43"]
+    for v in configs:
+        assert v["VALIDATION_SEED"] == "42"
+        assert v["MAX_TRAIN_EPOCHS"] == "1" and not v["SAMPLE_ENABLED"]
+        assert not v["KREA2_SELECTIVE_BLOCK_CHECK"]
+        cmd = ["python", "train.py"]
+        plan = SimpleNamespace(problems=[], stages=[SimpleNamespace(name="Training", cmd=cmd)],
+                               dataset_toml='holdout_file = "held.json"', console=[])
+        rb.adjust_plan(SimpleNamespace(key="krea2", n_blocks=28), v, plan)
+        assert not plan.problems
+        assert cmd[-4:] == ["--family_option", "movement_pilot_step=8",
+                            "--family_option", "movement_predictors=1"]

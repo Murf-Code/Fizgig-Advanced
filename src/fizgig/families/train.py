@@ -1568,12 +1568,15 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     movement_dual = str((family_options or {}).get("movement_dual", "0")) == "1"
     movement_dual_multi = str((family_options or {}).get("movement_dual_multi", "0")) == "1"
     movement_history = str((family_options or {}).get("movement_history", "0")) == "1"
+    movement_predictors = str((family_options or {}).get("movement_predictors", "0")) == "1"
+    if movement_predictors and (movement_history or movement_dual or movement_isolation or movement_dual_multi or movement_pilot_step != 8):
+        raise RuntimeError("Predictor verification needs its own strict calibration run.")
     historical_factors = {}
     if movement_history and (movement_dual or movement_isolation or movement_dual_multi or movement_pilot_step != 8):
         raise RuntimeError("Historical reversion requires its own strict movement research run.")
     if movement_dual_multi and not movement_dual:
         raise RuntimeError("Multi-checkpoint evaluation requires dual evaluation.")
-    movement_probe_steps = (4, 8, 12) if movement_dual_multi else ((movement_pilot_step,) if movement_pilot_step else ())
+    movement_probe_steps = (4, 8, 12) if (movement_dual_multi or movement_predictors) else ((movement_pilot_step,) if movement_pilot_step else ())
     if movement_history:
         movement_probe_steps = (12,)
     if movement_dual and movement_isolation:
@@ -3597,11 +3600,13 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             from fizgig.training.replay_history import capture_history
             historical_factors.update(capture_history(net, step=research_updates))
             _rr.record(logger, kind="historical_capture", step=research_updates, sha256=historical_factors["hash"])
+        predictor_report = None
+        predictor_observer = None
         if research_updates + 1 in movement_probe_steps:
             probe_step = research_updates + 1
             from fizgig.training.replay_live import run_pilot
             logger.info("[movement-pilot] Starting %s at update %s",
-                        "6F.2 historical block reversion" if movement_history else "6C.2k-C dual evaluation" if movement_dual else ("6C.2k-B numerical isolation" if movement_isolation else "development-only movement sensitivity fork"),
+                        "6F.3 predictor verification" if movement_predictors else "6F.2 historical block reversion" if movement_history else "6C.2k-C dual evaluation" if movement_dual else ("6C.2k-B numerical isolation" if movement_isolation else "development-only movement sensitivity fork"),
                         probe_step)
             pilot_report = run_pilot(
                 driver=driver, dit=dit, net=net, optimizer=optimizer, validator=validator,
@@ -3612,10 +3617,16 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                              "shadow": ema.shadow, "backup": ema._backup} if ema is not None else None),
                     "pending": pending, "research_updates": research_updates,
                     "driver_options": dict(driver.options)},
-                output=os.path.join(output_dir, "historical-reversion.json" if movement_history else f"movement-dual-step{probe_step:02d}.json" if movement_dual_multi else ("movement-dual.json" if movement_dual else ("movement-isolation.json" if movement_isolation else "movement-pilot.json"))),
+                output=os.path.join(output_dir, f"predictors-step{probe_step:02d}.json" if movement_predictors else "historical-reversion.json" if movement_history else f"movement-dual-step{probe_step:02d}.json" if movement_dual_multi else ("movement-dual.json" if movement_dual else ("movement-isolation.json" if movement_isolation else "movement-pilot.json"))),
                 step=probe_step, isolation=movement_isolation, dual=movement_dual,
-                history=historical_factors if movement_history else None)
-            if movement_history:
+                history=historical_factors if movement_history else None, predictors=movement_predictors)
+            if movement_predictors:
+                from fizgig.training.replay_predictors import UpdateObserver
+                from fizgig.training.replay_forks import network_pairs
+                predictor_report = pilot_report
+                predictor_report["parent_fingerprint"] = _rr.fingerprint(net)
+                predictor_observer = UpdateObserver(network_pairs(net))
+            elif movement_history:
                 _rr.record(logger, kind="historical_reversion", step=probe_step,
                            status=pilot_report["status"], integrity=pilot_report["integrity_passed"],
                            rollback=pilot_report["parent_rollback"], source_hash=pilot_report["source_hash"])
@@ -3642,7 +3653,19 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
         if selective_global_replay:
             driver.record_selective_gradient_update()
-        optimizer.step()
+        if predictor_observer is not None:
+            optimizer.step(proposal_sink=predictor_observer)
+            predictor_report["update"] = predictor_observer.result()
+            predictor_report["post_step_fingerprint"] = _rr.fingerprint(net)
+            predictor_report["status"] = "completed"
+            from fizgig.training.replay_live import _atomic_json
+            _atomic_json(os.path.join(output_dir, f"predictors-step{probe_step:02d}.json"), predictor_report)
+            _rr.record(logger, kind="predictors", step=probe_step, status="completed",
+                       panel_hash=predictor_report["panel_hash"],
+                       parent_fingerprint=predictor_report["parent_fingerprint"],
+                       post_step_fingerprint=predictor_report["post_step_fingerprint"])
+        else:
+            optimizer.step()
         if selective_global_replay:
             selective_status = driver.finish_selective_optimizer_step(selective_snapshot)
             if selective_status is not None:
@@ -4195,7 +4218,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     or max_train_epochs != 1 or not max(movement_probe_steps) <= steps_per_epoch <= 40
                     or validator is None or not validator.ready or ema is None
                     or not set(validator.wanted) <= set(val_held) or len(validator.ts) != 4
-                    or validation_every_steps or int(seed) not in ((42, 43) if (movement_dual_multi or movement_history) else (42,))):
+                    or validation_every_steps or int(seed) not in ((42, 43) if (movement_dual_multi or movement_history or movement_predictors) else (42,))):
                 raise RuntimeError("Movement sensitivity needs all planned probe steps (up to 40), one epoch, unrestricted Global Replay, cached hold-outs and the fixed training seed.")
         elif (not global_replay or steps_per_epoch != 29 or accum != 1 or max_train_epochs != 5
                 or validator is None or ema is None or validation_every_steps or int(seed) != 42

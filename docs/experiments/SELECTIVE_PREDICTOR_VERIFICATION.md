@@ -1,0 +1,7 @@
+# 6F.3 — Final exploratory predictor verification
+
+Two unrestricted deterministic calibration runs (seeds 42/43), same 13-update dataset and fixed eight-case panel as 6F.2. Probe before updates 4, 8, 12; no historical reversion or extra optimizer steps. Forward-only block input/output cosine and relative residual norm on the whole combined token stream, separately for native and weight-only INT8. At each actual optimizer update, observe Muon's LR-scaled additive post-orthogonalization direction (excludes decoupled decay), concatenate factor inner products per block, and record descent cosine and negative gradient-dot-update. No optimizer/parameter mutations from observers; registered-state audit around forward observations, compare parent and post-update fingerprints to archived 6F.2 / 6C.2k-D trajectories before joining data.
+
+Six probe JSONs in the usual results ZIP, with all individual panel rows. Positive descent cosine means predicted first-order loss reduction in factor space, not effective-weight or held-out loss. Historical reversion utility is not instantaneous gradient utility. Compare directions and effect sizes separately across seeds and precisions; no predictor is promoted based on a single correlation. If inconclusive, proceed to 7C/7D without a new ranking feature. No independent preservation claim.
+
+Progress reports count actual completed activation panels per probe. No sample generation or additional experimental arms.

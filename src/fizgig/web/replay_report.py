@@ -58,6 +58,13 @@ def _save(root, report):
         report["history_summary"] = {"completed_runs": sum("historical_reversion" in r for r in history),
             "same_panel_across_seeds": len(panels) == 1 if all(r["status"] == "finished" for r in history) else None,
             "scope": "development_target_only"}
+    predictors = [r for r in report["runs"] if r["case"].startswith("predictors-")]
+    if predictors:
+        report["experiment"] = "6F.3"
+        panels = {p["panel_hash"] for r in predictors for p in r.get("predictors", [])}
+        report["predictor_summary"] = {"completed_probes": sum(len(r.get("predictors", [])) for r in predictors),
+            "same_panel": len(panels) == 1 if all(r["status"] == "finished" for r in predictors) else None,
+            "scope": "development_target_only"}
     report["updated_at"] = time.time()
     _atomic(root / REPORT, json.dumps(report, indent=2, allow_nan=False))
     lines = ["Fizgig Global Replay comparison", "Status: " + report["status"],
@@ -85,7 +92,8 @@ def _save(root, report):
             for run in report["runs"]:
                 diagnostics = [f"{run['output']}/{name}" for name in
                                ("movement-pilot.json", "movement-isolation.json", "movement-dual.json",
-                                "movement-dual-step04.json", "movement-dual-step08.json", "movement-dual-step12.json", "historical-reversion.json")]
+                                "movement-dual-step04.json", "movement-dual-step08.json", "movement-dual-step12.json", "historical-reversion.json",
+                                "predictors-step04.json", "predictors-step08.json", "predictors-step12.json")]
                 for name in dict.fromkeys(run.get("samples", []) + run.get("logs", []) + diagnostics):
                     path = root / name
                     if path.is_file():
@@ -269,6 +277,39 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                                 "integrity": True, "matched": True, "unique_endpoints": len(names)}
                     except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
                         run.update(status="failed", reason="Invalid movement dual diagnostics: " + str(exc))
+                if status == "finished" and case.startswith("predictors-"):
+                    try:
+                        rows = run.get("research", [])
+                        hashes = {r["step"]: r["sha256"] for r in rows if r.get("kind") == "hash"}
+                        markers = [r for r in rows if r.get("kind") == "predictors"]
+                        completed = [r for r in rows if r.get("kind") == "complete"]
+                        expected_steps = (4, 8, 12)
+                        if ([m["step"] for m in markers] != list(expected_steps)
+                                or len(completed) != 1 or sorted(hashes) != list(range(completed[0]["step"]+1))):
+                            raise ValueError("missing predictor checkpoint markers")
+                        summaries = []
+                        blocks = {str(b) for b in range(28)}
+                        for step, marker in zip(expected_steps, markers):
+                            filename = f"predictors-step{step:02d}.json"
+                            p = _read_json(output / filename)
+                            modes = p["activations"]
+                            count = 4*len(p["probe_units"])
+                            if (p["experiment"] != "6F.3" or p["status"] != "completed"
+                                    or p["parent_rollback"] != "exact_registered_state" or p["step"] != step
+                                    or p["panel_hash"] != marker["panel_hash"]
+                                    or p["parent_fingerprint"] != hashes[step-1]
+                                    or p["post_step_fingerprint"] != hashes[step]
+                                    or set(p["update"]) != blocks or set(modes) != {"native", "weight_only"}
+                                    or any(len(rs) != count or any(set(r["blocks"]) != blocks for r in rs)
+                                           for rs in modes.values())
+                                    or [r["input_hash"] for r in modes["native"]] != [r["input_hash"] for r in modes["weight_only"]]):
+                                raise ValueError("incomplete predictor data or trajectory mismatch")
+                            summaries.append({"step": step, "report": filename, "panel_hash": p["panel_hash"],
+                                              "parent_fingerprint": p["parent_fingerprint"],
+                                              "post_step_fingerprint": p["post_step_fingerprint"]})
+                        run["predictors"] = summaries
+                    except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+                        run.update(status="failed", reason="Invalid predictor diagnostics: " + str(exc))
                 if status == "finished" and case in ("history-seed42-lr450", "history-seed43-lr450"):
                     try:
                         h = _read_json(output / "historical-reversion.json")
