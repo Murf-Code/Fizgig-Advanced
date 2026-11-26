@@ -104,8 +104,9 @@ def main():
         calibration=[stock/r["file"] for r in trace["calibration"]]
         result["calibration_sha256"]=[bench.sha(f) for f in calibration]
         result["calibration_steps"]=[r["step"] for r in trace["calibration"]]
+        result["calibration_tokens"]=[r["tokens"] for r in trace["calibration"]]
         result["calibration_timesteps"]=[trace["steps"][i-1]["timestep"] for i in result["calibration_steps"]]
-        if a.case=="nf4":
+        if a.case in ("nf4","stock-repeat"):
             result["status"]="native_control"; return 0
         if a.case=="mixed": return mixed(root,a.out,result)
         name,rank=bench.CASES[a.case]
@@ -136,20 +137,29 @@ def main():
                         ref,rdx=evaluate(native,x,dy)
                         fw,bw=compare(y,ref),compare(dx,rdx)
                         row["probes"].append({"step":result["calibration_steps"][index],
+                            "reference_forward_norm":float(ref.float().norm()),
+                            "reference_input_gradient_norm":float(rdx.float().norm()),
                             "forward_relative_error":fw["relative_error"],"input_gradient_relative_error":bw["relative_error"],
                             "forward_cosine":fw["cosine"],"input_gradient_cosine":bw["cosine"]})
-                    if pck.nbytes<sizes[key] and all(v["forward_relative_error"] is not None and v["input_gradient_relative_error"] is not None for v in row["probes"]):
+                    usable=[v for v in row["probes"] if v["forward_relative_error"] is not None and v["input_gradient_relative_error"] is not None]
+                    row["usable_probes"]=len(usable)
+                    if pck.nbytes>=sizes[key]:
+                        row["reason"]="not_smaller_than_int8"
+                    elif not usable:
+                        row["reason"]="insufficient_probe_signal"
+                    else:
                         payload[key]=pck; manifest[key]=spec
                     print(key,name,row["probes"],flush=True)
                     del w,native
                 good=len(payload)==28
                 if good:
                     accepted.update(payload); specs.update(manifest)
-                    values=[.5*(p["forward_relative_error"]**2+p["input_gradient_relative_error"]**2) for row in rows for p in row["probes"]]
+                    values=[.5*(p["forward_relative_error"]**2+p["input_gradient_relative_error"]**2) for row in rows for p in row["probes"] if p["forward_relative_error"] is not None and p["input_gradient_relative_error"] is not None]
                     result["families"][suffix]={"eligible":True,"packed_bytes":sum(r["packed_bytes"] for r in rows),
                                                "int8_bytes":sum(r["int8_bytes"] for r in rows),"proxy":sum(values)/len(values)}
                 else:
-                    result["families"][suffix]={"eligible":False,"reason":"requires 28 compatible, smaller, finite projections"}
+                    result["families"][suffix]={"eligible":False,"reason":"requires 28 compatible, smaller projections with usable probes",
+                                                "rejected":[{"key":r["key"],"reason":r.get("reason")} for r in rows if r.get("reason")]}
         if not accepted:
             result["status"]="rejected"; return 3
         total=sum(p.nbytes for p in accepted.values())
@@ -159,7 +169,9 @@ def main():
         publish(a.out/"compact.safetensors",accepted,specs,result["raw_sha256"])
         saved=sum(sizes[k]-p.nbytes for k,p in accepted.items())
         result.update(status="ready",compact_projections=len(specs),archive_bytes=(a.out/"compact.safetensors").stat().st_size,
-                      target_bytes_saved=saved,estimated_target_bytes_after_compression=sum(sizes.values())-saved)
+                      target_bytes_saved=saved,estimated_target_bytes_after_compression=sum(sizes.values())-saved,
+                      int8_fallback_bytes=sum(v for k,v in sizes.items() if k not in accepted),
+                      int8_fallback_fraction=sum(v for k,v in sizes.items() if k not in accepted)/sum(sizes.values()))
         return 0
     except Exception as exc:
         if result["status"] not in ("blocked","rejected"): result["status"]="error"

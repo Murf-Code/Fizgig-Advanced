@@ -6,6 +6,7 @@ import random
 import torch
 from safetensors.torch import save_file
 from fit_queue import atomic_json
+from valid_tokens import valid_rows
 
 HORIZONS=(1,16,200)
 CALIBRATION_STEPS=(1,2,3,4)
@@ -41,6 +42,7 @@ class Trace:
         self.active=False
         self.rows={}
         self.handles=[]
+        self.layout=None
 
     def seed(self,seed):
         import numpy as np
@@ -61,12 +63,17 @@ class Trace:
                          initial_sha256=fingerprint(net.state_dict(torch.float32)))
         if self.reference and any(self.reference[k]!=self.data[k] for k in ("seed","expected_modules","initial_sha256")):
             raise RuntimeError("paired initial adapter or target manifest mismatch")
-        if self.case=="stock":
+        if self.case in ("stock","stock-repeat"):
+            net.dit._littlebit_layout=self.set_layout
             from native_codec import ELIGIBLE
             for k,w in net.wrapped.items():
                 if k+".weight" in ELIGIBLE:
                     self.handles.append(w.register_forward_hook(self.hook(k+".weight")))
         self.write()
+
+    def set_layout(self,image_tokens,text_mask):
+        if self.active:
+            self.layout=valid_rows(image_tokens,text_mask,ROWS)
 
     def hook(self,key):
         def fn(module,args,y):
@@ -75,7 +82,9 @@ class Trace:
             x=args[0].detach().reshape(-1,args[0].shape[-1])
             if x.shape[0]!=y.numel()//y.shape[-1]:
                 raise RuntimeError("activation/cotangent rows differ")
-            idx=torch.linspace(0,len(x)-1,min(ROWS,len(x)),device=x.device).long()
+            if self.layout is None or self.layout[1]["sequence_tokens"]!=len(x):
+                raise RuntimeError("missing or incompatible valid-token layout")
+            idx=self.layout[0].to(x.device)
             sample=x.index_select(0,idx).cpu().contiguous()
             step=len(self.data["steps"])
             def backward(dy):
@@ -95,8 +104,9 @@ class Trace:
             raise RuntimeError(f"paired batch/conditioning/noise RNG mismatch at update {i+1}")
         self.data["steps"].append({"step":i+1,"input_sha256":sig,
                                    "items":list(map(str,batch.get("item_keys") or []))})
-        self.active=self.case=="stock" and i+1 in CALIBRATION_STEPS
+        self.active=self.case in ("stock","stock-repeat") and i+1 in CALIBRATION_STEPS
         self.rows={}
+        self.layout=None
 
     def pre_update(self):
         if not self.data["steps"]: raise RuntimeError("optimizer update without trace")
@@ -116,7 +126,7 @@ class Trace:
                 raise RuntimeError(f"incomplete real calibration capture: {missing}")
             filename=f"calibration-{step:06d}.safetensors"
             save_file(self.rows,str(self.out/filename))
-            self.data["calibration"].append({"step":step,"file":filename})
+            self.data["calibration"].append({"step":step,"file":filename,"tokens":self.layout[1]})
         self.active=False
         self.rows={}
 
@@ -141,6 +151,8 @@ class Trace:
         self.write()
         for h in self.handles: h.remove()
         self.handles.clear()
+        if getattr(self.net.dit,"_littlebit_layout",None) is not None:
+            del self.net.dit._littlebit_layout
 
     def write(self):
         atomic_json(self.out/"trace.json",self.data)

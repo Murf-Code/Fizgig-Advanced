@@ -482,6 +482,10 @@ class SingleStreamDiT(nn.Module):
 
         freqs = self.posemb(pos)
         attn_probe.layout((0, imglen), imglen, combined.shape[1], fulllen)    # the padded tail isn't attended
+        # Only the isolated LittleBit research observer installs this callback.
+        capture_layout = getattr(self, "_littlebit_layout", None)
+        if capture_layout is not None:
+            capture_layout(imglen, txtmask)
 
         from fizgig.krea2.offloading import run_checkpointed_block
         offloader = self.offloader if self.blocks_to_swap else None
