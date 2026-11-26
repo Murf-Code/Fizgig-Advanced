@@ -92,3 +92,52 @@ Use small projection sets first; CPU decomposition of wide matrices can be slow.
 Weight storage reduction is not total VRAM reduction. Activation, LoRA,
 optimizer, attention, swap buffers, and runtime overhead still impose limits.
 No GPU or full-model performance claim is made at this milestone.
+
+## Milestone 2 — geometry and activation-aware adaptive screening
+
+Ported the read-only matrix geometry helpers verbatim from
+research/lora-matrix-geometry at e6232036a97a80504526c0bfe4f7c2260c9b890f
+(no optimizer changes). Compact QR/SVD measures the effective rank of the
+selected packed factor product without materializing it. For dense Raw
+matrices, randomized SVD estimates captured energy and stable rank; these
+are diagnostics, not a certified exact spectrum.
+
+`adaptive.py` tests Q4/Q6 controls, LittleBit, LittleBit-2 and BF16 SVD at
+multiple ranks. Each factor codec is tested with and without diagonal
+activation weighting: fit W diag(s), then apply to x / s, where s is
+the clipped calibration RMS per input channel. The BF16 scale vector
+is included in the storage budget. This is an independent simple
+activation-aware experiment, not a reproduction of Samsung's QAT.
+
+Choose the smallest encoded candidate below INT8 bytes that passes BOTH
+forward and input-gradient relative L2 errors against native INT8 on
+calibration rows. The default 5% local tolerance is provisional; it is
+not the 96% LoRA learning-gain target. Evaluate the chosen candidate once
+on held-out rows; reject to INT8 on failure rather than using those rows
+to tune rank. This is a conservative per-projection screening rule, not
+a globally optimal memory allocation or proof of full-denoiser fidelity.
+Data must be collected separately by case and timestep; hashes and exact
+row overlap checks are not a substitute for real data provenance.
+
+Run the reproducible synthetic CPU checks first:
+```powershell
+& $py scripts/research/krea2_littlebit/check_adaptive.py --pilot $pilot
+```
+The checks exercise all five pilot codecs on small synthetic matrices,
+a structured rank-one target, a strict random-matrix fallback and a
+deliberate calibration-only fit that must fail the held-out gate.
+They use a dense reference, not the native INT8 path or real Krea2 data.
+
+After collecting disjoint activation/cotangent archives, run:
+```powershell
+& $py scripts/research/krea2_littlebit/adaptive.py --pilot $pilot --raw $raw --calibration cal.safetensors --heldout held.safetensors --key blocks.0.attn.wk.weight --rank 128 --rank 256 --rank 512 --out adaptive-screen.json
+```
+Omit --key to screen all eligible projections (potentially very slow).
+Archives must contain keys such as blocks.0.attn.wk.weight.x and
+blocks.0.attn.wk.weight.dy with aligned 2D rows. No raw model or actual
+activation captures were available in the CPU development environment.
+The report is a proposal only: no compressed checkpoint is written,
+no CUDA/trainer support is claimed, and its bytes exclude non-targeted
+weights, archive metadata, runtime scratch and activation storage.
+The next engineering milestone is a bounded stock-training capture
+harness and mixed-codec archive/loader with cache identity and swap tests.
