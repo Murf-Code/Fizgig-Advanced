@@ -29,9 +29,22 @@ CAUSAL_DECAYS = {case: (30.0 if case == "causal-decay30-lr450" else
                        10.0 if case == "causal-decay10-lr450" else 0.01)
                  for case in CAUSAL_ROUTES}
 UNRESTRICTED_CASES = {"causal-unrestricted-lr450", "causal-decay10-lr450", "causal-decay30-lr450"}
-CASES = tuple((case, "Global replay", case not in UNRESTRICTED_CASES) for case in CAUSAL_ROUTES)
+CALIBRATION_CASES = {
+    "calibration-unrestricted-lr200": ("0.00020", "replay"),
+    "calibration-unrestricted-lr250": ("0.00025", "replay"),
+    "calibration-unrestricted-lr264": ("0.000264", "replay"),
+    "calibration-unrestricted-lr300": ("0.00030", "replay"),
+    "calibration-unrestricted-lr350": ("0.00035", "replay"),
+    "calibration-unrestricted-lr450": ("0.00045", "replay"),
+    "calibration-random-lr450": ("0.00045", "random"),
+    "calibration-gradient-lr450": ("0.00045", "adaptive_gradient"),
+}
+CASES = tuple((case, "Global replay", strategy != "replay")
+              for case, (_, strategy) in CALIBRATION_CASES.items())
 
 def case_strategy(case):
+    if case in CALIBRATION_CASES:
+        return CALIBRATION_CASES[case][1]
     if case in UNRESTRICTED_CASES:
         return "replay"
     if case in RESEARCH_MODES or case in CAUSAL_ROUTES:
@@ -58,8 +71,7 @@ def settings(group, output_root, epochs=EPOCHS, prompt=""):
         "SAMPLE_EVERY_N_EPOCHS": "1", "SAMPLE_AT_FIRST": True,
         "SAMPLE_WIDTH": "512", "SAMPLE_HEIGHT": "512", "SAMPLE_STEPS": "20",
     }
-    return [{**common, "LEARNING_RATE": ("0.00045" if case.endswith("-lr450") else
-                                         "0.00035" if case.endswith("-lr350") else "0.00025"),
+    return [{**common, "LEARNING_RATE": CALIBRATION_CASES[case][0],
              "__replay_compare": case, "LORA_NAME": f"{group}-{case}",
              "LORA_OUTPUT_DIR": os.path.join(output_root, group, case),
              "KREA2_TRAINING_METHOD": method, "KREA2_SELECTIVE_BLOCK_CHECK": selective}
@@ -88,6 +100,13 @@ def adjust_plan(desc, values, plan):
             stages[0].cmd.extend(["--family_option", "selective_budget=14"])
     if case in RESEARCH_MODES:
         stages[0].cmd.extend(["--family_option", f"replay_research={RESEARCH_MODES[case]}"])
+    if case in CALIBRATION_CASES:
+        expected_lr, expected_strategy = CALIBRATION_CASES[case]
+        if (values.get("LEARNING_RATE") != expected_lr
+                or values.get("KREA2_SELECTIVE_BLOCK_CHECK") != (expected_strategy != "replay")):
+            raise ValueError("Experiment 5C queue settings differ from the fixed recipe.")
+        stages[0].cmd.extend(["--family_option", "replay_research=calibration",
+                              "--family_option", f"replay_calibration_lr={expected_lr}"])
     if case in CAUSAL_ROUTES:
         stages[0].cmd.extend(["--family_option", "replay_research=causal",
                               "--family_option", f"replay_causal_decay={CAUSAL_DECAYS[case]}"])

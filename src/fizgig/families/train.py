@@ -2549,14 +2549,20 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 logger.info(f"[optimizer] Automagic {_v}: sign window {desc.automagic_sign_window} (this family's "
                             f"default; set polarity_history in Optimizer Args to override)")
         _oargs = optimizer_args or ""
-        if research_mode == "causal":
+        if research_mode in ("causal", "calibration"):
             # Explicit research-only controls; do not inherit stale UI optimizer args.
             causal_decay = float((family_options or {}).get("replay_causal_decay", 0.01))
+            expected_research_lr = (float((family_options or {}).get("replay_calibration_lr", "nan"))
+                                    if research_mode == "calibration" else 0.00045)
+            if research_mode == "calibration" and (causal_decay != 0.01
+                    or expected_research_lr not in (0.00020, 0.00025, 0.000264, 0.00030, 0.00035, 0.00045)
+                    or (selective_global_replay and expected_research_lr != 0.00045)):
+                raise RuntimeError("Invalid Experiment 5C learning-rate control")
             if (str(optimizer_type).strip().lower() != "muon"
                     or causal_decay not in (0.01, 10.0, 30.0)
                     or (causal_decay != 0.01 and selective_global_replay)
-                    or float(learning_rate) != 0.00045):
-                raise RuntimeError("Invalid Experiment 5B Muon weight-decay control")
+                    or float(learning_rate) != expected_research_lr):
+                raise RuntimeError("Invalid Replay research Muon control")
             _oargs = (f"adjust_lr_fn=match_rms_adamw weight_decay={causal_decay} "
                       "momentum=0.95 nesterov=True ns_steps=5")
         if (desc.optimizer_weight_decay is not None and "weight_decay" not in _oargs
@@ -2564,15 +2570,15 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             _oargs = (_oargs + f" weight_decay={desc.optimizer_weight_decay:g}").strip()
         optimizer, opt_label = create_optimizer(optimizer_type, opt_params, learning_rate, _oargs,
                                                 eps_floor_8bit=desc.optimizer_eps_floor_8bit)
-    if research_mode == "causal":
+    if research_mode in ("causal", "calibration"):
         if optimizer.__class__.__name__ not in ("Muon", "BatchedMuon") or not optimizer.param_groups:
-            raise RuntimeError("Experiment 5B requires Muon")
+            raise RuntimeError("Replay research requires Muon")
         actual_groups = [{k: g.get(k) for k in ("lr", "weight_decay", "momentum", "nesterov", "ns_steps", "adjust_lr_fn")}
                          for g in optimizer.param_groups]
-        if any(g["weight_decay"] != causal_decay or g["lr"] != 0.00045
+        if any(g["weight_decay"] != causal_decay or g["lr"] != expected_research_lr
                or g["momentum"] != 0.95 or g["nesterov"] is not True or g["ns_steps"] != 5
                or g["adjust_lr_fn"] != "match_rms_adamw" for g in actual_groups):
-            raise RuntimeError("Experiment 5B optimizer group settings differ from the intended control")
+            raise RuntimeError("Replay research optimizer group settings differ from the intended control")
         _rr.record(logger, kind="optimizer", implementation=optimizer.__class__.__name__,
                    groups=actual_groups)
     _polora = optimizer.__class__.__name__ == "Polora"
@@ -3570,10 +3576,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 g["lr"] = g["lr"] * m
         research_mask = _rr.active_mask(net) if research_mode else None
         research_rates = ([{"lr": float(g["lr"]), "weight_decay": float(g["weight_decay"])}
-                           for g in optimizer.param_groups] if research_mode == "causal" else None)
-        research_before = (_rr.probe_before(net, optimizer=optimizer if research_mode == "causal" else None)
+                           for g in optimizer.param_groups] if research_mode in ("causal", "calibration") else None)
+        research_before = (_rr.probe_before(net, optimizer=optimizer if research_mode in ("causal", "calibration") else None)
                            if (research_mode == "telemetry" and driver.selective_probe_due)
-                           or (research_mode == "causal" and (research_updates + 1) % 8 == 0)
+                           or (research_mode in ("causal", "calibration") and (research_updates + 1) % 8 == 0)
                            else None)
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
         if selective_global_replay:
@@ -3946,7 +3952,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if research_mode:
             _rr.record(logger, kind="raw_validation", step=step_off + global_step,
                        loss=v, per_t=per_t, timesteps=list(validator.ts))
-            if research_mode in ("telemetry", "causal"):
+            if research_mode in ("telemetry", "causal", "calibration"):
                 if ema is None:
                     raise RuntimeError("Experiment 5A telemetry requires EMA.")
                 ema.swap_in()
@@ -4128,14 +4134,19 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     if research_mode:
         if (not global_replay or steps_per_epoch != 29 or accum != 1 or max_train_epochs != 5
                 or validator is None or ema is None or validation_every_steps or int(seed) != 42
-                or (research_mode != "causal" and not selective_global_replay)
-                or (selective_global_replay and driver._selective_strategy != "adaptive_gradient")):
+                or (research_mode not in ("causal", "calibration") and not selective_global_replay)
+                or (selective_global_replay and driver._selective_strategy not in
+                    (("random", "adaptive_gradient") if research_mode == "calibration" else ("adaptive_gradient",)))):
             raise RuntimeError("Replay research requires the original 29-step, five-epoch, seed-42 benchmark with EMA and epoch validation.")
-        if research_mode == "causal":
+        if research_mode in ("causal", "calibration"):
             route = (family_options or {}).get("replay_causal_route")
-            if route and not selective_global_replay:
-                raise RuntimeError("Causal interventions require selective replay")
-            _rr.record(logger, kind="routing", route=route or ("gradient" if selective_global_replay else "unrestricted"))
+            if route and (not selective_global_replay or research_mode == "calibration"):
+                raise RuntimeError("Causal interventions require Experiment 5B selective replay")
+            if research_mode == "calibration" and selective_global_replay and driver._selective_strategy == "random" and driver._selective_budget != 14:
+                raise RuntimeError("Experiment 5C Random requires exactly 14 blocks between probes")
+            _rr.record(logger, kind="routing", route=route or
+                       ("random" if selective_global_replay and driver._selective_strategy == "random"
+                        else "gradient" if selective_global_replay else "unrestricted"))
         _rr.record(logger, kind="hash", step=0, sha256=_rr.fingerprint(net), active_blocks=[])
     for epoch in (_worker_epochs() if share_worker else range(start_epoch, max_train_epochs)):
         while face_phase.get("said"):        # the boost's switches during the last epoch, each on a line of its own
@@ -4615,7 +4626,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             anchor_losses.clear()
         if slider_prompts and done < max_train_epochs:
             slider_live(done)
-        if research_mode and research_mode != "causal" and done == 2:
+        if research_mode and research_mode not in ("causal", "calibration") and done == 2:
             if global_step != 58 or driver.selective_state_dict()["optimizer_steps"] != 58:
                 raise RuntimeError("Experiment 5A did not reach exactly 58 optimizer updates.")
             progress.close()
@@ -4664,9 +4675,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     shutil.copyfile(final, os.path.join(output_dir, f"{output_name}-{max_train_epochs:06d}.safetensors"))
     if save_state_on_train_end:
         state(max_train_epochs)
-    if research_mode == "causal":
+    if research_mode in ("causal", "calibration"):
         if global_step != 145 or research_updates != 145:
-            raise RuntimeError("Experiment 5B did not complete exactly 145 updates")
+            raise RuntimeError("Replay research did not complete exactly 145 updates")
         _rr.record(logger, kind="complete", step=145, planned_epochs=5)
     logger.info(f"Training complete -> {final}")
     return final

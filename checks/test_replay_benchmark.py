@@ -8,18 +8,19 @@ def test_recipe_is_eight_independent_runs(tmp_path):
     runs = rb.settings("test", str(tmp_path), 3, "a test prompt")
     assert [v["__replay_compare"] for v in runs] == [c[0] for c in rb.CASES]
     assert len({v["LORA_NAME"] for v in runs}) == len({v["LORA_OUTPUT_DIR"] for v in runs}) == 8
-    assert [v["KREA2_SELECTIVE_BLOCK_CHECK"] for v in runs] == [False] + [True] * 5 + [False, False]
+    assert [v["KREA2_SELECTIVE_BLOCK_CHECK"] for v in runs] == [False] * 6 + [True, True]
     assert [v["KREA2_TRAINING_METHOD"] for v in runs] == ["Global replay"] * 8
-    assert [v["LEARNING_RATE"] for v in runs] == ["0.00045"] * 8
+    assert [v["LEARNING_RATE"] for v in runs] == ["0.00020", "0.00025", "0.000264", "0.00030", "0.00035", "0.00045", "0.00045", "0.00045"]
     varying = {"__replay_compare", "LORA_NAME", "LORA_OUTPUT_DIR", "KREA2_TRAINING_METHOD", "KREA2_SELECTIVE_BLOCK_CHECK", "LEARNING_RATE"}
     assert all({k: v for k, v in row.items() if k not in varying} ==
                {k: v for k, v in runs[0].items() if k not in varying} for row in runs)
     assert all(v["VALIDATION_HOLDOUT"] and v["SAMPLE_ENABLED"] for v in runs)
     assert all(v["MAX_TRAIN_EPOCHS"] == "5" for v in runs)
     assert [v["__replay_compare"] for v in runs] == [
-        "causal-unrestricted-lr450", "causal-gradient-lr450", "causal-random-lr450",
-        "causal-exact-lr450", "causal-block26-lr450", "causal-block13-lr450",
-        "causal-decay10-lr450", "causal-decay30-lr450"]
+        "calibration-unrestricted-lr200", "calibration-unrestricted-lr250",
+        "calibration-unrestricted-lr264", "calibration-unrestricted-lr300",
+        "calibration-unrestricted-lr350", "calibration-unrestricted-lr450",
+        "calibration-random-lr450", "calibration-gradient-lr450"]
     assert all(v["SEED"] == "42" and v["VALIDATION_SEED"] == "42" for v in runs)
 
 
@@ -34,11 +35,10 @@ def test_comparison_preserves_normal_adapter_targets(tmp_path):
         expected = ["python", "train.py", "--sample_prompts", "prompts.txt"]
         if values["KREA2_SELECTIVE_BLOCK_CHECK"]:
             expected += ["--family_option", "selective_strategy=" + rb.case_strategy(values["__replay_compare"])]
-        expected += ["--family_option", "replay_research=causal", "--family_option",
-                     f"replay_causal_decay={rb.CAUSAL_DECAYS[values['__replay_compare']]}"]
-        route = rb.CAUSAL_ROUTES[values["__replay_compare"]]
-        if route:
-            expected += ["--family_option", "replay_causal_route=" + route]
+        if rb.case_strategy(values["__replay_compare"]) == "random":
+            expected += ["--family_option", "selective_budget=14"]
+        expected += ["--family_option", "replay_research=calibration", "--family_option",
+                     f"replay_calibration_lr={values['LEARNING_RATE']}"]
         assert cmd == expected
 
 
@@ -92,8 +92,11 @@ def test_previous_controls_remain_launchable_without_requeuing():
         assert not plan.problems
 
 
-def test_decay_controls_only_change_decay_and_keep_all_blocks(tmp_path):
+def test_calibration_controls_keep_all_blocks_until_selective_arms(tmp_path):
     runs = rb.settings("test", str(tmp_path))
-    assert [rb.CAUSAL_DECAYS[v["__replay_compare"]] for v in runs] == [0.01] * 6 + [10.0, 30.0]
-    assert all(not v["KREA2_SELECTIVE_BLOCK_CHECK"] for v in (runs[0], runs[-2], runs[-1]))
-    assert all(rb.case_strategy(v["__replay_compare"]) == "replay" for v in (runs[0], runs[-2], runs[-1]))
+    assert all(not v["KREA2_SELECTIVE_BLOCK_CHECK"] for v in runs[:6])
+    assert all(rb.case_strategy(v["__replay_compare"]) == "replay" for v in runs[:6])
+    assert [rb.case_strategy(v["__replay_compare"]) for v in runs[6:]] == ["random", "adaptive_gradient"]
+    # Historical 5B queues retain their exact route and decay mappings.
+    assert rb.CAUSAL_DECAYS["causal-decay10-lr450"] == 10.0
+    assert rb.CAUSAL_DECAYS["causal-decay30-lr450"] == 30.0

@@ -4,7 +4,7 @@ const vm = require("node:vm");
 
 const html = fs.readFileSync("src/fizgig/web/static/index.html", "utf8");
 assert.match(html, /id="streamSyncMode" checked/);
-assert.match(html, /Global Replay Experiment 5B · 8 runs × 5 epochs/);
+assert.match(html, /Global Replay Experiment 5C · 8 runs × 5 epochs/);
 assert.doesNotMatch(html, /id="streamSyncQueue"|id="replayCompareQueue"|id="replayCompareToggle"/);
 const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(x=>x[1]).find(s=>s.includes('fetch("/api/queue/replay-compare"'));
 assert.ok(script);

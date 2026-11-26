@@ -40,6 +40,9 @@ def _save(root, report):
         report["causal_comparisons"] = compare_runs(report["runs"])
         from fizgig.krea2.replay_causal import compare_decay
         report["decay_comparisons"] = compare_decay(report["runs"])
+    if any(r["case"].startswith("calibration-") for r in report["runs"]):
+        report["experiment"] = "5C"
+        report["calibration_summary"] = calibration_summary(report["runs"])
     report["updated_at"] = time.time()
     _atomic(root / REPORT, json.dumps(report, indent=2, allow_nan=False))
     lines = ["Fizgig Global Replay comparison", "Status: " + report["status"],
@@ -70,6 +73,30 @@ def _save(root, report):
                     if path.is_file():
                         bundle.write(path, name)
         tmp.replace(root / BUNDLE)
+
+
+def calibration_summary(runs):
+    """Full precision scores, participation and common initialization checks."""
+    out = {}
+    initial = None
+    for run in runs:
+        if not run["case"].startswith("calibration-") or run["status"] != "finished":
+            continue
+        rows = run.get("research", [])
+        hashes = [x for x in rows if x.get("kind") == "hash"]
+        if not hashes:
+            continue
+        if initial is None:
+            initial = hashes[0]["sha256"]
+        row = {"lr": float(run["lr"]), "initial_hash_match": hashes[0]["sha256"] == initial,
+               "block_updates": sum(len(x["active_blocks"]) for x in hashes[1:])}
+        for kind in ("raw_validation", "ema_validation"):
+            vals = [x for x in rows if x.get("kind") == kind]
+            if vals:
+                best = min(vals, key=lambda x: x["loss"])
+                row[kind] = {"final": vals[-1]["loss"], "best": best["loss"], "best_step": best["step"]}
+        out[run["case"]] = row
+    return out
 
 
 def create(root, dataset, configs):
@@ -173,11 +200,16 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                             or not any(r.get("kind") == "complete" and r.get("step") == 58 for r in rows)
                             or (case == "repro-strict-telemetry-lr450" and ema_checks != [29, 58])):
                         run.update(status="failed", reason="Incomplete Experiment 5A diagnostics; do not compare this run.")
-                if status == "finished" and case.startswith("causal-"):
+                if status == "finished" and case.startswith(("causal-", "calibration-")):
                     from fizgig.krea2.replay_causal import (ALL, PROBES, SOURCE, checked_mask,
                                                             expected_mask, intervention, source_schedule)
-                    from fizgig.web.replay_benchmark import CAUSAL_ROUTES, CAUSAL_DECAYS, UNRESTRICTED_CASES
+                    from fizgig.web.replay_benchmark import (CAUSAL_ROUTES, CAUSAL_DECAYS, UNRESTRICTED_CASES,
+                                                             CALIBRATION_CASES)
+                    from fizgig.krea2.selective_policy import select_blocks
                     try:
+                        calibration = case in CALIBRATION_CASES
+                        expected_lr = float(CALIBRATION_CASES[case][0]) if calibration else 0.00045
+                        strategy = CALIBRATION_CASES[case][1] if calibration else "adaptive_gradient"
                         rows = run.get("research", [])
                         hashes = [r for r in rows if r.get("kind") == "hash"]
                         if [r["step"] for r in hashes] != list(range(146)):
@@ -199,28 +231,35 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                         if not any(r.get("kind") == "complete" and r.get("step") == 145 for r in rows):
                             raise ValueError("missing completion marker")
                         env = [r for r in rows if r.get("kind") == "environment"]
-                        if len(env) != 1 or env[0].get("mode") != "causal" or not env[0].get("deterministic"):
+                        if len(env) != 1 or env[0].get("mode") != ("calibration" if calibration else "causal") or not env[0].get("deterministic"):
                             raise ValueError("not strict deterministic causal execution")
                         opt = [r for r in rows if r.get("kind") == "optimizer"]
-                        decay = CAUSAL_DECAYS[case]
+                        decay = 0.01 if calibration else CAUSAL_DECAYS[case]
                         if (len(opt) != 1 or not opt[0].get("groups")
-                                or any(g.get("weight_decay") != decay for g in opt[0]["groups"])):
+                                or any(g.get("weight_decay") != decay or g.get("lr") != expected_lr
+                                       or g.get("momentum") != 0.95 or g.get("nesterov") is not True
+                                       or g.get("ns_steps") != 5 or g.get("adjust_lr_fn") != "match_rms_adamw"
+                                       for g in opt[0]["groups"])):
                             raise ValueError("incorrect or missing optimizer decay")
                         for row in hashes[1:]:
                             rates = row.get("optimizer_rates", [])
-                            if not rates or any(g.get("weight_decay") != decay for g in rates):
+                            if not rates or any(g.get("weight_decay") != decay or g.get("lr") != expected_lr for g in rates):
                                 raise ValueError("incorrect per-step decay")
                         run["weight_decay"] = decay
-                        if case in UNRESTRICTED_CASES:
+                        if case in UNRESTRICTED_CASES or (calibration and strategy == "replay"):
                             masks = [set(ALL) for _ in PROBES]
-                        elif case == SOURCE:
+                        elif case == SOURCE or calibration:
                             probes = run["probes"]
                             if [p["step"] for p in probes] != list(PROBES):
                                 raise ValueError("missing source probes")
                             masks = [checked_mask(p["active_blocks"]) for p in probes]
                             if any(p["active"] != len(mask) or p["total"] != 28
-                                   or p["strategy"] != "adaptive_gradient" for p, mask in zip(probes, masks)):
+                                   or p["strategy"] != strategy for p, mask in zip(probes, masks)):
                                 raise ValueError("invalid source probes")
+                            if calibration and strategy == "random":
+                                for i, mask in enumerate(masks):
+                                    if mask != select_blocks("random", [None] * 28, 14, i):
+                                        raise ValueError("Random mask differs from seeded fixed-budget schedule")
                         else:
                             source = source_schedule(root / REPORT)
                             masks = [intervention(CAUSAL_ROUTES[case], source, i) for i in range(len(PROBES))]
@@ -228,7 +267,7 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                             if checked_mask(row["active_blocks"]) != expected_mask(masks, row["step"]):
                                 raise ValueError(f"unexpected actual routing at step {row['step']}")
                     except (RuntimeError, ValueError, KeyError, TypeError, IndexError) as exc:
-                        run.update(status="failed", reason="Invalid Experiment 5B diagnostics: " + str(exc))
+                        run.update(status="failed", reason="Invalid replay research diagnostics: " + str(exc))
             perf = output / (".perf_" + run["name"] + ".json")
             if perf.is_file():
                 try:

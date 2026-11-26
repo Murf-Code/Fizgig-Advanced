@@ -11,7 +11,7 @@ import torch
 
 def config(options):
     mode = (options or {}).get("replay_research")
-    if mode is not None and mode not in ("normal", "strict", "telemetry", "causal"):
+    if mode is not None and mode not in ("normal", "strict", "telemetry", "causal", "calibration"):
         raise ValueError("Unknown replay research mode")
     return mode
 
