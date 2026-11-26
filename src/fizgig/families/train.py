@@ -3783,6 +3783,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     pass
             if val_held and not validator.ready:   # held out: never drawn by training, so kept straight from the cache
                 validator.prefill([], val_held)
+    if _LITTLEBIT_TRACE is not None:
+        if validator is None or not val_held or not validator.ready or not os.path.isfile(validator.snapshot_path):
+            raise RuntimeError("research needs a complete actual holdout snapshot")
+        # Reserve all held-out images for separate paired evaluation. The normal
+        # per-epoch validation must not score confirmation images during selection.
+        validator = None
     if calibration_active and calibration_info and not calibration_info.get("resume"):
         image_check = {
             "accepted": False,

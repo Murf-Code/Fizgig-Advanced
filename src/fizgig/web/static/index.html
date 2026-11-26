@@ -2557,7 +2557,7 @@
        note=document.getElementById("littlebitNote");
  let busy=false;
  mode.addEventListener("change",()=>{
-   note.textContent=mode.checked?"Krea2 · INT8 control + 17 compression candidates · up to 5 epochs each · rank 32 · Muon · INT8 22 swaps · compressed starts at 0 · CUDA OOM fallback · projection gate first":"";
+   note.textContent=mode.checked?"Krea2 · 8 short cases · 1 epoch or 200 updates · rank 32 · Muon · all resident first · real calibration · INT8 + Raw BF16 development scoring":"";
  });
  document.addEventListener("click",async event=>{
    if(!mode.checked || !queue.contains(event.target))return;

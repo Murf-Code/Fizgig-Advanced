@@ -1,143 +1,171 @@
-"""Conservative raw-weight gate for the uniform-layout LittleBit queue."""
+"""Short-queue real calibration and uniform-family mixed layout preparation."""
 import argparse
 import json
 import math
 from pathlib import Path
 import shutil
 import sys
+import time
 import tomllib
-
+from contextlib import ExitStack
 import torch
 from safetensors import safe_open
+from safetensors.torch import save_file
 
-REPO = Path(__file__).resolve().parents[3]
+REPO=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(REPO/"src"))
 from fizgig.web import littlebit_benchmark as bench
-from screen import evaluate, compare
+from native_codec import ELIGIBLE,MODULES,FORMAT,encode,linear,validate,stock_layer,import_file
+from geometry_codec import compatible,HQQ,HYBRID
+from screen import evaluate,compare
+from mixed_selector import choose
+
+
+def publish(archive,payload,specs,source_hash):
+    if not payload or set(payload)!=set(specs) or archive.exists():
+        raise ValueError("empty, inconsistent or existing archive")
+    tmp=archive.with_suffix(".tmp")
+    try:
+        save_file(payload,str(tmp),metadata={FORMAT:json.dumps(specs),"source_sha256":source_hash})
+        tmp.replace(archive)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def mixed(root,out,result):
+    choices={suffix:[{"codec":"int8","bytes":sum(result["int8_sizes"][f"blocks.{i}.{suffix}.weight"] for i in range(28)), "error":0.0}] for suffix in MODULES}
+    for case in bench.CASES:
+        if case in ("stock","nf4","mixed"): continue
+        record=bench.read_json(root/case/"prepare.json")
+        if not record or record.get("status")!="ready": continue
+        if any(record.get(k)!=result[k] for k in ("holdout_sha256","raw_sha256","calibration_sha256")):
+            raise ValueError("mixed precision source identity mismatch")
+        for suffix,row in record["families"].items():
+            if row["eligible"]:
+                choices[suffix].append({"codec":case,"bytes":row["packed_bytes"],"error":row["proxy"]})
+    plan=choose(choices)
+    result["mixed_plan"]=plan
+    payload={}; specs={}
+    with ExitStack() as stack:
+        readers={}
+        for suffix,row in plan["families"].items():
+            case=row["codec"]
+            if case=="int8": continue
+            if case not in readers:
+                f=stack.enter_context(safe_open(str(root/case/"compact.safetensors"),framework="pt",device="cpu"))
+                meta=f.metadata() or {}
+                if meta.get("source_sha256")!=result["raw_sha256"]: raise ValueError("mixed archive identity mismatch")
+                readers[case]=(f,json.loads(meta[FORMAT]))
+            f,manifest=readers[case]
+            for block in range(28):
+                key=f"blocks.{block}.{suffix}.weight"
+                p=f.get_tensor(key); spec=manifest[key]; validate(p,spec)
+                payload[key]=p; specs[key]=spec
+        if not payload:
+            result["status"]="rejected"
+            return 3
+        if shutil.disk_usage(out).free < sum(p.nbytes for p in payload.values())+2*1024**3:
+            raise ValueError("insufficient space for mixed archive")
+        publish(out/"compact.safetensors",payload,specs,result["raw_sha256"])
+    result.update(status="ready",compact_projections=len(specs),estimated_target_bytes_after_compression=plan["chosen_bytes"],
+                  target_bytes_saved=plan["baseline_bytes"]-plan["chosen_bytes"],archive_bytes=(out/"compact.safetensors").stat().st_size)
+    return 0
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    for k in ("raw","out","dataset"):
-        p.add_argument("--"+k,type=Path,required=True)
+    for k in ("raw","out","dataset"): p.add_argument("--"+k,type=Path,required=True)
     p.add_argument("--case",choices=tuple(bench.CASES),required=True)
-    a=p.parse_args()
-    a.out.mkdir(parents=True,exist_ok=True)
+    a=p.parse_args(); a.out.mkdir(parents=True,exist_ok=True)
     report=a.out/"prepare.json"
-    if report.exists():
-        p.error("fresh comparison required; prepare.json already exists")
-    result={"case":a.case,"status":"checking","gate":"synthetic rows, native INT8 reference",
-            "threshold":0.05,"seeds":[42,314159],"rows":64,"projections":{}}
+    if report.exists(): p.error("fresh comparison required")
+    started=time.monotonic()
+    result={"case":a.case,"status":"checking","screen":"real stock training activation/cotangent rows; no error cutoff",
+            "storage_scope":"224 eligible main-block weights and scales only; not total VRAM","projections":{},"families":{}}
     try:
-        from native_codec import ELIGIBLE, MODULES, FORMAT, convert, encode, linear, validate, stock_layer, import_file
-        from geometry_codec import compatible, HQQ, HYBRID
-        int8=import_file("littlebit_queue_int8",REPO/"src/fizgig/modules/int8_train.py")
         torch.set_num_threads(4)
         hold=Path(tomllib.loads(a.dataset.read_text(encoding="utf-8"))["general"]["holdout_file"])
         result["holdout_sha256"]=bench.sha(hold)
         result["raw_sha256"]=bench.sha(a.raw)
         with safe_open(str(a.raw),framework="pt",device="cpu") as f:
-            keys=set(f.keys())
-            if not ELIGIBLE <= keys or FORMAT in (f.metadata() or {}) or any(
-                k.endswith((".weight_scale",".scale_weight",".comfy_quant")) for k in keys):
-                raise ValueError("Expected complete original Krea2 Raw checkpoint")
-            if any(f.get_slice(k).get_dtype()!="BF16" for k in ELIGIBLE):
-                raise ValueError("Expected raw BF16 main-block weights")
-            stock_sizes = {k: math.prod(f.get_slice(k).get_shape()) + 4*f.get_slice(k).get_shape()[0]
-                           for k in ELIGIBLE}
-            result["int8_target_bytes"] = sum(stock_sizes.values())
-            result["int8_target_bytes_per_block"] = [sum(v for k,v in stock_sizes.items() if k.startswith(f"blocks.{i}.")) for i in range(28)]
+            if not ELIGIBLE<=set(f.keys()) or any(f.get_slice(k).get_dtype()!="BF16" for k in ELIGIBLE):
+                raise ValueError("expected original Raw BF16 weights")
+            sizes={k:math.prod(f.get_slice(k).get_shape())+4*f.get_slice(k).get_shape()[0] for k in ELIGIBLE}
+        result["int8_sizes"]=sizes; result["int8_target_bytes"]=sum(sizes.values())
         if a.case=="stock":
-            result["status"]="stock_verified"
-            return 0
-        root=a.out.parent
-        stock=root/"stock"
-        stock_name=root.name+"-stock"
-        prior=bench.read_json(stock/"prepare.json")
+            result["status"]="stock_verified"; return 0
+        root=a.out.parent; stock=root/"stock"; prior=bench.read_json(stock/"prepare.json")
         summary=bench.read_json(root/"littlebit-report.json")
-        if (not prior or prior.get("status")!="stock_verified" or not summary or
-            summary["cases"]["stock"]["status"]!="finished" or
-            not (stock/f"{stock_name}.safetensors").is_file() or
-            not (stock/f".fizgig_val_{stock_name}.pt").is_file()):
-            result["status"]="blocked"
-            raise ValueError("Stock control must finish with LoRA and validation snapshot first")
-        if any(prior.get(k)!=result[k] for k in ("holdout_sha256","raw_sha256")):
-            raise ValueError("Raw checkpoint or validation holdout changed between cases")
-        codec,rank=bench.CASES[a.case]
-        if codec in HQQ | HYBRID:
+        trace=bench.read_json(stock/"trace.json")
+        if not prior or prior["status"]!="stock_verified" or not summary or summary["cases"]["stock"]["status"]!="finished" or not trace or not trace.get("calibration"):
+            result["status"]="blocked"; raise ValueError("completed stock training and real calibration required")
+        if any(prior[k]!=result[k] for k in ("holdout_sha256","raw_sha256")):
+            raise ValueError("raw or holdout identity changed")
+        calibration=[stock/r["file"] for r in trace["calibration"]]
+        result["calibration_sha256"]=[bench.sha(f) for f in calibration]
+        result["calibration_steps"]=[r["step"] for r in trace["calibration"]]
+        result["calibration_timesteps"]=[trace["steps"][i-1]["timestep"] for i in result["calibration_steps"]]
+        if a.case=="nf4":
+            result["status"]="native_control"; return 0
+        if a.case=="mixed": return mixed(root,a.out,result)
+        name,rank=bench.CASES[a.case]
+        if name in HQQ|HYBRID:
             from fizgig.minimax.hqq4 import hqq_available
             if not hqq_available():
-                result["status"]="blocked"
-                raise ValueError("HQQ dependency unavailable: run the Fizgig updater to install hqq==0.2.8.post1")
-        result.update(codec=codec,rank=rank)
-        accepted=[]
-        totals={}
-        with safe_open(str(a.raw),framework="pt",device="cpu") as f:
+                result["status"]="blocked"; raise ValueError("HQQ unavailable: run Fizgig updater")
+        int8=import_file("littlebit_queue_int8",REPO/"src/fizgig/modules/int8_train.py")
+        result.update(codec=name,rank=rank)
+        accepted={}; specs={}
+        with ExitStack() as stack:
+            f=stack.enter_context(safe_open(str(a.raw),framework="pt",device="cpu"))
+            probes=[stack.enter_context(safe_open(str(path),framework="pt",device="cpu")) for path in calibration]
             for suffix in MODULES:
-                rows=[]
-                result["projections"][suffix]=rows
-                good=True
+                rows=[]; payload={}; manifest={}; result["projections"][suffix]=rows
                 for block in range(28):
-                    key=f"blocks.{block}.{suffix}.weight"
-                    w=f.get_tensor(key)
-                    m,n=w.shape
-                    if not compatible(codec,m,n,rank):
-                        rows.append({"key":key,"reason":"incompatible dimensions"})
-                        good=False
-                        break
-                    pck,spec=encode(w,codec,rank=rank,group=64)
-                    validate(pck,spec)
+                    key=f"blocks.{block}.{suffix}.weight"; w=f.get_tensor(key); m,n=w.shape
+                    if not compatible(name,m,n,rank):
+                        rows.append({"key":key,"reason":"incompatible dimensions"}); continue
+                    pck,spec=encode(w,name,rank=rank,group=64); validate(pck,spec)
                     native=stock_layer(w,int8)
-                    stock_bytes=native.weight.nbytes+native._int8_wscale.nbytes
-                    packed_bytes=pck.nbytes
-                    row={"key":key,"packed_bytes":packed_bytes,"int8_bytes":stock_bytes,
-                         "bytes_per_weight":packed_bytes/(m*n),"probes":[]}
+                    row={"key":key,"packed_bytes":pck.nbytes,"int8_bytes":sizes[key],"probes":[]}
                     rows.append(row)
-                    good=packed_bytes<stock_bytes
-                    for seed in result["seeds"]:
-                        g=torch.Generator().manual_seed(seed)
-                        x=torch.randn(64,n,generator=g).bfloat16()
-                        dy=torch.randn(64,m,generator=g).bfloat16()
+                    for index,probe in enumerate(probes):
+                        x=probe.get_tensor(key+".x").bfloat16()
+                        dy=probe.get_tensor(key+".dy").bfloat16()
                         y,dx=evaluate(lambda t:linear(t,pck,spec),x,dy)
                         ref,rdx=evaluate(native,x,dy)
-                        forward,backward=compare(y,ref),compare(dx,rdx)
-                        fw,bw=forward["relative_error"],backward["relative_error"]
-                        row["probes"].append({"seed":seed,"forward":fw,"backward":bw,
-                                              "forward_cosine":forward["cosine"],"backward_cosine":backward["cosine"]})
-                        good=good and fw is not None and bw is not None and fw<=0.05 and bw<=0.05
-                    print(key,codec,"pass" if good else "reject",row["probes"],flush=True)
-                    del w,pck,native
-                    if not good:
-                        break
-                if good and len(rows)==28:
-                    accepted.append(f"blocks.*.{suffix}.weight")
-                    totals[suffix]={"packed_bytes":sum(r["packed_bytes"] for r in rows),
-                                    "int8_bytes":sum(r["int8_bytes"] for r in rows)}
-        result["accepted_patterns"]=accepted
-        result["accepted_storage"]=totals
-        saved = sum(v["int8_bytes"]-v["packed_bytes"] for v in totals.values())
-        result["estimated_target_bytes_after_compression"] = result["int8_target_bytes"]-saved
-        result["target_bytes_saved"] = saved
-        result["storage_scope"] = "main-block eligible linear weights and scales only; excludes other weights and training overhead"
+                        fw,bw=compare(y,ref),compare(dx,rdx)
+                        row["probes"].append({"step":result["calibration_steps"][index],
+                            "forward_relative_error":fw["relative_error"],"input_gradient_relative_error":bw["relative_error"],
+                            "forward_cosine":fw["cosine"],"input_gradient_cosine":bw["cosine"]})
+                    if pck.nbytes<sizes[key] and all(v["forward_relative_error"] is not None and v["input_gradient_relative_error"] is not None for v in row["probes"]):
+                        payload[key]=pck; manifest[key]=spec
+                    print(key,name,row["probes"],flush=True)
+                    del w,native
+                good=len(payload)==28
+                if good:
+                    accepted.update(payload); specs.update(manifest)
+                    values=[.5*(p["forward_relative_error"]**2+p["input_gradient_relative_error"]**2) for row in rows for p in row["probes"]]
+                    result["families"][suffix]={"eligible":True,"packed_bytes":sum(r["packed_bytes"] for r in rows),
+                                               "int8_bytes":sum(r["int8_bytes"] for r in rows),"proxy":sum(values)/len(values)}
+                else:
+                    result["families"][suffix]={"eligible":False,"reason":"requires 28 compatible, smaller, finite projections"}
         if not accepted:
-            result["status"]="rejected"
-            print("No uniform projection family passed; training deliberately skipped.",flush=True)
-            return 3
-        if shutil.disk_usage(a.out).free < sum(v["packed_bytes"] for v in totals.values())+2*1024**3:
-            raise ValueError("Insufficient disk space for a separate compact archive")
-        archive=a.out/"compact.safetensors"
-        specs=convert(a.raw,archive,accepted,codec,rank,64)
-        if len(specs)!=28*len(accepted):
-            raise ValueError("Unexpected compact archive coverage")
-        result.update(status="ready",archive_bytes=archive.stat().st_size,
-                      compact_projections=len(specs))
+            result["status"]="rejected"; return 3
+        total=sum(p.nbytes for p in accepted.values())
+        if shutil.disk_usage(a.out).free < total+2*1024**3:
+            raise ValueError("insufficient disk space for compact archive")
+        if bench.sha(a.raw)!=result["raw_sha256"]: raise ValueError("raw source changed")
+        publish(a.out/"compact.safetensors",accepted,specs,result["raw_sha256"])
+        saved=sum(sizes[k]-p.nbytes for k,p in accepted.items())
+        result.update(status="ready",compact_projections=len(specs),archive_bytes=(a.out/"compact.safetensors").stat().st_size,
+                      target_bytes_saved=saved,estimated_target_bytes_after_compression=sum(sizes.values())-saved)
         return 0
     except Exception as exc:
-        if result["status"] not in ("blocked","rejected"):
-            result["status"]="error"
-        result["error"]=str(exc)
-        raise
+        if result["status"] not in ("blocked","rejected"): result["status"]="error"
+        result["error"]=str(exc); raise
     finally:
+        result["seconds"]=time.monotonic()-started
         bench.atomic_json(report,result)
 
 

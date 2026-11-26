@@ -7,30 +7,26 @@ import shutil
 import tomllib
 import zipfile
 
-CASES = {"stock": ("int8", 0), "q6": ("q6", 128), "q4": ("q4", 128),
-         "littlebit-r512": ("littlebit", 512), "littlebit2-r512": ("littlebit2", 512),
-         "littlebit2-r1024": ("littlebit2", 1024),
-         "q6-had": ("q6-had", 0), "q4-had": ("q4-had", 0),
-         "q6-opt": ("q6-opt", 0), "q4-opt": ("q4-opt", 0),
-         "q6-opt-had": ("q6-opt-had", 0), "q4-opt-had": ("q4-opt-had", 0),
-         "hqq": ("hqq", 0), "hqq-had": ("hqq-had", 0),
-         "littlebit-r512-had": ("littlebit-had", 512),
-         "littlebit2-r512-had": ("littlebit2-had", 512),
-         "lb2-r512-hqq": ("lb2-hqq", 512), "lb2-r512-hqq-had": ("lb2-hqq-had", 512)}
-IMPLEMENTATION = "independent-v3-geometry"
-EPOCHS = 5
-SWAPS = 22
+# Legacy codecs remain available via native_codec; this is the focused short queue.
+CASES = {"stock": ("int8", 0), "nf4": ("nf4", 0),
+         "q6": ("q6", 0), "q6-had": ("q6-had", 0),
+         "q4-had": ("q4-had", 0), "hqq-had": ("hqq-had", 0),
+         "lb2-r512-hqq": ("lb2-hqq", 512), "mixed": ("mixed", 0)}
+IMPLEMENTATION = "independent-v4-paired-development"
+EPOCHS = 1
+SWAPS = 22  # fixed deployment evaluation only; all training starts resident
+RAW_SWAPS = 26
 COMMON = {
     "FAMILY_KIND": "standard", "NETWORK_TYPE": "LoRA (standard)",
     "KREA2_TRAINING_METHOD": "Standard", "KREA2_SELECTIVE_BLOCK_CHECK": False,
     "NETWORK_DIM": "32", "NETWORK_ALPHA": "32", "LEARNING_RATE": "0.00025",
     "OPTIMIZER_TYPE": "muon", "GRADIENT_ACCUMULATION": "1", "BATCH_SIZE": "1",
-    "MAX_TRAIN_EPOCHS": str(EPOCHS), "SAVE_EVERY_N_EPOCHS": "5",
+    "MAX_TRAIN_EPOCHS": str(EPOCHS), "SAVE_EVERY_N_EPOCHS": "1",
+    "LR_SCHEDULER": "constant",
     "SAVE_STATE": False, "SAVE_STATE_ON_TRAIN_END": False, "SEED": "42",
-    "FAMILY_PRECISION": "INT8 (8-bit, fastest)",
     "DATASET_MEGAPIXELS": "0.25", "COMPILE_BLOCKS": "Off", "FAMILY_EMA": "Off",
     "VALIDATION_LOSS": True, "VALIDATION_HOLDOUT": True, "VALIDATION_IMAGES": "4",
-    "VALIDATION_GROUPS": "1", "VALIDATION_TIMESTEPS": "4", "VALIDATION_SEED": "42",
+    "VALIDATION_GROUPS": "2", "VALIDATION_TIMESTEPS": "4", "VALIDATION_SEED": "42",
     "VALIDATION_EARLY_STOP": False, "ADAPTIVE_LR": False,
     "KREA2_LOSS_WATCH": False, "KREA2_PER_IMAGE_LR": False,
     "KREA2_AUTO_RECAPTION": False, "KREA2_WARMUP_LOOK": False, "SAMPLE_ENABLED": False,
@@ -45,7 +41,8 @@ def sha(path):
 def settings(root):
     root = Path(root).resolve()
     return [{**COMMON, "__littlebit_case": case, "__littlebit_impl": IMPLEMENTATION,
-             "BLOCKS_SWAP": str(SWAPS if case == "stock" else 0),
+             "BLOCKS_SWAP": "0",
+             "FAMILY_PRECISION": "4-bit NF4 (smallest)" if case=="nf4" else "INT8 (8-bit, fastest)",
              "LORA_NAME": root.name + "-" + case, "LORA_OUTPUT_DIR": str(root / case)}
             for case in CASES]
 
@@ -67,7 +64,10 @@ def adjust_plan(desc, values, plan, repo, resume=False):
             raise ValueError("LittleBit comparisons must be fresh Krea2 runs; resume is not supported.")
         if any(values.get(k) != v for k,v in COMMON.items()):
             raise ValueError("LittleBit comparison settings are fixed. Remove and queue again.")
-        initial_swaps = SWAPS if case == "stock" else 0
+        initial_swaps = 0
+        precision = "nf4" if case=="nf4" else "int8"
+        if values.get("FAMILY_PRECISION") != ("4-bit NF4 (smallest)" if case=="nf4" else "INT8 (8-bit, fastest)"):
+            raise ValueError("Native precision is fixed by the comparison.")
         if values.get("BLOCKS_SWAP") != str(initial_swaps):
             raise ValueError("Initial block swap setting is fixed by the comparison.")
         stages = [s for s in plan.stages if s.name == "Training"]
@@ -75,7 +75,7 @@ def adjust_plan(desc, values, plan, repo, resume=False):
             raise ValueError("Expected one native Training stage.")
         stage = stages[0]
         cmd = stage.cmd
-        expected = {"--family":"krea2", "--precision":"int8",
+        expected = {"--family":"krea2", "--precision":precision,
                     "--network_dim":"32", "--network_alpha":"32", "--seed":"42",
                     "--max_train_epochs":str(EPOCHS), "--optimizer_type":"muon"}
         for flag, val in expected.items():
@@ -119,17 +119,24 @@ def adjust_plan(desc, values, plan, repo, resume=False):
                     "--case",case,"--out",str(out),"--dataset",arg(cmd,"--dataset_config")]
         from fizgig.families.launch import Stage
         plan.stages.insert(0, Stage("LittleBit projection screen",prep_cmd))
+        stock_name = root.name + "-stock"
+        stock = root / "stock"
+        worker = [cmd[0],str(prepare.with_name("fit_queue.py")),"--repo",str(repo),"--case",case]
+        if case not in ("stock","nf4"):
+            worker += ["--archive",str(archive)]
         if case != "stock":
-            stock_name = root.name + "-stock"
-            stock = root / "stock"
-            stage.cmd = [cmd[0],str(prepare.with_name("fit_queue.py")),"--repo",str(repo),"--archive",str(archive),"--",*cmd[2:]]
-            plan.stages.append(Stage("Stock-base transfer validation", [
-                cmd[0],str(prepare.with_name("native_runner.py")),"evaluate","--repo",str(repo),"--dit",str(raw),
-                "--snapshot",str(stock/f".fizgig_val_{stock_name}.pt"),
-                "--stock-lora",str(stock/f"{stock_name}.safetensors"),
-                "--compressed-lora",str(out/f"{name}.safetensors"),
-                "--out",str(out/"transfer.json"),"--swaps",str(SWAPS)]))
-        plan.console.append(f"[LittleBit test] {case}: fixed 5 epochs; stock 22 swaps, compressed starts at 0; no previews or resume.")
+            worker += ["--stock-trace",str(stock/"trace.json")]
+        stage.cmd = [*worker,"--",*cmd[2:]]
+        if case != "stock":
+            for deployment,swaps,filename in (("int8",SWAPS,"transfer.json"),("bf16",RAW_SWAPS,"transfer-bf16.json")):
+                plan.stages.append(Stage(f"Development transfer on {deployment}", [
+                    cmd[0],str(prepare.with_name("native_runner.py")),"evaluate","--repo",str(repo),"--dit",str(raw),
+                    "--snapshot",str(stock/f".fizgig_val_{stock_name}.pt"),
+                    "--stock-lora",str(stock/f"{stock_name}.safetensors"),
+                    "--compressed-lora",str(out/f"{name}.safetensors"),
+                    "--out",str(out/filename),"--deployment",deployment,"--swaps",str(swaps),
+                    "--split","development","--paired-horizons"]))
+        plan.console.append(f"[LittleBit test] {case}: one epoch or 200 updates; resident first; NF4 cannot swap; no retention cutoff.")
     except (ValueError, OSError, TypeError) as e:
         plan.problems.append(str(e))
     return plan
@@ -172,8 +179,10 @@ def update(values, status, log=None):
             status = "blocked"
     entry["status"] = status
     entry["transfer"] = read_json(out/"transfer.json")
+    entry["transfer_bf16"] = read_json(out/"transfer-bf16.json")
+    entry["trace"] = read_json(out/"trace.json")
     entry["fit"] = read_json(out/"fit-report.json")
-    entry["selected_swaps"] = SWAPS if case == "stock" and status == "finished" else (entry["fit"] or {}).get("selected_swaps")
+    entry["selected_swaps"] = (entry["fit"] or {}).get("selected_swaps")
     for p in out.glob(".perf_*.json"):
         entry["performance"] = read_json(p)
     if log and Path(log).is_file() and out.is_dir():
@@ -186,6 +195,8 @@ def update(values, status, log=None):
             lines.append(json.dumps(row["fit"],indent=2)+"\n")
         if row.get("transfer"):
             lines.append(json.dumps(row["transfer"],indent=2)+"\n")
+        if row.get("transfer_bf16"):
+            lines.append(json.dumps(row["transfer_bf16"],indent=2)+"\n")
         p = root/label/"run.log"
         if p.is_file():
             lines.append(p.read_text(encoding="utf-8",errors="replace")+"\n")

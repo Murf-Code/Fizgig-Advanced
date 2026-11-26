@@ -111,7 +111,10 @@ def run_sweep(command, out, launch=subprocess.run):
                     dest = out / src.name
                     if dest.exists():
                         raise FileExistsError(dest)
-                    shutil.copy2(src, dest)
+                    try:
+                        os.link(src,dest)
+                    except OSError:
+                        shutil.copy2(src, dest)
             row["status"] = "finished"
             info.update(status="finished", selected_swaps=swaps)
             atomic_json(report, info)
