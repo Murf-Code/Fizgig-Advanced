@@ -1,0 +1,215 @@
+{
+  "False": {
+    "mode": "passive",
+    "global_peak_bytes": [
+      12,
+      13
+    ],
+    "records": [
+      {
+        "phase": "forward",
+        "ok": true,
+        "start_bytes": [
+          8,
+          9
+        ],
+        "end_bytes": [
+          7,
+          8
+        ],
+        "peak_bytes": null,
+        "cumulative_peak_bytes": [
+          10,
+          11
+        ],
+        "host_elapsed_ns": 9704
+      },
+      {
+        "phase": "backward",
+        "ok": true,
+        "start_bytes": [
+          7,
+          8
+        ],
+        "end_bytes": [
+          7,
+          8
+        ],
+        "peak_bytes": null,
+        "cumulative_peak_bytes": [
+          11,
+          12
+        ],
+        "host_elapsed_ns": 5468
+      },
+      {
+        "phase": "optimizer",
+        "ok": true,
+        "start_bytes": [
+          7,
+          8
+        ],
+        "end_bytes": [
+          7,
+          8
+        ],
+        "peak_bytes": null,
+        "cumulative_peak_bytes": [
+          11,
+          12
+        ],
+        "host_elapsed_ns": 3245
+      },
+      {
+        "phase": "preview",
+        "ok": true,
+        "start_bytes": [
+          7,
+          8
+        ],
+        "end_bytes": [
+          7,
+          8
+        ],
+        "peak_bytes": null,
+        "cumulative_peak_bytes": [
+          12,
+          13
+        ],
+        "host_elapsed_ns": 2724
+      },
+      {
+        "phase": "exception",
+        "ok": false,
+        "start_bytes": [
+          7,
+          8
+        ],
+        "end_bytes": [
+          7,
+          8
+        ],
+        "peak_bytes": null,
+        "cumulative_peak_bytes": [
+          12,
+          13
+        ],
+        "host_elapsed_ns": 6520
+      }
+    ]
+  },
+  "True": {
+    "mode": "diagnostic",
+    "global_peak_bytes": [
+      12,
+      13
+    ],
+    "records": [
+      {
+        "phase": "forward",
+        "ok": true,
+        "start_bytes": [
+          8,
+          9
+        ],
+        "end_bytes": [
+          7,
+          8
+        ],
+        "peak_bytes": [
+          10,
+          11
+        ],
+        "cumulative_peak_bytes": [
+          10,
+          11
+        ],
+        "host_elapsed_ns": 3355
+      },
+      {
+        "phase": "backward",
+        "ok": true,
+        "start_bytes": [
+          7,
+          8
+        ],
+        "end_bytes": [
+          7,
+          8
+        ],
+        "peak_bytes": [
+          11,
+          12
+        ],
+        "cumulative_peak_bytes": [
+          11,
+          12
+        ],
+        "host_elapsed_ns": 2724
+      },
+      {
+        "phase": "optimizer",
+        "ok": true,
+        "start_bytes": [
+          7,
+          8
+        ],
+        "end_bytes": [
+          7,
+          8
+        ],
+        "peak_bytes": [
+          9,
+          10
+        ],
+        "cumulative_peak_bytes": [
+          11,
+          12
+        ],
+        "host_elapsed_ns": 2304
+      },
+      {
+        "phase": "preview",
+        "ok": true,
+        "start_bytes": [
+          7,
+          8
+        ],
+        "end_bytes": [
+          7,
+          8
+        ],
+        "peak_bytes": [
+          12,
+          13
+        ],
+        "cumulative_peak_bytes": [
+          12,
+          13
+        ],
+        "host_elapsed_ns": 2104
+      },
+      {
+        "phase": "exception",
+        "ok": false,
+        "start_bytes": [
+          7,
+          8
+        ],
+        "end_bytes": [
+          7,
+          8
+        ],
+        "peak_bytes": [
+          7,
+          8
+        ],
+        "cumulative_peak_bytes": [
+          12,
+          13
+        ],
+        "host_elapsed_ns": 2053
+      }
+    ]
+  }
+}

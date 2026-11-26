@@ -1,0 +1,225 @@
+{
+  "torch": "2.10.0+cpu",
+  "device": "CPU",
+  "drift": [
+    {
+      "scenario": "iid",
+      "block": 64,
+      "stochastic": false,
+      "final_relative": 0.01917950250208378,
+      "tail_mean": 0.01925286788493395,
+      "weak_relative": 0.019179552793502808,
+      "weak_zero_fraction": 0.008455882780253887
+    },
+    {
+      "scenario": "iid",
+      "block": 64,
+      "stochastic": true,
+      "final_relative": 0.027415568009018898,
+      "tail_mean": 0.027014016415923835,
+      "weak_relative": 0.027408679947257042,
+      "weak_zero_fraction": 0.00808823574334383
+    },
+    {
+      "scenario": "iid",
+      "block": 128,
+      "stochastic": false,
+      "final_relative": 0.021176520735025406,
+      "tail_mean": 0.020951760299503804,
+      "weak_relative": 0.02118440717458725,
+      "weak_zero_fraction": 0.010294117964804173
+    },
+    {
+      "scenario": "iid",
+      "block": 128,
+      "stochastic": true,
+      "final_relative": 0.0303619597107172,
+      "tail_mean": 0.029636729843914508,
+      "weak_relative": 0.030351877212524414,
+      "weak_zero_fraction": 0.00808823574334383
+    },
+    {
+      "scenario": "iid",
+      "block": 256,
+      "stochastic": false,
+      "final_relative": 0.022775953635573387,
+      "tail_mean": 0.022550102286040784,
+      "weak_relative": 0.022759277373552322,
+      "weak_zero_fraction": 0.010294117964804173
+    },
+    {
+      "scenario": "iid",
+      "block": 256,
+      "stochastic": true,
+      "final_relative": 0.03241969272494316,
+      "tail_mean": 0.031960728187114,
+      "weak_relative": 0.03240485489368439,
+      "weak_zero_fraction": 0.008210784755647182
+    },
+    {
+      "scenario": "correlated",
+      "block": 64,
+      "stochastic": false,
+      "final_relative": 0.01712832972407341,
+      "tail_mean": 0.017102369256317616,
+      "weak_relative": 0.017124703153967857,
+      "weak_zero_fraction": 0.008210784755647182
+    },
+    {
+      "scenario": "correlated",
+      "block": 64,
+      "stochastic": true,
+      "final_relative": 0.019885769113898277,
+      "tail_mean": 0.019984053149819374,
+      "weak_relative": 0.019903771579265594,
+      "weak_zero_fraction": 0.007107843179255724
+    },
+    {
+      "scenario": "correlated",
+      "block": 128,
+      "stochastic": false,
+      "final_relative": 0.018654851242899895,
+      "tail_mean": 0.018617972806096075,
+      "weak_relative": 0.01866809092462063,
+      "weak_zero_fraction": 0.007475490216165781
+    },
+    {
+      "scenario": "correlated",
+      "block": 128,
+      "stochastic": true,
+      "final_relative": 0.0211716890335083,
+      "tail_mean": 0.02117026360705495,
+      "weak_relative": 0.021190108731389046,
+      "weak_zero_fraction": 0.007720588240772486
+    },
+    {
+      "scenario": "correlated",
+      "block": 256,
+      "stochastic": false,
+      "final_relative": 0.01997852325439453,
+      "tail_mean": 0.019987133480608463,
+      "weak_relative": 0.019974103197455406,
+      "weak_zero_fraction": 0.008700980804860592
+    },
+    {
+      "scenario": "correlated",
+      "block": 256,
+      "stochastic": true,
+      "final_relative": 0.022099671885371208,
+      "tail_mean": 0.02219570180401206,
+      "weak_relative": 0.022117478772997856,
+      "weak_zero_fraction": 0.007720588240772486
+    },
+    {
+      "scenario": "outlier",
+      "block": 64,
+      "stochastic": false,
+      "final_relative": 0.0422990545630455,
+      "tail_mean": 0.042226256132125856,
+      "weak_relative": 1.6484901905059814,
+      "weak_zero_fraction": 0.1560049057006836
+    },
+    {
+      "scenario": "outlier",
+      "block": 64,
+      "stochastic": true,
+      "final_relative": 0.04671458527445793,
+      "tail_mean": 0.04708929933607578,
+      "weak_relative": 1.8205735683441162,
+      "weak_zero_fraction": 0.1302696019411087
+    },
+    {
+      "scenario": "outlier",
+      "block": 128,
+      "stochastic": false,
+      "final_relative": 0.059123411774635315,
+      "tail_mean": 0.059183421358466146,
+      "weak_relative": 2.304173707962036,
+      "weak_zero_fraction": 0.3121323585510254
+    },
+    {
+      "scenario": "outlier",
+      "block": 128,
+      "stochastic": true,
+      "final_relative": 0.06650467962026596,
+      "tail_mean": 0.06656695231795311,
+      "weak_relative": 2.5918385982513428,
+      "weak_zero_fraction": 0.2540441155433655
+    },
+    {
+      "scenario": "outlier",
+      "block": 256,
+      "stochastic": false,
+      "final_relative": 0.08399243652820587,
+      "tail_mean": 0.08430037252604962,
+      "weak_relative": 3.273376226425171,
+      "weak_zero_fraction": 0.612500011920929
+    },
+    {
+      "scenario": "outlier",
+      "block": 256,
+      "stochastic": true,
+      "final_relative": 0.09326022863388062,
+      "tail_mean": 0.09380263261497021,
+      "weak_relative": 3.634563446044922,
+      "weak_zero_fraction": 0.5123774409294128
+    },
+    {
+      "scenario": "subbin",
+      "block": 64,
+      "stochastic": false,
+      "final_relative": 0.00793624110519886,
+      "tail_mean": 0.00793624110519886,
+      "weak_relative": 0.4970511198043823,
+      "weak_zero_fraction": 0.24705882370471954
+    },
+    {
+      "scenario": "subbin",
+      "block": 64,
+      "stochastic": true,
+      "final_relative": 0.021048076450824738,
+      "tail_mean": 0.021664888598024845,
+      "weak_relative": 1.3182525634765625,
+      "weak_zero_fraction": 0.21482843160629272
+    },
+    {
+      "scenario": "subbin",
+      "block": 128,
+      "stochastic": false,
+      "final_relative": 0.01126796193420887,
+      "tail_mean": 0.01126796193420887,
+      "weak_relative": 0.7057185769081116,
+      "weak_zero_fraction": 0.49803921580314636
+    },
+    {
+      "scenario": "subbin",
+      "block": 128,
+      "stochastic": true,
+      "final_relative": 0.02956411801278591,
+      "tail_mean": 0.030066927969455717,
+      "weak_relative": 1.8516170978546143,
+      "weak_zero_fraction": 0.43468138575553894
+    },
+    {
+      "scenario": "subbin",
+      "block": 256,
+      "stochastic": false,
+      "final_relative": 0.01596665009856224,
+      "tail_mean": 0.01596665009856224,
+      "weak_relative": 1.0,
+      "weak_zero_fraction": 1.0
+    },
+    {
+      "scenario": "subbin",
+      "block": 256,
+      "stochastic": true,
+      "final_relative": 0.04216587543487549,
+      "tail_mean": 0.04221314433962107,
+      "weak_relative": 2.640871286392212,
+      "weak_zero_fraction": 0.8708333373069763
+    }
+  ],
+  "restore": "bitwise continuation; malformed state rejected without publishing; CPU harness, not Muon",
+  "budget": "unique-storage views; phase maxima; strict scratch gate passed",
+  "activation": "bounded synchronous CPU self-test passed"
+}
