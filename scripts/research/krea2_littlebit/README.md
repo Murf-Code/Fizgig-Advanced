@@ -199,3 +199,28 @@ No real model or Windows/CUDA runtime verification at this change.
 
 Remove any old ZIP-based queue entries before creating a new comparison.
 The version guard blocks outdated saved queues rather than mixing implementations.
+
+## Milestone 5 — zero-swap-first residency queue (supersedes fixed 22-swap recipe)
+
+Stock INT8 remains at 22 swaps. Every passing compressed arm tries 0 swaps
+first; a fresh subprocess trains the entire five-epoch workload at each
+attempt. Explicit CUDA OutOfMemoryError triggers the next count in
+0, 4, 8, 12, 16, 20, 22, 24, 26. Other errors fail rather than retry.
+This finds the first successful count on the tested grid, not the exact
+minimum. An OOM late in training restarts with the same initial seed,
+optimizer, dataset, and holdout; no partial adapter is promoted. Checkpointing
+is explicitly on across the queue. Stock-base transfer evaluation still
+uses 22 swaps on stock INT8. No pause, resume, live preview or reclaim changes
+during the comparison. Stop terminates the process tree.
+
+The per-case fit-report.json records attempted counts, exit classifications,
+elapsed time and PyTorch allocator peaks (bytes) aggregated across epoch
+resets. Successful native performance files are copied to the case root.
+All failed attempts are kept in fit_attempts; only a completed adapter and
+snapshot are published for stock transfer evaluation. Reports distinguish
+storage for eligible block matrices from full-device memory, and record
+actual selected storage savings from the projection gate. The user-supplied
+512 MiB/block is not assumed for model accounting. CPU mock-worker tests cover
+zero-swap success, retries, non-OOM failure, exhausted retries, isolation of
+outputs and unchanged holdout across attempts. Real CUDA behavior remains
+unverified. Remove old queue entries and start a fresh comparison.

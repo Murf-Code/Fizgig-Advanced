@@ -4,6 +4,8 @@ import json
 import math
 from pathlib import Path
 import sys
+import time
+import traceback
 import torch
 from safetensors import safe_open
 import native_codec as codec
@@ -70,6 +72,7 @@ def main():
     p.add_argument("mode",choices=("train","evaluate"))
     p.add_argument("--repo",type=Path,required=True)
     p.add_argument("--archive",type=Path)
+    p.add_argument("--attempt-result",type=Path)
     p.add_argument("--dit",type=Path)
     p.add_argument("--snapshot",type=Path)
     p.add_argument("--stock-lora",type=Path)
@@ -89,12 +92,41 @@ def main():
         from fizgig.families import train
         original=quant.load_base
         quant.load_base=compact_loader(a.archive,original)
+        # Record allocator maxima across the trainer's per-epoch resets.
+        from fit_queue import atomic_json, OOM_EXIT
+        started = time.monotonic()
+        metrics = {"status":"running", "peak_allocated_bytes":0, "peak_reserved_bytes":0}
+        reset = torch.cuda.reset_peak_memory_stats
+        def collect(device=None):
+            if torch.cuda.is_initialized():
+                metrics["peak_allocated_bytes"] = max(metrics["peak_allocated_bytes"], torch.cuda.max_memory_allocated(device))
+                metrics["peak_reserved_bytes"] = max(metrics["peak_reserved_bytes"], torch.cuda.max_memory_reserved(device))
+        def tracking_reset(device=None):
+            collect(device)
+            return reset(device)
+        torch.cuda.reset_peak_memory_stats = tracking_reset
+        rc = 0
         try:
             sys.argv=[sys.argv[0],*tail[1:]]
             train.main()
+            metrics["status"] = "finished"
+        except torch.cuda.OutOfMemoryError as exc:
+            metrics.update(status="cuda_oom", error=str(exc))
+            traceback.print_exc()
+            rc = OOM_EXIT
+        except BaseException as exc:
+            metrics.update(status="error", error=str(exc))
+            raise
         finally:
-            quant.load_base=original
-        return
+            try:
+                collect()
+            finally:
+                torch.cuda.reset_peak_memory_stats = reset
+                quant.load_base = original
+                metrics["seconds"] = time.monotonic()-started
+                if a.attempt_result:
+                    atomic_json(a.attempt_result,metrics)
+        return rc
     if tail or not all((a.dit,a.snapshot,a.stock_lora,a.compressed_lora,a.out)):
         p.error("evaluation requires stock base, snapshot, both adapters and output")
     from fizgig.families.registry import get
@@ -144,4 +176,4 @@ def main():
 
 
 if __name__=="__main__":
-    main()
+    sys.exit(main())

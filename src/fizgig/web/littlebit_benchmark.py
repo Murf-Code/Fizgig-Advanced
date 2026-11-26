@@ -10,7 +10,7 @@ import zipfile
 CASES = {"stock": ("int8", 0), "q6": ("q6", 128), "q4": ("q4", 128),
          "littlebit-r512": ("littlebit", 512), "littlebit2-r512": ("littlebit2", 512),
          "littlebit2-r1024": ("littlebit2", 1024)}
-IMPLEMENTATION = "independent-v1"
+IMPLEMENTATION = "independent-v2-residency"
 EPOCHS = 5
 SWAPS = 22
 COMMON = {
@@ -20,7 +20,7 @@ COMMON = {
     "OPTIMIZER_TYPE": "muon", "GRADIENT_ACCUMULATION": "1", "BATCH_SIZE": "1",
     "MAX_TRAIN_EPOCHS": str(EPOCHS), "SAVE_EVERY_N_EPOCHS": "5",
     "SAVE_STATE": False, "SAVE_STATE_ON_TRAIN_END": False, "SEED": "42",
-    "FAMILY_PRECISION": "INT8 (8-bit, fastest)", "BLOCKS_SWAP": str(SWAPS),
+    "FAMILY_PRECISION": "INT8 (8-bit, fastest)",
     "DATASET_MEGAPIXELS": "0.25", "COMPILE_BLOCKS": "Off", "FAMILY_EMA": "Off",
     "VALIDATION_LOSS": True, "VALIDATION_HOLDOUT": True, "VALIDATION_IMAGES": "4",
     "VALIDATION_GROUPS": "1", "VALIDATION_TIMESTEPS": "4", "VALIDATION_SEED": "42",
@@ -38,6 +38,7 @@ def sha(path):
 def settings(root):
     root = Path(root).resolve()
     return [{**COMMON, "__littlebit_case": case, "__littlebit_impl": IMPLEMENTATION,
+             "BLOCKS_SWAP": str(SWAPS if case == "stock" else 0),
              "LORA_NAME": root.name + "-" + case, "LORA_OUTPUT_DIR": str(root / case)}
             for case in CASES]
 
@@ -59,12 +60,15 @@ def adjust_plan(desc, values, plan, repo, resume=False):
             raise ValueError("LittleBit comparisons must be fresh Krea2 runs; resume is not supported.")
         if any(values.get(k) != v for k,v in COMMON.items()):
             raise ValueError("LittleBit comparison settings are fixed. Remove and queue again.")
+        initial_swaps = SWAPS if case == "stock" else 0
+        if values.get("BLOCKS_SWAP") != str(initial_swaps):
+            raise ValueError("Initial block swap setting is fixed by the comparison.")
         stages = [s for s in plan.stages if s.name == "Training"]
         if len(stages) != 1:
             raise ValueError("Expected one native Training stage.")
         stage = stages[0]
         cmd = stage.cmd
-        expected = {"--family":"krea2", "--precision":"int8", "--blocks_to_swap":str(SWAPS),
+        expected = {"--family":"krea2", "--precision":"int8",
                     "--network_dim":"32", "--network_alpha":"32", "--seed":"42",
                     "--max_train_epochs":str(EPOCHS), "--optimizer_type":"muon"}
         for flag, val in expected.items():
@@ -76,6 +80,16 @@ def adjust_plan(desc, values, plan, repo, resume=False):
             raise ValueError("Conflicting trainer option in LittleBit comparison.")
         if not tomllib.loads(plan.dataset_toml).get("general",{}).get("holdout_file"):
             raise ValueError("Comparison needs an actual validation holdout. Use a larger dataset.")
+        resolved_swaps = int(arg(cmd, "--blocks_to_swap")) if "--blocks_to_swap" in cmd else 0
+        if resolved_swaps != initial_swaps:
+            raise ValueError("Unexpected resolved block swap setting")
+        if "--blocks_to_swap" not in cmd:
+            cmd += ["--blocks_to_swap", "0"]
+        # Keep full activation checkpointing fixed across all swap counts.
+        if "--gradient_checkpointing" in cmd:
+            cmd[cmd.index("--gradient_checkpointing")+1] = "on"
+        else:
+            cmd += ["--gradient_checkpointing", "on"]
         # Freeze allocator recovery and classic block swap identically in every arm.
         cmd[:] = [x for x in cmd if x not in ("--send_only_force","--send_only_swap","--no-send_only_swap",
                         "--auto_reclaim_vram","--no-auto_reclaim_vram","--background_loading","--no-background_loading")]
@@ -101,14 +115,14 @@ def adjust_plan(desc, values, plan, repo, resume=False):
         if case != "stock":
             stock_name = root.name + "-stock"
             stock = root / "stock"
-            stage.cmd = [cmd[0],str(prepare.with_name("native_runner.py")),"train","--repo",str(repo),"--archive",str(archive),"--",*cmd[2:]]
+            stage.cmd = [cmd[0],str(prepare.with_name("fit_queue.py")),"--repo",str(repo),"--archive",str(archive),"--",*cmd[2:]]
             plan.stages.append(Stage("Stock-base transfer validation", [
                 cmd[0],str(prepare.with_name("native_runner.py")),"evaluate","--repo",str(repo),"--dit",str(raw),
                 "--snapshot",str(stock/f".fizgig_val_{stock_name}.pt"),
                 "--stock-lora",str(stock/f"{stock_name}.safetensors"),
                 "--compressed-lora",str(out/f"{name}.safetensors"),
                 "--out",str(out/"transfer.json"),"--swaps",str(SWAPS)]))
-        plan.console.append(f"[LittleBit test] {case}: fixed 5 epochs; synthetic projection gate; no previews or resume.")
+        plan.console.append(f"[LittleBit test] {case}: fixed 5 epochs; stock 22 swaps, compressed starts at 0; no previews or resume.")
     except (ValueError, OSError, TypeError) as e:
         plan.problems.append(str(e))
     return plan
@@ -151,6 +165,8 @@ def update(values, status, log=None):
             status = "blocked"
     entry["status"] = status
     entry["transfer"] = read_json(out/"transfer.json")
+    entry["fit"] = read_json(out/"fit-report.json")
+    entry["selected_swaps"] = SWAPS if case == "stock" and status == "finished" else (entry["fit"] or {}).get("selected_swaps")
     for p in out.glob(".perf_*.json"):
         entry["performance"] = read_json(p)
     if log and Path(log).is_file() and out.is_dir():
@@ -159,6 +175,8 @@ def update(values, status, log=None):
     lines = []
     for label,row in data["cases"].items():
         lines.append(f"=== {label}: {row['status']} ===\n")
+        if row.get("fit"):
+            lines.append(json.dumps(row["fit"],indent=2)+"\n")
         if row.get("transfer"):
             lines.append(json.dumps(row["transfer"],indent=2)+"\n")
         p = root/label/"run.log"

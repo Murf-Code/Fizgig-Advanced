@@ -2557,7 +2557,7 @@
        note=document.getElementById("littlebitNote");
  let busy=false;
  mode.addEventListener("change",()=>{
-   note.textContent=mode.checked?"Krea2 · INT8 control + 5 compression candidates · up to 5 epochs each · rank 32 · Muon · 22 swaps · projection gate first":"";
+   note.textContent=mode.checked?"Krea2 · INT8 control + 5 compression candidates · up to 5 epochs each · rank 32 · Muon · INT8 22 swaps · compressed starts at 0 · CUDA OOM fallback · projection gate first":"";
  });
  document.addEventListener("click",async event=>{
    if(!mode.checked || !queue.contains(event.target))return;

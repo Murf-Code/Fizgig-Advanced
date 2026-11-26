@@ -1,6 +1,7 @@
 """Conservative raw-weight gate for the uniform-layout LittleBit queue."""
 import argparse
 import json
+import math
 from pathlib import Path
 import shutil
 import sys
@@ -41,6 +42,10 @@ def main():
                 raise ValueError("Expected complete original Krea2 Raw checkpoint")
             if any(f.get_slice(k).get_dtype()!="BF16" for k in ELIGIBLE):
                 raise ValueError("Expected raw BF16 main-block weights")
+            stock_sizes = {k: math.prod(f.get_slice(k).get_shape()) + 4*f.get_slice(k).get_shape()[0]
+                           for k in ELIGIBLE}
+            result["int8_target_bytes"] = sum(stock_sizes.values())
+            result["int8_target_bytes_per_block"] = [sum(v for k,v in stock_sizes.items() if k.startswith(f"blocks.{i}.")) for i in range(28)]
         if a.case=="stock":
             result["status"]="stock_verified"
             return 0
@@ -101,6 +106,10 @@ def main():
                                     "int8_bytes":sum(r["int8_bytes"] for r in rows)}
         result["accepted_patterns"]=accepted
         result["accepted_storage"]=totals
+        saved = sum(v["int8_bytes"]-v["packed_bytes"] for v in totals.values())
+        result["estimated_target_bytes_after_compression"] = result["int8_target_bytes"]-saved
+        result["target_bytes_saved"] = saved
+        result["storage_scope"] = "main-block eligible linear weights and scales only; excludes other weights and training overhead"
         if not accepted:
             result["status"]="rejected"
             print("No uniform projection family passed; training deliberately skipped.",flush=True)

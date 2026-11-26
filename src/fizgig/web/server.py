@@ -5240,6 +5240,8 @@ class Handler(BaseHTTPRequestHandler):
                     history.set_values(run["history_id"], changes)
                 return self.json({"ok": True})
             if path == "/api/run/sample_override":   # the Samples tab's live previews: the run going now's override
+                if (_run.get("values") or {}).get("__littlebit_case"):
+                    return self.json({"error": "LittleBit comparisons use fixed training controls."}, 400)
                 with _lock:
                     out = _run["output_dir"] if _run["proc"] is not None and _run["proc"].poll() is None else ""
                     fam = _run["family"]
@@ -5292,6 +5294,8 @@ class Handler(BaseHTTPRequestHandler):
                     out, fam, vals = _run["output_dir"], _run["family"], dict(_run["values"])
                 if not running or not out:
                     return self.json({"error": "Nothing is training right now."}, 400)
+                if vals.get("__littlebit_case"):
+                    return self.json({"error": "LittleBit comparisons use fixed training controls."}, 400)
                 desc = get_family(fam)
                 if desc is not None and vals and form._kind(desc, vals) == "finetune":
                     return self.json({"error": "A fine-tune saves and previews at whole rotations only."}, 400)
@@ -5302,6 +5306,8 @@ class Handler(BaseHTTPRequestHandler):
                     out, running = _run["output_dir"], _run["proc"] is not None and _run["proc"].poll() is None
                 if not running:
                     return self.json({"error": "Nothing is running."}, 400)
+                if (_run.get("values") or {}).get("__littlebit_case"):
+                    return self.json({"error": "LittleBit comparison attempts cannot pause or resume; use Stop."}, 400)
                 if _run.get("family") == refmod.KEY:
                     return self.json({"error": "A RefMod can't pause: it is made in one go. Stop ends it."}, 400)
                 with _lock:
