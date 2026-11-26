@@ -1278,7 +1278,11 @@ def _plan(family_key, values, image_folder, resume="", ft_continue=None, models=
                       resuming=True)
     if resume or ft_continue or str(values.get("RESUME_TRAINING") or "").strip():
         inputs["recache"] = _size_changed(name, out_dir, values)
-    return desc, inputs, launch.plan(desc, inputs)
+    plan = launch.plan(desc, inputs)
+    if values.get("__littlebit_case"):
+        from fizgig.web import littlebit_benchmark
+        plan = littlebit_benchmark.adjust_plan(desc, values, plan, BASE_DIR, bool(resume or ft_continue))
+    return desc, inputs, plan
 
 
 _SIZE_KEYS = ("DATASET_MEGAPIXELS", "CLIP_MEGAPIXELS")
@@ -2253,6 +2257,16 @@ def _progress_dict(upd):
             "note": "", "lr": upd.get("lr_text") or "", "grad_norm": upd.get("grad_norm_text") or ""}
 
 
+def _littlebit_run_ended(result, lora, starter):
+    if (_run.get("values") or {}).get("__littlebit_case"):
+        try:
+            from fizgig.web import littlebit_benchmark
+            littlebit_benchmark.update(_run["values"], result, _run_log.get("path"))
+        except Exception:
+            logger.exception("LittleBit comparison report could not be updated")
+    webqueue.on_run_ended(result, lora, starter)
+
+
 def _run_stages(stages, out_dir):
     from fizgig.training.progress import TrainingProgressTracker
     append_log(f"\n=== Fizgig run, {datetime.datetime.now():%Y-%m-%d %H:%M:%S} ===\n")
@@ -2268,7 +2282,7 @@ def _run_stages(stages, out_dir):
         with _lock:
             if _run["state"] == "stopped":
                 history.end(_run.get("history_id"), "stopped", _run.get("progress"))
-                webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+                _littlebit_run_ended("stopped", _run.get("lora"), _queue_starter)
                 return
             _run["stage"] = stage.name
             if stage.name == "Training" and not _run.get("training_at"):
@@ -2293,14 +2307,14 @@ def _run_stages(stages, out_dir):
                 _run.update(state="failed", proc=None, ended_at=time.time())
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
             push_notifications.emit("failed", _run.get("lora"))
-            webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
+            _littlebit_run_ended("failed", _run.get("lora"), _queue_starter)
             return
         if skipped:
             append_log(f"\n■ Stopped before starting {stage.name}.\n")
             with _lock:
                 _run["proc"] = None
             history.end(_run.get("history_id"), "stopped", _run.get("progress"))
-            webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+            _littlebit_run_ended("stopped", _run.get("lora"), _queue_starter)
             return
         mem = oom.Watch()                       # GPU / system-RAM messages, and the Auto plan the trainer chose
         for line in proc.stdout:
@@ -2349,7 +2363,7 @@ def _run_stages(stages, out_dir):
                 _run["proc"] = None              # gone: a stop-and-wait sees it at once
             append_log(f"\n■ Stopped during {stage.name}.\n")
             history.end(_run.get("history_id"), "stopped", _run.get("progress"))
-            webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+            _littlebit_run_ended("stopped", _run.get("lora"), _queue_starter)
             return
         if ret != 0:
             kind = oom.classify(ret, mem)
@@ -2358,10 +2372,10 @@ def _run_stages(stages, out_dir):
             with _lock:
                 _run.update(state="failed", proc=None, ended_at=time.time())
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
-            if kind and _oom_recover(kind, stage.name, mem.plan):
+            if kind and not (_run.get("values") or {}).get("__littlebit_case") and _oom_recover(kind, stage.name, mem.plan):
                 return                           # it carries on by itself: the queue waits for that run
             push_notifications.emit("oom" if kind else "failed", _run.get("lora"))
-            webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
+            _littlebit_run_ended("failed", _run.get("lora"), _queue_starter)
             return
         if "cach" in stage.name.lower():
             push_notifications.emit("cache", _run.get("lora"))
@@ -2391,12 +2405,12 @@ def _run_stages(stages, out_dir):
         except OSError:
             pass
         history.end(_run.get("history_id"), "stopped", _run.get("progress"))
-        webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+        _littlebit_run_ended("stopped", _run.get("lora"), _queue_starter)
         append_log("\n■ Stopped at the end of the final stage.\n")
         return
     history.end(_run.get("history_id"), "paused" if paused else "finished", _run.get("progress"))
     push_notifications.emit("paused" if paused else "finished", _run.get("lora"))
-    webqueue.on_run_ended("paused" if paused else "finished", _run.get("lora"), _queue_starter)
+    _littlebit_run_ended("paused" if paused else "finished", _run.get("lora"), _queue_starter)
     append_log(("\n⏸ Restore point saved and training stopped. Resume continues from it.\n" if _run.get("save_stop")
                 else "\n⏸ Paused. Resume continues from the saved state.\n") if paused else
                f"\n✔ Run complete. {_run['early_stop']}\n" if _run.get("early_stop") else "\n✔ Run complete.\n")
@@ -4994,9 +5008,40 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": f"{name} is already there."}, 400)
                 os.makedirs(new)
                 return self.json({"ok": True, "path": new})
+            if path == "/api/queue/littlebit":
+                from fizgig.web import littlebit_benchmark as lb
+                folder = str(b.get("image_folder") or "").strip()
+                if not os.path.isdir(folder):
+                    return self.json({"error": "Select a Krea2 image dataset on Start."}, 400)
+                if any(h.get("share") for h in (load_prefs().get("helpers") or [])):
+                    return self.json({"error": "Disable shared training helpers for the comparison."}, 400)
+                pilot = lb.verify_pilot(str(b.get("pilot") or ""))
+                group = "littlebit-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+                root = os.path.join(default_output_dir(), "littlebit_comparisons", group)
+                configs = lb.settings(root, pilot)
+                entries = []
+                for vals in configs:
+                    _, inputs, plan = _plan("krea2", vals, folder)
+                    if plan.problems:
+                        return self.json({"problems": [vals["__littlebit_case"] + ": " + p for p in plan.problems]}, 400)
+                    out, name = inputs["LORA_OUTPUT_DIR"], inputs["LORA_NAME"]
+                    if os.path.exists(out) or name_taken(vals, inputs) or webqueue.clashes(out, name):
+                        return self.json({"error": "Comparison output already exists."}, 400)
+                    entries.append(("krea2", vals, folder, name, out))
+                lb.create(root, folder, configs)
+                items = webqueue.add_many(entries)
+                with _lock:
+                    idle = not (_run["proc"] is not None and _run["proc"].poll() is None) and (
+                        _run["state"] not in ("starting", "running", "paused"))
+                if idle and not webqueue.status()["held"]:
+                    webqueue.start_next(_queue_starter)
+                return self.json({"ok": True, "ids": [i["id"] for i in items],
+                                  "output": root, "report": os.path.join(root,"littlebit-report.json")})
             if path in ("/api/queue/add", "/api/queue/update"):   # Add to queue (or a queued run edited): checked
                 fam, vals, folder = b.get("family", ""), b.get("values") or {}, b.get("image_folder") or ""  # like Start
                 editing = str(b.get("id") or "") if path == "/api/queue/update" else ""
+                if editing and ((webqueue.get(editing) or {}).get("values") or {}).get("__littlebit_case"):
+                    return self.json({"error": "LittleBit test settings are fixed. Remove and queue again."}, 400)
                 if path == "/api/queue/update" and webqueue.get(editing) is None:
                     return self.json({"error": "That run has left the queue (it started, or was removed) - add "
                                                "this as a new one instead."}, 400)

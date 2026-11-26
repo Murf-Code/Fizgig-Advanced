@@ -141,3 +141,40 @@ no CUDA/trainer support is claimed, and its bytes exclude non-targeted
 weights, archive metadata, runtime scratch and activation storage.
 The next engineering milestone is a bounded stock-training capture
 harness and mixed-codec archive/loader with cache identity and swap tests.
+
+## Milestone 3: native web test queue
+
+The Training tab now has an opt-in LittleBit Test Mode next to Add to queue,
+adapted from test/global-replay-comparison. Select an ordinary Krea2 dataset
+and the extracted unmodified external pilot folder, then Add to queue.
+The original Raw BF16 model, VAE and encoder must be selected in Preferences.
+The app preflights six cases as one queue operation. Stock INT8 trains first;
+Q6, Q4, LittleBit rank 512, LittleBit-2 rank 512, and LittleBit-2 rank 1024
+follow. All passing arms train five epochs with rank/alpha 32, Muon,
+LR 0.00025, seed 42, 0.25 MP, batch 1, 22 classic swaps, four held-out images
+and four validation timesteps. Selective replay, EMA, auto recovery, resume,
+and previews are not used. Do not reorder, edit, or change the dataset.
+The fixed recipe isolates the effect of frozen weights.
+
+Before each compressed run, real Raw matrices are screened on two sets of
+synthetic activation/cotangent rows against the native INT8 path (5% relative
+forward AND input-gradient tolerance). Only entire corresponding projection
+families that pass in all 28 blocks are archived, preserving the pilot's
+uniform swap layout. A candidate with no passing family exits before training;
+it is reported as screen_rejected and the queue advances. Raw and holdout
+hashes must match the stock control. Nonpassing projections stay INT8.
+This is deliberately NOT the adaptive per-matrix activation-weighted archive
+yet; real activation capture and heterogeneous layouts remain research tasks.
+
+The compact trainer is launched explicitly from the external pilot; the final
+evaluation loads both LoRAs onto the same stock INT8 base and stock holdout
+snapshot. No evaluation on a different base is substituted. Negative or
+zero stock improvement makes retention inconclusive. Report, combined log,
+and final diagnostic ZIP are under output_loras/littlebit_comparisons/<group>
+(or your configured output root). Full compact archives are retained separately
+and excluded from the ZIP. Each passing archive can be nearly as large as Raw
+on disk because unselected weights are copied; allow sufficient disk space.
+Do not mistake archive bytes or selected weight bytes for total GPU memory.
+No Windows/CUDA end-to-end execution has been performed here. First test
+is a feasibility and quantitative stock-transfer experiment, not an image
+quality comparison.
