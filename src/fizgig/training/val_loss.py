@@ -130,6 +130,7 @@ class FixedValidation:
         if len(self.groups) < want_groups and self.wanted:
             logger.info(f"[validation] only {len(self.wanted)} image(s) to check, so {len(self.groups)} validation "
                         f"group(s) instead of {want_groups}")
+        self.last_per_image = {}     # paired research evaluation; rows in timestep order
         self.last_groups = []        # the latest check's mean for each group (empty with one group)
         self.ts = fixed_timesteps(timesteps)
         self.seed = int(seed)
@@ -256,6 +257,7 @@ class FixedValidation:
             torch.set_rng_state(cpu_rng)
             if cuda_rng is not None:
                 torch.cuda.set_rng_state_all(cuda_rng)
+        self.last_per_image = per_img
         means = [sum(v) / len(v) for v in per_t if v]
         if not means:
             return None

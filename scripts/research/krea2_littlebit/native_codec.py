@@ -209,10 +209,11 @@ class Frozen(torch.autograd.Function):
             dx=(dy@b)@a
         else:
             m,n=s["shape"]
-            dx=torch.zeros((*dy.shape[:-1],n),device=dy.device,dtype=dy.dtype)
+            dx=torch.zeros((*dy.shape[:-1],n),device=dy.device,dtype=torch.float32)
             for i in range(0,m,128):
                 j=min(i+128,m)
-                dx.add_(dy[...,i:j]@_rows(p,s,i,j,dy.dtype))
+                dx.add_((dy[...,i:j]@_rows(p,s,i,j,dy.dtype)).float())
+            dx=dx.to(dy.dtype)
         return dx,None,None
 
 

@@ -79,6 +79,8 @@ def main():
     p.add_argument("--compressed-lora",type=Path)
     p.add_argument("--out",type=Path)
     p.add_argument("--swaps",type=int,default=22)
+    p.add_argument("--deployment",choices=("int8","bf16"),default="int8")
+    p.add_argument("--split",choices=("development","confirmation","all"),default="development")
     argv=sys.argv[1:]
     cut=argv.index("--") if "--" in argv else len(argv)
     a=p.parse_args(argv[:cut])
@@ -142,34 +144,51 @@ def main():
     val.wanted=list(wanted)
     val.groups=snap.get("groups") or [wanted]
     val.ts=list(snap["ts"])
-    val.batches=snap["batches"]
+    # Preserve original image indices/seeds by scoring the same ordered list.
+    # Development excludes reserved confirmation keys; do not run the reserved subset here.
+    import hashlib
+    order=sorted(wanted,key=lambda k:hashlib.sha256(("littlebit-split-v1:"+str(k)).encode()).digest())
+    n=max(1,len(order)//2) if len(order)>=4 else len(order)
+    dev=set(order[:n]); confirm=set(order[n:])
+    subset=dev if a.split=="development" else confirm if a.split=="confirmation" else set(wanted)
+    if not subset:
+        raise ValueError("no untouched confirmation images available; use a larger dataset")
+    val.batches={k:v for k,v in snap["batches"].items() if k in subset}
     driver=get("krea2").load_driver()
     driver.set_options({})
     device=torch.device("cuda:0")
-    model,swapped=quant.load_base(driver,str(a.dit),device,"int8",a.swaps)
+    model,swapped=quant.load_base(driver,str(a.dit),device,a.deployment,a.swaps)
     net=FamilyLoRA(model,driver,device=device)
+    # net.targets was built before wrappers replaced the original Linear modules.
+    expected=set(net.targets)
+    if set(net.wrapped)!=expected or not expected:
+        raise ValueError("deployment model missing expected standard LoRA targets")
     def score():
         row=val.run(driver,model,device,net,swapped=bool(swapped))
         if row is None or not math.isfinite(row[0]):
             raise ValueError("invalid validation result")
-        return {"loss":row[0],"per_timestep":row[1],"seconds":row[2]}
+        return {"loss":row[0],"per_timestep":row[1],"per_image":val.last_per_image,"seconds":row[2]}
     scores={"no_adapter":score()}
     coverage=[]
     for label,path in (("stock_trained",a.stock_lora),("compressed_trained",a.compressed_lora)):
+        read=net.read_file(str(path))
+        if set(read)!=expected or any(v[0]!="lora" for v in read.values()):
+            raise ValueError(f"{label}: missing={sorted(expected-set(read))}; extra={sorted(set(read)-expected)}")
         if not net.add_file(str(path),label,strength=1.0):
             raise ValueError("adapter did not load")
         try:
             coverage.append({k for k,v in net.wrapped.items() if label in v.adapters})
+            if coverage[-1]!=expected:
+                raise ValueError(f"{label}: missing reloaded modules {sorted(expected-coverage[-1])}")
             scores[label]=score()
         finally:
             net.remove(label)
     if coverage[0]!=coverage[1]:
         raise ValueError("different LoRA module coverage")
-    base=scores["no_adapter"]["loss"]
-    gain=base-scores["stock_trained"]["loss"]
-    candidate=base-scores["compressed_trained"]["loss"]
-    result={"scores":scores,"stock_gain":gain,"candidate_gain":candidate,
-            "retention":candidate/gain if gain>1e-8 else None,
+    from paired_metrics import paired
+    result={"scores":scores,**paired(scores),"deployment":a.deployment,"split":a.split,
+            "deployment_swaps":swapped,"expected_modules":sorted(expected),
+            "development_images":sorted(dev),"reserved_confirmation_images":sorted(confirm),
             "snapshot_sha256":codec.sha256(a.snapshot),"source_sha256":codec.sha256(a.dit)}
     with a.out.open("x",encoding="utf-8") as f:
         json.dump(result,f,indent=2,allow_nan=False)
