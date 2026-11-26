@@ -3581,6 +3581,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             pending = 0                    # every parameter already stepped from its own gradient hook
             lr_acc.clear()
             return
+        if _LITTLEBIT_TRACE is not None:
+            _LITTLEBIT_TRACE.pre_update()
         if max_grad_norm:
             pre = torch.nn.utils.clip_grad_norm_(params, max_grad_norm)
             _later(_gn_done, gn=pre, clip=bool(adaptive is not None and adaptive.clip_signal))   # read next step
@@ -3593,8 +3595,6 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             for g in optimizer.param_groups:
                 g["lr"] = g["lr"] * m
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
-        if _LITTLEBIT_TRACE is not None:
-            _LITTLEBIT_TRACE.pre_update()
         optimizer.step()
         if selective_global_replay:
             selective_status = driver.finish_selective_optimizer_step(selective_snapshot)

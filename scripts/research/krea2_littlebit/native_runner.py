@@ -83,6 +83,7 @@ def main():
     p.add_argument("--swaps",type=int,default=22)
     p.add_argument("--deployment",choices=("int8","bf16"),default="int8")
     p.add_argument("--split",choices=("development","confirmation","all"),default="development")
+    p.add_argument("--paired-horizons",action="store_true")
     argv=sys.argv[1:]
     cut=argv.index("--") if "--" in argv else len(argv)
     a=p.parse_args(argv[:cut])
@@ -173,36 +174,74 @@ def main():
     model,swapped=quant.load_base(driver,str(a.dit),device,a.deployment,a.swaps)
     net=FamilyLoRA(model,driver,device=device)
     # net.targets was built before wrappers replaced the original Linear modules.
-    expected=set(net.targets)
-    if set(net.wrapped)!=expected or not expected:
+    expected=set(driver.lora_target_names(None))
+    if set(net.targets)!=expected or set(net.wrapped)!=expected or not expected:
         raise ValueError("deployment model missing expected standard LoRA targets")
     def score():
         row=val.run(driver,model,device,net,swapped=bool(swapped))
         if row is None or not math.isfinite(row[0]):
             raise ValueError("invalid validation result")
         return {"loss":row[0],"per_timestep":row[1],"per_image":val.last_per_image,"seconds":row[2]}
-    scores={"no_adapter":score()}
-    coverage=[]
-    for label,path in (("stock_trained",a.stock_lora),("compressed_trained",a.compressed_lora)):
-        read=net.read_file(str(path))
-        if set(read)!=expected or any(v[0]!="lora" for v in read.values()):
-            raise ValueError(f"{label}: missing={sorted(expected-set(read))}; extra={sorted(set(read)-expected)}")
-        if not net.add_file(str(path),label,strength=1.0):
-            raise ValueError("adapter did not load")
-        try:
-            coverage.append({k for k,v in net.wrapped.items() if label in v.adapters})
-            if coverage[-1]!=expected:
-                raise ValueError(f"{label}: missing reloaded modules {sorted(expected-coverage[-1])}")
-            scores[label]=score()
-        finally:
-            net.remove(label)
-    if coverage[0]!=coverage[1]:
-        raise ValueError("different LoRA module coverage")
     from paired_metrics import paired
-    result={"scores":scores,**paired(scores),"deployment":a.deployment,"split":a.split,
-            "deployment_swaps":swapped,"expected_modules":sorted(expected),
-            "development_images":sorted(dev),"reserved_confirmation_images":sorted(confirm),
-            "snapshot_sha256":codec.sha256(a.snapshot),"source_sha256":codec.sha256(a.dit)}
+    from task_diagnostics import movement, gradients
+    baseline=score()
+    def pair(stock_path,candidate_path,geometry=False,calibration=None):
+        scores={"no_adapter":baseline}; factors=[]
+        for label,path in (("stock_trained",stock_path),("compressed_trained",candidate_path)):
+            read=net.read_file(str(path))
+            if set(read)!=expected or any(v[0]!="lora" for v in read.values()):
+                raise ValueError(f"{label}: missing={sorted(expected-set(read))}; extra={sorted(set(read)-expected)}")
+            if geometry: factors.append(read)
+            if not net.add_file(str(path),label,strength=1.0):
+                raise ValueError("adapter did not load")
+            try:
+                covered={k for k,v in net.wrapped.items() if label in v.adapters}
+                if covered!=expected:
+                    raise ValueError(f"{label}: missing reloaded modules {sorted(expected-covered)}")
+                scores[label]=score()
+            finally:
+                net.remove(label)
+        result={"scores":scores,**paired(scores)}
+        if geometry:
+            result["effective_updates"]=movement(*factors,calibration)
+        return result
+
+    horizons={}
+    if a.paired_horizons:
+        if a.split!="development":
+            raise ValueError("horizon selection is development-only")
+        sroot,croot=a.stock_lora.parent,a.compressed_lora.parent
+        st=json.loads((sroot/"trace.json").read_text(encoding="utf-8"))
+        ct=json.loads((croot/"trace.json").read_text(encoding="utf-8"))
+        if st["initial_sha256"]!=ct["initial_sha256"] or st["expected_modules"]!=ct["expected_modules"] or set(st["expected_modules"])!=expected:
+            raise ValueError("training manifest/initialization mismatch")
+        if [r["input_sha256"] for r in st["steps"]]!=[r["input_sha256"] for r in ct["steps"]] or st["completed_updates"]!=ct["completed_updates"]:
+            raise ValueError("different optimizer trajectories' input schedule")
+        if set(st["checkpoints"])!=set(ct["checkpoints"]):
+            raise ValueError("missing matched horizons")
+        calibration_path=sroot/st["calibration"][0]["file"]
+        with safe_open(str(calibration_path),framework="pt",device="cpu") as cf:
+            for step in sorted(st["checkpoints"],key=int):
+                row=pair(sroot/st["checkpoints"][step],croot/ct["checkpoints"][step],
+                         geometry=a.deployment=="int8",calibration=cf)
+                if a.deployment=="int8":
+                    filename=f"task-grad-{int(step):06d}.safetensors"
+                    row["task_factor_gradients"]=gradients(sroot/filename,croot/filename,expected)
+                    row["gradient_scope"]="pre-clipping factor gradients; step 1 same initialization, later steps different adapter states"
+                horizons[step]=row
+        final_step=str(st["completed_updates"])
+        if final_step in horizons:
+            # Final saved file must still be loaded and checked. It is not assumed identical.
+            result=pair(a.stock_lora,a.compressed_lora)
+        else:
+            result=pair(a.stock_lora,a.compressed_lora,geometry=a.deployment=="int8")
+        result["completed_updates"]=int(final_step)
+    else:
+        result=pair(a.stock_lora,a.compressed_lora)
+    result.update(horizons=horizons,deployment=a.deployment,split=a.split,
+                  deployment_swaps=swapped,expected_modules=sorted(expected),
+                  development_images=sorted(dev),reserved_confirmation_images=sorted(confirm),
+                  snapshot_sha256=codec.sha256(a.snapshot),source_sha256=codec.sha256(a.dit))
     with a.out.open("x",encoding="utf-8") as f:
         json.dump(result,f,indent=2,allow_nan=False)
 

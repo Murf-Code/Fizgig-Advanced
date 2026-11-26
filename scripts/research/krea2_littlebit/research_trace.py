@@ -52,8 +52,8 @@ class Trace:
         from fizgig.families.lora import TRAINABLE
         self.net=net; self.out=Path(out)
         self.targets={k:w.adapters[TRAINABLE] for k,w in net.wrapped.items() if TRAINABLE in w.adapters}
-        expected=set(net.targets)
-        if set(self.targets)!=expected or not expected:
+        expected=set(net.driver.lora_target_names(None))
+        if set(net.targets)!=expected or set(self.targets)!=expected or not expected:
             raise RuntimeError(f"incomplete trainable manifest: {sorted(expected-set(self.targets))}")
         if any(len(a)!=2 or a[1].weight.count_nonzero().item()!=0 for a in self.targets.values()):
             raise RuntimeError("expected fresh standard zero-up LoRA")
