@@ -72,11 +72,22 @@ def run_pilot(*, driver, dit, net, optimizer, validator, device, swapped, genera
         raise ValueError('pilot requires all 224 standard Krea 2 modules')
     if not validator or not validator.ready or not validator.wanted:
         raise ValueError('pilot requires fully cached held-out development panel')
-    if any(set(w.adapters)!={TRAINABLE} for w in net.wrapped.values()):
-        raise ValueError('pilot requires no frozen/context adapters')
+    # FamilyLoRA wraps all targets before add_trainable restricts the block set.
+    # Empty wrappers (e.g. text fusion / I/O) are valid, but frozen adapters are not.
     scales={n:dict(w.scales) for n,w in net.wrapped.items()}
-    if any(not math.isfinite(s[TRAINABLE]) or s[TRAINABLE]==0 for s in scales.values()):
-        raise ValueError('pilot requires enabled trainable adapters')
+    trainable=set()
+    for n,w in net.wrapped.items():
+        names=set(w.adapters)
+        if names-{TRAINABLE}:
+            raise ValueError(f'pilot requires no frozen/context adapters: {n}: {sorted(names-{TRAINABLE})}')
+        if set(scales[n])!=names:
+            raise ValueError(f'pilot adapter/scale mismatch: {n}')
+        if TRAINABLE in names:
+            trainable.add(n)
+            if not math.isfinite(scales[n][TRAINABLE]) or scales[n][TRAINABLE]==0:
+                raise ValueError(f'pilot requires enabled trainable adapters: {n}')
+    if trainable!={p.name for p in pairs}:
+        raise ValueError('pilot trainable wrappers differ from captured factors')
     output=Path(output); scratch=output.parent
     # Payload ~1.4 GiB for warm rank 32; allow overhead and other ranks.
     factor_bytes=sum(p.numel()*p.element_size() for pair in pairs for p in (pair.A,pair.B))
@@ -130,7 +141,7 @@ def run_pilot(*, driver, dit, net, optimizer, validator, device, swapped, genera
                 fork.reset_weights(); fork.rng.restore()
                 parent=panel_guard(lambda:[predict(x) for _,x,_ in panel])
                 repeat=panel_guard(lambda:[predict(x) for _,x,_ in panel])
-                for n,w in net.wrapped.items():w.scales[TRAINABLE]=0.
+                for n in sorted(trainable):net.wrapped[n].scales[TRAINABLE]=0.
                 try:base=panel_guard(lambda:[predict(x) for _,x,_ in panel])
                 finally:
                     for n,w in net.wrapped.items():w.scales.clear();w.scales.update(scales[n])
