@@ -94,7 +94,7 @@ def test_pareto_tradeoff():
     assert not pareto({'g':2,'p':0},{'g':1,'p':1}) and not pareto({'g':1,'p':1},{'g':2,'p':0})
 
 def test_pareto_dominance():
-    assert pareto({'g':2,'p':1},{'g':1,'p':1})
+    assert pareto({'g':2,'p':1},{'g':1,'p':1}) and not pareto({'g':1,'p':1},{'g':1,'p':1})
 
 def test_paired_small_n():
     r=paired_summary([1,1,1]); assert r['sign_p_two_sided']==.25 and r['exploratory_ci95'] is None
