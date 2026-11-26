@@ -66,7 +66,7 @@ def evaluate_history(*, pairs, net, history, panel, predict, guard, report, save
                   parent_factor_hash=parent_hash,geometry={},matching={},evaluators={},integrity_passed=False)
 
     def endpoint():
-        return digest({p.name:(p.A,p.B) for p in pairs})
+        return digest({p.name:(p.A.detach().cpu(),p.B.detach().cpu()) for p in pairs})
 
     def restore_scales():
         for n,w in net.wrapped.items():
