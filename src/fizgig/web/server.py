@@ -2352,7 +2352,7 @@ def _run_stages(stages, out_dir):
         if diag_case:
             try:
                 with open(os.path.join(out_dir, "diagnostic.log"), "a", encoding="utf-8") as f:
-                    f.write(f"\\n[nan-diagnostic] {stage.name} exit code {ret}\\n")
+                    f.write(f"\n[nan-diagnostic] {stage.name} exit code {ret}\n")
             except OSError:
                 pass
         with _lock:
