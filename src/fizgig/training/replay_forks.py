@@ -128,11 +128,13 @@ class Fork:
             p.copy_(old)
 
     @torch.no_grad()
-    def apply(self, multipliers):
+    def apply(self, multipliers, *, max_multiplier=1.):
         if not self.live or set(multipliers) != set(self.block.values()):
             raise ValueError('fork closed or missing/extraneous block multiplier')
-        if any(not math.isfinite(m) or not 0 <= m <= 1 for m in multipliers.values()):
-            raise ValueError('multipliers must be finite and in [0, 1]')
+        if not math.isfinite(max_multiplier) or not 1 <= max_multiplier <= 2:
+            raise ValueError('invalid upper multiplier bound')
+        if any(not math.isfinite(m) or not 0 <= m <= max_multiplier for m in multipliers.values()):
+            raise ValueError('multipliers outside declared finite bounds')
         # Preserve native add/alpha and decay rounding, rather than subtracting
         # the rounded native endpoint to reconstruct a learning delta.
         for ps, alpha, foreach in self.groups:
@@ -168,9 +170,12 @@ class Fork:
             out.append((pair.block, *(x.numpy()*pair.scale for x in (C, L, Q))))
         return out
 
-    def achieved(self, multipliers):
-        self.apply(multipliers)
-        shares = {b: 0.0 for b in multipliers}
+    def achieved(self, multipliers, *, max_multiplier=1.):
+        self.apply(multipliers, max_multiplier=max_multiplier)
+        return self.measured()
+
+    def measured(self):
+        shares = {b: 0.0 for b in self.block.values()}
         for pair in self.pairs:
             A, B = self.parent[pair.A].double(), self.parent[pair.B].double()
             da, db = _cpu(pair.A).double()-A, _cpu(pair.B).double()-B

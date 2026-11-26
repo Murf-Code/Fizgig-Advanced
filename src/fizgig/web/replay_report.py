@@ -2,6 +2,7 @@
 import ast
 import json
 import logging
+import math
 import re
 import shutil
 import threading
@@ -65,6 +66,12 @@ def _save(root, report):
         report["predictor_summary"] = {"completed_probes": sum(len(r.get("predictors", [])) for r in predictors),
             "same_panel": len(panels) == 1 if all(r["status"] == "finished" for r in predictors) else None,
             "scope": "development_target_only"}
+    allocation = [r for r in report["runs"] if r["case"].startswith("allocation-")]
+    if allocation:
+        report["experiment"] = "7C/7D"
+        report["allocation_summary"] = {"completed_runs": sum("allocation" in r for r in allocation),
+            "scope": "development_target_only", "momentum_policy": "preserve",
+            "matching_scope": "local_same_parent_proposal"}
     report["updated_at"] = time.time()
     _atomic(root / REPORT, json.dumps(report, indent=2, allow_nan=False))
     lines = ["Fizgig Global Replay comparison", "Status: " + report["status"],
@@ -277,6 +284,43 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                                 "integrity": True, "matched": True, "unique_endpoints": len(names)}
                     except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
                         run.update(status="failed", reason="Invalid movement dual diagnostics: " + str(exc))
+                if status == "finished" and case.startswith("allocation-"):
+                    try:
+                        rows = run.get("research", [])
+                        allocations = [r for r in rows if r.get("kind") == "allocation"]
+                        hashes = [r["step"] for r in rows if r.get("kind") == "hash"]
+                        complete = [r["step"] for r in rows if r.get("kind") == "complete"]
+                        mode = case.split("-")[1]
+                        if ([a["step"] for a in allocations] != list(range(1,14))
+                                or hashes != list(range(14)) or complete != [13]):
+                            raise ValueError("incomplete allocation trajectory")
+                        for a in allocations:
+                            ms = a["multipliers"]
+                            target, actual, native = (a[k] for k in ("target_movement","actual_movement","native_movement"))
+                            attenuated = set(range((a["step"]-1)%2,28,2))
+                            if (a["mode"] != mode or a["momentum_policy"] != "preserve"
+                                    or a["gradient_blocks"] != list(range(28))
+                                    or set(a["attenuated_blocks"]) != attenuated
+                                    or set(ms) != {str(b) for b in range(28)}
+                                    or not all(math.isfinite(x) and x > 0 for x in (target,actual,native))
+                                    or abs(actual-target) > max(1e-12,.001*target)
+                                    or any(not 0 < v <= 1.5 for v in ms.values())):
+                                raise ValueError("invalid allocation movement or coverage")
+                            c = a["common_scale"]
+                            expected = {str(b): (c*(.5 if b in attenuated else 1.)
+                                        if mode in ("rotate","compensated") else c) for b in range(28)}
+                            if (any(abs(ms[b]-v)>1e-10 for b,v in expected.items())
+                                    or (mode in ("rotate","full") and c != 1.)
+                                    or (mode in ("full","compensated") and target != native)):
+                                raise ValueError("allocation multiplier or target mismatch")
+                        run["allocation"] = {
+                            "updates":len(allocations),
+                            "mean_local_movement_ratio":sum(a["movement_ratio"] for a in allocations)/13,
+                            "max_relative_gap":max(a["relative_gap"] for a in allocations),
+                            "mean_geometry_step_seconds":sum(a["seconds"] for a in allocations)/13,
+                            "cumulative_movement":sum(a["actual_movement"] for a in allocations)}
+                    except (ValueError, KeyError, TypeError, IndexError, ZeroDivisionError) as exc:
+                        run.update(status="failed", reason="Invalid allocation diagnostics: " + str(exc))
                 if status == "finished" and case.startswith("predictors-"):
                     try:
                         rows = run.get("research", [])

@@ -1571,6 +1571,13 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     movement_predictors = str((family_options or {}).get("movement_predictors", "0")) == "1"
     if movement_predictors and (movement_history or movement_dual or movement_isolation or movement_dual_multi or movement_pilot_step != 8):
         raise RuntimeError("Predictor verification needs its own strict calibration run.")
+    allocation_mode = (family_options or {}).get("movement_allocation")
+    if allocation_mode is not None:
+        from fizgig.training.replay_attenuation import MODES
+        if (allocation_mode not in MODES or movement_pilot_step or movement_predictors
+                or movement_history or movement_dual or movement_isolation or movement_dual_multi
+                or research_mode != "calibration"):
+            raise RuntimeError("Allocation experiment requires its own strict calibration run.")
     historical_factors = {}
     if movement_history and (movement_dual or movement_isolation or movement_dual_multi or movement_pilot_step != 8):
         raise RuntimeError("Historical reversion requires its own strict movement research run.")
@@ -3649,11 +3656,16 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         research_before = (_rr.probe_before(net, optimizer=optimizer if research_mode in ("causal", "calibration") else None)
                            if (research_mode == "telemetry" and driver.selective_probe_due)
                            or (research_mode in ("causal", "calibration") and (research_updates + 1) % 8 == 0)
-                           else None) if not movement_pilot_step else None
+                           else None) if not (movement_pilot_step or allocation_mode) else None
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
         if selective_global_replay:
             driver.record_selective_gradient_update()
-        if predictor_observer is not None:
+        if allocation_mode is not None:
+            from fizgig.training.replay_attenuation import allocated_step
+            from fizgig.training.replay_forks import network_pairs
+            allocation = allocated_step(network_pairs(net), optimizer, allocation_mode, research_updates + 1)
+            _rr.record(logger, kind="allocation", **allocation)
+        elif predictor_observer is not None:
             optimizer.step(proposal_sink=predictor_observer)
             predictor_report["update"] = predictor_observer.result()
             predictor_report["post_step_fingerprint"] = _rr.fingerprint(net)
@@ -4213,7 +4225,17 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 logger.info("[maps] training maps: no picture could be read from the cache - off for this run")
                 maps = None
     if research_mode:
-        if movement_pilot_step:
+        if allocation_mode is not None:
+            from fizgig.training.replay_forks import network_pairs
+            pairs = network_pairs(net)
+            if (not global_replay or selective_global_replay or accum != 1 or bsz != 1
+                    or max_train_epochs != 1 or steps_per_epoch != 13 or int(seed) != 42
+                    or validator is None or not validator.ready or ema is None
+                    or not set(validator.wanted) <= set(val_held) or len(validator.wanted) != 2
+                    or len(validator.ts) != 4 or int(validator.seed) != 42 or validation_every_steps
+                    or len(pairs) != 224 or set(p.block for p in pairs) != set(range(28))):
+                raise RuntimeError("7C/7D requires the same 13-step, seed-42 unrestricted recipe and fixed holdout.")
+        elif movement_pilot_step:
             if (not global_replay or selective_global_replay or accum != 1 or bsz != 1
                     or max_train_epochs != 1 or not max(movement_probe_steps) <= steps_per_epoch <= 40
                     or validator is None or not validator.ready or ema is None
@@ -4764,10 +4786,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     if save_state_on_train_end:
         state(max_train_epochs)
     if research_mode in ("causal", "calibration"):
-        expected_updates = steps_per_epoch if movement_pilot_step else 145
+        expected_updates = steps_per_epoch if (movement_pilot_step or allocation_mode) else 145
         if global_step != expected_updates or research_updates != expected_updates:
             raise RuntimeError("Replay research did not complete the planned optimizer updates")
-        _rr.record(logger, kind="complete", step=expected_updates, planned_epochs=1 if movement_pilot_step else 5)
+        _rr.record(logger, kind="complete", step=expected_updates, planned_epochs=1 if (movement_pilot_step or allocation_mode) else 5)
     logger.info(f"Training complete -> {final}")
     return final
 

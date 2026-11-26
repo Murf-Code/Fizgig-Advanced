@@ -197,3 +197,18 @@ def test_predictor_queue_recipe(tmp_path):
         assert not plan.problems
         assert cmd[-4:] == ["--family_option", "movement_pilot_step=8",
                             "--family_option", "movement_predictors=1"]
+
+
+def test_allocation_queue_recipe(tmp_path):
+    configs = rb.allocation_settings("allocation", str(tmp_path))
+    assert [v["__replay_compare"] for v in configs] == list(rb.ALLOCATION_CASES)
+    for v in configs:
+        assert v["SEED"] == v["VALIDATION_SEED"] == "42"
+        assert v["MAX_TRAIN_EPOCHS"] == "1" and not v["SAMPLE_ENABLED"]
+        assert not v["KREA2_SELECTIVE_BLOCK_CHECK"]
+        cmd = ["python", "train.py"]
+        plan = SimpleNamespace(problems=[], stages=[SimpleNamespace(name="Training", cmd=cmd)],
+                               dataset_toml='holdout_file = "held.json"', console=[])
+        rb.adjust_plan(SimpleNamespace(key="krea2", n_blocks=28), v, plan)
+        assert not plan.problems
+        assert cmd[-2:] == ["--family_option", "movement_allocation="+rb.ALLOCATION_CASES[v["__replay_compare"]]]
