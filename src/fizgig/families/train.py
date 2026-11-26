@@ -1571,6 +1571,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     movement_predictors = str((family_options or {}).get("movement_predictors", "0")) == "1"
     if movement_predictors and (movement_history or movement_dual or movement_isolation or movement_dual_multi or movement_pilot_step != 8):
         raise RuntimeError("Predictor verification needs its own strict calibration run.")
+    final_mode = (family_options or {}).get("replay_final")
+    if final_mode is not None:
+        from fizgig.training.replay_final import MODES
+        if (final_mode not in MODES or research_mode != "calibration" or movement_pilot_step
+                or (family_options or {}).get("movement_allocation") is not None):
+            raise RuntimeError("Invalid isolated final replay benchmark")
     allocation_mode = (family_options or {}).get("movement_allocation")
     if allocation_mode is not None:
         from fizgig.training.replay_attenuation import MODES
@@ -2487,7 +2493,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             driver.configure_selective_global_replay(
                 dit, net, warmup_updates=8, reactivate_every=8, score_decay=0.5,
                 matched_report=_ReplayPath(output_dir).parent / "global-replay-report.json")
-            logger.info("[selective-replay] strategy=%s budget=%s; all blocks train for the first 8 updates; "
+            if driver._selective_strategy == "balanced_step":
+                logger.info("[selective-replay] complementary 14-block groups alternate each global optimizer update; "
+                            "all input gradients propagate; no full probes; skipped momentum and weights frozen.")
+            else:
+                logger.info("[selective-replay] strategy=%s budget=%s; all blocks train for the first 8 updates; "
                         "then reassess every 8 updates with a full-block probe. Block input gradients still "
                         "propagate through every block.",
                         driver._selective_strategy,
@@ -3656,11 +3666,36 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         research_before = (_rr.probe_before(net, optimizer=optimizer if research_mode in ("causal", "calibration") else None)
                            if (research_mode == "telemetry" and driver.selective_probe_due)
                            or (research_mode in ("causal", "calibration") and (research_updates + 1) % 8 == 0)
-                           else None) if not (movement_pilot_step or allocation_mode) else None
+                           else None) if not (movement_pilot_step or allocation_mode or final_mode) else None
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
         if selective_global_replay:
             driver.record_selective_gradient_update()
-        if allocation_mode is not None:
+        if final_mode is not None:
+            from fizgig.training.replay_final import multiplier, checked_counts, active_blocks, FirstUpdateAudit
+            from fizgig.training.replay_forks import network_pairs
+            pairs = network_pairs(net)
+            active = set(research_mask)
+            if final_mode == "full":
+                expected = set(range(28))
+            elif final_mode == "existing":
+                expected = set(driver.selective_active_blocks())
+            else:
+                expected = active_blocks(28, research_updates+1, int(seed)==43)
+            if active != expected:
+                raise RuntimeError("final replay routing mismatch")
+            counts = checked_counts(pairs, active)
+            scale = multiplier(final_mode, len(active))
+            audit = (FirstUpdateAudit(pairs, optimizer, scale)
+                     if research_updates == 0 and final_mode in ("balanced", "compensated") else None)
+            if final_mode == "compensated" or audit is not None:
+                optimizer.step(learning_multiplier=scale, proposal_sink=audit.observe if audit else None)
+            else:
+                optimizer.step()
+            _rr.record(logger, kind="final_step", step=research_updates+1, mode=final_mode,
+                       active_blocks=sorted(active), factor_gradient_counts={b:v[0] for b,v in counts.items()},
+                       multiplier=scale, skipped_decay="none", skipped_momentum="preserve",
+                       **({"first_update_audit":audit.result()} if audit else {}))
+        elif allocation_mode is not None:
             from fizgig.training.replay_attenuation import allocated_step
             from fizgig.training.replay_forks import network_pairs
             allocation = allocated_step(network_pairs(net), optimizer, allocation_mode, research_updates + 1)
@@ -3714,7 +3749,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             research_step = research_updates
             if selective_global_replay and driver.selective_state_dict()["optimizer_steps"] != research_step:
                 raise RuntimeError("Research optimizer-step count mismatch")
-            _rr.record(logger, kind="hash", step=research_step, sha256=_rr.fingerprint(net),
+            # Full fingerprints at initialization and final checkpoint only for
+            # timed final arms; per-update routing is audited without CPU factor copies.
+            if not final_mode or research_step == 65:
+                _rr.record(logger, kind="hash", step=research_step, sha256=_rr.fingerprint(net),
                        active_blocks=research_mask, next_active_blocks=(
                            list(driver.selective_active_blocks()) if selective_global_replay else list(range(28))),
                        **({"optimizer_rates": research_rates} if research_rates is not None else {}))
@@ -4225,7 +4263,20 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 logger.info("[maps] training maps: no picture could be read from the cache - off for this run")
                 maps = None
     if research_mode:
-        if allocation_mode is not None:
+        if final_mode is not None:
+            from fizgig.training.replay_forks import network_pairs
+            pairs = network_pairs(net)
+            expected_strategy = "legacy" if final_mode == "existing" else "balanced_step"
+            if (not global_replay or accum != 1 or bsz != 1 or max_train_epochs != 5
+                    or steps_per_epoch != 13 or int(seed) not in (42,43)
+                    or validator is None or not validator.ready or ema is None
+                    or not set(validator.wanted) <= set(val_held) or len(validator.wanted) != 2
+                    or len(validator.ts) != 4 or int(validator.seed) != 42 or validation_every_steps
+                    or len(pairs) != 224 or set(p.block for p in pairs) != set(range(28))
+                    or selective_global_replay != (final_mode != "full")
+                    or (selective_global_replay and driver._selective_strategy != expected_strategy)):
+                raise RuntimeError("7G needs fixed 13-step, five-epoch, paired-seed recipe")
+        elif allocation_mode is not None:
             from fizgig.training.replay_forks import network_pairs
             pairs = network_pairs(net)
             if (not global_replay or selective_global_replay or accum != 1 or bsz != 1
@@ -4254,7 +4305,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 raise RuntimeError("Causal interventions require Experiment 5B selective replay")
             if research_mode == "calibration" and selective_global_replay and driver._selective_strategy == "random" and driver._selective_budget != 14:
                 raise RuntimeError("Experiment 5C Random requires exactly 14 blocks between probes")
-            _rr.record(logger, kind="routing", route=route or
+            _rr.record(logger, kind="routing", route=final_mode or route or
                        ("random" if selective_global_replay and driver._selective_strategy == "random"
                         else "gradient" if selective_global_replay else "unrestricted"))
         _rr.record(logger, kind="hash", step=0, sha256=_rr.fingerprint(net), active_blocks=[])
@@ -4786,7 +4837,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     if save_state_on_train_end:
         state(max_train_epochs)
     if research_mode in ("causal", "calibration"):
-        expected_updates = steps_per_epoch if (movement_pilot_step or allocation_mode) else 145
+        expected_updates = 65 if final_mode else steps_per_epoch if (movement_pilot_step or allocation_mode) else 145
         if global_step != expected_updates or research_updates != expected_updates:
             raise RuntimeError("Replay research did not complete the planned optimizer updates")
         _rr.record(logger, kind="complete", step=expected_updates, planned_epochs=1 if (movement_pilot_step or allocation_mode) else 5)

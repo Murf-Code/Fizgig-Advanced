@@ -82,7 +82,9 @@ class BatchedMuon(torch.optim.Optimizer):
                     raise ValueError(f"BatchedMuon takes 2D parameters only, got {tuple(p.shape)}")
 
     @torch.no_grad()
-    def step(self, closure=None, *, proposal_sink=None):
+    def step(self, closure=None, *, proposal_sink=None, learning_multiplier=1.):
+        if not math.isfinite(learning_multiplier) or not 0 < learning_multiplier <= 1.5:
+            raise ValueError('invalid post-orthogonalization learning multiplier')
         loss = None
         if closure is not None:
             with torch.enable_grad():
@@ -110,7 +112,7 @@ class BatchedMuon(torch.optim.Optimizer):
             for (shape, _dev, dtype), idx in by_shape.items():
                 ortho = _zeropower_batched(torch.stack([ups[i] for i in idx]), group["ns_coefficients"],
                                            int(group["ns_steps"]), float(group["eps"]))
-                alr = _adjust_lr(lr, group["adjust_lr_fn"], shape)
+                alr = _adjust_lr(lr, group["adjust_lr_fn"], shape) * learning_multiplier
                 if proposal_sink is not None:
                     proposal_sink([ps[i] for i in idx], list(ortho.to(dtype).unbind(0)), -alr, True)
                 torch._foreach_add_([ps[i] for i in idx], list(ortho.to(dtype).unbind(0)), alpha=-alr)
@@ -171,7 +173,9 @@ class Muon(torch.optim.Optimizer):
         super().__init__(params, defaults)
 
     @torch.no_grad()
-    def step(self, closure=None, *, proposal_sink=None):
+    def step(self, closure=None, *, proposal_sink=None, learning_multiplier=1.):
+        if not math.isfinite(learning_multiplier) or not 0 < learning_multiplier <= 1.5:
+            raise ValueError('invalid post-orthogonalization learning multiplier')
         loss = None
         if closure is not None:
             with torch.enable_grad():
@@ -214,6 +218,7 @@ class Muon(torch.optim.Optimizer):
 
                 if weight_decay != 0.0:
                     p.mul_(1.0 - lr * weight_decay)
+                adjusted_lr *= learning_multiplier
                 if proposal_sink is not None:
                     proposal_sink([p], [update], -adjusted_lr, False)
                 p.add_(update, alpha=-adjusted_lr)

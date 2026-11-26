@@ -72,6 +72,27 @@ def _save(root, report):
         report["allocation_summary"] = {"completed_runs": sum("allocation" in r for r in allocation),
             "scope": "development_target_only", "momentum_policy": "preserve",
             "matching_scope": "local_same_parent_proposal"}
+    final = [r for r in report["runs"] if r["case"].startswith("final-")]
+    if final:
+        report["experiment"] = "7G"
+        result = {}
+        for seed in ("42","43"):
+            group = {r["case"].split("-")[1]:r for r in final
+                     if r["settings"]["SEED"] == seed and r["status"] == "finished"}
+            first = {m:r["final_replay"]["initial_hash"] for m,r in group.items()}
+            row = {"completed_arms":list(group),"same_initialization":len(set(first.values()))==1 if len(first)==4 else None}
+            if "balanced" in group and "compensated" in group:
+                a,b = [group[m]["final_replay"]["first_update_audit"] for m in ("balanced","compensated")]
+                row["first_pair_match"] = (a["directions"] == b["directions"] and a["momentum"] == b["momentum"]
+                    and a["applied_alphas"].keys()==b["applied_alphas"].keys()
+                    and all(math.isclose(b["applied_alphas"][k], math.sqrt(2)*v,rel_tol=1e-12)
+                            for k,v in a["applied_alphas"].items()))
+            result[seed] = row
+        report["final_summary"] = result
+        if report["status"] == "complete" and not all(
+                r["same_initialization"] and r.get("first_pair_match") for r in result.values()):
+            report["status"] = "failed"
+            report["final_integrity_error"] = "paired initial weights or first native proposal audit differs"
     report["updated_at"] = time.time()
     _atomic(root / REPORT, json.dumps(report, indent=2, allow_nan=False))
     lines = ["Fizgig Global Replay comparison", "Status: " + report["status"],
@@ -284,6 +305,43 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                                 "integrity": True, "matched": True, "unique_endpoints": len(names)}
                     except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
                         run.update(status="failed", reason="Invalid movement dual diagnostics: " + str(exc))
+                if status == "finished" and case.startswith("final-"):
+                    try:
+                        from fizgig.training.replay_final import active_blocks, multiplier
+                        rows = run.get("research", [])
+                        mode = case.split("-")[1]
+                        seed = int(run["settings"]["SEED"])
+                        steps = [r for r in rows if r.get("kind") == "final_step"]
+                        hashes = [r for r in rows if r.get("kind") == "hash"]
+                        if ([r["step"] for r in steps] != list(range(1,66))
+                                or [r["step"] for r in hashes] != [0,65]
+                                or [r["step"] for r in rows if r.get("kind")=="complete"] != [65]):
+                            raise ValueError("incomplete final trajectory")
+                        for a in steps:
+                            active = set(a["active_blocks"])
+                            if (not active or not active <= set(range(28))
+                                    or a["mode"] != mode
+                                    or a["skipped_decay"] != "none" or a["skipped_momentum"] != "preserve"
+                                    or a["factor_gradient_counts"] != {str(i):16 if i in active else 0 for i in range(28)}
+                                    or not math.isclose(a["multiplier"],multiplier(mode,len(active)),rel_tol=1e-12)
+                                    or (mode=="full" and active!=set(range(28)))
+                                    or (mode in ("balanced","compensated") and active!=active_blocks(28,a["step"],seed==43))):
+                                raise ValueError("invalid final mask or multiplier")
+                        vals = {}
+                        for kind in ("raw_validation","ema_validation"):
+                            v = [r for r in rows if r.get("kind")==kind]
+                            if [r["step"] for r in v if r["step"]>0] != [13,26,39,52,65]:
+                                raise ValueError("missing final validation")
+                            vals[kind] = v[-1]["loss"]
+                        run["final_replay"] = {"initial_hash":hashes[0]["sha256"],
+                            "final_hash":hashes[-1]["sha256"], "updates":65,
+                            "factor_gradient_updates":sum(sum(a["factor_gradient_counts"].values()) for a in steps),
+                            "block_update_counts":{str(i):sum(i in a["active_blocks"] for a in steps) for i in range(28)},
+                            **vals}
+                        if mode in ("balanced","compensated"):
+                            run["final_replay"]["first_update_audit"] = steps[0]["first_update_audit"]
+                    except (ValueError, KeyError, TypeError, IndexError) as exc:
+                        run.update(status="failed",reason="Invalid final replay diagnostics: "+str(exc))
                 if status == "finished" and case.startswith("allocation-"):
                     try:
                         rows = run.get("research", [])

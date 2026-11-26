@@ -275,7 +275,7 @@ class Krea2Driver(FamilyDriver):
         from fizgig.krea2.selective_policy import STRATEGIES, ADAPTIVE_STRATEGIES, load_matched_counts
         self._selective_strategy = str(self.options.get("selective_strategy") or "legacy")
         self._selective_budget = int(self.options.get("selective_budget") or max(1, n // 2))
-        if self._selective_strategy != "legacy" and (self._selective_strategy not in STRATEGIES + ADAPTIVE_STRATEGIES
+        if self._selective_strategy != "legacy" and (self._selective_strategy not in STRATEGIES + ADAPTIVE_STRATEGIES + ("balanced_step",)
                                                      or not 1 <= self._selective_budget <= n):
             raise ValueError("Invalid selective replay strategy or budget.")
         self._selective_matched_counts = (load_matched_counts(matched_report, n, self._selective_warmup_updates,
@@ -294,6 +294,13 @@ class Krea2Driver(FamilyDriver):
         self._selective_update_counts = [0] * n
         self._selective_scores = [None] * n
         self._selective_active = set(range(n))
+        if self._selective_strategy == "balanced_step":
+            from fizgig.training.replay_final import active_blocks
+            if (self.options.get("replay_final") not in ("balanced", "compensated")
+                    or self._selective_budget != 14):
+                raise RuntimeError("balanced step routing is restricted to the final experiment")
+            self._selective_rotation_start = int(self.options.get("final_rotation_start", 0))
+            self._selective_active = active_blocks(n, 1, self._selective_rotation_start)
         # each block's weights at its last probe (CPU), the start of the displacement the next probe scores
         self._selective_anchor = ({i: self._selective_flat(by_block[i]) for i in range(n)}
                                   if self._selective_strategy in ("legacy", "downhill", "uphill", "adaptive_descent", "adaptive_inverse_descent") else {})
@@ -314,6 +321,8 @@ class Krea2Driver(FamilyDriver):
     def selective_probe_due(self):
         """Whether the optimizer update about to happen is a full-block probe that should be scored."""
         if not self.selective_global_replay or not hasattr(self, "_selective_optimizer_steps"):
+            return False
+        if self._selective_strategy == "balanced_step":
             return False
         upcoming = self._selective_optimizer_steps + 1
         warmup = self._selective_warmup_updates
@@ -388,6 +397,13 @@ class Krea2Driver(FamilyDriver):
             return None
         self._selective_optimizer_steps += 1
         step = self._selective_optimizer_steps
+        if self._selective_strategy == "balanced_step":
+            from fizgig.training.replay_final import active_blocks
+            self._selective_active = active_blocks(self._selective_block_count, step+1,
+                                                   self._selective_rotation_start)
+            self._set_selective_active_parameters()
+            return {"kind":"rotation", "active":len(self._selective_active),
+                    "total":self._selective_block_count}
         if snapshot is not None:
             for index, cosine in snapshot.get("cosines", {}).items():
                 old = self._selective_scores[index]
