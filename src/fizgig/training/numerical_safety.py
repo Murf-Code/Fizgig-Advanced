@@ -7,8 +7,16 @@ class NumericalError(RuntimeError):
     """An invalid training value; do not retry or publish this checkpoint."""
 
 
+def _finite_flag(tensor):
+    t = tensor.detach()
+    # Several float8 formats do not implement isfinite on CPU/CUDA.
+    if str(t.dtype).startswith("torch.float8"):
+        t = t.float()
+    return torch.isfinite(t).all()
+
+
 def require_finite(tensor, where):
-    if not bool(torch.isfinite(tensor.detach()).all()):
+    if not bool(_finite_flag(tensor)):
         raise NumericalError(f"[numerical safety] nonfinite {where}; training stopped")
 
 
@@ -19,7 +27,7 @@ def require_finite_tensors(tensors, where):
         if torch.is_tensor(t) and (t.is_floating_point() or t.is_complex()):
             groups.setdefault(t.device, []).append((name, t.detach()))
     for group in groups.values():
-        flags = torch.stack([torch.isfinite(t).all() for _, t in group])
+        flags = torch.stack([_finite_flag(t) for _, t in group])
         if not bool(flags.all()):
             bad = [name for (name, _), ok in zip(group, flags.cpu().tolist()) if not ok]
             raise NumericalError(f"[numerical safety] nonfinite {where}: {bad[:8]}; training stopped")
