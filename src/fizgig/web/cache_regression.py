@@ -29,7 +29,11 @@ DATASET_KEYS = (
 )
 
 
-def settings(group, root, prompt, *, gpu_profile, masked=False, dataset_values=None):
+class CacheUnavailable(ValueError):
+    """The source does not contain a complete compatible cache."""
+
+
+def settings(group, root, prompt, *, gpu_profile, masked=False, dataset_values=None, fresh_baseline=False):
     if gpu_profile not in GPU_PROFILES:
         raise ValueError("Choose the RTX 3090 or RTX 4070 Ti cache test.")
     profile = GPU_PROFILES[gpu_profile]
@@ -63,6 +67,7 @@ def settings(group, root, prompt, *, gpu_profile, masked=False, dataset_values=N
     if gpu_profile == "4070-ti" and dataset_values is not None:
         base.update({key: dataset_values[key] for key in DATASET_KEYS if key in dataset_values})
     return [dict(base, __cache_regression=case, __cache_prompt=prompt, __cache_gpu_profile=gpu_profile,
+                 __cache_fresh_baseline=bool(fresh_baseline or gpu_profile == "4070-ti"),
                  LORA_NAME=f"{group}-{case}", LORA_OUTPUT_DIR=os.path.join(root, group, case))
             for case in CASES]
 
@@ -127,9 +132,9 @@ def configure_plan(desc, inputs, plan, values, launch):
         stages.append(launch.Stage("Cache Preparation", lat))
     if fresh_text:
         stages.append(launch.Stage("Text Encoder Caching", txt))
-    # All 4070 Ti arms compare against one freshly created, private baseline.
+    # Fresh-baseline arms compare against one newly created, private baseline.
     # Arm A builds it before training; the server snapshots it into every arm.
-    seed_baseline = values.get("__cache_gpu_profile") == "4070-ti" and case == "a-existing"
+    seed_baseline = bool(values.get("__cache_fresh_baseline")) and case == "a-existing"
     if seed_baseline:
         baseline = dest.parent.parent / "baseline-cache"
         baseline_config = str(dest.parent.parent / "baseline-dataset.toml")
@@ -209,20 +214,18 @@ def prepare_caches(source_body, configs, arch, held_paths=()):
         var = Path(variants_path(str(te)))
         for file in (lat, te):
             if not file.is_file():
-                raise ValueError(f"Existing cache missing: {file}. Use the complete cache from the failing run with the same validation selection.")
+                raise CacheUnavailable(f"Existing cache missing: {file}. Use the complete cache from the failing run with the same validation selection.")
         if ImageDataset.latent_cache_matches_reso(str(lat), selector.get_bucket_resolution((w,h)), arch) is not True:
-            raise ValueError(f"Existing latent has the wrong bucket: {lat}. "
+            raise CacheUnavailable(f"Existing latent has the wrong bucket: {lat}. "
                              f"Expected {selector.get_bucket_resolution((w, h))} pixels at target {g['resolution']}. "
-                             "For RTX 4070 Ti, set Target Megapixels and bucket options to those used to create "
-                             "the existing cache. RTX 3090 uses the original fixed 1 MP recipe. "
-                             "Do not regenerate the source cache before testing.")
+                             "A fresh private baseline can be created instead; the source will not be modified.")
         expected.extend([(lat, "latents", rel / lat.name), (te, "text", rel / te.name)])
         if is_held:
             continue
         caption = read_caption(str(Path(p).with_suffix(ext))).strip()
         if variant_captions(caption, tags) or tags.caption_dropout:
             if not var.is_file():
-                raise ValueError(f"Existing caption variants missing: {var}. Do not rebuild the source before the test.")
+                raise CacheUnavailable(f"Existing caption variants missing: {var}. Do not rebuild the source before the test.")
             expected.append((var, "text", rel / var.name))
         elif var.is_file():
             expected.append((var, "text", rel / var.name))
@@ -264,7 +267,7 @@ def verify_start(plan, values):
     if any(out.glob("*.safetensors")) or (out / "diagnostic.log").exists():
         raise ValueError("This cache regression arm has already run; create a new comparison.")
     if manifest["snapshot"].get("baseline_pending"):
-        if values.get("__cache_gpu_profile") != "4070-ti" or case != "a-existing":
+        if not values.get("__cache_fresh_baseline") or case != "a-existing":
             raise ValueError("Baseline preparation has not completed; start a new comparison.")
         for p in (out / "isolated-cache", out.parent / "baseline-cache"):
             if p.exists() and any(p.iterdir()):
@@ -291,7 +294,7 @@ def finish_baseline(out_dir):
     pending = manifest["snapshot"]
     if not pending.get("baseline_pending"):
         return False
-    if manifest.get("gpu_profile") != "4070-ti" or out.name != "a-existing":
+    if out.name != "a-existing" or not manifest["cases"][0].get("__cache_fresh_baseline"):
         raise ValueError("Unexpected baseline preparation run.")
     body = (out.parent / "baseline-dataset.toml").read_text(encoding="utf-8")
     if body != pending["baseline_config"]:
