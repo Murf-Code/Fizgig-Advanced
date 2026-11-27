@@ -34,4 +34,31 @@ User supplied five report/log/ZIP sets. Verified embedded JSON byte-identical to
 
 Both successful arms have exactly 13 successful records for each phase, 13 state inventories and 13 loss entries. Offload accepted 364 inputs, no skips, 420 MiB host peak, zero live after each update per reported inventory. Forward allocation reduced 411.54 MiB, backward 21.48 MiB, reserved 284 MiB; step time +15.15%, system RAM +0.795 GiB, shared GPU 1.08 GiB unchanged. Identical final state inventory bytes (938446080 FP32 momentum), frozen-weight transfer counts and bytes (766 H2D, 332528615424 bytes; zero D2H). This independently repeats the first pilot's operational finding with complete phase telemetry. First pre-update loss differs .19066694 vs .15002115; mean of 13 losses .15571207 vs .17482471. Same holdout baseline .18260, no post-training validation. Input/initialization pairing not established; first-step discrepancy before optimizer updates cannot establish offload-induced gradient or quality error. Fixed-input parity and repeat control remain required. No new training execution or raw private data committed.
 
-Next: create fresh 192 MiB queue after pulling latest research branch (do not reuse old entries). The current branch source pins 192 MiB. The 128 MiB control and activation results should be preserved, not pooled with the forthcoming changed-budget arms as if matched.
+The planned fresh 192 MiB queue was subsequently completed on Nov 27; see below. Preserve the 128 MiB history separately, not as matched arms of the new queue.
+
+
+## Round 3 — complete GPU feasibility at 192 MiB (2026-11-27)
+
+Run `geometry-memory-20261127-131338-4712f5`. User archive matrix-geometry-results(10).zip and report/log export suffix 20261127-212149. ZIP integrity passed; embedded JSON and comparison log byte-identical to loose files; all structured phase/state/config/loss records matched the five individual raw logs exactly. Each arm had 13 successful scopes per forward/backward/optimizer, 13 state inventories, 13 finite losses and a completion marker. All five used chunk_memory_mib=192, rank/alpha64, seed42, LR .0002, 22 swaps, INT8 base, standard eager checkpointed LoRA, 13 training images (11 at 496x496 and one each 448x544 and 528x464), two holdouts, no previews or saves. All reported zero CUDA allocation retries/OOMs. Settings identical except momentum codec, activation flags, run names and output paths. First control rebuilt some caches; remaining arms reused caches, so compare training timings rather than startup-inclusive wall times. No paired actual tensor/input/initialization verification.
+
+| Arm | Completed updates | State bytes | Allocated peak bytes | Reserved peak bytes | Device peak GiB (sampled) | Step ms | Training wall s |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| FP32 | 13 | 938446080 | 8261988864 | 8835301376 | 10.73 | 2433.8 | 34.266 |
+| BF16 | 13 | 469223040 | 7773347840 | 8407482368 | 10.15 | 2613.0 | 36.750 |
+| INT8-64 | 13 | 249274740 | 7547469312 | 8118075392 | 10.04 | 2808.6 | 39.578 |
+| Split-Max64 | 13 | 267603765 | 7570945536 | 8136949760 | 10.04 | 2889.8 | 40.625 |
+| Sync activation | 13 | 938446080 | 8237883904 | 8537505792 | 10.54 | 2797.0 | 39.375 |
+
+| Arm | State saved MiB | Allocated saved MiB | Reserved saved MiB | Step time increase | Forward/backward/optimizer allocated peak MiB | Median optimizer host scope ms (steps 2–13) |
+|---|---:|---:|---:|---:|---|---:|
+| FP32 | 0 | 0 | 0 | 0% | 7799.72 / 7879.25 / 6719.40 | 93.5 |
+| BF16 | 447.49 | 466.00 | 408 | 7.36% | 7341.29 / 7413.24 / 6202.61 | 250 |
+| INT8-64 | 657.25 | 681.42 | 684 | 15.40% | 7126.17 / 7197.83 / 5983.37 | 437 |
+| Split-Max64 | 639.77 | 659.03 | 666 | 18.74% | 7143.48 / 7220.22 / 6005.49 | 532 |
+| Sync activation | 0 | 22.99 | 284 | 14.92% | 7388.30 / 7856.26 / 6712.88 | 62 |
+
+State dtype/bytes stable across all 13 inventories: BF16 469223040 BF16; INT8 234611520 int8 + 14663220 FP32; Split-Max 234611520 int8 + 29326440 FP32 + 3665805 uint8. All arms have 938446080 bytes each FP32 parameters and gradients and identical 766 H2D weight copies (332528615424 bytes), no weight D2H. Shared GPU peak 1.08 GiB throughout; system RAM peaks 26.727/26.758/26.754/26.794/27.599 GiB. Device memory is NVML sampled whole-device, not exact allocator usage; optimizer phase times are host elapsed, not synchronized kernel timings. Offload 364 accepted, zero skips, 420 MiB host peak under 512 MiB cap, zero live post-step. Forward allocation savings 411.43 MiB, backward only 22.99 MiB. Backward remained dominant in every arm. Third operational replication of synchronous offload, not parity proof.
+
+First training losses FP32/BF16/INT8/Split-Max/offload .134691/.189120/.121071/.100759/.150021; means .168736/.168945/.146201/.163602/.164088. Same fixed holdout baseline .18260, no endpoint validation, images or resume. The differences before first update (including differing FP32 controls across historical runs) defeat interpretation as paired learning quality. Do not rank codecs by these loss means. No claim of bitwise equivalence or improved convergence. BF16 is the provisional conservative candidate based on memory/speed and earlier synthetic numerical evidence; INT8 retains largest measured memory saving, Split-Max costs more and must justify its accuracy benefit. At rank16 the persistent state savings are roughly one quarter of rank64 assuming identical targets, so don't extrapolate full training savings or high-resolution fit.
+
+**Gate passed: independent GPU feasibility at rank64/.25 MP/swap22.** Next build a paired numerical diagnostic: actual training-input/noise/timestep/conditioning and initial factor hashes, FP32 repeat control, fixed-input loss/gradient/compact effective BA displacement comparisons, then longer matched training and checkpoint/resume. Separate diagnostics overhead from clean speed measurements. Profile compressed codec/synchronization overhead (one finite check per chunk is a hypothesis, not a measured attribution). Async activation work only after correctness; target backward live buffers as well as forward, since forward-only improvement is not enough. No need to rerun the same five-arm feasibility queue. No combined intervention, auto-budget CUDA, 1 MP, resume or production promotion yet. Preserve raw user archive separately; documentation only.
