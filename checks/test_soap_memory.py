@@ -3,7 +3,8 @@ import pytest
 from fizgig.training.soap import SOAP
 from fizgig.training.soap_memory import (ChunkedSOAP, OffloadedSOAP, CompactSOAP,
                                          _rotate, _reflectors, _covariance_factor,
-                                         _transport_variance, _variance_floor)
+                                         _transport_variance, _variance_floor,
+                                         _transport_axis, _transport_axis_lowrank)
 
 
 def test_compact_covariance_and_rotation():
@@ -105,3 +106,25 @@ def test_zero_and_suspended_state():
     q.grad = torch.randn_like(q)
     opt.step()
     assert opt.state[q]["step"] == frozen["step"]+1
+
+
+@pytest.mark.parametrize("n,k,m", [(256, 16, 8), (1536, 32, 32), (6144, 32, 32)])
+def test_lowrank_axis_matches_tiled(n,k,m):
+    torch.manual_seed(42)
+    old = _reflectors(torch.randn(n,k))
+    new = _reflectors(torch.randn(n,k))
+    v = torch.rand(n,m)
+    v[:,0] = 0
+    v[0,0] = 1
+    expected = _transport_axis(v,old,new)
+    actual = _transport_axis_lowrank(v,old,new)
+    torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
+    torch.testing.assert_close(actual.sum(), expected.sum(), rtol=2e-6, atol=1e-5)
+
+
+def test_lowrank_axis_identical_and_zero_bases():
+    torch.manual_seed(42)
+    v = torch.rand(256,8)
+    for basis in (_reflectors(torch.randn(256,16)), _reflectors(torch.zeros(256,16))):
+        torch.testing.assert_close(_transport_axis_lowrank(v,basis,basis), v,
+                                   atol=3e-6, rtol=3e-5)

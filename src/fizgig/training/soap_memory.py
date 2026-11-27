@@ -4,7 +4,8 @@ ChunkedSOAP retains full state and tiles covariance updates only.
 OffloadedSOAP retains full state and executes the original step on CPU.
 CompactSOAP approximates covariance with truncated factors and represents the
 orthogonal completion implicitly with Householder reflectors. Diagonal second
-moments are transported in bounded tiles, approximating the old covariance as
+moments are transported through a compact relative Householder span on wide
+axes (tiled reference on small axes). The old covariance is approximated as
 independent in the old coordinates; off-diagonal history is not retained.
 No CUDA fit or quality guarantees. Based on vendored MIT SOAP.
 """
@@ -157,9 +158,46 @@ def _transport_axis(var, old, new, tile=32):
     return result
 
 
+def _reflector_vectors(basis):
+    packed, tau = basis
+    vectors = torch.tril(packed, diagonal=-1)
+    vectors.diagonal().fill_(1.)
+    return vectors
+
+
+def _transport_axis_lowrank(var, old, new, tile=32, columns=4):
+    """Apply the same squared-overlap transform as the tiled reference.
+
+    The relative orthogonal transform R=Q_new.T@Q_old fixes the orthogonal
+    complement of the union of reflector spans. For an orthonormal basis U
+    of that union, R-I=W@U.T with W=R@U-U. This gives the diagonal of
+    R diag(v) R.T via small weighted Gram matrices. No wide square is stored.
+    Use the nonnegative diagonal/off-diagonal split to limit cancellation.
+    CPU parity is tested; CUDA workspace and runtime remain backend-dependent.
+    """
+    n = var.shape[0]
+    k = old[1].numel() + new[1].numel()
+    if 2*k >= n:
+        return _transport_axis(var, old, new, tile)
+    u, _ = torch.linalg.qr(torch.cat((_reflector_vectors(old),
+                                      _reflector_vectors(new)), dim=1), mode="reduced")
+    ru = torch.ormqr(old[0], old[1], u.contiguous(), left=True, transpose=False)
+    ru = torch.ormqr(new[0], new[1], ru.contiguous(), left=True, transpose=True)
+    w = ru-u
+    diag = (w*u).sum(dim=1)
+    result = torch.empty_like(var)
+    for start in range(0, var.shape[1], columns):
+        v = var[:, start:start+columns].T.contiguous()
+        gram = u.T.unsqueeze(0) @ (u.unsqueeze(0)*v.unsqueeze(-1))
+        quadratic = ((w.unsqueeze(0) @ gram)*w.unsqueeze(0)).sum(dim=-1)
+        off = (quadratic-v*diag.square()).clamp_min_(0.)
+        result[:, start:start+columns] = ((1+diag).square()*v+off).T
+    return result
+
+
 def _transport_variance(var, old, new, tile=32):
-    out = _transport_axis(var, old[0], new[0], tile)
-    out = _transport_axis(out.T.contiguous(), old[1], new[1], tile).T.contiguous()
+    out = _transport_axis_lowrank(var, old[0], new[0], tile)
+    out = _transport_axis_lowrank(out.T.contiguous(), old[1], new[1], tile).T.contiguous()
     return out.clamp_min_(0.)
 
 
@@ -237,8 +275,13 @@ class CompactSOAP(SOAP):
                     original = _rotate(avg, old_bases, True)
                     new_avg = _rotate(original, new_bases)
                     new_var = _transport_variance(var, old_bases, new_bases)
-                    new_var = torch.maximum(new_var, _variance_floor(
-                        new_avg, b1, b2, s["variance_age"]))
+                    floor = _variance_floor(new_avg, b1, b2, s["variance_age"])
+                    repair = (floor-new_var).clamp_min_(0.)
+                    # Device scalars only; avoid a synchronization per factor.
+                    s["refresh_repaired_count"] = torch.count_nonzero(repair)
+                    s["refresh_added_variance"] = repair.sum()
+                    s["refresh_transported_variance"] = new_var.sum()
+                    new_var = torch.maximum(new_var, floor)
                     s["bases"] = new_bases
                     s["exp_avg"] = new_avg
                     s["exp_avg_sq"] = new_var
