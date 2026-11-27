@@ -2627,7 +2627,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if per_image_lr:
             logger.info("[per-image LR] on with PoLoRA: each image's factor scales the learning rate for its step")
         if adaptive_lr:
-            logger.info("[adaptive_lr] on with PoLoRA: it moves the learning rate between Min and Max "
+            logger.info("[adaptive_lr] on with PoLoRA: it moves the learning rate from its starting value "
                         "(magnitude_scale stays as set)")
         if warmup_look_outliers:
             logger.info("[per-image LR] the look warm-up is off - PoLoRA sets its own step size")
@@ -2650,16 +2650,14 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             per_image_lr = False
         logger.info(f"[optimizer] {opt_label} owns the learning rate from here ({optimizer_lr(optimizer):.2e} is its start); "
                     f"the LR scheduler stands down")
-    box_learning_rate = learning_rate   # the Learning Rate box, before adaptive LR's midpoint (saved for a resume)
-    if adaptive_lr:                   # the watcher owns the rate: start at the geometric midpoint of Min/Max
-        learning_rate = math.sqrt(adaptive_lr_min * adaptive_lr_max)
-        for g in optimizer.param_groups:
-            g["lr"] = learning_rate
-        logger.info(f"[adaptive_lr] ENABLED - start_lr={learning_rate:.3e} min_lr={adaptive_lr_min:.3e} "
-                    f"max_lr={adaptive_lr_max:.3e} (the Learning Rate box is ignored; optimizer {optimizer_type}; "
-                    f"following {'validation loss when it runs' if adaptive_lr_on_val else 'smoothed training loss'})")
-    adaptive = (AdaptiveLR(adaptive_lr_min, adaptive_lr_max, clip_signal=desc.adaptive_lr_clip_signal)
+    box_learning_rate = learning_rate
+    adaptive = (AdaptiveLR.from_start(learning_rate, clip_signal=desc.adaptive_lr_clip_signal)
                 if adaptive_lr else None)
+    if adaptive:
+        adaptive_lr_min, adaptive_lr_max = adaptive.min_lr, adaptive.max_lr
+        logger.info(f"[adaptive_lr] ENABLED - start_lr={learning_rate:.3e} "
+                    f"emergency floor={adaptive_lr_min:.3e} ceiling={adaptive_lr_max:.3e}; "
+                    "legacy Min/Max ignored")
     ema = None
     if str(ema_decay).lower().startswith("short"):
         # short-run mode (from H3): the normal ramp never reaches 0.98 on a short run, so the window is sized to the

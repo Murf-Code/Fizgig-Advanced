@@ -1,6 +1,7 @@
 """Epoch-level adaptive learning rate: the bi-directional plateau tracker (probe up on steady descent, halve on a
 plateau or a weight-norm jump, with rollback). Used by the standard-layer trainer (families/train.py)."""
 import logging
+import math
 
 import torch
 
@@ -38,6 +39,14 @@ class AdaptiveLR:
     HARD_SPIKE_REL = 0.10   # within HARD_WINDOW epochs after a raise, train loss 10%+ above the epoch that triggered it:
     HARD_WINDOW = 2         # the raise overshot - back to the pre-raise LR and cool down (no 3-epoch plateau wait)
     COOLDOWN = 2            # after a halving, this many epochs before a plateau can count again: fresh evidence first
+
+    @classmethod
+    def from_start(cls, start_lr, clip_signal=False):
+        start = float(start_lr)
+        lo, hi = start * 1e-6, start * 1e6
+        if not (0 < lo < start < hi and math.isfinite(hi)):
+            raise ValueError("Adaptive LR requires a finite positive starting rate")
+        return cls(lo, hi, clip_signal=clip_signal)
 
     def __init__(self, min_lr, max_lr, clip_signal=False):
         """clip_signal: Klein's rules - a grad-clip ratio over 50% of the epoch's steps is a stability signal

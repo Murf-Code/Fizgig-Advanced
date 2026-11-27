@@ -405,11 +405,7 @@ def form(desc):
     if desc.adaptive_lr:
         params += [
             _row("ADAPTIVE_LR", "Adaptive LR (auto-adjust based on loss, gradient clipping & weight-norm growth)",
-                 "check", "When on, the Learning Rate box is ignored: the run starts at the geometric midpoint of "
-                 "Min and Max and the watcher sets the rate from there."),
-            # the usual values, with Other... for one of your own (as Blocks Swap): any positive number, 1e-5 style too
-            _row("ADAPTIVE_LR_MIN", "Min LR", "combo", choices=ADAPTIVE_MIN),
-            _row("ADAPTIVE_LR_MAX", "Max LR", "combo", choices=ADAPTIVE_MAX),
+                 "check", "Starts at the Learning Rate you set and adjusts using training feedback."),
         ]
     if desc.train_areas:
         names = [a[0] for a in desc.train_areas]
@@ -1519,15 +1515,9 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
     lokr = str(values.get("NETWORK_TYPE", "")).startswith("LoKR") and kind not in ("slider", "finetune")
     hidden |= {"NETWORK_DIM", "NETWORK_ALPHA"} if lokr else {"LOKR_FACTOR"}
     if lokr:
-        notes["NETWORK_TYPE"] = "LoKR selected: set your learning rate to 5e-5 - or with Adaptive LR, set Max 1e-4 " \
-                                "and Min 5e-5."
+        notes["NETWORK_TYPE"] = "LoKR selected: consider a starting learning rate of 5e-5."
     bad_lr = {}
-    if not values.get("ADAPTIVE_LR") or kind in ("slider", "finetune"):   # these train at the Learning Rate box
-        hidden |= {"ADAPTIVE_LR_MIN", "ADAPTIVE_LR_MAX"}
-    else:
-        disabled.add("LEARNING_RATE")
-        bad_lr = adaptive_lr_notes(values)       # a value of your own (Other...): said under its box as you type
-        notes.update(bad_lr)
+    hidden |= {"ADAPTIVE_LR_MIN", "ADAPTIVE_LR_MAX"}
     if kind == "finetune":       # a fine-tune trains at its own fixed rate: no Adaptive LR, on any model
         hidden.add("ADAPTIVE_LR")
     _polora_boxes(values, hidden, force)
@@ -1537,11 +1527,9 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
         raw_args = cleaned_args = ""
     else:
         if str(values.get("OPTIMIZER_TYPE", "")).strip().lower() == "polora" and kind not in ("slider", "finetune"):
-            notes["ADAPTIVE_LR"] = "With PoLoRA, Min and Max are its real learning rates (it trains around 1e-2 to " \
-                                   "4e-2), as with Muon; magnitude_scale stays as you set it."
+            notes["ADAPTIVE_LR"] = "PoLoRA adapts its real learning rate from the starting rate; magnitude_scale stays as set."
         if str(values.get("OPTIMIZER_TYPE", "")).strip().lower() == "lora_tsd" and kind not in ("slider", "finetune"):
-            notes["ADAPTIVE_LR"] = "With LoRA-TSD, Min and Max are its real learning rates (it trains around 2e-3 to " \
-                                   "1e-2); magnitude_scale stays as you set it, and each step's change stays " \
+            notes["ADAPTIVE_LR"] = "LoRA-TSD adapts its real learning rate; magnitude_scale stays as set, and each step's change stays " \
                                    "capped by max_delta_norm times magnitude_scale."
         from fizgig.training.optimizers import (
             MUON_DEFAULT_ARGS, PRODIGY_DEFAULT_ARGS, strip_muon_args, strip_prodigy_args,
@@ -1716,8 +1704,7 @@ def state(desc, values, image_folder="", captioner="", speed_file=False, checkpo
     lr_note = _lr_hint(desc, values, kind, image_folder)
     if lr_note and lr_note[0] not in bad_lr:       # a box's own problem (not a number, Min not below Max) first
         notes[lr_note[0]] = lr_note[1]
-        actions[lr_note[0]] = ({"label": "Use 1e-4 / 2e-4", "values": {"ADAPTIVE_LR_MIN": "1e-4", "ADAPTIVE_LR_MAX": "2e-4"}}
-                               if values.get("ADAPTIVE_LR") else {"label": "Use 1e-4", "values": {"LEARNING_RATE": "1e-4"}})
+        actions[lr_note[0]] = {"label": "Use 1e-4", "values": {"LEARNING_RATE": "1e-4"}}
     if kind in ("edit", "slider"):
         hidden.add("_overtrain_tip")
     if kind != "edit":
@@ -2098,7 +2085,7 @@ def _lr_hint(desc, values, kind, image_folder):
                                                                     "lora_tsd"):
         return None                              # their own rate scales (PoLoRA ~2e-2, LoRA-TSD ~5e-3)
     adaptive = bool(values.get("ADAPTIVE_LR"))
-    key = "ADAPTIVE_LR_MIN" if adaptive else "LEARNING_RATE"
+    key = "LEARNING_RATE"
     raw = str(values.get(key) or "").split(" ")[0].strip()
     try:
         if float(raw) < hint[0] * 0.999:
@@ -2108,10 +2095,6 @@ def _lr_hint(desc, values, kind, image_folder):
     n = _picture_count(image_folder)
     if n is None or n <= hint[1]:
         return None
-    if adaptive:
-        return key, (f"💡 Hint: a large dataset. With {n} images, a Min LR of {raw} moves the LoRA a long way each "
-                     "epoch, so the best point can fall between two saves. A Min LR of 1e-4 and a Max LR of 2e-4 "
-                     "suit a dataset this size.")
     return key, (f"💡 Hint: a large dataset. With {n} images, a learning rate of {raw} moves the LoRA a long way each "
                  "epoch, so the best point can fall between two saves. 1e-4 suits a dataset this size.")
 

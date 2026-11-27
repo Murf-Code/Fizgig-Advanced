@@ -1500,9 +1500,7 @@ def train_command(desc, inputs, plan):
     cmd += vram_margin_flags(st.get("vram_reclaim"))
     cmd += background_loading_flags(st.get("vram_reclaim"))
     if st.get("ADAPTIVE_LR") and desc.adaptive_lr and not ft_on(desc, st):   # a fine-tune trains at its own rate
-        cmd += ["--adaptive_lr",
-                "--adaptive_lr_min", (str(st.get("ADAPTIVE_LR_MIN", "1e-4")).split() or ["1e-4"])[0],
-                "--adaptive_lr_max", (str(st.get("ADAPTIVE_LR_MAX", "2e-4")).split() or ["2e-4"])[0]]
+        cmd += ["--adaptive_lr"]
         if str(st.get("ADAPTIVE_LR_ON_VAL", True)).lower() in ("false", "0", "off"):   # old configs: on
             cmd += ["--adaptive_lr_train_loss"]
     else:

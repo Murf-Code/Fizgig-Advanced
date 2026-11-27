@@ -79,21 +79,8 @@ def lr_value(x):
 
 
 def learning_rate_range(v):
-    """With Adaptive LR on, Min and Max must be positive numbers (any, via Other...) with Min < Max (the run starts
-    at their geometric midpoint); off, the Learning Rate must be positive."""
-    if v.get("ADAPTIVE_LR"):
-        lo, hi = lr_value(v.get("ADAPTIVE_LR_MIN")), lr_value(v.get("ADAPTIVE_LR_MAX"))
-        if lo is None or hi is None:
-            return ["Adaptive Min/Max LR must be positive numbers (e.g. 1e-5)."]
-        if lo >= hi:
-            return [f"Adaptive Min LR ({lo:g}) must be lower than Max LR ({hi:g})."]
-        return []
-    try:
-        if float(v.get("LEARNING_RATE")) <= 0:
-            return ["Learning rate must be positive"]
-    except (TypeError, ValueError):
-        return ["Learning rate must be a valid number"]
-    return []
+    """Validate the starting rate, ignoring obsolete Adaptive LR limits."""
+    return [] if lr_value(v.get("LEARNING_RATE")) is not None else ["Learning rate must be a positive finite number"]
 
 
 def context_lora(v):
