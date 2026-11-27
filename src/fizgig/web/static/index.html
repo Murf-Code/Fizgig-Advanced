@@ -1052,7 +1052,8 @@
               <div class="field-row">
                 <button class="btn btn-primary" id="btnStart">Start Training</button>
                 <button class="btn" id="btnQueue" title="Checked like Start, then lined up: it starts when the runs before it finish">Add to queue</button>
-                <button class="btn" id="btnCacheRegression" title="Queue four isolated cache comparison runs">Krea 2 cache test</button>
+                <button class="btn" id="btnCacheRegression3090" title="Four cache comparison runs: RTX 3090, 24 GB, zero block swap">Krea 2 cache test — RTX 3090</button>
+                <button class="btn" id="btnCacheRegression4070Ti" title="Four cache comparison runs: RTX 4070 Ti, 12 GB, 24 swapped blocks">Krea 2 cache test — RTX 4070 Ti</button>
                 <button class="btn btn-warning" id="btnPause">Pause</button>
                 <button class="btn" id="btnSampleNow" style="display:none" title="Make the previews now, after the current training step, without waiting for the epoch to end">Sample now</button>
                 <button class="btn btn-lilac is-off" id="btnImageLoss" style="display:none" title="Each training image's loss by epoch, against the rest of the dataset: which images are still being learned, which are done, and what the loss watch decided about each">Per-image loss</button>
@@ -2555,9 +2556,12 @@
       const note = document.createElement("div");
       note.className = "field-hint";
       note.setAttribute("role", "status");
-      const cacheBtn = document.getElementById("btnCacheRegression");
-      cacheBtn.parentElement.after(note);
-      cacheBtn.addEventListener("click", async () => {
+      const profiles = [
+        {button: document.getElementById("btnCacheRegression3090"), key: "3090", label: "RTX 3090 (24 GB)"},
+        {button: document.getElementById("btnCacheRegression4070Ti"), key: "4070-ti", label: "RTX 4070 Ti (12 GB)"}
+      ];
+      profiles[0].button.parentElement.after(note);
+      async function queueCacheTest(profile) {
         const folder = document.getElementById("imageFolder").value.trim();
         if (family.value !== "krea2" || !folder) {
           note.textContent = "Select Krea 2 and the original training dataset.";
@@ -2565,24 +2569,25 @@
         }
         const prompt = window.prompt("Enter one fixed preview prompt, including the character trigger word.");
         if (!prompt || !prompt.trim()) return;
-        if (!window.confirm("Queue four two-epoch INT8 PoLoRA runs with fixed settings? Masking and block swapping are chosen once for your dataset and GPU. Copies the existing complete 1 MP cache (including matching validation hold-outs) into separate directories, then regenerates selected axes. Original caches are not changed. Do not edit images/captions/settings while testing.")) return;
-        cacheBtn.disabled = true;
+        if (!window.confirm("Queue four two-epoch INT8 PoLoRA runs using the fixed " + profile.label + " profile? Use the button matching your GPU. Masking is enabled only if usable masks exist. Copies the existing complete 1 MP cache (including matching validation hold-outs) into separate directories, then regenerates selected axes. Original caches are not changed. Do not edit images/captions/settings while testing.")) return;
+        profiles.forEach(p => { p.button.disabled = true; });
         note.textContent = "Checking and copying the existing cache...";
         try {
           const response = await fetch("/api/queue/cache-regression", {
             method: "POST",
             headers: {"Content-Type": "application/json", "X-Fizgig-Token": document.querySelector('meta[name="fizgig-token"]').content},
-            body: JSON.stringify({family: family.value, image_folder: folder, prompt: prompt.trim()})
+            body: JSON.stringify({family: family.value, image_folder: folder, prompt: prompt.trim(), gpu_profile: profile.key})
           });
           const result = await response.json();
           if (!result.ok) throw new Error(result.error || (result.problems || []).join("; ") || "Queue failed");
-          note.textContent = "Four cache regression runs queued. Samples, logs and manifest: " + result.output;
+          note.textContent = profile.label + ": four cache regression runs queued. Samples, logs and manifest: " + result.output;
         } catch (error) {
           note.textContent = error.message || String(error);
         } finally {
-          cacheBtn.disabled = false;
+          profiles.forEach(p => { p.button.disabled = false; });
         }
-      });
+      }
+      profiles.forEach(p => p.button.addEventListener("click", () => queueCacheTest(p)));
     })();
   </script>
 </body>
