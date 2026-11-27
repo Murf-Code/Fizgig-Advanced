@@ -597,7 +597,11 @@ class Krea2Driver(FamilyDriver):
                 raise RuntimeError("Global replay does not support paired/difference loss yet.")
             loss = self._block_local_training_loss(
                 dit, latents, noise, t, cond, loss_mask=loss_mask, prior=prior)
-            return loss, {"t": float(t.mean()), "block_local": True, "block_local_phase": "global_replay"}
+            info = {"t": float(t.mean()), "block_local": True, "block_local_phase": "global_replay"}
+            if getattr(self, "_optimizer_match_audit", False):
+                from fizgig.web.optimizer_match import input_hash
+                info["input_hash"] = input_hash(latents, noise, t, cond, loss_mask)
+            return loss, info
         loss = self.loss_at(dit, latents, noise, t, cond, diff_ref=diff_ref, diff_weight=diff_weight,
                             loss_mask=loss_mask, prior=prior)
         return loss, {"t": float(t.mean())}

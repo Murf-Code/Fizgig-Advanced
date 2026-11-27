@@ -1984,11 +1984,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     _reg_capped = bool(_reg_resume.capped(group, reg_per_epoch))
     _reg_limit(group, reg_per_epoch, say=True, quota_mode=_reg_mode)
     loader = DataLoader(group, batch_size=1, shuffle=True, num_workers=0,
+                        generator=torch.Generator().manual_seed(int(seed)+137) if optimizer_match else None,
                         collate_fn=(lambda b: b[0]) if slider_prompts else _Collator(shared_epoch, group))
     # Background loading (training/prefetch.py): the next batches are read from the cache while the GPU trains -
     # the same batches in the same order. Its timing feeds the CPU / GPU / disk readout either way.
     from fizgig.training import prefetch as _prefetch
-    _bg = _prefetch.wanted(background_loading) and not slider_prompts
+    _bg = _prefetch.wanted(background_loading) and not slider_prompts and not optimizer_match
     if _bg and _prefetch.reads_draw_global_random(group):
         logger.info("[data] background loading: off for this run - its reference distillation picks a reference "
                     "as each picture is read, which has to happen in step with training")
@@ -2621,8 +2622,21 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             _oargs = (_oargs + f" weight_decay={desc.optimizer_weight_decay:g}").strip()
         optimizer, opt_label = create_optimizer(optimizer_type, opt_params, learning_rate, _oargs,
                                                 eps_floor_8bit=desc.optimizer_eps_floor_8bit)
-    if optimizer_match and "fallback" in opt_label.lower():
-        raise RuntimeError("Optimizer match refuses optimizer fallback")
+    if optimizer_match:
+        if "fallback" in opt_label.lower():
+            raise RuntimeError("Optimizer match refuses optimizer fallback")
+        from fizgig.web.optimizer_match import optimizer_manifest, checkpoint
+        _match_manifest = optimizer_manifest(optimizer, optimizer_match)
+        checkpoint(output_dir, optimizer_match, status="running", resolved_optimizer=_match_manifest,
+                   steps=[], phase="optimizer_preflight")
+        if torch.cuda.is_available():
+            free, total = torch.cuda.mem_get_info()
+            available = free + max(0, torch.cuda.memory_reserved()-torch.cuda.memory_allocated())
+            checkpoint(output_dir, optimizer_match, preflight_free_bytes=free,
+                       preflight_total_bytes=total)
+            if _match_manifest["estimated_persistent_bytes"] > available:
+                raise RuntimeError("Optimizer persistent state exceeds available CUDA memory")
+        driver._optimizer_match_audit = True
     if selective_compensation:
         from fizgig.training.selective_compensation import validate_optimizer
         validate_optimizer(optimizer, compensation_optimizer)
@@ -3658,6 +3672,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             match_before = snapshot(net)
             if match_initial is None:
                 match_initial = fingerprint(match_before)
+            from fizgig.web.optimizer_match import checkpoint
+            checkpoint(output_dir, optimizer_match, initial_fingerprint=match_initial,
+                       phase="optimizer_step", pending_update=len(match_rows)+1,
+                       pending_input_hash=match_input_hash)
+            _match_step_started = time.perf_counter()
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
         if selective_compensation:
             scale = driver.selective_learning_multiplier()
@@ -3680,13 +3699,21 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             optimizer.step()
         if match_before is not None:
             from fizgig.web.optimizer_match import movement
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            _match_optimizer_seconds = time.perf_counter()-_match_step_started
+            _match_geometry_start = time.perf_counter()
             row = movement(match_before, net)
+            row["optimizer_seconds_including_sync"] = _match_optimizer_seconds
+            row["geometry_seconds"] = time.perf_counter()-_match_geometry_start
+            row["input_hash"] = match_input_hash
             row["update"] = len(match_rows) + 1
             row["group_lrs"] = [float(g["lr"]) for g in optimizer.param_groups]
             if torch.cuda.is_available():
                 row["cuda_peak_allocated_bytes"] = torch.cuda.max_memory_allocated()
                 row["cuda_peak_reserved_bytes"] = torch.cuda.max_memory_reserved()
             match_rows.append(row)
+            checkpoint(output_dir, optimizer_match, steps=match_rows, phase="step_completed")
             logger.info("[optimizer-match] %s update %d: effective movement %.6g", optimizer_match, row["update"], row["norm"])
         if selective_global_replay:
             selective_status = driver.finish_selective_optimizer_step(selective_snapshot)
@@ -4477,6 +4504,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     dop_sum[1] += 1
                 for _p in _frozen_now:
                     _p.requires_grad_(True)
+            if optimizer_match:
+                from fizgig.web.optimizer_match import input_hash, checkpoint
+                match_input_hash = input_hash(batch.get("item_keys"), _info.get("input_hash"))
+                if not _info.get("input_hash"):
+                    raise RuntimeError("Missing realized Krea2 input fingerprint")
             pending += 1
             if pending >= accum:
                 _update()

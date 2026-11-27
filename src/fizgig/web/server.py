@@ -2375,6 +2375,8 @@ def _run_stages(stages, out_dir):
         ret = proc.wait()
         with _lock:
             stopped = _run["state"] == "stopped"
+            if ret != 0 and not stopped:
+                _run.update(state="failed", proc=None, ended_at=time.time())
         if stopped:
             with _lock:
                 _run["proc"] = None              # gone: a stop-and-wait sees it at once
@@ -2534,7 +2536,16 @@ def _stop(skip_test=False, expected_id=None):
         if not alive:
             return True              # the watcher will acknowledge it; no PID is alive to kill
     if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, **_NO_WINDOW)
+        killed = subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, **_NO_WINDOW)
+        if killed.returncode and proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                if proc.poll() is None:
+                    with _lock:
+                        if _run["proc"] is proc and _run["state"] == "stopped":
+                            _run.update(state="running", skip_test=False, ended_at=None)
+                    return False
     else:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)

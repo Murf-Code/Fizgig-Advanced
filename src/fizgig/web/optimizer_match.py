@@ -16,11 +16,13 @@ START = {
     "polora": .02, "lora_tsd": .005,
     "prodigy": 1., "automagic3": .00025, "automagic4": .00025,
 }
+START["adamw-repeat"] = START["adamw"]
+PILOT = ("adamw", "adamw-repeat", "soap-512", "soap-compact32")
 SOAP_CAPS = {"soap-512": 512, "soap-1024": 1024}
 
 
 def optimizer_name(case):
-    return "soap" if case.startswith("soap-") else case
+    return "soap" if case.startswith("soap-") else "adamw" if case == "adamw-repeat" else case
 
 
 SOAP_ARGS = {
@@ -37,13 +39,13 @@ REPORT = "optimizer-match-report.json"
 AUDIT = "optimizer-match-audit.json"
 
 
-def settings(group, previous=None):
+def settings(group, previous=None, cases=PILOT):
     group = Path(group)
     rates = dict(START)
     if previous:
         for r in previous["runs"]:
             name = r["case"]
-            if name in rates and name not in SPECIAL and name != "adamw":
+            if name in rates and name not in SPECIAL and name not in ("adamw", "adamw-repeat"):
                 proposed = r.get("suggested_lr")
                 if proposed is not None and math.isfinite(proposed) and proposed > 0:
                     rates[name] = proposed
@@ -52,7 +54,7 @@ def settings(group, previous=None):
                                 else "" if name in SPECIAL else "weight_decay=0.01"),
              "KREA2_SELECTIVE_BLOCK_CHECK": False, "KREA2_SELECTIVE_COMPENSATION": False,
              "__optimizer_match": name, "LORA_NAME": f"{group.name}-{name}",
-             "LORA_OUTPUT_DIR": str(group / name)} for name, lr in rates.items()]
+             "LORA_OUTPUT_DIR": str(group / name)} for name in cases for lr in (rates[name],)]
 
 
 def attach(plan, values, family, resume=""):
@@ -62,7 +64,7 @@ def attach(plan, values, family, resume=""):
     if not expected or family != "krea2" or resume or values.get("RESUME_TRAINING"):
         raise ValueError("Optimizer match needs a fresh Krea 2 run")
     lr = float(values["LEARNING_RATE"])
-    if not math.isfinite(lr) or lr <= 0 or (name == "adamw" and lr != START[name]):
+    if not math.isfinite(lr) or lr <= 0 or (name in ("adamw", "adamw-repeat") and lr != START[name]):
         raise ValueError("Invalid calibration rate")
     if any(values.get(k) != v for k, v in expected.items() if k != "LEARNING_RATE"):
         raise ValueError("Optimizer match recipe changed")
@@ -80,6 +82,64 @@ def initialize(group, dataset, values):
     _write(group / MANIFEST, {"dataset": str(dataset), "settings": values,
                              "expected_updates": EXPECTED_UPDATES})
     return refresh(group)
+
+
+def input_hash(*items):
+    """Hash actual tensor bytes, dtype, shape and structured input identity."""
+    import torch
+    h = hashlib.sha256()
+    def visit(x):
+        if isinstance(x, torch.Tensor):
+            y = x.detach().cpu().contiguous()
+            h.update(repr((str(y.dtype), tuple(y.shape))).encode())
+            h.update(y.reshape(-1).view(torch.uint8).numpy().tobytes())
+        elif isinstance(x, dict):
+            for k in sorted(x):
+                visit(k)
+                visit(x[k])
+        elif isinstance(x, (tuple, list)):
+            h.update(str(len(x)).encode())
+            for v in x: visit(v)
+        else:
+            h.update(repr(x).encode())
+        h.update(b"\\0")
+    for item in items: visit(item)
+    return h.hexdigest()
+
+
+def optimizer_manifest(optimizer, case):
+    import torch
+    from fizgig.training.soap import SOAP
+    from fizgig.training.soap_memory import CompactSOAP
+    expected = {"adamw": torch.optim.AdamW, "adamw-repeat": torch.optim.AdamW,
+                "soap-512": SOAP, "soap-compact32": CompactSOAP}[case]
+    if type(optimizer) is not expected:
+        raise RuntimeError(f"Unexpected optimizer for {case}: {type(optimizer)}")
+    groups, persistent = [], 0
+    for group in optimizer.param_groups:
+        shapes = [list(p.shape) for p in group["params"]]
+        cfg = {k: v for k,v in group.items() if k != "params"
+               and isinstance(v, (str, int, float, bool, tuple, list, type(None)))}
+        if case == "soap-512" and group["max_precond_dim"] != 512:
+            raise RuntimeError("SOAP cap mismatch")
+        for p in group["params"]:
+            persistent += 8*p.numel()
+            if case == "soap-512":
+                persistent += sum(8*d*d for d in p.shape if d <= 512)
+            elif case == "soap-compact32":
+                if optimizer.compact_rank != 32:
+                    raise RuntimeError("Compact SOAP rank mismatch")
+                persistent += sum(8*d*min(32,d)+4*min(32,d) for d in p.shape)
+        groups.append({"config": cfg, "shapes": shapes})
+    return {"class": type(optimizer).__name__, "groups": groups,
+            "estimated_persistent_bytes": persistent,
+            "compact_rank": getattr(optimizer, "compact_rank", None)}
+
+
+def checkpoint(output, case, **fields):
+    p = Path(output) / AUDIT
+    old = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {"case": case}
+    _write(p, {**old, **fields})
 
 
 def snapshot(net):
@@ -113,10 +173,11 @@ def delta_sq(a0, b0, a1, b1, scale=1.):
     # Stable difference factorization: B1(A1-A0)+(B1-B0)A0.
     left = torch.cat((b1.double(), b1.double()-b0.double()), dim=1)
     right = torch.cat((a1.double()-a0.double(), a0.double()), dim=0)
-    sq = float(((left.T @ left) * (right @ right.T)).sum()) * scale**2
+    terms = (left.T @ left) * (right @ right.T)
+    sq = float(terms.sum()) * scale**2
     if not math.isfinite(sq):
         raise RuntimeError("Nonfinite effective LoRA movement")
-    if sq < 0:
+    if sq <= 1e-12 * float(terms.abs().sum()) * scale**2:
         _, rl = torch.linalg.qr(left, mode="reduced")
         _, rr = torch.linalg.qr(right.T, mode="reduced")
         sq = float((rl @ rr.T).square().sum()) * scale**2
@@ -145,9 +206,8 @@ def finish(output, name, implementation, lr, rows, validation, initial):
     status = ("measured" if len(rows) == EXPECTED_UPDATES and [r["update"] for r in rows] == list(range(1, EXPECTED_UPDATES+1))
               and validation and validation[-1]["step"] == EXPECTED_UPDATES
               and all(math.isfinite(r["norm"]) for r in rows) else "incomplete")
-    _write(output / AUDIT, {"case": name, "implementation": implementation, "native_lr": lr,
-                           "status": status, "steps": rows, "validation": validation,
-                           "initial_fingerprint": initial})
+    checkpoint(output, name, implementation=implementation, native_lr=lr,
+               status=status, steps=rows, validation=validation, initial_fingerprint=initial)
     return refresh(output.parent)
 
 
@@ -155,8 +215,7 @@ def record_terminal(output, case, status, reason, progress=None):
     output = Path(output)
     if case not in START or output.name != case or not (output.parent / MANIFEST).is_file():
         return
-    _write(output / AUDIT, {"case": case, "status": status, "reason": reason,
-                           "progress": progress})
+    checkpoint(output, case, status=status, reason=reason, progress=progress)
     refresh(output.parent)
 
 
@@ -164,18 +223,34 @@ def refresh(group):
     group = Path(group)
     manifest = json.loads((group / MANIFEST).read_text(encoding="utf-8"))
     runs = []
-    for name in START:
+    for name in [r["__optimizer_match"] for r in manifest["settings"]]:
         p = group / name / AUDIT
         runs.append(json.loads(p.read_text(encoding="utf-8")) if p.is_file()
                     else {"case": name, "status": "not_completed"})
     ref = runs[0]
-    ref_ok = ref["status"] == "measured"
+    repeat = next((r for r in runs if r["case"] == "adamw-repeat"), {})
+    def paired(a,b):
+        return (a.get("initial_fingerprint") == b.get("initial_fingerprint")
+                and bool(a.get("initial_fingerprint"))
+                and len(a.get("steps", [])) == len(b.get("steps", [])) == EXPECTED_UPDATES
+                and all(x.get("input_hash") and x["input_hash"] == y.get("input_hash")
+                        for x,y in zip(a["steps"], b["steps"])))
+    repeat_ok = (ref["status"] == repeat.get("status") == "measured" and paired(ref,repeat)
+                 and all(math.isclose(x["norm"], y["norm"], rel_tol=.01, abs_tol=1e-9)
+                         for x,y in zip(ref["steps"], repeat["steps"])))
+    ref_ok = repeat_ok
     for r in runs:
         if r["status"] != "measured" or not ref_ok:
             continue
         if r["initial_fingerprint"] != ref["initial_fingerprint"]:
             r["status"] = "initialization_mismatch"
             continue
+        if not paired(ref,r):
+            r["status"] = "input_mismatch"
+            continue
+        r["paired_ratios"] = [x["norm"]/y["norm"] if y["norm"] > 0 else None
+                              for x,y in zip(r["steps"],ref["steps"])]
+        r["post_refresh_updates"] = r["steps"][11:13]
         # Skip first update: SOAP may initialize its preconditioner without moving.
         base = statistics.median(x["norm"] for x in ref["steps"][1:8])
         value = statistics.median(x["norm"] for x in r["steps"][1:8])
@@ -195,6 +270,12 @@ def refresh(group):
             r["suggested_lr"] = r["native_lr"] if r["status"] == "matched" else r["native_lr"] * min(4., max(.25, 1. / ratio))
         else:
             r["specialized_review"] = True
-    report = {**manifest, "runs": runs}
+    report = {**manifest, "runs": runs, "adamw_repeat_verified": repeat_ok,
+              "deferred": {"soap-1024": "duplicate axes on expected recipe",
+                           "soap": "estimated 88.4 GiB GPU state",
+                           "soap-chunked": "same persistent state; parity unresolved",
+                           "soap-offloaded": "requires approximately 91.5 GiB available RAM",
+                           "soap-compact64": "conditional on compact32 results",
+                           "soap-compact128": "conditional on compact64 results"}}
     _write(group / REPORT, report)
     return report
