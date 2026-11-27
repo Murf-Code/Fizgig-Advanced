@@ -13,9 +13,18 @@ CASES = {
 }
 
 
-def settings(group, root, prompt, *, masked=False, gpu_gb=None):
-    # Pin the same memory configuration in all four arms. Swapped INT8 is eager.
-    swap = 24 if gpu_gb is None or gpu_gb < 15 else 20 if gpu_gb < 19 else 12 if gpu_gb < 22 else 0
+# Explicit profiles, not hardware detection: the chosen recipe stays fixed across all arms.
+GPU_PROFILES = {
+    "3090": {"swap": 0, "compile": "outside"},
+    "4070-ti": {"swap": 24, "compile": "Off"},
+}
+
+
+def settings(group, root, prompt, *, gpu_profile, masked=False):
+    if gpu_profile not in GPU_PROFILES:
+        raise ValueError("Choose the RTX 3090 or RTX 4070 Ti cache test.")
+    profile = GPU_PROFILES[gpu_profile]
+    swap = profile["swap"]
     base = {
         "FAMILY_KIND": "standard", "NETWORK_TYPE": "LoRA (standard)",
         "NETWORK_DIM": "8", "NETWORK_ALPHA": "8", "GRADIENT_ACCUMULATION": "1",
@@ -38,11 +47,11 @@ def settings(group, root, prompt, *, masked=False, gpu_gb=None):
                 VALIDATION_TIMESTEPS="4", ADAPTIVE_LR=False, KREA2_PER_IMAGE_LR=False,
                 KREA2_LOSS_WATCH=False, KREA2_DIRECTION_EDIT=False, SAMPLE_ENABLED=False,
                 FAMILY_TURBO_ON=False, FAMILY_TURBO_STRENGTH="0",
-                COMPILE_BLOCKS="Off" if swap else "outside", POLORA_COMPILE=True, MASKED_TRAINING=bool(masked),
+                COMPILE_BLOCKS=profile["compile"], POLORA_COMPILE=True, MASKED_TRAINING=bool(masked),
                 OPTIMIZER_TYPE="polora", FAMILY_PRECISION="INT8 (8-bit, fastest)",
                 BLOCKS_SWAP=str(swap), LEARNING_RATE="0.02",
                 OPTIMIZER_ARGS="magnitude_scale=3 curvature_beta=0.99 compile=True")
-    return [dict(base, __cache_regression=case, __cache_prompt=prompt,
+    return [dict(base, __cache_regression=case, __cache_prompt=prompt, __cache_gpu_profile=gpu_profile,
                  LORA_NAME=f"{group}-{case}", LORA_OUTPUT_DIR=os.path.join(root, group, case))
             for case in CASES]
 
