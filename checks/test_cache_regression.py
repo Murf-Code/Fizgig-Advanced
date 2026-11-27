@@ -64,6 +64,29 @@ class CacheRegressionTests(unittest.TestCase):
                 self.assertEqual(arm["COMPILE_BLOCKS"], compile_mode)
                 self.assertEqual(arm["__cache_gpu_profile"], gpu)
 
+    def test_4070_inherits_dataset_only_and_3090_ignores_it(self):
+        saved = {"DATASET_MEGAPIXELS": "0.5", "ENABLE_BUCKET": False,
+                 "BUCKET_NO_UPSCALE": False, "DATASET_CAPTION_EXT": ".caption",
+                 "TAG_SHUFFLE": False, "TAG_VARIANTS": "2", "TAG_DROPOUT": "5",
+                 "TAG_VARIANT_CAP": "6", "CAPTION_DROPOUT": "0.05",
+                 "BLOCKS_SWAP": "0", "LEARNING_RATE": "9", "MASKED_TRAINING": True}
+        for arm in cr.settings("test", str(self.root), "prompt", gpu_profile="4070-ti",
+                               dataset_values=saved, masked=False):
+            for key in cr.DATASET_KEYS:
+                if key in saved:
+                    self.assertEqual(arm[key], saved[key])
+            self.assertEqual(arm["BLOCKS_SWAP"], "24")
+            self.assertEqual(arm["LEARNING_RATE"], "0.02")
+            self.assertFalse(arm["MASKED_TRAINING"])
+        for arm in cr.settings("test", str(self.root), "prompt", gpu_profile="3090",
+                               dataset_values=saved, masked=True):
+            self.assertEqual(arm["DATASET_MEGAPIXELS"], "1.0")
+            self.assertTrue(arm["ENABLE_BUCKET"])
+            self.assertTrue(arm["TAG_SHUFFLE"])
+            self.assertEqual(arm["TAG_VARIANTS"], "4")
+            self.assertEqual(arm["BLOCKS_SWAP"], "0")
+            self.assertTrue(arm["MASKED_TRAINING"])
+
     def test_unknown_gpu_profile_refused(self):
         with self.assertRaises(ValueError):
             cr.settings("test", str(self.root), "prompt", gpu_profile="auto")
