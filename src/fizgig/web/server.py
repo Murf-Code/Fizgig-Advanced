@@ -1270,6 +1270,10 @@ def _plan(family_key, values, image_folder, resume="", ft_continue=None, models=
     if resume or ft_continue or str(values.get("RESUME_TRAINING") or "").strip():
         inputs["recache"] = _size_changed(name, out_dir, values)
     plan = launch.plan(desc, inputs)
+    if values.get("__cache_regression"):
+        from fizgig.web import cache_regression
+        cache_regression.configure_plan(desc, inputs, plan, values, launch)
+        return desc, inputs, plan
     if values.get("__polora_diagnostic"):
         from fizgig.web import polora_diagnostic
         case = values["__polora_diagnostic"]
@@ -2267,7 +2271,8 @@ def _run_stages(stages, out_dir):
         _run["started_at"] = time.time()
         _run["training_at"] = None             # the Training stage's start (the run summary's Training time)
         _stats["vram_peak"] = 0                # this run's peak, not the server's
-    diag_case = (_run.get("values") or {}).get("__polora_diagnostic")
+    diag_case = ((_run.get("values") or {}).get("__polora_diagnostic") or
+                 (_run.get("values") or {}).get("__cache_regression"))
     for stage in stages:
         with _lock:
             if _run["state"] == "stopped":
@@ -2371,7 +2376,7 @@ def _run_stages(stages, out_dir):
             with _lock:
                 _run.update(state="failed", proc=None, ended_at=time.time())
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
-            if kind and not (_run.get("values") or {}).get("__polora_diagnostic") and _oom_recover(kind, stage.name, mem.plan):
+            if kind and not diag_case and _oom_recover(kind, stage.name, mem.plan):
                 return                           # it carries on by itself: the queue waits for that run
             webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
             return
@@ -5069,6 +5074,49 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": f"{name} is already there."}, 400)
                 os.makedirs(new)
                 return self.json({"ok": True, "path": new})
+            if path == "/api/queue/cache-regression":
+                from fizgig.web import cache_regression
+                folder = str(b.get("image_folder") or "").strip()
+                prompt = str(b.get("prompt") or "").strip()
+                if b.get("family") != "krea2" or not os.path.isdir(folder):
+                    return self.json({"error": "Select Krea 2 and the original training folder."}, 400)
+                if any(h.get("share") for h in (load_prefs().get("helpers") or [])):
+                    return self.json({"error": "Disable shared training helpers for this diagnostic."}, 400)
+                with _lock:
+                    busy = _run["state"] in ("starting", "running", "paused")
+                if busy or captions.status()["state"] in ("loading", "running", "translating"):
+                    return self.json({"error": "Finish or stop the active run/caption job before snapshotting the cache."}, 400)
+                group = "cache-regression-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+                root = os.path.join(default_output_dir(), "polora_diagnostics")
+                configs = cache_regression.settings(group, root, prompt)
+                entries, plans = [], []
+                source = None
+                for vals in configs:
+                    desc, inputs, plan = _plan("krea2", vals, folder)
+                    if plan.problems:
+                        return self.json({"problems": [vals["__cache_regression"] + ": " + p for p in plan.problems]}, 400)
+                    out, name = inputs["LORA_OUTPUT_DIR"], inputs["LORA_NAME"]
+                    if os.path.exists(out) or name_taken(vals, inputs) or webqueue.clashes(out, name):
+                        return self.json({"error": "Diagnostic output already exists."}, 400)
+                    if source is None:
+                        source = launch.dataset_toml(desc, inputs)
+                    plans.append({"case": vals["__cache_regression"], "dataset_toml": plan.dataset_toml,
+                                  "stages": [{"name": s.name, "cmd": s.cmd} for s in plan.stages]})
+                    entries.append(("krea2", vals, folder, name, out))
+                output = os.path.join(root, group)
+                os.makedirs(output, exist_ok=False)
+                try:
+                    snapshot = cache_regression.prepare_caches(source, configs, desc.arch_id)
+                    with open(os.path.join(output, "diagnostic-settings.json"), "w", encoding="utf-8") as f:
+                        json.dump({"dataset": folder, "cases": configs, "snapshot": snapshot, "plans": plans}, f, indent=2)
+                except (OSError, ValueError) as exc:
+                    # Only this newly created diagnostic group is removed, never the source cache.
+                    shutil.rmtree(output, ignore_errors=True)
+                    return self.json({"error": str(exc)}, 400)
+                items = webqueue.add_many(entries)
+                if not webqueue.status()["held"]:
+                    webqueue.start_next(_queue_starter)
+                return self.json({"ok": True, "ids": [i["id"] for i in items], "output": output})
             if path == "/api/queue/polora-diagnostic":
                 from fizgig.web import polora_diagnostic
                 folder = str(b.get("image_folder") or "").strip()
