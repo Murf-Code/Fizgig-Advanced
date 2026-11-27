@@ -70,12 +70,22 @@ def test_effective_selective_recipe(tmp_path):
     from fizgig.web.optimizer_match import effective_settings, selective_arm, expected_updates, optimizer_name
     rows = effective_settings(tmp_path / "group", "fixed prompt")
     assert [r["__optimizer_match"] for r in rows] == [
-        "polora-full","polora-selective","polora-effective",
-        "lora_tsd-full","lora_tsd-selective","lora_tsd-effective"]
+        "polora-geometry-full","polora-geometry-selective","polora-geometry-effective",
+        "lora_tsd-geometry-full","lora_tsd-geometry-selective","lora_tsd-geometry-effective"]
     for i,row in enumerate(rows):
         case = row["__optimizer_match"]
-        assert expected_updates(case)==65
+        assert expected_updates(case)==78
+        assert row["MAX_TRAIN_EPOCHS"]=="6"
         assert selective_arm(case)==(i%3!=0)
         assert row["KREA2_SELECTIVE_BLOCK_CHECK"]==selective_arm(case)
         assert not row["KREA2_SELECTIVE_COMPENSATION"]
         assert row["OPTIMIZER_TYPE"]==optimizer_name(case)
+
+
+def test_effective_legacy_recipe_unchanged(tmp_path):
+    from fizgig.web.optimizer_match import effective_settings, expected_updates
+    rows = effective_settings(tmp_path / "legacy", "fixed prompt", epochs=5)
+    assert [r["__optimizer_match"] for r in rows] == [
+        "polora-full", "polora-selective", "polora-effective",
+        "lora_tsd-full", "lora_tsd-selective", "lora_tsd-effective"]
+    assert all(r["MAX_TRAIN_EPOCHS"] == "5" and expected_updates(r["__optimizer_match"]) == 65 for r in rows)

@@ -31,10 +31,16 @@ SELECTIVE_RATES = {"ademamix8bit": .00025, "pagedademamix8bit": .00025,
 SELECTIVE_BASE = {f"{name}-{mode}": name for name in SELECTIVE_RATES for mode in ("full", "selective")}
 EFFECTIVE_CASES = {f"{name}-effective": name for name in ("polora", "lora_tsd")}
 SELECTIVE_BASE.update(EFFECTIVE_CASES)
+# Distinct six-epoch case IDs keep the ordinary five-epoch compatibility arms intact.
+EFFECTIVE_SIX = {f"{name}-geometry-{mode}": name for name in ("polora", "lora_tsd")
+                 for mode in ("full", "selective", "effective")}
+SELECTIVE_BASE.update(EFFECTIVE_SIX)
 START.update({case: SELECTIVE_RATES[name] for case, name in SELECTIVE_BASE.items()})
 
 
 def expected_updates(case):
+    if case in EFFECTIVE_SIX:
+        return 78
     return 65 if case in SOAP_SWEEP or case in SELECTIVE_BASE else EXPECTED_UPDATES
 
 
@@ -120,23 +126,26 @@ def selective_settings(group, prompt, names=None):
     return rows
 
 
-def effective_settings(group, prompt):
-    """Six matched arms; reuse the original full and Selective recipes."""
+def effective_settings(group, prompt, *, epochs=6):
+    """Six matched arms; distinct case IDs for six epochs, legacy five-epoch manifests supported."""
     group = Path(group)
+    if epochs not in (5, 6):
+        raise ValueError("Effective Selective requires five (legacy) or six epochs")
     rows = []
     for name in ("polora", "lora_tsd"):
-        pair = selective_settings(group, prompt, [name])
-        case = name + "-effective"
-        rows.extend(pair)
-        rows.append({**pair[1], "__optimizer_match": case, "LORA_NAME": f"{group.name}-{case}",
-                     "LORA_OUTPUT_DIR": str(group / case)})
+        full, selective = selective_settings(group, prompt, [name])
+        for mode, template in (("full", full), ("selective", selective), ("effective", selective)):
+            case = f"{name}-geometry-{mode}" if epochs == 6 else f"{name}-{mode}"
+            rows.append({**template, "MAX_TRAIN_EPOCHS": str(epochs), "__optimizer_match": case,
+                         "LORA_NAME": f"{group.name}-{case}", "LORA_OUTPUT_DIR": str(group / case)})
     return rows
 
 
 def attach(plan, values, family, resume=""):
     name = values["__optimizer_match"]
     group = Path(values["LORA_OUTPUT_DIR"]).parent
-    choices = (effective_settings(group, values.get("SAMPLE_PROMPT", "")) if name in EFFECTIVE_CASES
+    choices = (effective_settings(group, values.get("SAMPLE_PROMPT", ""), epochs=6) if name in EFFECTIVE_SIX
+               else effective_settings(group, values.get("SAMPLE_PROMPT", ""), epochs=5) if name in EFFECTIVE_CASES
                else selective_settings(group, values.get("SAMPLE_PROMPT", ""), [SELECTIVE_BASE[name]]) if name in SELECTIVE_BASE
                else soap_settings(group, values.get("SAMPLE_PROMPT", "")) if name in SOAP_SWEEP else settings(group))
     expected = next((r for r in choices if r["__optimizer_match"] == name), None)
@@ -387,7 +396,8 @@ def refresh(group):
             r["peak_allocated_bytes"] = max(x.get("cuda_peak_allocated_bytes",0) for x in rows)
             r["peak_reserved_bytes"] = max(x.get("cuda_peak_reserved_bytes",0) for x in rows)
             if selective_arm(r["case"]):
-                base = by_case.get(SELECTIVE_BASE[r["case"]] + "-full", {})
+                base_suffix = "-geometry-full" if r["case"] in EFFECTIVE_SIX else "-full"
+                base = by_case.get(SELECTIVE_BASE[r["case"]] + base_suffix, {})
                 r["paired_inputs"] = (base.get("status") == "measured"
                     and bool(r.get("initial_fingerprint"))
                     and r["initial_fingerprint"] == base.get("initial_fingerprint")
@@ -404,7 +414,7 @@ def refresh(group):
                     "not_exercised" if not reduced or not r["reactivated_blocks"] else
                     "reactivation_movement_missing" if r["reactivated_blocks"] != r["reactivated_moved_blocks"] else
                     "passed" if all(x["inactive_state_unchanged"] for x in rows) else "failed")
-        report = {**manifest, "runs": runs, "experiment": ("selective_effective_alignment" if any(r["case"] in EFFECTIVE_CASES for r in runs) else "selective_native_compatibility"),
+        report = {**manifest, "runs": runs, "experiment": ("selective_effective_alignment" if any(r["case"] in EFFECTIVE_CASES or r["case"] in EFFECTIVE_SIX for r in runs) else "selective_native_compatibility"),
                   "external_compensation": False, "pilot_only": True}
         _write(group / REPORT, report)
         return report

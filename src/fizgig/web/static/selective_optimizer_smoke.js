@@ -120,7 +120,8 @@
     let busy = false;
     function update() {
       const count = geometry ? 6 : selective ? checks.filter(c => c.checked).length * 2 : 4;
-      summary.textContent = count + " runs · 5 epochs each · " + count * 65 + " training updates";
+      const epochs = geometry ? 6 : 5;
+      summary.textContent = count + " runs · " + epochs + " epochs each · " + count * epochs * 13 + " training updates";
       submit.textContent = busy ? "Queueing…" : "Queue " + count + " tests";
       submit.disabled = busy || count === 0 || !prompt.value.trim() || prompt.value.trim().length > 4000;
     }
@@ -141,7 +142,7 @@
           body:JSON.stringify(payload)});
         const data = await res.json();
         if (!res.ok || !data.ok) throw Error(data.error || (data.problems || []).join("; ") || "Could not queue tests");
-        note.textContent = data.count + " five-epoch runs queued. Press Start queue. Report: " + data.output_dir;
+        note.textContent = data.count + (geometry ? " six-epoch" : " five-epoch") + " runs queued. Press Start queue. Report: " + data.output_dir;
         busy = false; dlg.close();
       } catch (e) {
         busy = false; close.disabled = cancel.disabled = false; error.textContent = e.message; update();
