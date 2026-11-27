@@ -33,6 +33,20 @@ class CacheUnavailable(ValueError):
     """The source does not contain a complete compatible cache."""
 
 
+def first_sample_caption(folder, caption_extension=".txt"):
+    """Freeze the first nonempty caption in normal sorted dataset order."""
+    from fizgig.dataset.image_dataset import glob_images
+    from fizgig.dataset.caption_file import read_caption
+
+    for image in sorted(glob_images(folder, caption_extension=caption_extension)):
+        caption_path = Path(image).with_suffix(caption_extension)
+        # Preview files take one prompt per line; keep multiline captions together.
+        prompt = " ".join(read_caption(str(caption_path)).split())
+        if prompt:
+            return str(image), prompt
+    raise ValueError("No nonempty image captions found for the cache test. Caption at least one image first.")
+
+
 def settings(group, root, prompt, *, gpu_profile, masked=False, dataset_values=None, fresh_baseline=False):
     if gpu_profile not in GPU_PROFILES:
         raise ValueError("Choose the RTX 3090 or RTX 4070 Ti cache test.")
@@ -144,8 +158,8 @@ def configure_plan(desc, inputs, plan, values, launch):
         stages = [launch.Stage("Baseline Latent Caching", lat),
                   launch.Stage("Baseline Text Caching", txt)]
     prompt = str(values.get("__cache_prompt") or "").strip()
-    if not prompt or len(prompt) > 2000 or "\n" in prompt or "\r" in prompt:
-        plan.problems.append("Provide one fixed sample prompt (up to 2000 characters).")
+    if not prompt or "\n" in prompt or "\r" in prompt:
+        plan.problems.append("Cache regression requires one fixed nonempty dataset caption.")
         return
     prompt_path = str(Path(inputs["LORA_OUTPUT_DIR"]) / "regression-prompt.txt")
     plan.files.append((prompt_path, prompt + "\n"))

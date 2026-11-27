@@ -53,6 +53,31 @@ class CacheRegressionTests(unittest.TestCase):
         with patch.dict(sys.modules, self.fake_modules):
             return cr.prepare_caches(self.body, self.configs, "krea2drv")
 
+    def test_automatic_sample_caption_is_sorted_and_fixed(self):
+        second = self.root / "b.png"
+        second.write_bytes(b"image")
+        second.with_suffix(".caption").write_text("second caption", encoding="utf-8")
+        self.image.with_suffix(".caption").write_text("first\ncaption", encoding="utf-8")
+        with patch.dict(sys.modules, self.fake_modules):
+            with patch.object(self.fake_modules["fizgig.dataset.image_dataset"], "glob_images",
+                              return_value=[str(second), str(self.image)]) as glob:
+                image, prompt = cr.first_sample_caption(str(self.root), ".caption")
+                glob.assert_called_once_with(str(self.root), caption_extension=".caption")
+                self.assertEqual((image, prompt), (str(self.image), "first caption"))
+                for gpu in cr.GPU_PROFILES:
+                    arms = cr.settings("test", str(self.root), prompt, gpu_profile=gpu)
+                    for arm in arms:
+                        plan = self.make_plan(arm)
+                        self.assertFalse(plan.problems)
+                        self.assertEqual(next(body for path, body in plan.files
+                                              if path.endswith("regression-prompt.txt")), "first caption\n")
+                self.image.with_suffix(".caption").write_text("  \n", encoding="utf-8")
+                self.assertEqual(cr.first_sample_caption(str(self.root), ".caption"),
+                                 (str(second), "second caption"))
+                second.with_suffix(".caption").write_text("", encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "No nonempty image captions"):
+                    cr.first_sample_caption(str(self.root), ".caption")
+
     def test_mask_and_gpu_recipe_fixed_across_arms(self):
         for gpu, masks, swap, compile_mode in [("4070-ti", False, "24", "Off"),
                                                 ("3090", True, "0", "outside"),

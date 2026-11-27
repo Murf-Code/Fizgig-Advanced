@@ -6,7 +6,7 @@ This is a diagnostic, not a production cache fix. Based on WIP 7878f133, retaini
 
 1. Stop/finish any active run, select Krea 2 and the same original image folder.
 2. No existing cache is required. RTX 3090 retains the original **1 MP (992 nominal)** recipe and first tries to snapshot the current compatible cache. If files are missing, the bucket is incompatible, or required variants are absent, the UI automatically requests a fresh private baseline. RTX 4070 Ti inherits the saved Krea 2 dataset resolution, bucket/no-upscale, caption extension and tag/caption dropout/variant settings and always generates a fresh private baseline. Neither path alters the original cache. If the previous failed run's cache was overwritten, even an existing-cache snapshot is not a snapshot of the historical failing bytes.
-3. Click **Krea 2 cache test — RTX 3090** or **Krea 2 cache test — RTX 4070 Ti** in the Run card (choose the matching GPU) and enter one preview prompt containing the trigger word. Confirm.
+3. Click **Krea 2 cache test — RTX 3090** or **Krea 2 cache test — RTX 4070 Ti** in the Run card (choose the matching GPU) and confirm. The first nonempty caption in sorted dataset image order is used automatically for all previews; no manual sample prompt is required. The source image and fixed prompt are recorded in the manifest.
 4. The existing queue runs A/B/C/D in order, advancing after failures. Keep the models, captions, images, masks, preferences, and dataset unchanged during the comparison. There is no need to manually switch settings between arms.
 
 | Arm | Image latents | Caption embeddings (including variants) |

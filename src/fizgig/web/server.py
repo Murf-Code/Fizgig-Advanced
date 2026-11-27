@@ -5033,7 +5033,6 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/queue/cache-regression":
                 from fizgig.web import cache_regression
                 folder = str(b.get("image_folder") or "").strip()
-                prompt = str(b.get("prompt") or "").strip()
                 if b.get("family") != "krea2" or not os.path.isdir(folder):
                     return self.json({"error": "Select Krea 2 and the original training folder."}, 400)
                 if any(h.get("share") for h in (load_prefs().get("helpers") or [])):
@@ -5056,9 +5055,16 @@ class Handler(BaseHTTPRequestHandler):
                     saved = (load_state().get("values") or {}).get("krea2") or {}
                     dataset_values = {**form.DEFAULTS, **saved}
                 fresh_baseline = profile == "4070-ti" or b.get("fresh_baseline") is True
-                configs = cache_regression.settings(group, root, prompt, gpu_profile=profile,
+                configs = cache_regression.settings(group, root, "", gpu_profile=profile,
                                                     masked=bool(mask_count), dataset_values=dataset_values,
                                                     fresh_baseline=fresh_baseline)
+                try:
+                    sample_image, prompt = cache_regression.first_sample_caption(
+                        folder, configs[0]["DATASET_CAPTION_EXT"])
+                except (OSError, ValueError) as exc:
+                    return self.json({"error": str(exc)}, 400)
+                for vals in configs:
+                    vals["__cache_prompt"] = prompt
                 entries, plans = [], []
                 source = None
                 baseline_config = None
@@ -5095,7 +5101,8 @@ class Handler(BaseHTTPRequestHandler):
                         snapshot = cache_regression.prepare_caches(source, configs, desc.arch_id, held or [])
                         snapshot["provenance"] = "existing_cache_snapshot"
                     with open(os.path.join(output, "diagnostic-settings.json"), "w", encoding="utf-8") as f:
-                        json.dump({"dataset": folder, "gpu_profile": profile, "cases": configs, "snapshot": snapshot, "plans": plans}, f, indent=2)
+                        json.dump({"dataset": folder, "gpu_profile": profile, "sample_source_image": sample_image,
+                                   "sample_prompt": prompt, "cases": configs, "snapshot": snapshot, "plans": plans}, f, indent=2)
                 except cache_regression.CacheUnavailable as exc:
                     shutil.rmtree(output, ignore_errors=True)
                     return self.json({"error": str(exc), "can_prepare_baseline": not fresh_baseline}, 400)

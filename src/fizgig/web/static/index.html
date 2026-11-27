@@ -2567,9 +2567,7 @@
           note.textContent = "Select Krea 2 and the original training dataset.";
           return;
         }
-        const prompt = window.prompt("Enter one fixed preview prompt, including the character trigger word.");
-        if (!prompt || !prompt.trim()) return;
-        if (!window.confirm("Queue four two-epoch INT8 PoLoRA runs using " + profile.label + "? Finish or remove existing queued jobs first. Masks are automatic. " + (profile.key === "3090" ? "The 3090 uses the original fixed 1 MP recipe and prefers compatible existing caches. If those are unavailable, it creates a private baseline first. " : "The 4070 Ti uses your saved Krea 2 dataset settings and creates a fresh private baseline first. ") + "No original caches are changed. Do not edit images/captions/settings while testing.")) return;
+        if (!window.confirm("Queue four two-epoch INT8 PoLoRA runs using " + profile.label + "? The first nonempty dataset caption is used for all sample images. Finish or remove existing queued jobs first. Masks are automatic. " + (profile.key === "3090" ? "The 3090 uses the original fixed 1 MP recipe and prefers compatible existing caches. If those are unavailable, it creates a private baseline first. " : "The 4070 Ti uses your saved Krea 2 dataset settings and creates a fresh private baseline first. ") + "No original caches are changed. Do not edit images/captions/settings while testing.")) return;
         profiles.forEach(p => { p.button.disabled = true; });
         note.textContent = "Preparing the cache comparison...";
         try {
@@ -2577,7 +2575,7 @@
             const response = await fetch("/api/queue/cache-regression", {
               method: "POST",
               headers: {"Content-Type": "application/json", "X-Fizgig-Token": document.querySelector('meta[name="fizgig-token"]').content},
-              body: JSON.stringify({family: family.value, image_folder: folder, prompt: prompt.trim(), gpu_profile: profile.key, fresh_baseline: fresh})
+              body: JSON.stringify({family: family.value, image_folder: folder, gpu_profile: profile.key, fresh_baseline: fresh})
             });
             return response.json();
           };
