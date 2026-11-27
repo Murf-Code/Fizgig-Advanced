@@ -3,7 +3,7 @@ name: Checks
 on:
   pull_request:
   push:
-    branches: [master, fizgig-advanced, test/caption-workbench]
+    branches: [master, fizgig-advanced, test/caption-workbench, experiment/constellation-revamp]
 
 jobs:
   checks:
