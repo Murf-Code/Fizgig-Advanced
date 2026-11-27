@@ -70,7 +70,8 @@ KREA2 = FamilyDescription(
         section="other",
         mode="lora",
         requires="KREA2_SELECTIVE_BLOCK_CHECK",
-        hint="Krea 2 Global replay + Selective + Muon only. Boosts active adapter updates by sqrt(total/active), "
+        hint="Krea 2 Global replay + Selective + Muon or AdamW (including 8-bit variants). Boosts active adapter updates "
+             "by sqrt(total/active), "
              "capped at 1.5×. Full probes and weight decay stay unchanged. Off by default.",
         summary="Selective LR compensation",
     ), FamilyOption(

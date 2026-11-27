@@ -1583,9 +1583,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     selective_global_replay = bool(global_replay and getattr(driver, "selective_global_replay", False))
     selective_compensation = str((family_options or {}).get("selective_compensation", "")).strip().lower() in (
         "1", "true", "on", "yes")
-    if selective_compensation and (not selective_global_replay or str(optimizer_type).strip().lower() != "muon"):
-        raise RuntimeError("Selective LR compensation requires Krea 2 Global replay, "
-                           "Selective block check and the built-in Muon optimizer.")
+    compensation_optimizer = str(optimizer_type).strip().lower()
+    if selective_compensation:
+        from fizgig.training.selective_compensation import SUPPORTED
+        if not selective_global_replay or compensation_optimizer not in SUPPORTED:
+            raise RuntimeError("Selective LR compensation requires Krea 2 Global replay, "
+                               "Selective block check and one of: " + ", ".join(SUPPORTED))
     if global_replay:
         unsupported = []
         if str(network_type or "lora").lower() != "lora":
@@ -2597,13 +2600,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         optimizer, opt_label = create_optimizer(optimizer_type, opt_params, learning_rate, _oargs,
                                                 eps_floor_8bit=desc.optimizer_eps_floor_8bit)
     if selective_compensation:
-        from fizgig.training.muon import Muon, BatchedMuon
-        if not isinstance(optimizer, (Muon, BatchedMuon)) or any(
-                g.get("adjust_lr_fn") != "match_rms_adamw" for g in optimizer.param_groups):
-            raise RuntimeError("Selective LR compensation needs built-in Muon with match_rms_adamw")
+        from fizgig.training.selective_compensation import validate_optimizer
+        validate_optimizer(optimizer, compensation_optimizer)
         driver.validate_selective_compensation_optimizer(optimizer)
-        logger.info("[selective-compensation] enabled: active learning term × min(1.5, sqrt(total/active)); "
-                    "native group LR, full probes, decay and skipped momentum are unchanged.")
+        logger.info("[selective-compensation] enabled for %s: active learning term × min(1.5, sqrt(total/active)); "
+                    "full probes, nominal decay product, skipped optimizer state and persistent group LR unchanged.",
+                    compensation_optimizer)
     _polora = optimizer.__class__.__name__ == "Polora"
     if _polora:
         # PoLoRA: Adaptive LR and per-image LR move its learning rate, as with every other optimizer (Min/Max are real
@@ -2674,8 +2676,14 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             raise RuntimeError("Resume requires the same Selective LR compensation setting as the saved state.")
         if selective_compensation and (not meta.get("own_state") or meta.get("selective_global_replay") is None):
             raise RuntimeError("Compensated Selective resume requires its own saved replay state.")
-        if selective_compensation and any(g.get("adjust_lr_fn") != "match_rms_adamw" for g in optimizer.param_groups):
-            raise RuntimeError("Compensated Selective resume requires match_rms_adamw.")
+        if selective_compensation:
+            # WIP's previous compensated states were Muon-only.
+            if (meta.get("selective_compensation_optimizer", "muon") != compensation_optimizer
+                    or meta.get("fresh_optimizer")):
+                raise RuntimeError("Compensated Selective resume requires the same optimizer and saved optimizer state.")
+            from fizgig.training.selective_compensation import validate_optimizer
+            validate_optimizer(optimizer, compensation_optimizer)
+            driver.validate_selective_compensation_optimizer(optimizer)
         if isinstance(meta.get("mid_epoch"), dict) and meta["own_state"]:
             resume_mid = meta["mid_epoch"]
         saved_batch_size = int(meta.get("batch_size", 1))
@@ -3378,7 +3386,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                                       if _reg_capped else {}),
                                    **({"early_stop": es.state_dict()} if es is not None else {}),
                                    **({"batch_size": bsz} if bsz > 1 else {}),
-                                   **({"selective_compensation": True} if selective_compensation else {}),
+                                   **({"selective_compensation": True,
+                                       "selective_compensation_optimizer": compensation_optimizer}
+                                      if selective_compensation else {}),
                                    **({"selective_global_replay": driver.selective_state_dict()}
                                       if selective_global_replay else {}),
                                    # the pictures set aside for validation: a resume holds out the same ones
@@ -3621,7 +3631,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
         if selective_compensation:
             scale = driver.selective_learning_multiplier()
-            optimizer.step(learning_multiplier=scale)
+            from fizgig.training.selective_compensation import compensated_step
+            compensated_step(optimizer, compensation_optimizer, scale)
             logger.debug("[selective-compensation] update %d learning multiplier %.6f", global_step + 1, scale)
         else:
             optimizer.step()
