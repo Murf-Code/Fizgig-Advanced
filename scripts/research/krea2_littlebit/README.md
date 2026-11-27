@@ -365,3 +365,20 @@ not estimated by the packed-byte budget.
 
 New tests: `checks/test_littlebit_private_correction.py`. Full-size offline
 run requires a completed capture set and the original checkpoint.
+
+The report also includes per-active-layer packed payload bytes and dense
+multiply-accumulate estimates (excluding unpack, Hadamard, BF16 rounding,
+temporary memory and transfer). These are not measured GPU performance.
+Capture files and raw checkpoint are hashed before and after the run.
+
+Verification in the implementation environment: four isolated CPU checks
+of the extracted rank-budget, split, and private/shared fitting functions
+passed on synthetic inputs. The full new pytest file and actual packed-Q5
+integration have not been executed in that environment: repository access
+through the GitHub connector succeeded, but the local runtime could not
+resolve raw.githubusercontent.com. No real capture or CUDA was available.
+Run the integration tests from the full checkout:
+
+```powershell
+.\venv\Scripts\python.exe -m pytest -q checks/test_littlebit_private_correction.py
+```

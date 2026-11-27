@@ -47,12 +47,15 @@ def run_pair(weights,keys,stock,trace,split,int8_module,steps):
         if aa is not None: nbytes+=sum(x.nbytes for x in aa+bb)
         if nbytes>budget["budget_bytes"]: raise ValueError("candidate exceeded byte cap")
         row={"charged_bytes":nbytes,"unused_bytes":budget["budget_bytes"]-nbytes,
-             "rank":aa[0].shape[0] if aa else 0,"weight_error":[],"fit":fit}
+             "rank":aa[0].shape[0] if aa else 0,"weight_error":[],"fit":fit,
+             "active_layer_payload_bytes":[],"dense_equivalent_macs_per_token":[]}
         for i,w in enumerate(weights):
             p,s=res[i]
             a=aa[0 if len(aa)==1 else i] if aa else None
             b=bb[i] if bb else None
             row["weight_error"].append(pc.weight_error(w,p,s,a,b))
+            row["active_layer_payload_bytes"].append(p.nbytes+(a.nbytes+b.nbytes if a is not None else 0))
+            row["dense_equivalent_macs_per_token"].append(m*n+(a.shape[0]*(m+n) if a is not None else 0))
         models[name]=(res,aa,bb)
         report["candidates"][name]=row
     def evaluate(name,subset):
@@ -123,7 +126,8 @@ def main():
         stocks=sorted(a.comparisons.glob("littlebit-*/stock/trace.json"),key=lambda p:p.stat().st_mtime,reverse=True)
         for t in stocks:
             tr=json.loads(t.read_text(encoding="utf-8"))
-            if tr.get("case")=="stock" and tr.get("completed_updates") and (t.parent/"prepare.json").is_file():
+            if (tr.get("case")=="stock" and tr.get("completed_updates") and tr.get("calibration")
+                    and all("tokens" in r for r in tr["calibration"]) and (t.parent/"prepare.json").is_file()):
                 a.stock=t.parent
                 break
         if a.stock is None: p.error("no completed stock trace found")
@@ -158,6 +162,10 @@ def main():
                 atomic_json(a.out,result)
                 del weights
         if codec.sha256(a.raw)!=result["raw_sha256"]: raise ValueError("raw changed during experiment")
+        for records in result["split"].values():
+            for r in records:
+                if codec.sha256(a.stock/r["file"])!=r["sha256"]:
+                    raise ValueError("calibration file changed during experiment")
         result["status"]="completed"
     except Exception as exc:
         result.update(status="error",error=str(exc))

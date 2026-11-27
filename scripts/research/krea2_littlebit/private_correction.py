@@ -78,13 +78,11 @@ def residual(w,a,b):
     return p,spec
 
 
-def actions(w,x,g):
-    return F.linear(x.float(),w.float()),g.float()@w.float()
-
-
 def fit_target(w,p,s,capture):
     """Compute targets for the frozen low-rank path, with decoded Q5 fixed."""
     x,g=capture["x"].float(),capture["dy"].float()
+    if x.ndim!=2 or g.ndim!=2 or len(x)!=len(g) or (g.shape[1],x.shape[1])!=tuple(w.shape):
+        raise ValueError("capture shape does not match raw projection")
     y=torch.empty((len(x),w.shape[0]),dtype=torch.float32)
     dx=torch.zeros((len(g),w.shape[1]),dtype=torch.float32)
     ry=torch.empty_like(y); rg=torch.zeros_like(dx)
