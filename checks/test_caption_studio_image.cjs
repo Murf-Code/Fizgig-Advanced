@@ -31,10 +31,10 @@ const start=js.indexOf('const pictureActions=el("div",{class:"studio-image-toolb
 const end=js.indexOf('const orderKey=',start);
 assert(start>0&&end>start,"Tags toolbar missing");
 const toolbar=js.slice(start,end);
-for(const word of ['btn("Remove"','btn("Crop"','btn("Undo"','btn("Redo"','btn("Apply"'])
+for(const word of ['btn("Erase"','btn("Crop"','btn("Undo"','btn("Redo"','btn("Apply"'])
   assert(toolbar.includes(word),"missing tool "+word);
 assert.match(toolbar,/sizeLabel\.hidden=tool!=="remove"/);
-assert.match(toolbar,/applyImage\.hidden=!active/);
+assert.match(toolbar,/applyImage\.hidden=!active\|\|!\["remove","crop"\]\.includes\(tool\)/);
 assert.match(toolbar,/await captionImageOpen\(current,tool\)/);
 assert.match(toolbar,/await captionImageClose\(\)/);
 assert.match(toolbar,/await meApply\(\)/);
@@ -49,9 +49,9 @@ assert.match(css,/#tab-captions \.studio-image-toolbar\{/);
 assert.match(css,/#tab-captions \.studio-image-toolbar \[hidden\]\{display:none!important\}/);
 
 // Keep the removed-image workflow and shared undo history separate from
-// in-image Remove; "Remove" on the toolbar must not delete dataset pictures.
-assert.match(js,/const removeSelectedImages=async\(targetPath=null\)=>/);
+// in-image Erase; "Erase" on the toolbar must not delete dataset pictures.
+assert.match(js,/const removeSelectedImages=async\(targetPath=null,single=false\)=>/);
 assert.match(js,/studioRecord\("Remove image"/);
 assert.match(js,/api\("\/api\/captions\/remove"/);
 assert.match(js,/api\("\/api\/captions\/restore"/);
-console.log("Tags inline Remove/Crop editor lifecycle and shared-history checks passed");
+console.log("Tags inline Erase/Crop editor lifecycle and shared-history checks passed");
