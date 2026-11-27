@@ -13,7 +13,9 @@ CASES = {
 }
 
 
-def settings(group, root, prompt):
+def settings(group, root, prompt, *, masked=False, gpu_gb=None):
+    # Pin the same memory configuration in all four arms. Swapped INT8 is eager.
+    swap = 24 if gpu_gb is None or gpu_gb < 15 else 20 if gpu_gb < 19 else 12 if gpu_gb < 22 else 0
     base = {
         "FAMILY_KIND": "standard", "NETWORK_TYPE": "LoRA (standard)",
         "NETWORK_DIM": "8", "NETWORK_ALPHA": "8", "GRADIENT_ACCUMULATION": "1",
@@ -36,9 +38,9 @@ def settings(group, root, prompt):
                 VALIDATION_TIMESTEPS="4", ADAPTIVE_LR=False, KREA2_PER_IMAGE_LR=False,
                 KREA2_LOSS_WATCH=False, KREA2_DIRECTION_EDIT=False, SAMPLE_ENABLED=False,
                 FAMILY_TURBO_ON=False, FAMILY_TURBO_STRENGTH="0",
-                COMPILE_BLOCKS="outside", POLORA_COMPILE=True, MASKED_TRAINING=True,
+                COMPILE_BLOCKS="Off" if swap else "outside", POLORA_COMPILE=True, MASKED_TRAINING=bool(masked),
                 OPTIMIZER_TYPE="polora", FAMILY_PRECISION="INT8 (8-bit, fastest)",
-                BLOCKS_SWAP="0", LEARNING_RATE="0.02",
+                BLOCKS_SWAP=str(swap), LEARNING_RATE="0.02",
                 OPTIMIZER_ARGS="magnitude_scale=3 curvature_beta=0.99 compile=True")
     return [dict(base, __cache_regression=case, __cache_prompt=prompt,
                  LORA_NAME=f"{group}-{case}", LORA_OUTPUT_DIR=os.path.join(root, group, case))
