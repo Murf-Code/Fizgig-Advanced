@@ -62,14 +62,19 @@ assert.match(css,/#tab-captions \.studio-host \.studio-thumb-footer\s*\{\s*displ
 assert.match(css,/@container \(max-width:170px\)/);
 assert.match(css,/\.studio-missing-filter::after\s*\{\s*content:attr\(data-compact\)/);
 
-// Saved is represented by a green light; pending writes, errors and required
-// image actions still keep explanatory text. Status details remain accessible.
-assert.match(app,/liveLabel\.textContent=label/);
-assert.match(app,/liveSummary\.setAttribute\("aria-label","Dataset status: "\+label/);
-assert.match(css,/\.studio-workspace-status\[data-state="saved"\] \.studio-status-label\s*\{/);
-assert.match(css,/\.studio-workspace-status\[data-state="saved"\] summary::after\s*\{\s*display:none;/);
-assert.match(css,/\.studio-workspace-status\[data-state="saved"\] \.studio-status-dot\s*\{/);
-assert.match(css,/\.studio-workspace-status\[data-state="attention"\] \.studio-status-dot\s*\{/);
+// The header star conveys save state, and the details panel retains the
+// explanatory text for pending writes, errors and required image actions.
+assert.match(app,/function captionStarStatus\(state,label,detail=""\)/);
+assert.match(app,/captionStarStatus\(state,label,failedTask\?/);
+assert.match(app,/star\.dataset\.state=state/);
+assert.match(app,/star\.setAttribute\("aria-label","Workspace status: "\+label\+"\. View details"\)/);
+assert.match(app,/panel\.textContent=label\+\(detail\?" — "\+detail:""\)/);
+assert.match(app,/S\.cap\.studioStatusRefresh=refreshStatus/);
+assert.match(css,/\.caption-bench-monogram\[data-state="saved"\]>span\s*\{\s*color:var\(--success/);
+assert.match(css,/\.caption-bench-monogram\[data-state="attention"\]>span\s*\{\s*color:var\(--danger/);
+assert.match(css,/\.caption-bench-monogram\[data-state="saving"\]>span\s*\{\s*color:var\(--warning/);
+assert.match(css,/\.caption-bench-monogram:is\(\[data-state="pending"\],\[data-state="editing"\]\)>span\s*\{\s*color:var\(--warning/);
+assert.match(css,/\.caption-star-detail\[hidden\]\{display:none!important\}/);
 
 // The stage expands to fill the available notebook viewport, rather than
 // being capped at 82dvh/950px. Short windows still scroll normally.
