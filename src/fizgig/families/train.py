@@ -1590,13 +1590,26 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     match_rows, match_initial = [], None
     if optimizer_match:
         from fizgig.web.optimizer_match import START, optimizer_name
-        if (optimizer_match not in START or optimizer_name(optimizer_match) != compensation_optimizer
-                or not global_replay or selective_global_replay or selective_compensation
-                or resume_state_dir or finetune or adaptive_lr or per_image_lr
-                or max_train_epochs != 1 or int(seed) != 42 or int(network_dim) != 32
-                or float(network_alpha) != 32 or lr_scheduler != "constant"
-                or validation_early_stop or not validation_loss or not validation_holdout):
-            raise RuntimeError("Optimizer match requires the fixed fresh one-epoch recipe")
+        from fizgig.web.optimizer_match import require_recipe
+        require_recipe({
+            "case": optimizer_match in START,
+            "optimizer": optimizer_name(optimizer_match) == compensation_optimizer,
+            "global_replay": global_replay,
+            "selective_disabled": not selective_global_replay and not selective_compensation,
+            "fresh": not resume_state_dir,
+            "lora": not finetune,
+            "adaptive_lr_disabled": not adaptive_lr,
+            "per_image_lr_disabled": not per_image_lr,
+            "epochs": max_train_epochs == 1,
+            "seed": int(seed) == 42,
+            "rank": int(network_dim) == 32,
+            "alpha": float(network_alpha) == 32,
+            "scheduler": lr_scheduler == "constant",
+            "early_stop_disabled": not validation_early_stop,
+            "validation_loss": validation_loss,
+        })
+        # Actual holdout is validated below, after loading the dataset TOML.
+        # The obsolete CLI --validation_holdout flag is no longer passed by Start.
     if optimizer_smoke:
         from fizgig.web.selective_optimizer_smoke import CASES
         if (optimizer_smoke not in CASES or optimizer_smoke != compensation_optimizer
@@ -1604,7 +1617,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 or finetune or adaptive_lr or per_image_lr or max_train_epochs != 1
                 or int(seed) != 42 or int(network_dim) != 32 or float(network_alpha) != 32
                 or float(learning_rate) != .00025 or lr_scheduler != "constant"
-                or validation_early_stop or not validation_loss or not validation_holdout):
+                or validation_early_stop or not validation_loss):
             raise RuntimeError("Optimizer smoke test requires the fixed one-epoch recipe")
     if selective_compensation:
         from fizgig.training.selective_compensation import SUPPORTED
@@ -1832,6 +1845,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if len(val_held) < len(names):
             logger.warning(f"[validation] hold-out: {len(names) - len(val_held)} set-aside picture(s) have no "
                            "validation cache, so they are left out of training and validation alike")
+    if optimizer_smoke or optimizer_match:
+        from fizgig.web.optimizer_match import require_holdout
+        require_holdout(holdout_list, val_held)
+        logger.info("[optimizer-research] verified two held-out validation images from dataset TOML")
     masked_images = 0
     if masked_training and slider_prompts:
         logger.info("[masks] a prompt-pair slider trains on pictures it makes itself: masked training is off")

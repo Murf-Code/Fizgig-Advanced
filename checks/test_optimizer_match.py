@@ -1,6 +1,6 @@
 import pytest
 import torch
-from fizgig.web.optimizer_match import delta_sq, settings, START, PILOT, optimizer_name, input_hash
+from fizgig.web.optimizer_match import delta_sq, settings, START, PILOT, optimizer_name, input_hash, require_recipe, require_holdout
 
 def test_compact_delta_matches_dense():
     g = torch.Generator().manual_seed(42)
@@ -24,3 +24,17 @@ def test_input_hash():
     x = torch.arange(4, dtype=torch.bfloat16)
     assert input_hash(x, {"t": 1}) == input_hash(x.clone(), {"t": 1})
     assert input_hash(x, {"t": 1}) != input_hash(x, {"t": 2})
+
+
+def test_research_guard_uses_actual_holdout():
+    require_holdout({"paths": ["a.png", "b.png"]}, {"a": object(), "b": object()})
+    for held, cached in [(None, {}), ({"paths": ["a", "a"]}, {"a": 1, "b": 2}),
+                         ({"paths": ["a", "b"]}, {"a": 1})]:
+        with pytest.raises(RuntimeError, match="two distinct actual held-out"):
+            require_holdout(held, cached)
+
+
+def test_recipe_guard_names_failed_fields():
+    require_recipe({"seed": True, "epochs": True})
+    with pytest.raises(RuntimeError, match="failed checks: seed, epochs"):
+        require_recipe({"seed": False, "epochs": False, "rank": True})

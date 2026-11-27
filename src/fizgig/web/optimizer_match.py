@@ -84,6 +84,22 @@ def initialize(group, dataset, values):
     return refresh(group)
 
 
+def require_recipe(checks):
+    failures = [name for name, ok in checks.items() if not ok]
+    if failures:
+        raise RuntimeError("Optimizer match requires the fixed fresh one-epoch recipe; "
+                           "failed checks: " + ", ".join(failures))
+
+
+def require_holdout(holdout_list, val_held):
+    """The web launcher uses TOML holdout_file, not the retired CLI flag."""
+    paths = (holdout_list or {}).get("paths") or []
+    if len(paths) != 2 or len(set(paths)) != 2 or len(val_held) != 2:
+        raise RuntimeError("Optimizer research requires two distinct actual held-out "
+                           f"images with validation caches; paths={len(paths)}, "
+                           f"cached_items={len(val_held)}")
+
+
 def input_hash(*items):
     """Hash actual tensor bytes, dtype, shape and structured input identity."""
     import torch
