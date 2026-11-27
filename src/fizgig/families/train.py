@@ -1650,6 +1650,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     device = torch.device("cuda")
     quant.apply_vram_cap()          # FIZGIG_SIM_VRAM_GB: behave like a smaller card
     random.seed(seed)  # dataset blueprint uses Python RNG; saved mid-epoch seeds still override it
+    if str((family_options or {}).get("cache_regression", "")) == "1":
+        np.random.seed(int(seed) % (2 ** 32))
     torch.manual_seed(seed)
     os.makedirs(output_dir, exist_ok=True)
 
