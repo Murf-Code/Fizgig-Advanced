@@ -19,6 +19,13 @@ START = {
 START["adamw-repeat"] = START["adamw"]
 PILOT = ("adamw", "adamw-repeat", "soap-512", "soap-compact32")
 SOAP_CAPS = {"soap-512": 512, "soap-1024": 1024}
+SOAP_SWEEP = ("soap-512-long", "soap-512-high", "soap-compact32-long", "soap-compact32-high")
+SWEEP_BASE = dict(zip(SOAP_SWEEP, ("soap-512", "soap-512", "soap-compact32", "soap-compact32")))
+START.update(dict(zip(SOAP_SWEEP, (.00025, .0004, .00025, .0005))))
+
+
+def expected_updates(case):
+    return 65 if case in SOAP_SWEEP else EXPECTED_UPDATES
 
 
 def optimizer_name(case):
@@ -57,14 +64,30 @@ def settings(group, previous=None, cases=PILOT):
              "LORA_OUTPUT_DIR": str(group / name)} for name in cases for lr in (rates[name],)]
 
 
+def soap_settings(group, prompt):
+    group = Path(group)
+    prompt = str(prompt).strip()
+    if not prompt or len(prompt) > 4000:
+        raise ValueError("Supply one or more fixed sample prompts (up to 4000 characters)")
+    return [{**COMMON, "LEARNING_RATE": str(START[name]), "OPTIMIZER_TYPE": "soap",
+             "OPTIMIZER_ARGS": f"weight_decay=0.01 {SOAP_ARGS[SWEEP_BASE[name]]}",
+             "KREA2_SELECTIVE_BLOCK_CHECK": False, "KREA2_SELECTIVE_COMPENSATION": False,
+             "MAX_TRAIN_EPOCHS": "5", "SAMPLE_ENABLED": True, "SAMPLE_AT_FIRST": True,
+             "SAMPLE_PROMPT": prompt, "SAMPLE_SEED": "1234", "SAMPLE_WIDTH": "768",
+             "SAMPLE_HEIGHT": "768", "SAMPLE_EVERY_N_EPOCHS": "1", "SAMPLE_LATER": False,
+             "__optimizer_match": name, "LORA_NAME": f"{group.name}-{name}",
+             "LORA_OUTPUT_DIR": str(group / name)} for name in SOAP_SWEEP]
+
+
 def attach(plan, values, family, resume=""):
     name = values["__optimizer_match"]
-    expected = next((r for r in settings(Path(values["LORA_OUTPUT_DIR"]).parent)
-                     if r["__optimizer_match"] == name), None)
+    group = Path(values["LORA_OUTPUT_DIR"]).parent
+    choices = soap_settings(group, values.get("SAMPLE_PROMPT", "")) if name in SOAP_SWEEP else settings(group)
+    expected = next((r for r in choices if r["__optimizer_match"] == name), None)
     if not expected or family != "krea2" or resume or values.get("RESUME_TRAINING"):
         raise ValueError("Optimizer match needs a fresh Krea 2 run")
     lr = float(values["LEARNING_RATE"])
-    if not math.isfinite(lr) or lr <= 0 or (name in ("adamw", "adamw-repeat") and lr != START[name]):
+    if not math.isfinite(lr) or lr <= 0 or (name in ("adamw", "adamw-repeat", *SOAP_SWEEP) and lr != START[name]):
         raise ValueError("Invalid calibration rate")
     if any(values.get(k) != v for k, v in expected.items() if k != "LEARNING_RATE"):
         raise ValueError("Optimizer match recipe changed")
@@ -80,14 +103,14 @@ def initialize(group, dataset, values):
     group = Path(group)
     group.mkdir(parents=True, exist_ok=False)
     _write(group / MANIFEST, {"dataset": str(dataset), "settings": values,
-                             "expected_updates": EXPECTED_UPDATES})
+                             "expected_updates": expected_updates(values[0]["__optimizer_match"])})
     return refresh(group)
 
 
 def require_recipe(checks):
     failures = [name for name, ok in checks.items() if not ok]
     if failures:
-        raise RuntimeError("Optimizer match requires the fixed fresh one-epoch recipe; "
+        raise RuntimeError("Optimizer match requires the fixed fresh research recipe; "
                            "failed checks: " + ", ".join(failures))
 
 
@@ -127,6 +150,7 @@ def optimizer_manifest(optimizer, case):
     import torch
     from fizgig.training.soap import SOAP
     from fizgig.training.soap_memory import CompactSOAP
+    case = SWEEP_BASE.get(case, case)
     expected = {"adamw": torch.optim.AdamW, "adamw-repeat": torch.optim.AdamW,
                 "soap-512": SOAP, "soap-compact32": CompactSOAP}[case]
     if type(optimizer) is not expected:
@@ -219,8 +243,9 @@ def finish(output, name, implementation, lr, rows, validation, initial):
     output = Path(output)
     if output.name != name or name not in START:
         raise ValueError("Invalid optimizer match output")
-    status = ("measured" if len(rows) == EXPECTED_UPDATES and [r["update"] for r in rows] == list(range(1, EXPECTED_UPDATES+1))
-              and validation and validation[-1]["step"] == EXPECTED_UPDATES
+    count = expected_updates(name)
+    status = ("measured" if len(rows) == count and [r["update"] for r in rows] == list(range(1, count+1))
+              and validation and validation[-1]["step"] == count
               and all(math.isfinite(r["norm"]) for r in rows) else "incomplete")
     checkpoint(output, name, implementation=implementation, native_lr=lr,
                status=status, steps=rows, validation=validation, initial_fingerprint=initial)
@@ -243,6 +268,33 @@ def refresh(group):
         p = group / name / AUDIT
         runs.append(json.loads(p.read_text(encoding="utf-8")) if p.is_file()
                     else {"case": name, "status": "not_completed"})
+    if runs[0]["case"] in SOAP_SWEEP:
+        ref = runs[0]
+        def paired_sweep(a, b):
+            return (bool(a.get("initial_fingerprint")) and
+                    a["initial_fingerprint"] == b.get("initial_fingerprint") and
+                    len(a.get("steps", [])) == len(b.get("steps", [])) == 65 and
+                    all(x.get("input_hash") and x["input_hash"] == y.get("input_hash")
+                        for x,y in zip(a["steps"], b["steps"])))
+        for r in runs:
+            if r["status"] != "measured":
+                continue
+            r["paired_inputs"] = paired_sweep(ref, r)
+            rows = r["steps"]
+            r["movement_summary"] = {
+                "early_median": statistics.median(x["norm"] for x in rows[1:8]),
+                "late_median": statistics.median(x["norm"] for x in rows[21:]),
+                "path_length": sum(x["norm"] for x in rows),
+                "optimizer_seconds": sum(x["optimizer_seconds_including_sync"] for x in rows),
+                "peak_allocated_bytes": max((x.get("cuda_peak_allocated_bytes", 0) for x in rows)),
+                "peak_reserved_bytes": max((x.get("cuda_peak_reserved_bytes", 0) for x in rows))}
+            r["refresh_windows"] = [rows[i-1:i+2] for i in range(11, 66, 10)]
+            if ref["status"] == "measured" and not r["paired_inputs"]:
+                r["status"] = "input_mismatch"
+        report = {**manifest, "runs": runs, "experiment": "soap_learning_strength",
+                  "pilot_only": True}
+        _write(group / REPORT, report)
+        return report
     ref = runs[0]
     repeat = next((r for r in runs if r["case"] == "adamw-repeat"), {})
     def paired(a,b):

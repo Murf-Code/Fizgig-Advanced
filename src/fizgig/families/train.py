@@ -1589,7 +1589,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     optimizer_match = (family_options or {}).get("optimizer_match")
     match_rows, match_initial = [], None
     if optimizer_match:
-        from fizgig.web.optimizer_match import START, optimizer_name
+        from fizgig.web.optimizer_match import START, optimizer_name, expected_updates, SOAP_SWEEP
         from fizgig.web.optimizer_match import require_recipe
         require_recipe({
             "case": optimizer_match in START,
@@ -1600,7 +1600,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             "lora": not finetune,
             "adaptive_lr_disabled": not adaptive_lr,
             "per_image_lr_disabled": not per_image_lr,
-            "epochs": max_train_epochs == 1,
+            "epochs": max_train_epochs == (5 if optimizer_match in SOAP_SWEEP else 1),
             "seed": int(seed) == 42,
             "rank": int(network_dim) == 32,
             "alpha": float(network_alpha) == 32,
@@ -2644,8 +2644,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             raise RuntimeError("Optimizer match refuses optimizer fallback")
         from fizgig.web.optimizer_match import optimizer_manifest, checkpoint
         _match_manifest = optimizer_manifest(optimizer, optimizer_match)
+        from fizgig.training import soap_memory as _soap_module
+        import hashlib as _match_hashlib
+        from pathlib import Path as _MatchPath
         checkpoint(output_dir, optimizer_match, status="running", resolved_optimizer=_match_manifest,
-                   steps=[], phase="optimizer_preflight")
+                   steps=[], phase="optimizer_preflight",
+                   soap_memory_source_sha256=_match_hashlib.sha256(_MatchPath(_soap_module.__file__).read_bytes()).hexdigest())
         if torch.cuda.is_available():
             free, total = torch.cuda.mem_get_info()
             available = free + max(0, torch.cuda.memory_reserved()-torch.cuda.memory_allocated())
@@ -3684,7 +3688,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             for g in optimizer.param_groups:
                 g["lr"] = g["lr"] * m
         match_before = None
-        if optimizer_match and len(match_rows) < 13:
+        if optimizer_match and len(match_rows) < expected_updates(optimizer_match):
             from fizgig.web.optimizer_match import snapshot, fingerprint
             match_before = snapshot(net)
             if match_initial is None:
@@ -3725,6 +3729,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             row["geometry_seconds"] = time.perf_counter()-_match_geometry_start
             row["input_hash"] = match_input_hash
             row["update"] = len(match_rows) + 1
+            if optimizer_match in SOAP_SWEEP and row["update"] > 1 and (row["update"]-1) % 10 == 0:
+                repairs = [st for st in optimizer.state.values() if "refresh_added_variance" in st]
+                if repairs:
+                    row["refresh_variance_repair"] = {key: float(torch.stack([st[key].float() for st in repairs]).sum().item()) for key in ("refresh_repaired_count", "refresh_added_variance", "refresh_transported_variance")}
             row["group_lrs"] = [float(g["lr"]) for g in optimizer.param_groups]
             if torch.cuda.is_available():
                 row["cuda_peak_allocated_bytes"] = torch.cuda.max_memory_allocated()
@@ -4090,6 +4098,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if optimizer_smoke or optimizer_match:
             smoke_validation.append({"step": global_step, "epoch": epoch_no, "loss": float(v),
                                      "per_t": [float(x) for x in per_t], "images": len(validator.batches)})
+            if optimizer_match:
+                from fizgig.web.optimizer_match import checkpoint
+                checkpoint(output_dir, optimizer_match, validation=smoke_validation)
         last_val[0] = v                   # adaptive LR judges on it at this epoch's end
         if _meta_best[0] is None or v < _meta_best[0]:
             _meta_best[0], _meta_best[1] = v, epoch_no

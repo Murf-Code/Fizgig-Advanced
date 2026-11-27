@@ -5042,8 +5042,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": f"{name} is already there."}, 400)
                 os.makedirs(new)
                 return self.json({"ok": True, "path": new})
-            if path in ("/api/queue/selective_optimizer_smoke", "/api/queue/optimizer_match"):
-                if path.endswith("/optimizer_match"):
+            if path in ("/api/queue/selective_optimizer_smoke", "/api/queue/optimizer_match", "/api/queue/soap_sweep"):
+                if path.endswith(("/optimizer_match", "/soap_sweep")):
                     from fizgig.web import optimizer_match as smoke
                 else:
                     from fizgig.web import selective_optimizer_smoke as smoke
@@ -5070,7 +5070,10 @@ class Handler(BaseHTTPRequestHandler):
                         previous = json.loads((prior / smoke.REPORT).read_text(encoding="utf-8"))
                         if os.path.normcase(os.path.abspath(previous["dataset"])) != os.path.normcase(os.path.abspath(folder)):
                             raise ValueError("Calibration must use the same dataset folder.")
-                    cases = smoke.settings(group, previous) if path.endswith("/optimizer_match") else smoke.settings(group)
+                    if path.endswith("/soap_sweep"):
+                        cases = smoke.soap_settings(group, b.get("sample_prompt") or "")
+                    else:
+                        cases = smoke.settings(group, previous) if path.endswith("/optimizer_match") else smoke.settings(group)
                     rows = []
                     for vals in cases:
                         desc, inputs, plan = _plan("krea2", vals, folder)

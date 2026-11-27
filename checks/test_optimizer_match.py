@@ -38,3 +38,14 @@ def test_recipe_guard_names_failed_fields():
     require_recipe({"seed": True, "epochs": True})
     with pytest.raises(RuntimeError, match="failed checks: seed, epochs"):
         require_recipe({"seed": False, "epochs": False, "rank": True})
+
+
+def test_soap_sweep(tmp_path):
+    from fizgig.web.optimizer_match import soap_settings, expected_updates, SOAP_SWEEP
+    rows = soap_settings(tmp_path / "group", "a test prompt")
+    assert [r["__optimizer_match"] for r in rows] == list(SOAP_SWEEP)
+    assert [float(r["LEARNING_RATE"]) for r in rows] == [.00025,.0004,.00025,.0005]
+    assert all(expected_updates(r["__optimizer_match"]) == 65 for r in rows)
+    assert all(r["SAMPLE_ENABLED"] and r["SAMPLE_AT_FIRST"] and r["SAMPLE_SEED"] == "1234"
+               and r["MAX_TRAIN_EPOCHS"] == "5" and not r["ADAPTIVE_LR"]
+               and not r["KREA2_SELECTIVE_COMPENSATION"] for r in rows)

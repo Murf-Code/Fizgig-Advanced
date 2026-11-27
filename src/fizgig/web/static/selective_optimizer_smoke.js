@@ -10,6 +10,28 @@
   match.className = button.className;
   match.textContent = "Test Mode · AdamW Match";
   button.insertAdjacentElement("afterend", match);
+  const soap = document.createElement("button");
+  soap.type = "button";
+  soap.className = button.className;
+  soap.textContent = "Test Mode · SOAP 5 epochs";
+  match.insertAdjacentElement("afterend", soap);
+  soap.addEventListener("click", async () => {
+    const folder = document.getElementById("imageFolder")?.value.trim();
+    if (!folder) { note.textContent = "Select the original 15-image Krea 2 dataset."; return; }
+    const prompt = window.prompt("Fixed sample prompt (same for all four SOAP runs):", "");
+    if (!prompt?.trim()) return;
+    soap.disabled = true;
+    try {
+      const res = await fetch("/api/queue/soap_sweep", {
+        method: "POST", headers: {"Content-Type": "application/json",
+          "X-Fizgig-Token": document.querySelector('meta[name="fizgig-token"]').content},
+        body: JSON.stringify({image_folder: folder, sample_prompt: prompt.trim()})});
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw Error(data.error || (data.problems || []).join("; ") || "Could not queue SOAP");
+      note.textContent = data.count + " five-epoch SOAP runs queued. Press Start queue. Report: " + data.output_dir;
+    } catch (e) { note.textContent = e.message; }
+    finally { soap.disabled = false; }
+  });
   const skip = document.createElement("button");
   skip.type = "button";
   skip.className = button.className;
