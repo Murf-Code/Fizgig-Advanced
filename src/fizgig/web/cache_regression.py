@@ -165,3 +165,27 @@ def prepare_caches(source_body, configs, arch):
             if (record["axis"] == "latents" and not fresh_lat) or (record["axis"] == "text" and not fresh_text):
                 shutil.copy2(control / record["file"], dest / record["file"])
     return {"source": str(source), "images": paths, "files": records}
+
+
+def verify_start(plan, values):
+    """Reject changed recipes, models/paths, or previously used arm caches."""
+    case = values["__cache_regression"]
+    out = Path(values["LORA_OUTPUT_DIR"])
+    with open(out.parent / "diagnostic-settings.json", encoding="utf-8") as f:
+        manifest = json.load(f)
+    recipe = next(p for p in manifest["plans"] if p["case"] == case)
+    actual = [{"name": s.name, "cmd": s.cmd} for s in plan.stages]
+    if plan.dataset_toml != recipe["dataset_toml"] or actual != recipe["stages"]:
+        raise ValueError("Diagnostic plan changed after snapshot; start a new comparison.")
+    if any(out.glob("*.safetensors")) or (out / "diagnostic.log").exists():
+        raise ValueError("This cache regression arm has already run; create a new comparison.")
+    fresh_lat, fresh_text = CASES[case]
+    expected = {r["file"]: r for r in manifest["snapshot"]["files"]
+                if (r["axis"] == "latents" and not fresh_lat) or (r["axis"] == "text" and not fresh_text)}
+    cache = out / "isolated-cache"
+    actual_files = {p.name for p in cache.iterdir()}
+    if actual_files != set(expected):
+        raise ValueError("Isolated cache contents changed before start; create a new comparison.")
+    for name, record in expected.items():
+        if digest(cache / name) != record["sha256"]:
+            raise ValueError(f"Isolated cache bytes changed before start: {name}.")
