@@ -152,7 +152,12 @@ def configure_plan(desc, inputs, plan, values, launch):
         # Cache-only: no training, preview or original-cache access.
         lat.extend(["--cache_audit", str(dest.parent / "latent-audit.jsonl")])
         txt.extend(["--cache_audit", str(dest.parent / "cache-audit.jsonl")])
+        fixed = values.get("__cache_gpu_profile") == "4070-ti"
+        if fixed:
+            for cmd in (lat, txt):
+                cmd.append("--cache_audit_fixes")
         plan.stages = [launch.Stage("Latent Cache Audit", lat), launch.Stage("Shuffle Text Cache Audit", txt)]
+        plan.console.append("[cache-regression] Candidate cache fixes " + ("ON (4070 Ti)" if fixed else "OFF (3090 baseline)"))
         plan.dirs.append(str(dest))
         plan.console.append("[cache-regression] Cache-only audit: shuffle ON, four variants, no training or sampling.")
         return

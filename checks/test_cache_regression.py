@@ -200,6 +200,7 @@ class CacheRegressionTests(unittest.TestCase):
             for stage in plan.stages:
                 cmd = stage.cmd
                 self.assertIn("--cache_audit", cmd)
+                self.assertEqual("--cache_audit_fixes" in cmd, gpu == "4070-ti")
                 self.assertNotIn("--skip_existing", cmd)
                 self.assertNotIn("--sample_at_first", cmd)
                 self.assertNotIn("--optimizer_type", cmd)

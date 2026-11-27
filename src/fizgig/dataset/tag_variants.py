@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
+# Enabled only in the fixed audit subprocess.
+STRICT_ENCODER_PROVENANCE = False
 
 TAGS_SUFFIX = "_tags.safetensors"
 TE_SUFFIX = "_te.safetensors"
@@ -181,6 +183,18 @@ def te_caption(te_path) -> Optional[str]:
     return None if md is None else md.get("caption1")
 
 
+def _encoder_for(te_path):
+    md, _ = _header(te_path)
+    return (md or {}).get("text_encoder")
+
+
+def _encoder_matches(te_path, md):
+    if not STRICT_ENCODER_PROVENANCE:
+        return True
+    encoder = _encoder_for(te_path)
+    return bool(encoder and md.get("text_encoder") == encoder)
+
+
 def write_variants(encode: Callable[[list], list], te_path: str, caption: str, s: TagSettings, *, arch: str = "",
                    seed: int = 0, clean: Callable = None, compact: bool = False) -> int:
     """Write (or bring up to date) one item's variants file. encode(captions) -> conditioning dicts (CPU tensors).
@@ -195,7 +209,7 @@ def write_variants(encode: Callable[[list], list], te_path: str, caption: str, s
         return 0
     have = {}                                   # caption text -> {key: tensor}
     md, keys = _header(path) if os.path.exists(path) else (None, [])
-    if md is not None and md.get("fizgig_tags") == "1":
+    if md is not None and md.get("fizgig_tags") == "1" and _encoder_matches(te_path, md):
         old = compact_text.load(path)
         try:
             texts = json.loads(md.get("captions") or "[]")
@@ -233,6 +247,11 @@ def write_variants(encode: Callable[[list], list], te_path: str, caption: str, s
     meta = {"fizgig_tags": "1", "architecture": arch, "source": caption, "recipe": s.recipe(),
             "captions": json.dumps(wanted, ensure_ascii=False), "empty": "1" if s.caption_dropout else "0",
             "orig": json.dumps(same)}
+    if STRICT_ENCODER_PROVENANCE:
+        encoder = _encoder_for(te_path)
+        if not encoder:
+            raise ValueError(f"Cannot write variants without base encoder provenance: {te_path}")
+        meta["text_encoder"] = encoder
     tmp = path + ".tmp"
     compact_text.save(sd, tmp, meta, compact)     # compact: only each variant's real tokens (Krea 2)
     os.replace(tmp, path)
@@ -295,7 +314,7 @@ def _needed(te_path, caption, s: TagSettings) -> list:
     have = set()
     path = variants_path(te_path)
     md, _ = _header(path) if os.path.exists(path) else (None, [])
-    if md is not None and md.get("fizgig_tags") == "1":
+    if md is not None and md.get("fizgig_tags") == "1" and _encoder_matches(te_path, md):
         try:
             have |= set(json.loads(md.get("captions") or "[]"))
         except ValueError:
@@ -362,7 +381,7 @@ class VariantPicker:
         md, _ = _header(path)
         n, empty = 0, False
         self._orig[path] = set()
-        if md is not None and md.get("fizgig_tags") == "1":
+        if md is not None and md.get("fizgig_tags") == "1" and _encoder_matches(te_path, md):
             empty = md.get("empty") == "1"
             if self.s.varies and md.get("recipe") == self.s.recipe() and md.get("source") == te_caption(te_path):
                 try:
@@ -372,6 +391,8 @@ class VariantPicker:
                     n = 0
             elif self.s.varies:
                 self.stale.add(path)
+        if STRICT_ENCODER_PROVENANCE and md is not None and not _encoder_matches(te_path, md):
+            self.stale.add(path)
         self._info[path] = (tm, vm, (n, empty))
         return n, empty
 

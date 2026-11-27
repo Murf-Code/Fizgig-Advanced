@@ -45,10 +45,14 @@ def release_between_pictures():
         torch.cuda.empty_cache()
 logging.basicConfig(level=logging.INFO)
 FORMAT_VERSION = "1.0.0"
+# Opt-in for the isolated fixed audit only. The original 3090 diagnostic stays unchanged.
+_STRICT_CACHE = False
 
 
 def _clean(t, what, key):
     t = t.detach().cpu().contiguous()
+    if _STRICT_CACHE and t.is_floating_point() and not bool(torch.isfinite(t).all()):
+        raise ValueError(f"Nonfinite cache tensor {what} for {key}; cache write refused")
     if t.is_floating_point() and torch.isnan(t).any():
         logger.warning(f"NaN in {what} for {key} - replaced with 0")
         t[torch.isnan(t)] = 0
@@ -140,16 +144,39 @@ def _cached_matches(path, caption, refs, encoder=None):
     # Caches made before encoder_stamp was introduced have no text_encoder field. Keep those when the caption and
     # reference geometry still match; an explicit, different stamp is still a reason to re-encode.
     return (md.get("caption1") == caption and md.get("reference_sizes", "") == refs
-            and (encoder is None or not md.get("text_encoder") or md.get("text_encoder") == encoder))
+            and (encoder is None or md.get("text_encoder") == encoder
+                 or (not _STRICT_CACHE and not md.get("text_encoder"))))
 
 
 def encoder_stamp(model):
     """The text encoder file as a text cache records it (name and size): a cache another encoder wrote (a new
     quantisation, a different file in Preferences) is not kept by --skip_existing."""
+    if _STRICT_CACHE:
+        return _strong_encoder_stamp(os.fspath(model))
     try:
         return f"{os.path.basename(str(model))}:{os.path.getsize(model)}"
     except (OSError, TypeError):
         return os.path.basename(str(model or ""))
+
+
+def _strong_encoder_stamp(model):
+    """Hash the actual weights once per unchanged file in this process."""
+    import hashlib
+    st = os.stat(model)
+    key = (os.path.realpath(model), st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    if key not in _encoder_hashes:
+        digest = hashlib.sha256()
+        with open(model, "rb") as f:
+            for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
+                digest.update(chunk)
+        after = os.stat(model)
+        if (after.st_size, after.st_mtime_ns, after.st_ctime_ns) != key[1:]:
+            raise ValueError("Text encoder changed while computing its cache fingerprint")
+        _encoder_hashes[key] = "sha256:" + digest.hexdigest()
+    return _encoder_hashes[key]
+
+
+_encoder_hashes = {}
 
 
 def vae_stamp(model):
@@ -241,7 +268,16 @@ def main():
     p.add_argument("--aux", action="append", default=[], metavar="KEY=VALUE",
                    help="a further model file or option for the family's own caching (e.g. audio_vae=PATH)")
     p.add_argument("--cache_audit", default="", help="diagnostic JSONL of real-token values before cleaning and after saving")
+    p.add_argument("--cache_audit_fixes", action="store_true", help="opt-in candidate cache fixes for isolated audit only")
     args = p.parse_args()
+    global _STRICT_CACHE
+    if args.cache_audit_fixes and (not args.cache_audit or args.family != "krea2"):
+        p.error("--cache_audit_fixes requires a Krea 2 audit")
+    _STRICT_CACHE = args.cache_audit_fixes
+    from fizgig.dataset import tag_variants
+    tag_variants.STRICT_ENCODER_PROVENANCE = _STRICT_CACHE
+    if _STRICT_CACHE:
+        logger.info("[cache-audit] Candidate cache fixes ENABLED")
     if args.cache_audit:
         cache_audit.enable(args.cache_audit)
     from fizgig.families.quant import apply_vram_cap
@@ -286,6 +322,8 @@ def main():
             _stage(args, desc, driver, held, device, aux, pairs, variants=False)
     if args.stage == "text" and cache_audit.active():
         cache_audit.provenance_probe(_cached_matches)
+        if _STRICT_CACHE:
+            cache_audit.fix_probe(_cached_matches, _clean, encoder_stamp, save_cond)
     cache_audit.finish()
 
 

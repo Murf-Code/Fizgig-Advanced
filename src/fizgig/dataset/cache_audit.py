@@ -220,6 +220,59 @@ def provenance_probe(cache_matches):
               accepts_unstamped_base=cache_matches(p, cap, "", "new"))
 
 
+def fix_probe(cache_matches, clean, encoder_stamp, save_cond):
+    """Use the actual writer and picker on deliberately stale and nonfinite data."""
+    import tempfile
+    import torch
+    from types import SimpleNamespace
+    from safetensors.torch import save_file
+    from fizgig.dataset import tag_variants as tv, compact_text
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        a, b = root / "a" / "encoder.bin", root / "b" / "encoder.bin"
+        for p, data in ((a, b"aaaa"), (b, b"bbbb")):
+            p.parent.mkdir()
+            p.write_bytes(data)
+        old, new = encoder_stamp(a), encoder_stamp(b)
+        check("fix_encoder_fingerprint", a, ok=old != new and new == encoder_stamp(b),
+              old=old, new=new)
+        p = str(root / "probe_te.safetensors")
+        cap = "trigger, red, blue, green, yellow"
+        settings = tv.TagSettings(shuffle=True)
+        desc = SimpleNamespace(arch_id="krea2drv", text_cache_trim=True)
+        item = SimpleNamespace(text_encoder_output_cache_path=p, caption=cap, item_key="synthetic")
+        mask = torch.ones(2, dtype=torch.bool)
+        def cond(v):
+            return {"hidden_states": torch.full((2, 1, 2), float(v)), "attention_mask": mask.clone()}
+        save_cond(desc, item, cond(1), encoder=old)
+        tv.write_variants(lambda caps: [cond(1) for _ in caps], p, cap, settings, compact=True)
+        good_count, _ = tv.VariantPicker(settings).info(p)
+        check("fix_healthy_reuse", p, ok=cache_matches(p, cap, "", old) and
+              good_count == len(tv.variant_captions(cap, settings)) and not tv._needed(p, cap, settings),
+              picker_variants=good_count)
+        save_cond(desc, item, cond(2), encoder=new)
+        stale_count, _ = tv.VariantPicker(settings).info(p)
+        need = tv._needed(p, cap, settings)
+        written = tv.write_variants(lambda caps: [cond(2) for _ in caps], p, cap, settings, compact=True)
+        md, _ = tv._header(tv.variants_path(p))
+        count, _ = tv.VariantPicker(settings).info(p)
+        tensors = compact_text.load(tv.variants_path(p))
+        check("fix_stale_rebuild", p, ok=stale_count == 0 and bool(need) and written == len(need)
+              and md.get("text_encoder") == new and count == len(tv.variant_captions(cap, settings))
+              and all(bool((v == 2).all()) for k, v in tensors.items() if k.endswith("hidden_states"))
+              and not tv._needed(p, cap, settings),
+              stale_picker_variants=stale_count, regenerated=written, accepted=count)
+        for label, bad in (("nan", float("nan")), ("inf", float("inf"))):
+            old_bytes = Path(p).read_bytes()
+            rejected = False
+            try:
+                save_cond(desc, item, cond(bad), encoder=new)
+            except ValueError:
+                rejected = True
+            check("fix_nonfinite_rejection", p, ok=rejected and Path(p).read_bytes() == old_bytes,
+                  injected=label, rejected=rejected, existing_cache_preserved=Path(p).read_bytes() == old_bytes)
+
+
 def combined_report():
     if not active() or _path.name != "cache-audit.jsonl":
         return
