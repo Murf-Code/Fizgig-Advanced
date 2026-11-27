@@ -86,7 +86,7 @@ def create(root, dataset, configs):
         runs = [{"case": v["__geometry_compare"], "name": v["LORA_NAME"], "lr": v["LEARNING_RATE"],
                  "output": v["__geometry_compare"], "status": "queued", "logs": [],
                  "settings": {k: x for k, x in v.items() if not k.startswith("__")}} for v in configs]
-        _save(root, {"version": 1, "dataset": str(dataset), "created_at": time.time(), "scope": "one-seed feasibility pilot; provisional optimizer rates", "runs": runs})
+        _save(root, {"version": 1, "dataset": str(dataset), "created_at": time.time(), "scope": ("paired numerical diagnostic; sampled gradients and displacements; timings include instrumentation" if any(r["case"] in memory_benchmark.PAIR_NAMES for r in runs) else "one-seed feasibility pilot; provisional optimizer rates"), "runs": runs})
 
 
 def parse_log(text):

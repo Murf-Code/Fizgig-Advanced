@@ -577,6 +577,9 @@ class Krea2Driver(FamilyDriver):
         n_tokens = (latents.shape[-2] // patch) * (latents.shape[-1] // patch)
         noise = torch.randn(latents.shape, generator=generator)
         t = self._sample_t(n_tokens, generator, min_t, max_t, self.timestep_spread)
+        pair_input = getattr(self, "_geometry_pair_input", None)
+        if pair_input is not None:
+            pair_input(latents, cond, noise, t)
         if self.global_replay and torch.is_grad_enabled():
             if diff_ref is not None or diff_weight:
                 raise RuntimeError("Global replay does not support paired/difference loss yet.")

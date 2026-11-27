@@ -11,12 +11,21 @@ CASES = (
     ('memory-splitmax-64', 'splitmax', 0),
     ('memory-activation-sync', 'fp32', 512),
 )
-CASE_MAP = {name:(storage, activation) for name,storage,activation in CASES}
+PAIR_CASES = (
+    ('pair-fp32-control', 'fp32', 0),
+    ('pair-fp32-repeat', 'fp32', 0),
+    ('pair-bf16', 'bf16', 0),
+    ('pair-int8-64', 'int8', 0),
+    ('pair-splitmax-64', 'splitmax', 0),
+    ('pair-activation-sync', 'fp32', 512),
+)
+PAIR_NAMES = {case for case, _, _ in PAIR_CASES}
+CASE_MAP = {name:(storage, activation) for name,storage,activation in CASES + PAIR_CASES}
 
 
-def settings(group, output_root, common):
+def settings(group, output_root, common, paired=False):
     result=[]
-    for case, storage, activation in CASES:
+    for case, storage, activation in (PAIR_CASES if paired else CASES):
         args=' '.join(arg for arg in common['OPTIMIZER_ARGS'].split() if not arg.startswith('chunk_memory_mib='))
         args += f' chunk_memory_mib={CHUNK_MEMORY_MIB}'
         if storage!='fp32': args += f' momentum_storage={storage} momentum_block=64'
@@ -44,12 +53,14 @@ def apply_flags(cmd,case):
                 '--no-auto_reclaim_vram','--family_option',f'geometry_feasibility_steps={STEPS}',
                 '--family_option','geometry_memory_phase=peaks','--family_option','geometry_memory_require_h2d=1',
                 '--family_option',f'geometry_activation_mib={activation}','--family_option','geometry_host_floor_mib=6144'])
+    if case in PAIR_NAMES:
+        cmd.extend(['--family_option',f'geometry_memory_pair={case}'])
 
 
 def parse_memory_log(text):
-    result={'memory_phases':[],'memory_states':[],'memory_config':[],'memory_losses':[]}
+    result={'memory_phases':[],'memory_states':[],'memory_config':[],'memory_losses':[],'pair_steps':[],'pair_complete':[]}
     for line in text.splitlines():
-        for marker,key in (('[geometry-memory] ','memory_phases'),('[geometry-memory-state] ','memory_states'),('[geometry-memory-config] ','memory_config'),('[geometry-memory-loss] ','memory_losses')):
+        for marker,key in (('[geometry-memory] ','memory_phases'),('[geometry-memory-state] ','memory_states'),('[geometry-memory-config] ','memory_config'),('[geometry-memory-loss] ','memory_losses'),('[geometry-pair-step] ','pair_steps'),('[geometry-pair-complete] ','pair_complete')):
             if marker not in line:continue
             try:
                 value,_=json.JSONDecoder().raw_decode(line.split(marker,1)[1])
@@ -78,6 +89,17 @@ def verify_memory_run(case,run):
         rows=[r for r in phases if r.get('phase')==phase and r.get('ok') and r.get('peak_bytes') is not None]
         if len(rows)!=updates or sorted(r.get('step') for r in rows)!=list(range(1,updates+1)):
             return f'Incomplete {phase} phase telemetry.'
+    if case in PAIR_NAMES:
+        complete=run.get('pair_complete',[])
+        traces=run.get('pair_steps',[])
+        if len(complete)!=1 or complete[0].get('expected_steps')!=updates or [r.get('step') for r in traces]!=list(range(1,updates+1)):
+            return 'Incomplete paired correctness trace.'
+        meta=complete[0]
+        if not meta.get('initial_sha256') or not meta.get('modules') or not meta.get('sample'):
+            return 'Missing paired target manifest.'
+        for r in traces:
+            if not r.get('input_sha256') or (r['step'] in meta['horizons'] and set(r.get('metrics',{}))!=set(meta['sample'])):
+                return 'Incomplete paired inputs or sampled metrics.'
     expected={'fp32':{'torch.float32'},'bf16':{'torch.bfloat16'},'int8':{'torch.float32','torch.int8'},'splitmax':{'torch.float32','torch.int8','torch.uint8'}}[storage]
     if set(states[-1].get('state_by_dtype',{}))!=expected or not states[-1].get('optimizer_state'):
         return 'Unexpected optimizer-state format.'

@@ -26,3 +26,24 @@ def test_report_requires_actual_intervention():
     r['memory_states'][0]['activation']['accepted']=0
     assert m.verify_memory_run('memory-activation-sync',r)
     assert r['memory_phase_peaks_bytes']['backward']==[10,20]
+
+def test_paired_queue_preserves_feasibility_and_requires_trace(tmp_path):
+    common={'OPTIMIZER_ARGS':'chunk_memory_mib=128','SEED':'42','VALIDATION_HOLDOUT':True}
+    c=m.settings('test',str(tmp_path),common,paired=True)
+    assert [v['__geometry_compare'] for v in c]==[v[0] for v in m.PAIR_CASES]
+    assert len(c)==6 and c[0]['OPTIMIZER_ARGS']==c[1]['OPTIMIZER_ARGS']
+    for v in c:
+        cmd=['python']
+        m.apply_flags(cmd,v['__geometry_compare'])
+        assert 'geometry_memory_pair='+v['__geometry_compare'] in cmd
+        assert 'chunk_memory_mib=192' in v['OPTIMIZER_ARGS']
+    raw='[geometry-memory-config] {"offloader":"LoRAStreamOffloader","activation_mib":0}\n'
+    raw+='[geometry-memory-state] {"step":1,"optimizer_state":100,"state_by_dtype":{"torch.float32":100}}\n'
+    for phase in ('forward','backward','optimizer'):
+        raw+='[geometry-memory] {"step":1,"phase":"'+phase+'","ok":true,"peak_bytes":[10,20]}\n'
+    r=m.parse_memory_log(raw);r['feasibility']={'updates':1}
+    assert m.verify_memory_run('pair-fp32-control',r)=='Incomplete paired correctness trace.'
+    raw+='[geometry-pair-step] {"step":1,"input_sha256":"x","metrics":{"a":{}}}\n'
+    raw+='[geometry-pair-complete] {"initial_sha256":"y","modules":1,"sample":["a"],"horizons":[1],"expected_steps":1}\n'
+    r=m.parse_memory_log(raw);r['feasibility']={'updates':1}
+    assert m.verify_memory_run('pair-fp32-control',r) is None

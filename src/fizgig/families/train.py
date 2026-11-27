@@ -1574,6 +1574,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     activation_mib = int((family_options or {}).get("geometry_activation_mib", 0) or 0)
     host_floor_mib = int((family_options or {}).get("geometry_host_floor_mib", 6144) or 6144)
     memory_h2d = str((family_options or {}).get("geometry_memory_require_h2d", "0")) == "1"
+    pair_case = str((family_options or {}).get("geometry_memory_pair", "") or "")
     if memory_mode not in ("off", "passive", "peaks") or not 0 <= activation_mib <= 4096 or host_floor_mib < 1024:
         raise ValueError("invalid geometry memory options")
     memory_research = memory_mode != "off" or activation_mib > 0 or memory_h2d
@@ -1584,8 +1585,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                                or int(max_train_epochs) != 1
                                or int(gradient_accumulation_steps) != 1 or resume_state_dir):
         raise ValueError("Geometry feasibility requires fresh rank 16/32/64 Krea 2 PoLoRA or LoRA-TSD, alpha=rank, one epoch, accumulation 1.")
+    if pair_case and (not memory_fit or pair_case not in ("pair-fp32-control", "pair-fp32-repeat", "pair-bf16", "pair-int8-64", "pair-splitmax-64", "pair-activation-sync")):
+        raise ValueError("paired correctness requires the fixed memory research queue")
     driver = desc.load_driver()
-    driver.set_options({k:v for k,v in (family_options or {}).items() if k not in ("geometry_feasibility_steps", "geometry_optimizer_timing", "geometry_memory_phase", "geometry_activation_mib", "geometry_host_floor_mib", "geometry_memory_require_h2d")})      # before the data: an option may shape the dataset
+    driver.set_options({k:v for k,v in (family_options or {}).items() if k not in ("geometry_feasibility_steps", "geometry_optimizer_timing", "geometry_memory_phase", "geometry_activation_mib", "geometry_host_floor_mib", "geometry_memory_require_h2d", "geometry_memory_pair")})      # before the data: an option may shape the dataset
     _method = str((family_options or {}).get("training_method", "") or "").strip()
     if desc.key == "krea2" and _method and not getattr(driver, "global_replay", False):
         # a method from the test build that was not kept (Blockwise flow, Residual-path hybrid): train Standard
@@ -1659,6 +1662,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     "this off.")
     device = torch.device("cuda")
     quant.apply_vram_cap()          # FIZGIG_SIM_VRAM_GB: behave like a smaller card
+    if pair_case:
+        # Dataset blueprint draws its shuffle seed from Python random, not torch.
+        import numpy as np
+        random.seed(int(seed))
+        np.random.seed(int(seed))
     torch.manual_seed(seed)
     os.makedirs(output_dir, exist_ok=True)
 
@@ -4120,6 +4128,17 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             else:
                 logger.info("[maps] training maps: no picture could be read from the cache - off for this run")
                 maps = None
+    pair_trace = None
+    if pair_case:
+        from fizgig.training.memory_pair import PairTrace
+        from fizgig.families.lora import TRAINABLE as _PAIR_TRAINABLE
+        targets = {name: (list(w.adapters[_PAIR_TRAINABLE].parameters()), w.scales[_PAIR_TRAINABLE])
+                   for name,w in net.wrapped.items() if _PAIR_TRAINABLE in w.adapters}
+        if {id(p) for ps,_ in targets.values() for p in ps} != {id(p) for p in params}:
+            raise RuntimeError("paired trace target manifest differs from trained parameters")
+        # CPU-only QR diagnostics are intentionally not throughput benchmarks.
+        torch.set_num_threads(min(4, torch.get_num_threads()))
+        pair_trace = PairTrace(targets, output_dir, pair_case, min(geometry_fit_steps, steps_per_epoch))
     geometry_fit_started = time.monotonic() if geometry_fit_steps else None
     for epoch in (_worker_epochs() if share_worker else range(start_epoch, max_train_epochs)):
         while face_phase.get("said"):        # the boost's switches during the last epoch, each on a line of its own
@@ -4335,12 +4354,17 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     # step's forward and backward, so the backward stops at the first trained block and they get no grad
                     _frozen_now = _step_freeze(driver.step_frozen_blocks(batch))
                     _lm = _loss_mask(batch)
+                    if pair_trace is not None:
+                        driver._geometry_pair_input = lambda lat, c, noise, t: pair_trace.begin(
+                            global_step + 1, batch.get("item_keys") or [], lat, c, noise, t)
                     with _memory_phase("forward", global_step + 1):
                         loss, _info = driver.training_loss(dit, latents, cond, gen, min_t=min_timestep, max_t=max_timestep,
                                                            **({"refs": refs} if refs else {}),
                                                            **({"loss_mask": _lm} if _lm is not None else {}),
                                                            **({"prior": prior} if prior is not None and _lm is not None
                                                               else {}))
+                    if pair_trace is not None:
+                        driver._geometry_pair_input = None
                 if "lr_mult" in _info and lr_acc:
                     lr_acc[-1] *= _info["lr_mult"]     # where the step landed (the H3 noise-band LR)
                 if pending == 0 and optimizer is not None:
@@ -4386,8 +4410,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     _p.requires_grad_(True)
             pending += 1
             if pending >= accum:
+                if pair_trace is not None:
+                    pair_trace.pre_update(loss)
                 with _memory_phase("optimizer", global_step + 1):
                     _update()
+                if pair_trace is not None:
+                    logger.info("[geometry-pair-step] %s", json.dumps(pair_trace.end(), allow_nan=False, separators=(",", ":")))
                 if memory_research:
                     info = optimizer_inventory(optimizer)
                     ab = getattr(dit, "activation_offload_budget", None)
@@ -4497,6 +4525,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 allocated, reserved = _memory_training_peaks()
                 if geometry_updates != min(geometry_fit_steps, steps_per_epoch):
                     raise RuntimeError(f"Geometry fit expected {min(geometry_fit_steps, steps_per_epoch)} optimizer calls, got {geometry_updates}")
+                if pair_trace is not None:
+                    logger.info("[geometry-pair-complete] %s", json.dumps(pair_trace.finish(), allow_nan=False, separators=(",", ":")))
                 logger.info("[geometry-fit] complete updates=%d allocated_bytes=%d reserved_bytes=%d wall_seconds=%.3f",
                             geometry_updates, allocated, reserved, time.monotonic() - geometry_fit_started)
                 progress.close()
