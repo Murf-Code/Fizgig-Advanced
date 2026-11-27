@@ -110,12 +110,28 @@ class CacheRegressionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already run"):
             cr.verify_start(p, v)
 
-    def test_no_holdout_or_multi_dataset(self):
+    def test_held_cache_preserved_without_training_variants(self):
+        held = self.source / "_fizgig_holdout"
+        held.mkdir()
+        for name in self.names[:2]:
+            (self.source / name).rename(held / name)
+        (self.source / self.names[2]).unlink()
+        with patch.dict(sys.modules, self.fake_modules):
+            snap = cr.prepare_caches(self.body, self.configs, "krea2drv", [str(self.image)])
+        self.assertEqual(snap["holdout"], [str(self.image)])
+        self.assertEqual({r["file"] for r in snap["files"]},
+                         {"_fizgig_holdout/" + name for name in self.names[:2]})
+        for v, names in zip(self.configs, [self.names[:2], self.names[:1], self.names[1:2], []]):
+            dest = Path(v["LORA_OUTPUT_DIR"]) / "isolated-cache"
+            self.assertEqual({p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file()},
+                             {"_fizgig_holdout/" + name for name in names})
+
+    def test_no_pairs_or_multi_dataset(self):
         cfg = toml.loads(self.body)
-        cfg["general"]["holdout_file"] = "holdout.json"
+        cfg["datasets"][0]["control_directory"] = "pairs"
         with self.assertRaises(ValueError):
             cr.source_config(toml.dumps(cfg))
-        cfg["general"].pop("holdout_file")
+        cfg["datasets"][0].pop("control_directory")
         cfg["datasets"].append(cfg["datasets"][0].copy())
         with self.assertRaises(ValueError):
             cr.source_config(toml.dumps(cfg))
