@@ -2565,7 +2565,7 @@
         }
         const prompt = window.prompt("Enter one fixed preview prompt, including the character trigger word.");
         if (!prompt || !prompt.trim()) return;
-        if (!window.confirm("Queue four two-epoch INT8 PoLoRA runs with fixed settings? Copies the existing complete 1 MP cache (including matching validation hold-outs) into separate directories, then regenerates selected axes. Original caches are not changed. Do not edit images/captions/settings while testing.")) return;
+        if (!window.confirm("Queue four two-epoch INT8 PoLoRA runs with fixed settings? Masking and block swapping are chosen once for your dataset and GPU. Copies the existing complete 1 MP cache (including matching validation hold-outs) into separate directories, then regenerates selected axes. Original caches are not changed. Do not edit images/captions/settings while testing.")) return;
         cacheBtn.disabled = true;
         note.textContent = "Checking and copying the existing cache...";
         try {
