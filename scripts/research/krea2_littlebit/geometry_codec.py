@@ -11,7 +11,7 @@ import torch.nn.functional as F
 TILE = 128
 HAD = 64
 HQQ_GROUP = 8
-UNIFORM = {"q4-had", "q6-had", "q4-opt", "q6-opt", "q4-opt-had", "q6-opt-had"}
+UNIFORM = {"q4-had", "q5-had", "q6-had", "q4-opt", "q6-opt", "q4-opt-had", "q6-opt-had"}
 HQQ = {"hqq", "hqq-had"}
 HYBRID = {"lb2-hqq", "lb2-hqq-had"}
 EXTRA = UNIFORM | HQQ | HYBRID
