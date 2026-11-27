@@ -1278,7 +1278,11 @@ def _plan(family_key, values, image_folder, resume="", ft_continue=None, models=
                       resuming=True)
     if resume or ft_continue or str(values.get("RESUME_TRAINING") or "").strip():
         inputs["recache"] = _size_changed(name, out_dir, values)
-    return desc, inputs, launch.plan(desc, inputs)
+    plan = launch.plan(desc, inputs)
+    if values.get("__selective_optimizer_smoke"):
+        from fizgig.web.selective_optimizer_smoke import attach
+        attach(plan, values, desc.key, resume)
+    return desc, inputs, plan
 
 
 _SIZE_KEYS = ("DATASET_MEGAPIXELS", "CLIP_MEGAPIXELS")
@@ -3731,7 +3735,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, page.encode("utf-8"), "text/html; charset=utf-8", extra=extra)
         if path == "/welcome.mp4":                  # the welcome popup's tour (it ships with Fizgig: no network)
             return self._stream(os.path.join(STATIC_DIR, "welcome_v8.mp4"), attachment=False)  # ranged: it seeks
-        if path in ("/app.js", "/sample_blur.js", "/stream_prefs.js", "/push_notifications.js", "/caption_studio_tags.js", "/caption_studio_viz.js",
+        if path in ("/app.js", "/selective_optimizer_smoke.js", "/sample_blur.js", "/stream_prefs.js", "/push_notifications.js", "/caption_studio_tags.js", "/caption_studio_viz.js",
                     "/caption_studio_learning.js",
                     "/caption_studio_selection.js", "/caption_studio_training_picks.js",
                     "/caption_theme.js", "/caption_image_perf.js", "/caption_thumb_rail.js", "/caption_remove_bridge.js", "/mask_stroke_worker.js",
@@ -4994,6 +4998,34 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": f"{name} is already there."}, 400)
                 os.makedirs(new)
                 return self.json({"ok": True, "path": new})
+            if path == "/api/queue/selective_optimizer_smoke":
+                from fizgig.web import selective_optimizer_smoke as smoke
+                folder = str(b.get("image_folder") or "").strip()
+                if not folder or not os.path.isdir(folder):
+                    raise ValueError("Select the original small 15-image Krea 2 dataset first.")
+                with _claim:
+                    with _lock:
+                        if (_run.get("state") in ("starting", "running", "paused")
+                                or (_run.get("proc") is not None and _run["proc"].poll() is None)):
+                            raise ValueError("Finish the current run before queueing the isolated tests.")
+                    if webqueue.status()["items"]:
+                        raise ValueError("Empty the queue before adding the isolated optimizer tests.")
+                    import uuid
+                    group = os.path.join(default_output_dir(), "selective_optimizer_tests",
+                                         "optimizer-smoke-" + time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6])
+                    cases = smoke.settings(group)
+                    rows = []
+                    for vals in cases:
+                        desc, inputs, plan = _plan("krea2", vals, folder)
+                        if plan.problems:
+                            return self.json({"problems": plan.problems})
+                        taken = name_taken(vals, inputs)
+                        if taken:
+                            return self.json({"problems": [taken]})
+                        rows.append(("krea2", vals, folder, inputs["LORA_NAME"], inputs["LORA_OUTPUT_DIR"]))
+                    smoke.initialize(group, folder, cases)
+                    webqueue.add_held_batch(rows, "Optimizer smoke tests queued. Press Start queue to begin.")
+                return self.json({"ok": True, "count": len(rows), "output_dir": group})
             if path in ("/api/queue/add", "/api/queue/update"):   # Add to queue (or a queued run edited): checked
                 fam, vals, folder = b.get("family", ""), b.get("values") or {}, b.get("image_folder") or ""  # like Start
                 editing = str(b.get("id") or "") if path == "/api/queue/update" else ""

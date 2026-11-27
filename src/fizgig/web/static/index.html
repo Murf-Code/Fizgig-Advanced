@@ -1052,6 +1052,7 @@
               <div class="field-row">
                 <button class="btn btn-primary" id="btnStart">Start Training</button>
                 <button class="btn" id="btnQueue" title="Checked like Start, then lined up: it starts when the runs before it finish">Add to queue</button>
+                <button class="btn" id="btnSelectiveOptimizerSmoke" title="Krea 2 optimizer compatibility tests: one epoch each, fixed small dataset recipe">Test Mode · Optimizers</button>
                 <button class="btn btn-warning" id="btnPause">Pause</button>
                 <button class="btn" id="btnSampleNow" style="display:none" title="Make the previews now, after the current training step, without waiting for the epoch to end">Sample now</button>
                 <button class="btn btn-lilac is-off" id="btnImageLoss" style="display:none" title="Each training image's loss by epoch, against the rest of the dataset: which images are still being learned, which are done, and what the loss watch decided about each">Per-image loss</button>
@@ -2548,5 +2549,6 @@
   <script src="/app.js" onerror="fizgigRetry(this)"></script>
   <script src="/push_notifications.js" onerror="fizgigRetry(this)"></script>
   <script src="/stream_prefs.js" onerror="fizgigRetry(this)"></script>
+  <script src="/selective_optimizer_smoke.js" onerror="fizgigRetry(this)"></script>
 </body>
 </html>

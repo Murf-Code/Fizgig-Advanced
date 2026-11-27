@@ -72,6 +72,21 @@ def add(family, values, image_folder, lora, output_dir):
     return item
 
 
+def add_held_batch(rows, reason):
+    """Atomically enqueue an isolated test suite; never overwrite or start existing work."""
+    items = [{"id": uuid.uuid4().hex[:10], "family": family, "values": dict(values),
+              "image_folder": folder, "lora": lora, "output_dir": output_dir,
+              "queued_at": time.strftime("%Y-%m-%d %H:%M")}
+             for family, values, folder, lora, output_dir in rows]
+    with _lock:
+        if _q["items"]:
+            raise ValueError("Empty the queue before adding the isolated optimizer tests.")
+        _cancel_timer()
+        _q.update(items=items, batch=bool(items), held=True, reason=reason, waiting="", for_pause=False)
+        _save()
+    return items
+
+
 def clashes(output_dir, lora, skip=""):
     """A queued run that would save into the same files (same output folder and LoRA name), or None. skip: the item
     being edited, which may of course keep its own name."""

@@ -1584,6 +1584,17 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     selective_compensation = str((family_options or {}).get("selective_compensation", "")).strip().lower() in (
         "1", "true", "on", "yes")
     compensation_optimizer = str(optimizer_type).strip().lower()
+    optimizer_smoke = (family_options or {}).get("selective_optimizer_smoke")
+    smoke_rows, smoke_validation = [], []
+    if optimizer_smoke:
+        from fizgig.web.selective_optimizer_smoke import CASES
+        if (optimizer_smoke not in CASES or optimizer_smoke != compensation_optimizer
+                or not selective_compensation or not selective_global_replay or resume_state_dir
+                or finetune or adaptive_lr or per_image_lr or max_train_epochs != 1
+                or int(seed) != 42 or int(network_dim) != 32 or float(network_alpha) != 32
+                or float(learning_rate) != .00025 or lr_scheduler != "constant"
+                or validation_early_stop or not validation_loss or not validation_holdout):
+            raise RuntimeError("Optimizer smoke test requires the fixed one-epoch recipe")
     if selective_compensation:
         from fizgig.training.selective_compensation import SUPPORTED
         if not selective_global_replay or compensation_optimizer not in SUPPORTED:
@@ -2745,6 +2756,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     # ceil(steps / N) and the schedule runs in those updates. Sliders already backpropagate two poles per step: 1.
     accum = 1 if slider else max(1, int(gradient_accumulation_steps or 1))
     updates_per_epoch = math.ceil(steps_per_epoch / accum)
+    if optimizer_smoke and (updates_per_epoch != 13 or accum != 1 or bsz != 1):
+        raise RuntimeError("Optimizer smoke test requires 13 training batches after the two-image holdout. Select the original 15-image dataset.")
     if accum > 1:
         logger.info(f"[grad_accum] {accum} micro-batches per optimizer step (effective batch {accum}); "
                     f"{updates_per_epoch} updates/epoch")
@@ -3632,7 +3645,19 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if selective_compensation:
             scale = driver.selective_learning_multiplier()
             from fizgig.training.selective_compensation import compensated_step
+            if optimizer_smoke:
+                before_groups = [(g["lr"], g["weight_decay"]) for g in optimizer.param_groups]
+                active = driver.selective_active_blocks()
             compensated_step(optimizer, compensation_optimizer, scale)
+            if optimizer_smoke:
+                restored = before_groups == [(g["lr"], g["weight_decay"]) for g in optimizer.param_groups]
+                smoke_rows.append({"update": len(smoke_rows)+1, "active_blocks": active,
+                                   "multiplier": scale, "groups_restored": restored,
+                                   "group_lr_decay": before_groups})
+                logger.info("[optimizer-smoke] %s update %d: %d/28 active, multiplier %.6f, groups restored=%s",
+                            optimizer_smoke, len(smoke_rows), len(active), scale, restored)
+                if not restored:
+                    raise RuntimeError("Optimizer smoke: persistent LR/decay changed")
             logger.debug("[selective-compensation] update %d learning multiplier %.6f", global_step + 1, scale)
         else:
             optimizer.step()
@@ -3991,6 +4016,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             return
         v, per_t, sec = r
         require_finite_score(v, f"validation loss at step {global_step}")
+        if optimizer_smoke:
+            smoke_validation.append({"step": global_step, "epoch": epoch_no, "loss": float(v),
+                                     "per_t": [float(x) for x in per_t], "images": len(validator.batches)})
         last_val[0] = v                   # adaptive LR judges on it at this epoch's end
         if _meta_best[0] is None or v < _meta_best[0]:
             _meta_best[0], _meta_best[1] = v, epoch_no
@@ -4669,6 +4697,18 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     shutil.copyfile(final, os.path.join(output_dir, f"{output_name}-{max_train_epochs:06d}.safetensors"))
     if save_state_on_train_end:
         state(max_train_epochs)
+    if optimizer_smoke:
+        from fizgig.web.selective_optimizer_smoke import finish
+        state_dtypes = {}
+        for st in optimizer.state.values():
+            t = st.get("state1")
+            if torch.is_tensor(t):
+                key = str(t.dtype)
+                state_dtypes[key] = state_dtypes.get(key, 0) + 1
+        audit = finish(output_dir, optimizer_smoke, type(optimizer).__name__,
+                       smoke_rows, smoke_validation, state_dtypes, global_step)
+        logger.info("[optimizer-smoke] %s: %s; %d/%d compensated updates",
+                    optimizer_smoke, audit["status"], audit["compensated_updates"], audit["updates"])
     logger.info(f"Training complete -> {final}")
     return final
 
