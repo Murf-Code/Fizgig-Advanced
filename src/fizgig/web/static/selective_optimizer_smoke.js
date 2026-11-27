@@ -15,49 +15,140 @@
   soap.className = button.className;
   soap.textContent = "Test Mode · SOAP 5 epochs";
   match.insertAdjacentElement("afterend", soap);
-  soap.addEventListener("click", async () => {
-    const folder = document.getElementById("imageFolder")?.value.trim();
-    if (!folder) { note.textContent = "Select the original 15-image Krea 2 dataset."; return; }
-    const prompt = window.prompt("Fixed sample prompt (same for all four SOAP runs):", "");
-    if (!prompt?.trim()) return;
-    soap.disabled = true;
-    try {
-      const res = await fetch("/api/queue/soap_sweep", {
-        method: "POST", headers: {"Content-Type": "application/json",
-          "X-Fizgig-Token": document.querySelector('meta[name="fizgig-token"]').content},
-        body: JSON.stringify({image_folder: folder, sample_prompt: prompt.trim()})});
-      const data = await res.json();
-      if (!res.ok || !data.ok) throw Error(data.error || (data.problems || []).join("; ") || "Could not queue SOAP");
-      note.textContent = data.count + " five-epoch SOAP runs queued. Press Start queue. Report: " + data.output_dir;
-    } catch (e) { note.textContent = e.message; }
-    finally { soap.disabled = false; }
-  });
   const compat = document.createElement("button");
   compat.type = "button";
   compat.className = button.className;
   compat.textContent = "Test Mode · Selective optimizer compatibility";
   soap.insertAdjacentElement("afterend", compat);
-  compat.addEventListener("click", async () => {
+  const optimizerChoices = [
+    ["ademamix8bit", "AdEMAMix 8-bit", "0.00025"],
+    ["pagedademamix8bit", "Paged AdEMAMix 8-bit", "0.00025"],
+    ["lion8bit", "Lion 8-bit", "0.000025"],
+    ["polora", "PoLoRA", "0.02 · magnitude 3"],
+    ["lora_tsd", "LoRA-TSD", "0.005 · magnitude 3"],
+    ["prodigy", "Prodigy", "Native · multiplier 1"],
+    ["automagic3", "Automagic v3", "Native · starts at 0.000001"],
+    ["automagic4", "Automagic v4", "Native · starts at 0.000001"]
+  ];
+  function make(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text) node.textContent = text;
+    return node;
+  }
+  function currentPrompt() {
+    // app.js owns the training form. Read its current text, never modify it.
+    try {
+      if (typeof S !== "undefined" && typeof S.values?.SAMPLE_PROMPT === "string")
+        return S.values.SAMPLE_PROMPT;
+    } catch (_) {}
+    return "";
+  }
+  let researchDialog = null;
+  function openResearch(mode, trigger) {
     const folder = document.getElementById("imageFolder")?.value.trim();
     if (!folder) { note.textContent = "Select the original 15-image Krea 2 dataset."; return; }
-    const choices = "ademamix8bit,pagedademamix8bit,lion8bit,polora,lora_tsd,prodigy,automagic3,automagic4";
-    const selected = window.prompt("Optimizers to compare (comma separated; two runs per optimizer):", choices);
-    if (!selected?.trim()) return;
-    const prompt = window.prompt("Fixed sample prompt for all runs:", "");
-    if (!prompt?.trim()) return;
-    compat.disabled = true;
-    try {
-      const res = await fetch("/api/queue/selective_compat", {
-        method: "POST", headers: {"Content-Type": "application/json",
-          "X-Fizgig-Token": document.querySelector('meta[name="fizgig-token"]').content},
-        body: JSON.stringify({image_folder: folder, sample_prompt: prompt.trim(),
-          optimizers: selected.split(",").map(x => x.trim()).filter(Boolean)})});
-      const data = await res.json();
-      if (!res.ok || !data.ok) throw Error(data.error || (data.problems || []).join("; ") || "Could not queue Selective");
-      note.textContent = data.count + " five-epoch comparison runs queued. Press Start queue. Report: " + data.output_dir;
-    } catch (e) { note.textContent = e.message; }
-    finally { compat.disabled = false; }
-  });
+    if (researchDialog) return;
+    const selective = mode === "selective";
+    const dlg = make("dialog", "modal-window");
+    researchDialog = dlg;
+    dlg.setAttribute("aria-labelledby", "researchTestTitle");
+    Object.assign(dlg.style, {width:"620px", margin:"auto", padding:"0",
+      borderRadius:"12px", color:"var(--text-primary)", maxHeight:"85vh"});
+    const sheet = make("style");
+    sheet.textContent = "dialog.research-test::backdrop {background:color-mix(in srgb,var(--shadow,#000) 75%,transparent)}";
+    dlg.classList.add("research-test");
+    dlg.append(sheet);
+    const header = make("div", "modal-header");
+    const title = make("span", "", selective ? "Selective optimizer comparison" : "SOAP learning-rate comparison");
+    title.id = "researchTestTitle";
+    const close = make("button", "btn", "✕"); close.type = "button"; close.setAttribute("aria-label","Close");
+    header.append(title,close);
+    const body = make("div", "modal-body");
+    body.append(make("p", "", selective
+      ? "Each selected optimizer runs twice: Global Replay, then Selective Global Replay. External LR compensation stays off."
+      : "Compare SOAP-512 and Compact SOAP-32 at two learning rates each."));
+    const checks = [];
+    if (selective) {
+      const controls = make("div");
+      Object.assign(controls.style,{display:"flex",gap:"8px",margin:"12px 0"});
+      const all = make("button","btn","Select all"), none = make("button","btn","Clear all");
+      all.type = none.type = "button";
+      controls.append(all,none); body.append(controls);
+      const list = make("div");
+      Object.assign(list.style,{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:"8px"});
+      for (const [id,name,rate] of optimizerChoices) {
+        const item = make("label");
+        Object.assign(item.style,{display:"flex",alignItems:"center",gap:"10px",padding:"10px",
+          border:"1px solid var(--border)",borderRadius:"8px",background:"var(--bg-surface)",cursor:"pointer"});
+        const check = make("input");
+        check.type = "checkbox"; check.checked = true; check.value = id;
+        Object.assign(check.style,{width:"18px",height:"18px",flex:"none",accentColor:"var(--accent)"});
+        const desc = make("div");
+        desc.append(make("strong","",name),make("div","field-hint",rate));
+        item.append(check,desc); list.append(item); checks.push(check);
+      }
+      body.append(list);
+      all.onclick = () => { checks.forEach(c => c.checked = true); update(); };
+      none.onclick = () => { checks.forEach(c => c.checked = false); update(); };
+      checks.forEach(c => c.addEventListener("change",update));
+    } else {
+      body.append(make("p","field-hint","SOAP-512: 0.00025 and 0.00040 · Compact SOAP-32: 0.00025 and 0.00050"));
+    }
+    const label = make("label","","Sample prompts");
+    label.htmlFor = "researchSamplePrompt";
+    label.style.display = "block"; label.style.marginTop = "16px";
+    const prompt = make("textarea"); prompt.id = "researchSamplePrompt"; prompt.rows = 3;
+    prompt.value = currentPrompt();
+    prompt.placeholder = "Enter a representative prompt (one per line)";
+    Object.assign(prompt.style,{width:"100%",boxSizing:"border-box",marginTop:"6px",resize:"vertical",
+      background:"var(--bg-inset)",color:"var(--text-primary)",border:"1px solid var(--border)",borderRadius:"8px",padding:"10px"});
+    const help = make("div","field-hint","Same prompts and seed for every run. Samples before training and after every epoch.");
+    const summary = make("p",""); summary.setAttribute("aria-live","polite");
+    const error = make("div","field-hint"); error.setAttribute("role","alert");
+    error.style.color = "var(--danger)"; error.style.whiteSpace = "pre-wrap";
+    body.append(label,prompt,help,summary,error);
+    const footer = make("div","modal-footer");
+    const cancel = make("button","btn","Cancel"), submit = make("button","btn btn-primary","Queue tests");
+    cancel.type = submit.type = "button"; footer.append(cancel,submit);
+    dlg.append(header,body,footer);
+    let busy = false;
+    function update() {
+      const count = selective ? checks.filter(c => c.checked).length * 2 : 4;
+      summary.textContent = count + " runs · 5 epochs each · " + count * 65 + " training updates";
+      submit.textContent = busy ? "Queueing…" : "Queue " + count + " tests";
+      submit.disabled = busy || count === 0 || !prompt.value.trim() || prompt.value.trim().length > 4000;
+    }
+    function dismiss() { if (!busy) dlg.close(); }
+    close.onclick = cancel.onclick = dismiss;
+    dlg.addEventListener("cancel",e => { if (busy) e.preventDefault(); });
+    dlg.addEventListener("close",() => { dlg.remove(); researchDialog = null; trigger.focus(); });
+    prompt.addEventListener("input",update);
+    submit.onclick = async () => {
+      if (submit.disabled) return;
+      busy = true; close.disabled = cancel.disabled = true; update(); error.textContent = "";
+      try {
+        const payload = {image_folder:folder,sample_prompt:prompt.value.trim()};
+        if (selective) payload.optimizers = checks.filter(c => c.checked).map(c => c.value);
+        const res = await fetch(selective ? "/api/queue/selective_compat" : "/api/queue/soap_sweep", {
+          method:"POST",headers:{"Content-Type":"application/json",
+            "X-Fizgig-Token":document.querySelector('meta[name="fizgig-token"]').content},
+          body:JSON.stringify(payload)});
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw Error(data.error || (data.problems || []).join("; ") || "Could not queue tests");
+        note.textContent = data.count + " five-epoch runs queued. Press Start queue. Report: " + data.output_dir;
+        busy = false; dlg.close();
+      } catch (e) {
+        busy = false; close.disabled = cancel.disabled = false; error.textContent = e.message; update();
+      }
+    };
+    document.body.append(dlg);
+    update();
+    dlg.showModal();
+    prompt.focus();
+  }
+  soap.addEventListener("click",() => openResearch("soap",soap));
+  compat.addEventListener("click",() => openResearch("selective",compat));
   const skip = document.createElement("button");
   skip.type = "button";
   skip.className = button.className;
