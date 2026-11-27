@@ -11,14 +11,24 @@ START = {
     "adamw": .00025, "adamw8bit": .00025, "pagedadamw8bit": .00025,
     "muon": .00045, "ademamix8bit": .00025, "pagedademamix8bit": .00025,
     "lion8bit": .000025, "soap-512": .00025, "soap-1024": .00025,
-    "soap": .00025, "polora": .02, "lora_tsd": .005,
+    "soap-compact32": .00025, "soap-compact64": .00025, "soap-compact128": .00025,
+    "soap-chunked": .00025, "soap-offloaded": .00025, "soap": .00025,
+    "polora": .02, "lora_tsd": .005,
     "prodigy": 1., "automagic3": .00025, "automagic4": .00025,
 }
 SOAP_CAPS = {"soap-512": 512, "soap-1024": 1024}
 
 
 def optimizer_name(case):
-    return "soap" if case in SOAP_CAPS else case
+    return "soap" if case.startswith("soap-") else case
+
+
+SOAP_ARGS = {
+    **{case: f"max_precond_dim={cap}" for case, cap in SOAP_CAPS.items()},
+    "soap-chunked": "memory_mode=chunked chunk_rows=128",
+    "soap-offloaded": "memory_mode=offloaded",
+    **{f"soap-compact{k}": f"memory_mode=compact compact_rank={k}" for k in (32, 64, 128)},
+}
 
 
 SPECIAL = {"prodigy", "automagic3", "automagic4", "polora", "lora_tsd"}
@@ -38,7 +48,7 @@ def settings(group, previous=None):
                 if proposed is not None and math.isfinite(proposed) and proposed > 0:
                     rates[name] = proposed
     return [{**COMMON, "LEARNING_RATE": str(lr), "OPTIMIZER_TYPE": optimizer_name(name),
-             "OPTIMIZER_ARGS": (f"weight_decay=0.01 max_precond_dim={SOAP_CAPS[name]}" if name in SOAP_CAPS
+             "OPTIMIZER_ARGS": (f"weight_decay=0.01 {SOAP_ARGS[name]}" if name in SOAP_ARGS
                                 else "" if name in SPECIAL else "weight_decay=0.01"),
              "KREA2_SELECTIVE_BLOCK_CHECK": False, "KREA2_SELECTIVE_COMPENSATION": False,
              "__optimizer_match": name, "LORA_NAME": f"{group.name}-{name}",

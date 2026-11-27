@@ -47,7 +47,7 @@ POLORA_ONLY_KEYS = ("magnitude_scale", "curvature_beta", "beta1", "delta", "high
 # SOAP's (fizgig/training/soap.py, MIT) and LoRA-TSD's (fizgig/training/lora_tsd.py, MIT) own Optimizer Args.
 # LoRA-TSD shares momentum and ns_steps with Muon: they're kept for it.
 SOAP_ONLY_KEYS = ("shampoo_beta", "precondition_frequency", "max_precond_dim", "merge_dims", "precondition_1d",
-                  "normalize_grads", "data_format", "correct_bias")
+                  "normalize_grads", "data_format", "correct_bias", "memory_mode", "chunk_rows", "compact_rank")
 LORA_TSD_ONLY_KEYS = ("ball_iters", "max_delta_norm", "ridge_eps", "balance", "zero_eps", "log_every")
 # the Muon keys each pair-wise optimizer reads too (not stripped for it)
 _SHARED_MUON_KEYS = {"polora": ("ns_steps",), "lora_tsd": ("ns_steps", "momentum")}
@@ -534,8 +534,15 @@ def create_optimizer(name: str, params, lr: float, args_str: str = "",
             from fizgig.training.lora_tsd import LoRATSD
             opt = LoRATSD(pairs, lr=lr, **kwargs)
         elif key == "soap":
-            from fizgig.training.soap import SOAP          # the vendored copy only
-            opt = SOAP(params_list, lr=lr, **kwargs)
+            from fizgig.training.soap import SOAP
+            mode = kwargs.pop("memory_mode", "default")
+            if mode == "default":
+                cls = SOAP
+            else:
+                from fizgig.training.soap_memory import ChunkedSOAP, OffloadedSOAP, CompactSOAP
+                cls = {"chunked": ChunkedSOAP, "offloaded": OffloadedSOAP,
+                       "compact": CompactSOAP}[mode]
+            opt = cls(params_list, lr=lr, **kwargs)
         elif key == "automagic3":
             from fizgig.training.automagic3 import Automagic3
             # NON-fused: the MiniMax H3 loop clips, masks and snapshots grads between backward
