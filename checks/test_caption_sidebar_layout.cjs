@@ -62,19 +62,24 @@ assert.match(css,/#tab-captions \.studio-host \.studio-thumb-footer\s*\{\s*displ
 assert.match(css,/@container \(max-width:170px\)/);
 assert.match(css,/\.studio-missing-filter::after\s*\{\s*content:attr\(data-compact\)/);
 
-// Saved is represented by a green light; pending writes, errors and required
-// image actions still keep explanatory text. Status details remain accessible.
-assert.match(app,/liveLabel\.textContent=label/);
-assert.match(app,/liveSummary\.setAttribute\("aria-label","Dataset status: "\+label/);
-assert.match(css,/\.studio-workspace-status\[data-state="saved"\] \.studio-status-label\s*\{/);
-assert.match(css,/\.studio-workspace-status\[data-state="saved"\] summary::after\s*\{\s*display:none;/);
-assert.match(css,/\.studio-workspace-status\[data-state="saved"\] \.studio-status-dot\s*\{/);
-assert.match(css,/\.studio-workspace-status\[data-state="attention"\] \.studio-status-dot\s*\{/);
+// The header star conveys save state, and the details panel retains the
+// explanatory text for pending writes, errors and required image actions.
+assert.match(app,/function captionStarStatus\(state,label,detail=""\)/);
+assert.match(app,/captionStarStatus\(state,label,failedTask\?/);
+assert.match(app,/star\.dataset\.state=state/);
+assert.match(app,/star\.setAttribute\("aria-label","Workspace status: "\+label\+"\. View details"\)/);
+assert.match(app,/panel\.textContent=label\+\(detail\?" — "\+detail:""\)/);
+assert.match(app,/S\.cap\.studioStatusRefresh=refreshStatus/);
+assert.match(css,/\.caption-bench-monogram\[data-state="saved"\]>span\s*\{\s*color:var\(--success/);
+assert.match(css,/\.caption-bench-monogram\[data-state="attention"\]>span\s*\{\s*color:var\(--danger/);
+assert.match(css,/\.caption-bench-monogram\[data-state="saving"\]>span\s*\{\s*color:var\(--warning/);
+assert.match(css,/\.caption-bench-monogram:is\(\[data-state="pending"\],\[data-state="editing"\]\)>span\s*\{\s*color:var\(--warning/);
+assert.match(css,/\.caption-star-detail\[hidden\]\{display:none!important\}/);
 
 // The stage expands to fill the available notebook viewport, rather than
 // being capped at 82dvh/950px. Short windows still scroll normally.
 assert.match(css,/\.notebook-pane:has\(> #tab-captions\.active\)/);
-assert.match(css,/#tab-captions\.active #captionsGrid\.studio-host > \.studio-layout\s*\{\s*flex:1 1 auto;/);
+assert.match(css,/#tab-captions\.active #captionsGrid\.studio-host > \.studio-layout\s*\{\s*flex:1 1 0;\s*min-height:min\(300px,45dvh\);\s*height:0;\s*grid-template-rows:minmax\(0,1fr\)/);
 assert.match(css,/#tab-captions\.active #captionsGrid\.studio-host > \.studio-layout > :is\(\.studio-browser,\.studio-editor,\.studio-index\)/);
 assert.match(css,/#tab-captions \.studio-image-stage \.studio-preview\{[^}]*flex:1 1 0;[^}]*height:100%;/);
 assert.match(css,/#tab-captions \.studio-image-stage \.studio-preview img,[\s\S]*?max-height:100%;[\s\S]*?object-fit:contain/);
@@ -164,7 +169,11 @@ console.log("TagBench stacked sidebar and unchanged Tags/Waterfall/Constellation
 assert.match(app,/const imageTagButtons=new Map\(\)/);
 assert.match(app,/const syncImageTagSelection=before=>/);
 assert.doesNotMatch(app,/for\(const el of tags\.querySelectorAll\("button"\)\)/);
-assert.match(app,/const tagBatchSize=80/);
+assert.match(app,/const mountedTags=new Map\(\)/);
+assert.match(app,/CaptionThumbRail\.fixedWindow\(matchedTagRows\.length,index\.scrollTop,viewport,tagRowHeight,8\)/);
+assert.match(app,/CaptionThumbRail\.reconcile\(index,mountedTags,start,end,createTagRow,tagBottom\)/);
+assert.match(app,/tagTop\.style\.height=start\*tagRowHeight\+"px"/);
+assert.match(app,/tagBottom\.style\.height=\(matchedTagRows\.length-end\)\*tagRowHeight\+"px"/);
 assert.match(app,/indexSearch\.addEventListener\("input",scheduleTagRows\)/);
 assert.match(app,/if\(index\.parentElement!==explore\)explore\.replaceChildren\(index\)/);
 assert.match(app,/const tagHeader=el\("div",\{class:"studio-tag-header"\},headerTitle,rightDock\)/);
@@ -174,7 +183,7 @@ assert.match(css,/#tab-captions \.studio-host \.studio-tag-header\s*\{/);
 
 assert.match(app,/CaptionStudioLearning\.filterByVerdict\(items,S\.cap\.learningMap,/);
 assert.match(app,/const createLearningFilterSelect=\(\)=>/);
-assert.match(app,/actionBar\.append\(learningToggle,learningFilter,viewButtons,liveStatus\)/);
+assert.match(app,/actionBar\.append\(learningToggle,learningFilter,viewButtons\)/);
 assert.match(app,/const refilter=\(S\.cap\.studioLearningFilter\|\|"all"\)!=="all"/);
 assert.match(css,/#tab-captions \.studio-learning-filter-label\{/);
 
@@ -189,27 +198,30 @@ assert.match(app,/S\.cap\.studioLearningFilter="all";/);
 assert.match(css,/\.studio-empty-actions\{/);
 
 // Scrolling Image Tags / All Tags must not flash hover rows under the cursor.
-// Each mounted list is stabilized; All Tags lazy insertion is frame-batched.
+// Each mounted list is stabilized; All Tags virtualized scrolling is frame-batched.
 assert.match(app,/const stabilizeTagScroll=list=>/);
 assert.match(app,/stabilizeTagScroll\(tags\)/);
 assert.match(app,/stabilizeTagScroll\(index\)/);
 assert.match(app,/list\.classList\.add\("is-scrolling"\)/);
 assert.match(app,/idle=setTimeout\(\(\)=>list\.classList\.remove\("is-scrolling"\),160\)/);
-assert.match(app,/let tagScrollLoadPending=false/);
-assert.match(app,/if\(!index\.isConnected\)return/);
+assert.match(app,/const queueTagWindow=\(\)=>\{\s*if\(tagWindowFrame\)return/);
+assert.match(app,/index\.addEventListener\("scroll",queueTagWindow,\{passive:true\}\)/);
+assert.match(app,/tagWindowFrame=0;if\(index\.isConnected\)paintTagWindow\(\)/);
+assert.match(app,/tagResizeObserver\?\.disconnect\(\)/);
 assert.match(css,/\.studio-image-tag-list\.is-scrolling \.studio-image-tag:hover:not\(\.is-picked\):not\(:focus-visible\)/);
 assert.match(css,/\.studio-tag-list\.is-scrolling \.studio-index-tag:hover:not\(\.is-picked\):not\(:focus-visible\)/);
 assert.match(css,/scrollbar-gutter:stable/);
 assert.match(css,/contain:paint/);
 assert.match(css,/\.studio-file:is\(\.is-picked,\.active\) \{\s*animation:none;\s*filter:none;/);
 
-// Stuck is a vivid, distinct red independent of the theme's muted danger token.
-assert.match(css,/\[data-learning-status="stuck"\]\{--caption-learning-ring:#ff3344\}/);
+// Stuck uses the selected theme's danger color and a distinct breathing halo.
+assert.match(css,/\[data-learning-status="stuck"\]\{--caption-learning-ring:var\(--danger\)\}/);
+assert.match(css,/\[data-learning-status="stuck"\]\[data-learning-visible="true"\]>\.studio-stuck-halo\{\s*animation:studio-stuck-breathe/);
 
 // The loss status selector follows the Loss Status toggle rather than
 // remaining visible (and potentially filtering invisibly) when switched off.
 assert.match(app,/aria-label":"Loss Status"/);
-assert.match(app,/el\("span",\{text:"Loss"\}\)/);
+assert.match(app,/el\("span",\{text:"Per-image Loss"\}\)/);
 assert.doesNotMatch(app,/el\("span",\{text:"Learning colors"\}\)/);
 assert.match(app,/learningFilter\.hidden=view==="constellation"\|\|!learningCheck\.checked/);
 assert.match(app,/if\(!learningCheck\.checked\)S\.cap\.studioLearningFilter="all"/);
@@ -230,37 +242,39 @@ assert.match(app,/else if\(key==="b"\)\{handled\(\);openBatchReorder\(\);\}/);
 assert.doesNotMatch(app,/History & advanced tag ordering/);
 assert.match(css,/studio-edit-action kbd\{/);
 
-// TagBench image menu keeps core copy/delete/review actions first, with the
+// TagBench image menu retains core copy/remove/review actions, with the
 // earlier Validation/Sample functionality grouped after them.
 assert.match(app,/action\("Select All Images","Ctrl\+A"/);
 assert.match(app,/action\("Invert Selection","Ctrl\+I"/);
 assert.match(app,/action\("Copy Tags","Ctrl\+C"/);
 assert.match(app,/action\("Paste Tags","Ctrl\+V"/);
-assert.match(app,/action\("Delete "\+\(count===1\?"Image":"Images"\),"Ctrl\+Del"/);
+assert.match(app,/action\(count===1\?"Remove Image":"Remove Selected Images",preview\?"":"Ctrl\+Del",\s*\(\)=>removeSelectedImages\(it\.path,preview\)/);
 assert.match(app,/action\(complete\?"Mark Incomplete":"Mark Complete","Ctrl\+K"/);
 assert.match(app,/action\(inValidation\?"Remove "/);
 assert.match(app,/action\(inSamples\?"Remove "/);
 // Tag context menus are two distinct scopes with the same Boolean filter
-// choices; global deletion explicitly confirms before writing.
+// choices; bulk removal explicitly confirms the actual affected captions before writing.
 assert.match(app,/const filterByTag=\(tag,mode\)=>/);
 assert.match(app,/CaptionStudioTags\.addFilter\(S\.cap\.studioQuery,tag,mode\)/);
 assert.match(app,/menuAction\("Add to Filter"/);
 assert.match(app,/addAction\("Add to Filter"/);
 assert.match(app,/menuAction\("Exclude from Filter"/);
 assert.match(app,/addAction\("Exclude from Filter"/);
-assert.match(app,/menuAction\("Delete Tag",removePickedTags,!editable\)/);
-assert.match(app,/addAction\("Delete Tag",\(\)=>void deletePickedTags\(tag\)\)/);
+assert.match(app,/menuAction\(imageTagPicked\.size>1\?"Remove Selected Tags":"Remove Tag",\(\)=>void removePickedTags\(\),!editable\)/);
+assert.match(app,/addAction\(selectionState\.size>1\?"Remove Selected Tags":"Remove Tag",\(\)=>void deletePickedTags\(tag\)\)/);
 // The old window.confirm prompt was replaced by the scoped, keyboard-accessible
 // removal dialog. Check the actual confirmation branch, not deleted wording.
-assert.match(app,/if\(mode==="remove"&&!\(await captionConfirmRemoval\(/);
-assert.match(app,/scope==="all"\?" across the dataset\?"/);
-assert.match(app,/items:\[old\.trim\(\)\],confirmLabel:"Remove tag"/);
+assert.match(app,/if\(!\(await captionConfirmRemoval\(\{\s*title,detail,compact:true,confirmLabel:mode==="rename"\?"Rename":mode==="remove"\?"Remove":"Add",\s*destructive:mode==="remove"\s*\}\)\)\)return false/);
+assert.match(app,/const affected=scope==="all"\?S\.cap\.items:scope==="image"\?\[current\]:\s*selection\.size\?S\.cap\.items\.filter\(it=>selection\.has\(it\.path\)\):\[current\]/);
+assert.match(app,/mode==="remove"\?captionTagRemovalTitle\(\[old\.trim\(\)\],changes\.length\)/);
+assert.match(app,/captionBulkTagChanges\(\s*affected,mode,old,newTag,drafts,S\.cap\.studioReviewed\)/);
 assert.match(app,/const category=el\("details",\{class:"studio-tag-color-category"\}\)/);
 assert.match(css,/\.studio-tag-context-menu \.studio-tag-color-category>summary\{/);
 
 // Selected-tag deletion is scoped to one active/selected image group. Image
 // Tags can remove any number of selected tags, including the entire tag list.
-assert.match(app,/menuAction\("Delete Tag",removePickedTags,!editable\)/);
+assert.match(app,/const picked=onlyTag\?new Set\(\[onlyTag\.toLowerCase\(\)\]\):new Set\(imageTagPicked\)/);
+assert.match(app,/captionTagRemovalConfirmation\(removing,\[ta\.value\]\)/);
 assert.match(app,/const deletePickedTags=async\(contextTag=null\)=>/);
 assert.match(app,/const chosen=imageTargets\(\);/);
 assert.match(app,/Delete .*selected tag/);
@@ -287,7 +301,8 @@ assert.match(app,/e\.key==="Escape"\)\{/);
 assert.match(app,/const quickSettings=el\("div",\{class:"studio-ai-quick-settings"/);
 assert.match(app,/overwrite\.checked=writeMode\.value==="replace"/);
 assert.match(app,/overwrite\.dispatchEvent\(new Event\("change",\{bubbles:true\}\)\)/);
-assert.match(app,/destination\.textContent=capTagger\(\)\|\|capDesc\(\)\?\.kind==="tags"\?"Tags":"Natural language"/);
+assert.match(app,/function studioAiFormat\(\)\{\s*return qwenOn\(\)\?\(studioAiState\(\)\.format==="tags"\?"tags":"natural"\):\s*\(capTagger\(\)\|\|capDesc\(\)\?\.kind==="tags"\?"tags":"natural"\)/);
+assert.match(app,/destination\.textContent=\(format==="tags"\?"Tags":"Natural language"\)\+\(instruction\?"  ⇄":""\)/);
 assert.match(app,/target\.append\(el\("section",\{class:"studio-ai-caption-card"\},header,group\)\)/);
 assert.match(app,/panel\?\.querySelector\("\.studio-ai-quick-settings"\)\?\.remove\(\)/);
 assert.match(app,/text:count\+" selected picture"/);
@@ -312,7 +327,7 @@ assert.match(app,/const log = \$\("capLog"\)/);
 // repeatedly rebuilt on every keystroke or ordinary image selection.
 assert.match(app,/tagIndex\.searchRows\.map|tagIndex\.sorted\.map\(\(\[tag,count\]\)=>\[tag,count,tag\.toLocaleLowerCase\(\)\]\)/);
 assert.match(app,/CaptionStudioTags\.findTagMatches\(/);
-assert.match(app,/newTag\.addEventListener\("input",scheduleSuggestions\)/);
+assert.match(app,/newTag\.addEventListener\("input",\(\)=>\{tintTagField\(newTag\);scheduleSuggestions\(\);\}\)/);
 assert.match(app,/requestAnimationFrame\(\(\)=>\{\s*tagQueryFrame=0;/);
 assert.match(app,/S\.cap\.studioGraphPending\?\.cancel\?\.\(\);/);
 assert.match(app,/const palette=S\.cap\.studioTagbenchPalette\?\.key===colorScope/);
@@ -327,8 +342,10 @@ assert.match(app,/openImageMenu\(e,current,\{preview:true\}\)/);
 assert.match(app,/if\(S\.cap\.imageEditing\?\.inline\|\|!e\.target\.closest\("img"\)\)return/);
 assert.match(app,/action\("Open File Location","",\(\)=>revealImageFile\(it\)\)/);
 assert.match(app,/action\("Copy Caption","",\(\)=>copyImageText\(ta\.value,"caption"\)/);
-assert.match(app,/action\("Remove Tool","",\(\)=>selectInlineTool\("remove"\),!canEditPicture\)/);
-assert.match(app,/action\("Crop Tool","",\(\)=>selectInlineTool\("crop"\),!canEditPicture\)/);
+assert.match(app,/action\("Erase","",\(\)=>editTarget\("remove"\),!canEditTarget\|\|\(!preview&&count!==1\)\)/);
+assert.match(app,/action\("Crop","",\(\)=>editTarget\("crop"\),!canEditTarget\|\|\(!preview&&count!==1\)\)/);
+assert.match(app,/if\(it\.path===current\.path&&S\.cap\.studioExploreMode!=="waterfall"&&S\.cap\.studioExploreMode!=="constellation"\)\s*return selectInlineTool\(tool\)/);
+assert.match(app,/const canEditTarget=!S\.cap\.studioReviewed\?\.has\(it\.path\)&&!!it\.size/);
 const server=fs.readFileSync("src/fizgig/web/server.py","utf8");
 assert.match(server,/if path == "\/api\/captions\/reveal_file":/);
 assert.match(server,/if on_pod\(\) or not self\._local_viewer\(\):/);
