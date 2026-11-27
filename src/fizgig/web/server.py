@@ -5029,13 +5029,14 @@ class Handler(BaseHTTPRequestHandler):
                     busy = _run["state"] in ("starting", "running", "paused")
                 if busy or captions.status()["state"] in ("loading", "running", "translating"):
                     return self.json({"error": "Finish or stop the active run/caption job before snapshotting the cache."}, 400)
-                group = "cache-regression-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+                profile = str(b.get("gpu_profile") or "")
+                if profile not in cache_regression.GPU_PROFILES:
+                    return self.json({"error": "Choose the RTX 3090 or RTX 4070 Ti cache test."}, 400)
+                group = "cache-regression-" + profile + "-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
                 root = os.path.join(default_output_dir(), "polora_diagnostics")
                 # This diagnostic is restricted to the selected ordinary image folder.
                 mask_count = launch.mask_report(get_family("krea2"), {"image_folder": folder})["with"]
-                gpu = _chosen_gpu(list_gpus(), os.environ.get("CUDA_VISIBLE_DEVICES") or load_prefs().get("cuda_device"))
-                gpu_gb = float(gpu["total_gb"]) if gpu and gpu.get("total_gb") else None
-                configs = cache_regression.settings(group, root, prompt, masked=bool(mask_count), gpu_gb=gpu_gb)
+                configs = cache_regression.settings(group, root, prompt, gpu_profile=profile, masked=bool(mask_count))
                 entries, plans = [], []
                 source = None
                 held = None
@@ -5061,7 +5062,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     snapshot = cache_regression.prepare_caches(source, configs, desc.arch_id, held or [])
                     with open(os.path.join(output, "diagnostic-settings.json"), "w", encoding="utf-8") as f:
-                        json.dump({"dataset": folder, "cases": configs, "snapshot": snapshot, "plans": plans}, f, indent=2)
+                        json.dump({"dataset": folder, "gpu_profile": profile, "cases": configs, "snapshot": snapshot, "plans": plans}, f, indent=2)
                 except (OSError, ValueError) as exc:
                     # Only this newly created diagnostic group is removed, never the source cache.
                     shutil.rmtree(output, ignore_errors=True)
