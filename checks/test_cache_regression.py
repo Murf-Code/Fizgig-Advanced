@@ -40,7 +40,9 @@ class CacheRegressionTests(unittest.TestCase):
 
     def make_plan(self, values):
         config = str(self.root / "dataset.toml")
-        plan = NS(problems=[], stages=[NS(name="Training", cmd=["train"])], dataset_toml=self.body,
+        plan = NS(problems=[], stages=[NS(name="Training", cmd=["train", "--max_train_epochs", "2",
+                    "--optimizer_type", "polora", "--output_dir", values["LORA_OUTPUT_DIR"],
+                    "--dataset_config", config])], dataset_toml=self.body,
                   files=[(config, self.body)], dirs=[], console=[])
         launch = NS(Stage=lambda name, cmd: NS(name=name, cmd=cmd),
                     cache_command=lambda desc, inputs, stage: ["cache", "--model", stage, "--skip_existing"])
@@ -90,6 +92,19 @@ class CacheRegressionTests(unittest.TestCase):
     def test_unknown_gpu_profile_refused(self):
         with self.assertRaises(ValueError):
             cr.settings("test", str(self.root), "prompt", gpu_profile="auto")
+
+    def test_normal_training_recipe_refused(self):
+        config = str(self.root / "dataset.toml")
+        v = self.configs[0]
+        for flag, val in [("--max_train_epochs", "30"), ("--optimizer_type", "muon")]:
+            cmd = ["train", "--max_train_epochs", "2", "--optimizer_type", "polora",
+                   "--output_dir", v["LORA_OUTPUT_DIR"], "--dataset_config", config]
+            cmd[cmd.index(flag) + 1] = val
+            plan = NS(problems=[], stages=[NS(name="Training", cmd=cmd)], dataset_toml=self.body,
+                      files=[(config, self.body)], dirs=[], console=[])
+            cr.configure_plan(NS(key="krea2"), dict(v, DATASET_CONFIG=config), plan, v, NS())
+            self.assertIn(flag, plan.problems[0])
+            self.assertEqual(plan.dataset_toml, self.body)
 
     def test_four_stage_plans(self):
         expected = [["Training"], ["Text Encoder Caching", "Training"],
