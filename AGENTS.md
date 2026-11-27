@@ -159,6 +159,9 @@ For particularly complex research, follow an iterative cycle of implementation, 
 
 ## 9. Project continuity
 
+- Read [RESEARCH_STATUS.md](RESEARCH_STATUS.md) and the linked experiment records before proposing, repeating or changing research. Check the canonical WIP ledger for newer entries when working on a research branch.
+- Update the canonical WIP research ledger after substantive findings, including negative results, evidence provenance, remaining gates and branch ownership. Synchronize active branch copies without merging unrelated code. Do not silently reopen closed research.
+
 - Consult existing research reports before repeating experiments.
 - Preserve previously validated findings and user-approved design decisions.
 - Do not reopen settled decisions without new evidence.
