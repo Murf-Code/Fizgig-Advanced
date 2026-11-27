@@ -5093,7 +5093,7 @@ class Handler(BaseHTTPRequestHandler):
                                     "arch": desc.arch_id, "holdout": held or [], "files": []}
                     else:
                         snapshot = cache_regression.prepare_caches(source, configs, desc.arch_id, held or [])
-                        snapshot["provenance"] = "original_existing_cache"
+                        snapshot["provenance"] = "existing_cache_snapshot"
                     with open(os.path.join(output, "diagnostic-settings.json"), "w", encoding="utf-8") as f:
                         json.dump({"dataset": folder, "gpu_profile": profile, "cases": configs, "snapshot": snapshot, "plans": plans}, f, indent=2)
                 except cache_regression.CacheUnavailable as exc:
