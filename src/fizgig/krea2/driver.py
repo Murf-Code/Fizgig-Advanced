@@ -702,7 +702,9 @@ class Krea2Driver(FamilyDriver):
             self._cache_regression_previews = count + 1
             out = self.options.get("cache_regression_dir")
             if out:
-                path = Path(out) / f"preview-latent-{count:02d}.safetensors"
+                folder = Path(out) / "preview-latents"
+                folder.mkdir(parents=True, exist_ok=True)
+                path = folder / f"preview-latent-{count:02d}.safetensors"
                 save_file({"latent": result.detach().cpu().contiguous()}, str(path))
             z = result.detach().float()
             logging.getLogger(__name__).info("[cache-regression] preview %d pre-decode latent rms=%g finite=%s",
