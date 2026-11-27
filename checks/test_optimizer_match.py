@@ -1,6 +1,6 @@
 import pytest
 import torch
-from fizgig.web.optimizer_match import delta_sq, settings, START
+from fizgig.web.optimizer_match import delta_sq, settings, START, optimizer_name
 
 def test_compact_delta_matches_dense():
     g = torch.Generator().manual_seed(42)
@@ -13,7 +13,8 @@ def test_compact_delta_matches_dense():
 
 def test_all_candidates_fixed_recipe(tmp_path):
     rows = settings(tmp_path / "group")
-    assert [r["OPTIMIZER_TYPE"] for r in rows] == list(START)
+    assert [r["OPTIMIZER_TYPE"] for r in rows] == [optimizer_name(case) for case in START]
+    assert "max_precond_dim=512" in next(r["OPTIMIZER_ARGS"] for r in rows if r["__optimizer_match"] == "soap-512")
     assert all(r["MAX_TRAIN_EPOCHS"] == "1" and not r["ADAPTIVE_LR"]
                and not r["KREA2_SELECTIVE_COMPENSATION"] for r in rows)
     assert float(rows[0]["LEARNING_RATE"]) == .00025

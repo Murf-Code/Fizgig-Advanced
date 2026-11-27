@@ -10,9 +10,17 @@ from fizgig.web.selective_optimizer_smoke import COMMON, EXPECTED_UPDATES, _writ
 START = {
     "adamw": .00025, "adamw8bit": .00025, "pagedadamw8bit": .00025,
     "muon": .00045, "ademamix8bit": .00025, "pagedademamix8bit": .00025,
-    "lion8bit": .000025, "soap": .00025, "polora": .02, "lora_tsd": .005,
+    "lion8bit": .000025, "soap-512": .00025, "soap-1024": .00025,
+    "soap": .00025, "polora": .02, "lora_tsd": .005,
     "prodigy": 1., "automagic3": .00025, "automagic4": .00025,
 }
+SOAP_CAPS = {"soap-512": 512, "soap-1024": 1024}
+
+
+def optimizer_name(case):
+    return "soap" if case in SOAP_CAPS else case
+
+
 SPECIAL = {"prodigy", "automagic3", "automagic4", "polora", "lora_tsd"}
 MANIFEST = "optimizer-match-manifest.json"
 REPORT = "optimizer-match-report.json"
@@ -29,8 +37,9 @@ def settings(group, previous=None):
                 proposed = r.get("suggested_lr")
                 if proposed is not None and math.isfinite(proposed) and proposed > 0:
                     rates[name] = proposed
-    return [{**COMMON, "LEARNING_RATE": str(lr), "OPTIMIZER_TYPE": name,
-             "OPTIMIZER_ARGS": "" if name in SPECIAL else "weight_decay=0.01",
+    return [{**COMMON, "LEARNING_RATE": str(lr), "OPTIMIZER_TYPE": optimizer_name(name),
+             "OPTIMIZER_ARGS": (f"weight_decay=0.01 max_precond_dim={SOAP_CAPS[name]}" if name in SOAP_CAPS
+                                else "" if name in SPECIAL else "weight_decay=0.01"),
              "KREA2_SELECTIVE_BLOCK_CHECK": False, "KREA2_SELECTIVE_COMPENSATION": False,
              "__optimizer_match": name, "LORA_NAME": f"{group.name}-{name}",
              "LORA_OUTPUT_DIR": str(group / name)} for name, lr in rates.items()]
@@ -130,6 +139,15 @@ def finish(output, name, implementation, lr, rows, validation, initial):
                            "status": status, "steps": rows, "validation": validation,
                            "initial_fingerprint": initial})
     return refresh(output.parent)
+
+
+def record_terminal(output, case, status, reason, progress=None):
+    output = Path(output)
+    if case not in START or output.name != case or not (output.parent / MANIFEST).is_file():
+        return
+    _write(output / AUDIT, {"case": case, "status": status, "reason": reason,
+                           "progress": progress})
+    refresh(output.parent)
 
 
 def refresh(group):

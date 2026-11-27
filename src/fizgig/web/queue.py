@@ -184,7 +184,7 @@ def on_run_ended(result, lora, starter):
     """A web run ended: the next one starts shortly after a finish; anything else holds the queue, saying why."""
     if result == "stopped":
         push_notifications.emit("stopped", lora)
-    if result in ("finished", "failed"):
+    if result in ("finished", "failed", "skipped"):
         with _lock:
             drained = _q["batch"] and not _q["items"]
             if drained:
@@ -195,6 +195,8 @@ def on_run_ended(result, lora, starter):
         with _lock:
             if _q["for_pause"]:              # the paused run (resumed) is done: the queue carries on
                 _q.update(held=False, reason="", for_pause=False)
+        schedule(10, starter)
+    elif result == "skipped":
         schedule(10, starter)
     elif result == "failed":            # an overnight queue doesn't stall on one run: it's named, and the next starts
         with _lock:

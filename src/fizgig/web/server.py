@@ -2164,6 +2164,7 @@ def _start_one(family_key, values, image_folder, resume, ft_continue, note, mode
     with _lock:
         _run.update(state="starting", stage="", lora=inputs["LORA_NAME"], output_dir=out_dir, family=family_key,
                     values=dict(values), image_folder=image_folder, pause=False, save_stop=False, save_stop_note="", early_stop="",
+                    skip_test=False,
                     resume="", resume_mode="", recaching=recaching)
     save_state({"last_run": {"family": family_key, "values": values, "image_folder": image_folder}})
     if _startup["offer"] or load_state().get("interrupted"):
@@ -2260,6 +2261,29 @@ def _progress_dict(upd):
             "note": "", "lr": upd.get("lr_text") or "", "grad_norm": upd.get("grad_norm_text") or ""}
 
 
+def _test_terminal(result, reason=""):
+    values = _run.get("values") or {}
+    case = values.get("__optimizer_match")
+    if case:
+        try:
+            from fizgig.web.optimizer_match import record_terminal
+            record_terminal(_run.get("output_dir"), case, result, reason, _run.get("progress"))
+        except Exception as e:
+            append_log(f"\n[optimizer-match] Could not record terminal result: {e}\n")
+
+
+def _stage_queue_end(result, reason=""):
+    if result == "stopped" and _run.get("skip_test"):
+        _test_terminal("skipped", "User terminated current optimizer test")
+        webqueue.on_run_ended("skipped", _run.get("lora"), _queue_starter)
+    else:
+        if result == "failed":
+            _test_terminal("failed", reason)
+        elif result == "stopped":
+            _test_terminal("stopped", "User stopped queue")
+        webqueue.on_run_ended(result, _run.get("lora"), _queue_starter)
+
+
 def _run_stages(stages, out_dir):
     from fizgig.training.progress import TrainingProgressTracker
     append_log(f"\n=== Fizgig run, {datetime.datetime.now():%Y-%m-%d %H:%M:%S} ===\n")
@@ -2275,7 +2299,7 @@ def _run_stages(stages, out_dir):
         with _lock:
             if _run["state"] == "stopped":
                 history.end(_run.get("history_id"), "stopped", _run.get("progress"))
-                webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+                _stage_queue_end("stopped")
                 return
             _run["stage"] = stage.name
             if stage.name == "Training" and not _run.get("training_at"):
@@ -2300,14 +2324,14 @@ def _run_stages(stages, out_dir):
                 _run.update(state="failed", proc=None, ended_at=time.time())
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
             push_notifications.emit("failed", _run.get("lora"))
-            webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
+            _stage_queue_end("failed", str(e))
             return
         if skipped:
             append_log(f"\n■ Stopped before starting {stage.name}.\n")
             with _lock:
                 _run["proc"] = None
             history.end(_run.get("history_id"), "stopped", _run.get("progress"))
-            webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+            _stage_queue_end("stopped")
             return
         mem = oom.Watch()                       # GPU / system-RAM messages, and the Auto plan the trainer chose
         for line in proc.stdout:
@@ -2356,7 +2380,7 @@ def _run_stages(stages, out_dir):
                 _run["proc"] = None              # gone: a stop-and-wait sees it at once
             append_log(f"\n■ Stopped during {stage.name}.\n")
             history.end(_run.get("history_id"), "stopped", _run.get("progress"))
-            webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+            _stage_queue_end("stopped")
             return
         if ret != 0:
             kind = oom.classify(ret, mem)
@@ -2365,10 +2389,10 @@ def _run_stages(stages, out_dir):
             with _lock:
                 _run.update(state="failed", proc=None, ended_at=time.time())
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
-            if kind and _oom_recover(kind, stage.name, mem.plan):
+            if kind and not ((_run.get("values") or {}).get("__optimizer_match") or (_run.get("values") or {}).get("__selective_optimizer_smoke")) and _oom_recover(kind, stage.name, mem.plan):
                 return                           # it carries on by itself: the queue waits for that run
             push_notifications.emit("oom" if kind else "failed", _run.get("lora"))
-            webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
+            _stage_queue_end("failed", f"{stage.name}: exit {ret}{what}")
             return
         if "cach" in stage.name.lower():
             push_notifications.emit("cache", _run.get("lora"))
@@ -2398,7 +2422,7 @@ def _run_stages(stages, out_dir):
         except OSError:
             pass
         history.end(_run.get("history_id"), "stopped", _run.get("progress"))
-        webqueue.on_run_ended("stopped", _run.get("lora"), _queue_starter)
+        _stage_queue_end("stopped")
         append_log("\n■ Stopped at the end of the final stage.\n")
         return
     history.end(_run.get("history_id"), "paused" if paused else "finished", _run.get("progress"))
@@ -2491,14 +2515,20 @@ def _save_stop_check(r):
     r.update(save_stop=False, save_stop_note=_run["save_stop_note"])
 
 
-def _stop():
+def _stop(skip_test=False, expected_id=None):
     with _lock:
+        if skip_test:
+            vals = _run.get("values") or {}
+            if (not (vals.get("__optimizer_match") or vals.get("__selective_optimizer_smoke"))
+                    or not expected_id or str(_run.get("history_id")) != str(expected_id)):
+                return False
         proc = _run["proc"]
         if proc is None or _run["state"] not in ("starting", "running"):
             return False
         # A stage subprocess can exit just before the watcher clears it and
         # starts the next stage. Stop must still claim the run in that gap.
         alive = proc.poll() is None
+        _run["skip_test"] = bool(skip_test)
         _run["state"] = "stopped"
         _run["ended_at"] = time.time()
         if not alive:
@@ -5329,6 +5359,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json({"ok": True})
             if path == "/api/fetch/cancel":
                 return self.json({"ok": _cancel_fetch()})
+            if path == "/api/queue/skip_optimizer_test":
+                return self.json({"ok": _stop(skip_test=True, expected_id=b.get("history_id"))})
             if path == "/api/stop":
                 return self.json({"ok": _stop() or _stop_paused()})
             if path == "/api/logout":                     # this device: its login cookie goes

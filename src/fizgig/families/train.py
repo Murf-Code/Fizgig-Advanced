@@ -1589,8 +1589,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     optimizer_match = (family_options or {}).get("optimizer_match")
     match_rows, match_initial = [], None
     if optimizer_match:
-        from fizgig.web.optimizer_match import START
-        if (optimizer_match not in START or optimizer_match != compensation_optimizer
+        from fizgig.web.optimizer_match import START, optimizer_name
+        if (optimizer_match not in START or optimizer_name(optimizer_match) != compensation_optimizer
                 or not global_replay or selective_global_replay or selective_compensation
                 or resume_state_dir or finetune or adaptive_lr or per_image_lr
                 or max_train_epochs != 1 or int(seed) != 42 or int(network_dim) != 32
