@@ -166,6 +166,26 @@ class CacheRegressionTests(unittest.TestCase):
                 cache = Path(v["LORA_OUTPUT_DIR"]) / "isolated-cache"
                 self.assertEqual({p.name for p in cache.iterdir()}, set(names))
 
+    def test_holdout_flag_survives_rebuilt_cache_commands(self):
+        cfg = toml.loads(self.body)
+        cfg["general"]["holdout_file"] = str(self.root / "held.json")
+        self.body = toml.dumps(cfg)
+        for gpu, fresh in [("4070-ti", True), ("3090", False), ("3090", True)]:
+            arms = cr.settings("test-" + gpu, str(self.root), "prompt",
+                               gpu_profile=gpu, fresh_baseline=fresh)
+            for arm in arms:
+                plan = self.make_plan(arm)
+                self.assertFalse(plan.problems)
+                for stage in plan.stages[:-1]:
+                    self.assertEqual(stage.cmd.count("--holdout_cache"), 1)
+                    self.assertNotIn("--skip_existing", stage.cmd)
+                self.assertNotIn("--holdout_cache", plan.stages[-1].cmd)
+                if fresh and arm["__cache_regression"] == "a-existing":
+                    body = next(body for path, body in plan.files
+                                if str(path).endswith("baseline-dataset.toml"))
+                    self.assertEqual(toml.loads(body)["general"]["holdout_file"],
+                                     cfg["general"]["holdout_file"])
+
     def test_3090_defaults_to_original_cache(self):
         arms = cr.settings("test", str(self.root), "prompt", gpu_profile="3090")
         self.assertFalse(arms[0]["__cache_fresh_baseline"])
@@ -179,6 +199,7 @@ class CacheRegressionTests(unittest.TestCase):
             self.assertFalse(p.problems)
             self.assertEqual([s.name for s in p.stages], names)
             self.assertTrue(all("--skip_existing" not in s.cmd for s in p.stages))
+            self.assertTrue(all("--holdout_cache" not in s.cmd for s in p.stages))
             self.assertIn("--sample_at_first", p.stages[-1].cmd)
             self.assertEqual(toml.loads(p.dataset_toml)["datasets"][0]["cache_directory"],
                              str(Path(v["LORA_OUTPUT_DIR"]) / "isolated-cache"))

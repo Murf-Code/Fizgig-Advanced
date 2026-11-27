@@ -138,8 +138,15 @@ def configure_plan(desc, inputs, plan, values, launch):
     # Rebuild commands even if the source preflight omitted a stage.
     lat = launch.cache_command(desc, inputs, "latents")
     txt = launch.cache_command(desc, inputs, "text")
+    # launch.plan builds the hold-out in its own input copy. The rebuilt cache
+    # commands must use the hold-out in the frozen TOML, not the caller's inputs.
+    # Both fresh baseline and fresh-axis arms need the separate validation cache.
+    cfg, _ = source_config(body)
+    has_holdout = bool(cfg.get("general", {}).get("holdout_file"))
     for cmd in (lat, txt):
-        cmd[:] = [v for v in cmd if v != "--skip_existing"]
+        cmd[:] = [v for v in cmd if v not in ("--skip_existing", "--holdout_cache")]
+        if has_holdout:
+            cmd.append("--holdout_cache")
     stages = []
     fresh_lat, fresh_text = CASES[case]
     if fresh_lat:
