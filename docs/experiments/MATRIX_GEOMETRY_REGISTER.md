@@ -1,17 +1,17 @@
-# Matrix geometry research register — 2026-11-25
+# Matrix geometry research register — updated 2026-11-27
 
-Research only. Preserve the pending Round 10 GPU queue and do not merge into release, WIP or Selective Global Replay. This register records prior experiments; it does not imply that their standalone prototypes have been integrated or that synthetic quality transfers to diffusion. Original brief: LoRA geometry, efficient learning, low VRAM, high resolution on a 12 GB GPU, compact standard-compatible export.
+Research only. Do not merge research code into release, WIP or Selective Global Replay. The completed Round 10/Muon-ME experiments are historical; consult the current memory pilot below before queueing. This register records prior experiments; it does not imply that their standalone prototypes have been integrated or that synthetic quality transfers to diffusion. Original brief: LoRA geometry, efficient learning, low VRAM, high resolution on a 12 GB GPU, compact standard-compatible export.
 
 ## Evidence and priorities
 
 | Workstream | Evidence / status | Next gate |
 |---|---|---|
 | PoLoRA-ME | Chunked implementation and state views already in branch; rank-64 GPU fit. CPU temporary allocation reduction 2611 to 47 MiB at smallest tested chunk, not measured GPU peak savings. | Matched rank-64 CUDA chunk sweep, optimizer vs backward peaks, timing and parity. |
-| Muon-ME | Isolated rank-64 CUDA gate passed: 128 MiB warm scratch 1358.16 to 60 MiB, peak reserved down 1.545 GiB, optimizer time down 13.68%; reference repeat and shape-local bitwise identical; chunked momentum exact under supplied gradients, small weight differences. See [CUDA results](MUON_ME_CUDA_RESULTS_20261125.md). | Integrate opt-in only; matched closed-loop training, full-training memory and quality, device/shape coverage. |
+| Muon-ME | Isolated rank-64 CUDA gate passed: 128 MiB warm scratch 1358.16 to 60 MiB, peak reserved down 1.545 GiB, optimizer time down 13.68%; reference repeat and shape-local bitwise identical; chunked momentum exact under supplied gradients, small weight differences. See [CUDA results](MUON_ME_CUDA_RESULTS_20261125.md). | Opt-in integration and six closed-loop runs completed; see results below. Extend only after independent state/activation feasibility gates. |
 | TSD-ME | Round 13 compact clipping prepass standalone: 48 trajectories/1440 steps bitwise equal, 11 selected checks and 12 resume checks. Estimated rank-64 cache 903.22 to 25.01 MiB, not GPU peak. | Review cumulative R11–13 changes, then CUDA. |
-| Automatic budgeting | Standalone conservative preflight, state/scratch estimates and hysteresis. | Shared manager across optimizers; CUDA calibration and host budget, no silent training-setting changes or partial-step retry. |
-| Activation offload | Krea2 model accepts but ignores cpu_offload; targeted checkpoint-input CPU parity prototype. 1024² modeled 1.39 GiB saved inputs, 2.79 GiB round trip. | Synchronous CUDA with block swap before async; measure PCIe and host RAM, 32/64 GB host targets. |
-| Optimizer-state compression | Standalone packed INT8/INT4 Muon momentum; INT8 nearly matched FP32 in synthetic tests, INT4 degraded. | CUDA quality/speed, resume; PoLoRA/TSD separately. |
+| Automatic budgeting | CPU-tested optional Muon-ME preflight for FP32 and compressed state, reserve and hysteresis; integrated at dcf7cd0. Disabled in fixed pilot. | CUDA calibration; PoLoRA/TSD-specific estimates and eventual shared planner. No silent setting changes or partial-step retry. |
+| Activation offload | Integrated opt-in synchronous checkpoint-input copy with H2D ring; completed 13 GPU updates, 420 MiB host snapshot peak, 284 MiB lower CUDA reserved peak, ~25 MiB lower allocated peak, 14.6% slower; incomplete forward telemetry and unmatched loss trajectories. 1 MP estimates remain theoretical. | Repeat with full telemetry and paired inputs/gradients; verify numerical correctness before async copies, PCIe coordination or combined interventions. |
+| Optimizer-state compression | CPU stages 1–2 archived; BF16, INT8-64 and Split-Max64 integrated experimentally. Synthetic closed-loop convergence gaps and weak-coordinate errors matter; INT4 deferred. Rank-64 fixed cap corrected from 128 to 192 MiB at d7df5b3; no completed compressed GPU update verified. | Five-arm feasibility rerun, then paired quality/resume, measured state bytes and backward peaks. PoLoRA/TSD separately. |
 | Scaled Adam | Gradient-first damped preconditioned FP64 Adam, no WD; synthetic gains during growth/conditioning; not gauge invariant. | Opt-in trainer version, Adam control, LR matching. |
 | RoM/Riemannion | Literature and compact mathematical prototypes, not complete published implementations. | Defer full ports pending benefit. |
 | Learning-regime awareness | Adaptive Muon SNR and displacement coherence tested; SNR can harm growth; cosine decay beat tested coherence controller. | Keep schedule controls; no default adaptive policy. |
@@ -24,7 +24,7 @@ Research only. Preserve the pending Round 10 GPU queue and do not merge into rel
 
 ## Archive index
 
-Existing standalone evidence packages (conversation artifacts, not yet vendored in this commit):
+CPU memory stages 1–2 are now committed at 6010b0f (see [CPU results](MATRIX_MEMORY_CPU_RESULTS_20261125.md)). Other standalone evidence packages below are conversation artifact pointers, not necessarily vendored:
 - functional_rank_research.zip
 - adaptive_muon_research.zip
 - tsd_compact_prepass_research.zip
@@ -51,3 +51,11 @@ Opt-in factory key `muon_me`, default chunk budget 128 MiB, fixed 22-swap rank-6
 
 ### Muon-ME closed-loop results
 Six runs completed. See [full training results](MUON_ME_TRAINING_RESULTS_20261125.md). ME128 faster optimizer, modest sampled full-training memory improvement, no proven quality difference. Rank64/16 swap completes but severe shared-memory pressure and 7.24x slowdown versus own 22 swap arm. Next phase-resolved profiling and activation/state-memory experiments, not a repeat of this queue.
+
+## Current memory architecture gate — 2026-11-27
+
+- [Integration protocol](MEMORY_ARCHITECTURE_INTEGRATION.md) and [GPU pilot evidence](MEMORY_ARCHITECTURE_GPU_PILOT_20261125.md) supersede the earlier prospective statuses for memory work. Source fixes: 1ff0c21 (dataset-group shadowing, telemetry retention, per-step loss); d7df5b3 (rank-64 scratch preflight and common 192 MiB cap).
+- Next: fresh five-arm feasibility queue, identical rank/alpha64, seed42, 0.25 MP actual buckets, swap22, fixed 192 MiB, no automatic recovery/budgeting. Do not infer RAM exhaustion from the earlier policy exception. Keep failed and incomplete arms in the record.
+- After feasibility: paired A/A control, verify initial factor hashes and actual inputs/noise/timesteps, fixed-input activation-offload gradient/update parity, then matched longer quality/resume. Reuse compact exact effective BA displacement diagnostics from geometry/LittleBit; keep diagnostic overhead separate from clean throughput. These are proposed measurement additions, not yet implemented in this queue.
+- Only after individual gates: async bounded activation transfers, combined memory techniques, swap20/21 profiling, actual 0.75–1 MP at rank16/32/64. Keep LittleBit frozen-base codecs, Selective policy and SOAP LR calibration independent. Consider SOAP budgeting after its separate calibration; do not port prematurely.
+- Ultimate target: rank64, genuine 1 MP, 12 GiB VRAM with acceptable speed, numerical stability and standard LoRA export. Not demonstrated.
