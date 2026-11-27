@@ -1014,7 +1014,6 @@
               <div class="field-row">
                 <button class="btn btn-primary" id="btnStart">Start Training</button>
                 <button class="btn" id="btnQueue" title="Checked like Start, then lined up: it starts when the runs before it finish">Add to queue</button>
-                <button class="btn" id="btnPoloraDiagnostic" title="Queue seven short Krea 2 numerical diagnostic runs">PoLoRA NaN test</button>
                 <button class="btn" id="btnCacheRegression" title="Queue four isolated cache comparison runs">Krea 2 cache test</button>
                 <button class="btn btn-warning" id="btnPause">Pause</button>
                 <button class="btn" id="btnSampleNow" style="display:none" title="Make the previews now, after the current training step, without waiting for the epoch to end">Sample now</button>
@@ -2476,13 +2475,12 @@
   <script src="/app.js" onerror="fizgigRetry(this)"></script>
   <script>
     (() => {
-      const btn = document.getElementById("btnPoloraDiagnostic");
       const family = document.getElementById("familySelect");
       const note = document.createElement("div");
       note.className = "field-hint";
       note.setAttribute("role", "status");
-      btn.parentElement.after(note);
       const cacheBtn = document.getElementById("btnCacheRegression");
+      cacheBtn.parentElement.after(note);
       cacheBtn.addEventListener("click", async () => {
         const folder = document.getElementById("imageFolder").value.trim();
         if (family.value !== "krea2" || !folder) {
@@ -2507,29 +2505,6 @@
           note.textContent = error.message || String(error);
         } finally {
           cacheBtn.disabled = false;
-        }
-      });
-      btn.addEventListener("click", async () => {
-        const folder = document.getElementById("imageFolder").value.trim();
-        if (family.value !== "krea2" || !folder) {
-          note.textContent = "Select Krea 2 and the original training dataset.";
-          return;
-        }
-        if (!window.confirm("Queue seven fresh one-epoch Krea 2 diagnostic runs? Uses fixed rank 8, 1 MP (992 px nominal), and the selected dataset. Failed runs advance automatically.")) return;
-        btn.disabled = true;
-        try {
-          const response = await fetch("/api/queue/polora-diagnostic", {
-            method: "POST",
-            headers: {"Content-Type": "application/json", "X-Fizgig-Token": document.querySelector('meta[name="fizgig-token"]').content},
-            body: JSON.stringify({family: family.value, image_folder: folder})
-          });
-          const result = await response.json();
-          if (!result.ok) throw new Error(result.error || (result.problems || []).join("; ") || "Queue failed");
-          note.textContent = "Seven diagnostic runs queued. Logs and settings: " + result.output;
-        } catch (error) {
-          note.textContent = error.message || String(error);
-        } finally {
-          btn.disabled = false;
         }
       });
     })();
