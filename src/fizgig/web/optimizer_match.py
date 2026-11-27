@@ -24,12 +24,24 @@ SWEEP_BASE = dict(zip(SOAP_SWEEP, ("soap-512", "soap-512", "soap-compact32", "so
 START.update(dict(zip(SOAP_SWEEP, (.00025, .0004, .00025, .0005))))
 
 
+# Native rates, not claims of AdamW-equivalent movement.
+SELECTIVE_RATES = {"ademamix8bit": .00025, "pagedademamix8bit": .00025,
+                   "lion8bit": .000025, "polora": .02, "lora_tsd": .005,
+                   "prodigy": 1., "automagic3": 1e-6, "automagic4": 1e-6}
+SELECTIVE_BASE = {f"{name}-{mode}": name for name in SELECTIVE_RATES for mode in ("full", "selective")}
+START.update({case: SELECTIVE_RATES[name] for case, name in SELECTIVE_BASE.items()})
+
+
 def expected_updates(case):
-    return 65 if case in SOAP_SWEEP else EXPECTED_UPDATES
+    return 65 if case in SOAP_SWEEP or case in SELECTIVE_BASE else EXPECTED_UPDATES
+
+
+def selective_arm(case):
+    return case in SELECTIVE_BASE and case.endswith("-selective")
 
 
 def optimizer_name(case):
-    return "soap" if case.startswith("soap-") else "adamw" if case == "adamw-repeat" else case
+    return SELECTIVE_BASE.get(case, "soap" if case.startswith("soap-") else "adamw" if case == "adamw-repeat" else case)
 
 
 SOAP_ARGS = {
@@ -79,15 +91,43 @@ def soap_settings(group, prompt):
              "LORA_OUTPUT_DIR": str(group / name)} for name in SOAP_SWEEP]
 
 
+def selective_settings(group, prompt, names=None):
+    group = Path(group)
+    prompt = str(prompt).strip()
+    if not prompt or len(prompt) > 4000:
+        raise ValueError("Supply a fixed sample prompt")
+    names = list(SELECTIVE_RATES) if names is None else list(names)
+    if not names or len(set(names)) != len(names) or any(n not in SELECTIVE_RATES for n in names):
+        raise ValueError("Unknown or duplicate Selective optimizer")
+    from fizgig.training.optimizers import PRODIGY_DEFAULT_ARGS
+    args = {"polora": "magnitude_scale=3 compile=False", "lora_tsd": "magnitude_scale=3",
+            "prodigy": PRODIGY_DEFAULT_ARGS, "automagic3": "fused=False", "automagic4": "fused=False"}
+    rows = []
+    for name in names:
+        for mode in ("full", "selective"):
+            case = f"{name}-{mode}"
+            rows.append({**COMMON, "OPTIMIZER_TYPE": name, "LEARNING_RATE": str(START[case]),
+                         "OPTIMIZER_ARGS": args.get(name, "weight_decay=0.01"),
+                         "MAX_TRAIN_EPOCHS": "5", "SAMPLE_ENABLED": True, "SAMPLE_AT_FIRST": True,
+                         "SAMPLE_PROMPT": prompt, "SAMPLE_SEED": "1234", "SAMPLE_WIDTH": "768",
+                         "SAMPLE_HEIGHT": "768", "SAMPLE_EVERY_N_EPOCHS": "1", "SAMPLE_LATER": False,
+                         "KREA2_SELECTIVE_BLOCK_CHECK": mode == "selective",
+                         "KREA2_SELECTIVE_COMPENSATION": False,
+                         "__optimizer_match": case, "LORA_NAME": f"{group.name}-{case}",
+                         "LORA_OUTPUT_DIR": str(group / case)})
+    return rows
+
+
 def attach(plan, values, family, resume=""):
     name = values["__optimizer_match"]
     group = Path(values["LORA_OUTPUT_DIR"]).parent
-    choices = soap_settings(group, values.get("SAMPLE_PROMPT", "")) if name in SOAP_SWEEP else settings(group)
+    choices = (selective_settings(group, values.get("SAMPLE_PROMPT", ""), [SELECTIVE_BASE[name]]) if name in SELECTIVE_BASE
+               else soap_settings(group, values.get("SAMPLE_PROMPT", "")) if name in SOAP_SWEEP else settings(group))
     expected = next((r for r in choices if r["__optimizer_match"] == name), None)
     if not expected or family != "krea2" or resume or values.get("RESUME_TRAINING"):
         raise ValueError("Optimizer match needs a fresh Krea 2 run")
     lr = float(values["LEARNING_RATE"])
-    if not math.isfinite(lr) or lr <= 0 or (name in ("adamw", "adamw-repeat", *SOAP_SWEEP) and lr != START[name]):
+    if not math.isfinite(lr) or lr <= 0 or (name in ("adamw", "adamw-repeat", *SOAP_SWEEP, *SELECTIVE_BASE) and lr != START[name]):
         raise ValueError("Invalid calibration rate")
     if any(values.get(k) != v for k, v in expected.items() if k != "LEARNING_RATE"):
         raise ValueError("Optimizer match recipe changed")
@@ -150,6 +190,34 @@ def optimizer_manifest(optimizer, case):
     import torch
     from fizgig.training.soap import SOAP
     from fizgig.training.soap_memory import CompactSOAP
+    if case in SELECTIVE_BASE:
+        name = SELECTIVE_BASE[case]
+        if name in ("ademamix8bit", "pagedademamix8bit", "lion8bit"):
+            import bitsandbytes as bnb
+            expected = getattr(bnb.optim, {"ademamix8bit": "AdEMAMix8bit",
+                "pagedademamix8bit": "PagedAdEMAMix8bit", "lion8bit": "Lion8bit"}[name])
+        elif name == "polora":
+            from fizgig.training.polora import Polora as expected
+        elif name == "lora_tsd":
+            from fizgig.training.lora_tsd import LoRATSD as expected
+        elif name == "prodigy":
+            from fizgig.training.prodigy import Prodigy as expected
+        elif name == "automagic3":
+            from fizgig.training.automagic3 import Automagic3 as expected
+        else:
+            from fizgig.training.automagic4 import Automagic4 as expected
+        if type(optimizer) is not expected:
+            raise RuntimeError(f"Unexpected optimizer for {case}: {type(optimizer)}")
+        if name.startswith("automagic") and optimizer.fused:
+            raise RuntimeError("Selective audit requires non-fused Automagic")
+        if name in ("polora", "lora_tsd") and optimizer.magnitude_scale != 3:
+            raise RuntimeError("Pair optimizer magnitude_scale mismatch")
+        return {"class": type(optimizer).__name__, "estimated_persistent_bytes": None,
+                "magnitude_scale": getattr(optimizer, "magnitude_scale", None),
+                "groups": [{"shapes": [list(p.shape) for p in g["params"]],
+                            "config": {k:v for k,v in g.items() if k != "params"
+                                       and isinstance(v,(str,int,float,bool,tuple,list,type(None)))}}
+                           for g in optimizer.param_groups]}
     case = SWEEP_BASE.get(case, case)
     expected = {"adamw": torch.optim.AdamW, "adamw-repeat": torch.optim.AdamW,
                 "soap-512": SOAP, "soap-compact32": CompactSOAP}[case]
@@ -174,6 +242,30 @@ def optimizer_manifest(optimizer, case):
     return {"class": type(optimizer).__name__, "groups": groups,
             "estimated_persistent_bytes": persistent,
             "compact_rank": getattr(optimizer, "compact_rank", None)}
+
+
+def selective_audit(optimizer, driver, case, active):
+    """Exact byte fingerprints for inactive weights and local state.
+    Shared native controller values intentionally evolve with active parameters.
+    PoLoRA's stacked pair state is not in torch Optimizer.state.
+    """
+    name = SELECTIVE_BASE[case]
+    by_block = driver._selective_params_by_block
+    active = set(active)
+    inactive = {id(p): (b,p) for b,ps in by_block.items() if b not in active for p in ps}
+    pair_states = {}
+    if name == "polora":
+        for i,(a,b) in enumerate(optimizer.pairs):
+            if (id(a) in inactive) != (id(b) in inactive):
+                raise RuntimeError("Split PoLoRA pair in Selective mask")
+            if id(a) in inactive:
+                pair_states[id(a)] = optimizer.pair_state[i]
+    ignored = {"lr", "sens_ref"} if name.startswith("automagic") else set()
+    result = {}
+    for key,(block,p) in inactive.items():
+        state = {k:v for k,v in optimizer.state.get(p, {}).items() if k not in ignored}
+        result[key] = (block, input_hash(p, state, pair_states.get(key)))
+    return result
 
 
 def checkpoint(output, case, **fields):
@@ -268,6 +360,38 @@ def refresh(group):
         p = group / name / AUDIT
         runs.append(json.loads(p.read_text(encoding="utf-8")) if p.is_file()
                     else {"case": name, "status": "not_completed"})
+    if runs[0]["case"] in SELECTIVE_BASE:
+        by_case = {r["case"]:r for r in runs}
+        for r in runs:
+            if r["status"] != "measured":
+                continue
+            rows = r["steps"]
+            r["path_length"] = sum(x["norm"] for x in rows)
+            r["optimizer_seconds"] = sum(x["optimizer_seconds_including_sync"] for x in rows)
+            r["peak_allocated_bytes"] = max(x.get("cuda_peak_allocated_bytes",0) for x in rows)
+            r["peak_reserved_bytes"] = max(x.get("cuda_peak_reserved_bytes",0) for x in rows)
+            if selective_arm(r["case"]):
+                base = by_case.get(SELECTIVE_BASE[r["case"]] + "-full", {})
+                r["paired_inputs"] = (base.get("status") == "measured"
+                    and bool(r.get("initial_fingerprint"))
+                    and r["initial_fingerprint"] == base.get("initial_fingerprint")
+                    and len(base.get("steps", [])) == len(rows)
+                    and all(x.get("input_hash") and x["input_hash"] == y.get("input_hash")
+                            for x,y in zip(rows,base["steps"])))
+                reduced = [x for x in rows if len(x["active_blocks"]) < 28]
+                r["suspended_updates"] = len(reduced)
+                r["active_block_mean"] = sum(len(x["active_blocks"]) for x in rows)/len(rows)
+                r["reactivated_blocks"] = sorted({b for x in rows for b in x["reactivated_blocks"]})
+                r["reactivated_moved_blocks"] = sorted({b for x in rows for b in x["reactivated_blocks"]
+                                                       if x["blocks"].get(str(b),0) > 0})
+                r["compatibility"] = ("input_mismatch" if not r["paired_inputs"] else
+                    "not_exercised" if not reduced or not r["reactivated_blocks"] else
+                    "reactivation_movement_missing" if r["reactivated_blocks"] != r["reactivated_moved_blocks"] else
+                    "passed" if all(x["inactive_state_unchanged"] for x in rows) else "failed")
+        report = {**manifest, "runs": runs, "experiment": "selective_native_compatibility",
+                  "external_compensation": False, "pilot_only": True}
+        _write(group / REPORT, report)
+        return report
     if runs[0]["case"] in SOAP_SWEEP:
         ref = runs[0]
         def paired_sweep(a, b):

@@ -1588,19 +1588,21 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     smoke_rows, smoke_validation = [], []
     optimizer_match = (family_options or {}).get("optimizer_match")
     match_rows, match_initial = [], None
+    match_previous_active = set(range(28))
     if optimizer_match:
-        from fizgig.web.optimizer_match import START, optimizer_name, expected_updates, SOAP_SWEEP
+        from fizgig.web.optimizer_match import START, optimizer_name, expected_updates, SOAP_SWEEP, SELECTIVE_BASE, selective_arm
         from fizgig.web.optimizer_match import require_recipe
         require_recipe({
             "case": optimizer_match in START,
             "optimizer": optimizer_name(optimizer_match) == compensation_optimizer,
             "global_replay": global_replay,
-            "selective_disabled": not selective_global_replay and not selective_compensation,
+            "selective_mode": selective_global_replay == selective_arm(optimizer_match) and not selective_compensation,
             "fresh": not resume_state_dir,
             "lora": not finetune,
             "adaptive_lr_disabled": not adaptive_lr,
             "per_image_lr_disabled": not per_image_lr,
-            "epochs": max_train_epochs == (5 if optimizer_match in SOAP_SWEEP else 1),
+            "epochs": max_train_epochs == expected_updates(optimizer_match) // 13,
+            "native_rate": optimizer_match not in SELECTIVE_BASE or float(learning_rate) == START[optimizer_match],
             "seed": int(seed) == 42,
             "rank": int(network_dim) == 32,
             "alpha": float(network_alpha) == 32,
@@ -2655,9 +2657,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             available = free + max(0, torch.cuda.memory_reserved()-torch.cuda.memory_allocated())
             checkpoint(output_dir, optimizer_match, preflight_free_bytes=free,
                        preflight_total_bytes=total)
-            if _match_manifest["estimated_persistent_bytes"] > available:
+            estimate = _match_manifest["estimated_persistent_bytes"]
+            if estimate is not None and estimate > available:
                 raise RuntimeError("Optimizer persistent state exceeds available CUDA memory")
         driver._optimizer_match_audit = True
+        if selective_arm(optimizer_match):
+            driver.validate_selective_compensation_optimizer(optimizer)
     if selective_compensation:
         from fizgig.training.selective_compensation import validate_optimizer
         validate_optimizer(optimizer, compensation_optimizer)
@@ -3671,7 +3676,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             adaptive.record_clip(gn, max_grad_norm)
 
     def _update():
-        nonlocal pending, match_initial
+        nonlocal pending, match_initial, match_previous_active
         if ftr is not None and ftr.fused is not None:
             pending = 0                    # every parameter already stepped from its own gradient hook
             lr_acc.clear()
@@ -3699,6 +3704,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                        pending_input_hash=match_input_hash)
             _match_step_started = time.perf_counter()
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
+        if optimizer_match and selective_arm(optimizer_match):
+            from fizgig.web.optimizer_match import selective_audit
+            match_active = driver.selective_active_blocks()
+            driver.selective_learning_multiplier()  # validate actual gradient mask only; do not scale
+            match_inactive = selective_audit(optimizer, driver, optimizer_match, match_active)
+            _match_step_started = time.perf_counter()
         if selective_compensation:
             scale = driver.selective_learning_multiplier()
             from fizgig.training.selective_compensation import compensated_step
@@ -3733,12 +3744,20 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 repairs = [st for st in optimizer.state.values() if "refresh_added_variance" in st]
                 if repairs:
                     row["refresh_variance_repair"] = {key: float(torch.stack([st[key].float() for st in repairs]).sum().item()) for key in ("refresh_repaired_count", "refresh_added_variance", "refresh_transported_variance")}
+            if optimizer_match in SELECTIVE_BASE:
+                row["active_blocks"] = match_active if selective_arm(optimizer_match) else list(range(28))
+                row["reactivated_blocks"] = sorted(set(row["active_blocks"])-match_previous_active)
+                match_previous_active = set(row["active_blocks"])
+                row["inactive_state_unchanged"] = (not selective_arm(optimizer_match) or
+                    match_inactive == selective_audit(optimizer, driver, optimizer_match, match_active))
             row["group_lrs"] = [float(g["lr"]) for g in optimizer.param_groups]
             if torch.cuda.is_available():
                 row["cuda_peak_allocated_bytes"] = torch.cuda.max_memory_allocated()
                 row["cuda_peak_reserved_bytes"] = torch.cuda.max_memory_reserved()
             match_rows.append(row)
             checkpoint(output_dir, optimizer_match, steps=match_rows, phase="step_completed")
+            if row.get("inactive_state_unchanged") is False:
+                raise RuntimeError("Selective optimizer mutated suspended weights or local state")
             logger.info("[optimizer-match] %s update %d: effective movement %.6g", optimizer_match, row["update"], row["norm"])
         if selective_global_replay:
             selective_status = driver.finish_selective_optimizer_step(selective_snapshot)

@@ -32,6 +32,32 @@
     } catch (e) { note.textContent = e.message; }
     finally { soap.disabled = false; }
   });
+  const compat = document.createElement("button");
+  compat.type = "button";
+  compat.className = button.className;
+  compat.textContent = "Test Mode · Selective optimizer compatibility";
+  soap.insertAdjacentElement("afterend", compat);
+  compat.addEventListener("click", async () => {
+    const folder = document.getElementById("imageFolder")?.value.trim();
+    if (!folder) { note.textContent = "Select the original 15-image Krea 2 dataset."; return; }
+    const choices = "ademamix8bit,pagedademamix8bit,lion8bit,polora,lora_tsd,prodigy,automagic3,automagic4";
+    const selected = window.prompt("Optimizers to compare (comma separated; two runs per optimizer):", choices);
+    if (!selected?.trim()) return;
+    const prompt = window.prompt("Fixed sample prompt for all runs:", "");
+    if (!prompt?.trim()) return;
+    compat.disabled = true;
+    try {
+      const res = await fetch("/api/queue/selective_compat", {
+        method: "POST", headers: {"Content-Type": "application/json",
+          "X-Fizgig-Token": document.querySelector('meta[name="fizgig-token"]').content},
+        body: JSON.stringify({image_folder: folder, sample_prompt: prompt.trim(),
+          optimizers: selected.split(",").map(x => x.trim()).filter(Boolean)})});
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw Error(data.error || (data.problems || []).join("; ") || "Could not queue Selective");
+      note.textContent = data.count + " five-epoch comparison runs queued. Press Start queue. Report: " + data.output_dir;
+    } catch (e) { note.textContent = e.message; }
+    finally { compat.disabled = false; }
+  });
   const skip = document.createElement("button");
   skip.type = "button";
   skip.className = button.className;

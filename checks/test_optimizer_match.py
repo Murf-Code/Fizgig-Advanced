@@ -49,3 +49,18 @@ def test_soap_sweep(tmp_path):
     assert all(r["SAMPLE_ENABLED"] and r["SAMPLE_AT_FIRST"] and r["SAMPLE_SEED"] == "1234"
                and r["MAX_TRAIN_EPOCHS"] == "5" and not r["ADAPTIVE_LR"]
                and not r["KREA2_SELECTIVE_COMPENSATION"] for r in rows)
+
+
+def test_selective_compat_recipe(tmp_path):
+    from fizgig.web.optimizer_match import selective_settings, SELECTIVE_RATES, selective_arm, expected_updates, optimizer_name
+    rows = selective_settings(tmp_path / "group", "fixed prompt")
+    assert len(rows) == 16
+    for full, sel in zip(rows[::2], rows[1::2]):
+        name = full["OPTIMIZER_TYPE"]
+        assert name == sel["OPTIMIZER_TYPE"] == optimizer_name(sel["__optimizer_match"])
+        assert float(full["LEARNING_RATE"]) == float(sel["LEARNING_RATE"]) == SELECTIVE_RATES[name]
+        assert not selective_arm(full["__optimizer_match"]) and selective_arm(sel["__optimizer_match"])
+        assert not full["KREA2_SELECTIVE_BLOCK_CHECK"] and sel["KREA2_SELECTIVE_BLOCK_CHECK"]
+        assert not full["KREA2_SELECTIVE_COMPENSATION"] and not sel["KREA2_SELECTIVE_COMPENSATION"]
+        assert expected_updates(sel["__optimizer_match"]) == 65
+    assert len(selective_settings(tmp_path / "group", "fixed prompt", ["polora"])) == 2
