@@ -58,3 +58,15 @@ def test_full_ema_for_initially_suspended_factors():
     assert 1 < b.item() < 3
     ema.swap_out()
     assert torch.equal(b,raw)
+
+
+def test_dynamic_multiplier_is_bounded_and_full_probe_is_native():
+    from fizgig.training.replay_final import DYNAMIC_CAP
+    assert multiplier("dynamic",28)==1.
+    assert multiplier("dynamic",14)==math.sqrt(2)
+    assert multiplier("dynamic",1)==DYNAMIC_CAP==1.5
+    assert all(1.<=multiplier("dynamic",n)<=1.5 for n in range(1,29))
+    assert all(multiplier("dynamic",n)>=multiplier("dynamic",n+1) for n in range(1,28))
+    assert all(multiplier("existing",n)==1. for n in range(1,29))
+    with pytest.raises(ValueError):
+        multiplier("dynamic",0)

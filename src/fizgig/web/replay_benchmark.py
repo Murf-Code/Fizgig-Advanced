@@ -50,7 +50,8 @@ HISTORY_CASES = {"history-seed42-lr450": "42", "history-seed43-lr450": "43"}
 PREDICTOR_CASES = {"predictors-seed42-lr450": "42", "predictors-seed43-lr450": "43"}
 ALLOCATION_CASES = {f"allocation-{mode}-lr450": mode for mode in ("full", "rotate", "uniform", "compensated")}
 FINAL_CASES = {f"final-{mode}-seed{seed}-lr450": (mode, str(seed))
-               for seed in (42,43) for mode in ("full","existing","balanced","compensated")}
+               for seed in (42,43) for mode in ("full","existing","balanced","compensated","dynamic")}
+DYNAMIC_CASES = tuple(case for case,(mode,seed) in FINAL_CASES.items() if mode=="dynamic")
 
 def case_strategy(case):
     if case in (MOVEMENT_PILOT_CASE, MOVEMENT_ISOLATION_CASE, MOVEMENT_DUAL_CASE) or case in MOVEMENT_MULTI_CASES or case in HISTORY_CASES or case in PREDICTOR_CASES or case in ALLOCATION_CASES or case in FINAL_CASES:
@@ -145,7 +146,7 @@ def allocation_settings(group, output_root):
             for case in ALLOCATION_CASES]
 
 
-def final_settings(group, output_root):
+def final_settings(group, output_root, *, dynamic_only=False):
     v = next(x for x in settings(group, output_root)
              if x["__replay_compare"] == "calibration-unrestricted-lr450")
     return [{**v, "__replay_compare":case, "SEED":seed,
@@ -154,7 +155,8 @@ def final_settings(group, output_root):
              "KREA2_SELECTIVE_BLOCK_CHECK":mode != "full",
              "LORA_NAME":f"{group}-{case}",
              "LORA_OUTPUT_DIR":os.path.join(output_root, group, case)}
-            for case,(mode,seed) in FINAL_CASES.items()]
+            for case,(mode,seed) in FINAL_CASES.items()
+            if (mode == "dynamic") == dynamic_only]
 
 
 def adjust_plan(desc, values, plan):

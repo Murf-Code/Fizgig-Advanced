@@ -1,0 +1,13 @@
+# 7G.1 — Existing Selective with nominal active-count compensation
+
+One final targeted follow-up to the completed eight-run 7G comparison, not a new selection policy. Reuse archived controls from queue replay-compare-20261126-135122-d5cf3a (report global-replay-report(20261127-045922).json, results global-replay-results(20261127-045948).zip). Archived controls are not automatically copied into the new output directory. Keep them separately.
+
+Two fresh runs, seeds 42 and 43, five epochs, 13 updates per epoch, same rank/alpha 32/32, Muon AdamW-RMS-matched base LR .00045, weight decay .01, EMA .98/ramp 10, native INT8, 22 swaps, fixed validation seed 42, same four preview prompts and settings. Select exactly the same dataset and base model; do not change captions, Turbo preview settings, software environment, or holdout. 7G held out image (144).png and image (182).png. The initial factor hashes are checked against the archived controls; that alone does not establish dataset or environment identity. Verify these against the archived logs before interpreting results.
+
+Existing legacy displacement-cosine selection, unchanged eight-update warmup and periodic full probes. At each optimizer update multiply only the orthogonalized learning term by min(1.5,sqrt(28/active_count)); all-active steps remain unchanged. Skipped weights, decay, and momentum behavior remain native. No extra per-step geometry or predictor; mask can evolve differently as training diverges. Cap is an engineering safeguard rather than an experimentally optimized hyperparameter. Record actual factor gradient counts and multiplier at every step, full-factor EMA coverage, initialization/final fingerprints, per-epoch raw/EMA validation, all 24 previews per run. Old eight-arm recipe remains callable. Normal training unchanged.
+
+Archived 7G reference final EMA losses, seed 42 / 43:
+- A full: 0.1806838922202587 / 0.1802713219076395
+- B existing: 0.18081016093492508 / 0.1802792903035879
+
+The original B masks would have given average nominal compensation 1.14268084 / 1.04164781 (no cap hits). Actual new masks may differ. This is a policy-level treatment, not a movement-matched intervention. Prefer uncompensated existing on ties; no production integration if no consistent meaningful gain in EMA/visual quality without substantial overhead or preservation loss. No further LR sweep. Same 2-image holdout and 2 seeds remain limited evidence; archived rather than concurrently repeated controls require unchanged environment. Compare visual quality and preservation before recommending shipping. Close development afterward regardless of outcome.

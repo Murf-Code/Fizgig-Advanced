@@ -73,7 +73,15 @@ def _save(root, report):
             "scope": "development_target_only", "momentum_policy": "preserve",
             "matching_scope": "local_same_parent_proposal"}
     final = [r for r in report["runs"] if r["case"].startswith("final-")]
-    if final:
+    dynamic = [r for r in final if r["case"].startswith("final-dynamic-")]
+    if dynamic and len(dynamic) == len(final):
+        report["experiment"] = "7G.1"
+        report["dynamic_summary"] = {r["settings"]["SEED"]: r["final_replay"]
+                                     for r in dynamic if r["status"] == "finished"}
+        if report["status"] == "complete" and set(report["dynamic_summary"]) != {"42","43"}:
+            report["status"] = "failed"
+            report["final_integrity_error"] = "missing dynamic paired seed"
+    elif final:
         report["experiment"] = "7G"
         result = {}
         for seed in ("42","43"):
@@ -327,6 +335,19 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                                     or (mode=="full" and active!=set(range(28)))
                                     or (mode in ("balanced","compensated") and active!=active_blocks(28,a["step"],seed==43))):
                                 raise ValueError("invalid final mask or multiplier")
+                        if mode == "dynamic":
+                            from fizgig.training.replay_final import REFERENCE_INIT, DYNAMIC_CAP
+                            control = [r for r in rows if r.get("kind")=="dynamic_control"]
+                            if (len(control)!=1 or control[0].get("reference")!="7G"
+                                    or control[0].get("cap")!=DYNAMIC_CAP
+                                    or control[0].get("policy")!="legacy"
+                                    or control[0].get("warmup")!=8 or control[0].get("probe_interval")!=8
+                                    or hashes[0]["sha256"]!=REFERENCE_INIT[seed]
+                                    or control[0].get("reference_initial_hash")!=REFERENCE_INIT[seed]):
+                                raise ValueError("invalid archived-control identity")
+                            if any(len(a["active_blocks"])!=28 or a["multiplier"]!=1.
+                                   for a in steps if a["step"]<=8 or a["step"]%8==0):
+                                raise ValueError("dynamic compensation altered a full probe")
                         ema_rows = [r for r in rows if r.get("kind")=="final_ema"]
                         if (len(ema_rows)!=1 or ema_rows[0]["factors"]!=448
                                 or ema_rows[0]["decay"]!=.98 or ema_rows[0]["ramp"]!=10):
@@ -344,6 +365,14 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                             **vals}
                         if mode in ("balanced","compensated"):
                             run["final_replay"]["first_update_audit"] = steps[0]["first_update_audit"]
+                        if mode == "dynamic":
+                            scales = [a["multiplier"] for a in steps]
+                            run["final_replay"].update(reference="7G", reference_initial_match=True,
+                                mean_multiplier=sum(scales)/len(scales),
+                                max_multiplier=max(scales),
+                                compensated_updates=sum(c>1. for c in scales),
+                                capped_updates=sum(c==DYNAMIC_CAP for c in scales),
+                                first_compensated_step=next((a["step"] for a in steps if a["multiplier"]>1.),None))
                     except (ValueError, KeyError, TypeError, IndexError) as exc:
                         run.update(status="failed",reason="Invalid final replay diagnostics: "+str(exc))
                 if status == "finished" and case.startswith("allocation-"):

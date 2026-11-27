@@ -4,7 +4,7 @@ const vm = require("node:vm");
 
 const html = fs.readFileSync("src/fizgig/web/static/index.html", "utf8");
 assert.match(html, /id="streamSyncMode" checked/);
-assert.match(html, /Final Selective 7G · 8 runs × 5 epochs/);
+assert.match(html, /Dynamic Selective 7G.1 · 2 runs × 5 epochs/);
 assert.doesNotMatch(html, /id="streamSyncQueue"|id="replayCompareQueue"|id="replayCompareToggle"/);
 const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(x=>x[1]).find(s=>s.includes('fetch("/api/queue/replay-compare"'));
 assert.ok(script);
@@ -32,7 +32,7 @@ vm.runInNewContext(script, {document, fetch:async (url, opts)=>{
   await handler(event);
   assert.ok(event.prevented && event.stopped);
   assert.deepEqual(requests, [["/api/queue/replay-compare", {image_folder:"C:/dataset"}]]);
-  assert.match(elements.streamSyncNote.textContent, /Final Selective queued \(four arms × two seeds\)/);
+  assert.match(elements.streamSyncNote.textContent, /Dynamic Selective queued \(two seeds\)/);
   elements.streamSyncMode.checked=false;
   event.prevented=event.stopped=false;
   await handler(event);

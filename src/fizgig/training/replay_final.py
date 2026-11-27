@@ -4,8 +4,14 @@ import math
 
 import torch
 
-MODES = ("full", "existing", "balanced", "compensated")
+MODES = ("full", "existing", "balanced", "compensated", "dynamic")
 BASE_LR = .00045
+DYNAMIC_CAP = 1.5
+# Archived 7G matched initialization fingerprints (both A and B).
+REFERENCE_INIT = {
+    42: "f7c8fb775d4830114bcd30e8db35a9873f18d0cf95dfd75e00c4c675f9b79734",
+    43: "3a62741778e6e3ca2642a8bd2584198dfab24c60bc4b4d5bb69d88ec1c3df5e8",
+}
 
 
 def active_blocks(n, update, start=0):
@@ -17,6 +23,8 @@ def active_blocks(n, update, start=0):
 def multiplier(mode, active, total=28):
     if mode not in MODES or not 1 <= active <= total:
         raise ValueError("invalid final allocation")
+    if mode == "dynamic":
+        return min(DYNAMIC_CAP, math.sqrt(total/active))
     return math.sqrt(total/active) if mode == "compensated" else 1.
 
 

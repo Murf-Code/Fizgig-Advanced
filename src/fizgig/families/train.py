@@ -3677,7 +3677,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             active = set(research_mask)
             if final_mode == "full":
                 expected = set(range(28))
-            elif final_mode == "existing":
+            elif final_mode in ("existing", "dynamic"):
                 expected = set(driver.selective_active_blocks())
             else:
                 expected = active_blocks(28, research_updates+1, int(seed)==43)
@@ -3687,7 +3687,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             scale = multiplier(final_mode, len(active))
             audit = (FirstUpdateAudit(pairs, optimizer, scale)
                      if research_updates == 0 and final_mode in ("balanced", "compensated") else None)
-            if final_mode == "compensated" or audit is not None:
+            if final_mode in ("compensated", "dynamic") or audit is not None:
                 optimizer.step(learning_multiplier=scale, proposal_sink=audit.observe if audit else None)
             else:
                 optimizer.step()
@@ -4266,7 +4266,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if final_mode is not None:
             from fizgig.training.replay_forks import network_pairs
             pairs = network_pairs(net)
-            expected_strategy = "legacy" if final_mode == "existing" else "balanced_step"
+            expected_strategy = "legacy" if final_mode in ("existing", "dynamic") else "balanced_step"
             if (not global_replay or accum != 1 or bsz != 1 or max_train_epochs != 5
                     or steps_per_epoch != 13 or int(seed) not in (42,43)
                     or validator is None or not validator.ready or ema is None
@@ -4311,7 +4311,15 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             _rr.record(logger, kind="routing", route=final_mode or route or
                        ("random" if selective_global_replay and driver._selective_strategy == "random"
                         else "gradient" if selective_global_replay else "unrestricted"))
-        _rr.record(logger, kind="hash", step=0, sha256=_rr.fingerprint(net), active_blocks=[])
+        initial_hash = _rr.fingerprint(net)
+        if final_mode == "dynamic":
+            from fizgig.training.replay_final import REFERENCE_INIT, DYNAMIC_CAP
+            if initial_hash != REFERENCE_INIT[int(seed)]:
+                raise RuntimeError("7G.1 initialization differs from archived 7G controls; do not compare")
+            _rr.record(logger, kind="dynamic_control", reference="7G", cap=DYNAMIC_CAP,
+                       reference_initial_hash=REFERENCE_INIT[int(seed)],
+                       policy="legacy", warmup=8, probe_interval=8)
+        _rr.record(logger, kind="hash", step=0, sha256=initial_hash, active_blocks=[])
     for epoch in (_worker_epochs() if share_worker else range(start_epoch, max_train_epochs)):
         while face_phase.get("said"):        # the boost's switches during the last epoch, each on a line of its own
             logger.info(face_phase["said"].pop(0))

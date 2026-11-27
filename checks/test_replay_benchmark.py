@@ -212,3 +212,23 @@ def test_allocation_queue_recipe(tmp_path):
         rb.adjust_plan(SimpleNamespace(key="krea2", n_blocks=28), v, plan)
         assert not plan.problems
         assert cmd[-2:] == ["--family_option", "movement_allocation="+rb.ALLOCATION_CASES[v["__replay_compare"]]]
+
+
+def test_dynamic_final_queue_reuses_7g_recipe(tmp_path):
+    base = rb.final_settings("old", str(tmp_path))
+    runs = rb.final_settings("new", str(tmp_path), dynamic_only=True)
+    assert len(base)==8 and len(runs)==2
+    assert [v["SEED"] for v in runs]==["42","43"]
+    for v in runs:
+        assert v["__replay_compare"] == f"final-dynamic-seed{v['SEED']}-lr450"
+        old = next(x for x in base if x["__replay_compare"]==f"final-existing-seed{v['SEED']}-lr450")
+        ignore={"__replay_compare","LORA_NAME","LORA_OUTPUT_DIR"}
+        assert {k:x for k,x in v.items() if k not in ignore}=={k:x for k,x in old.items() if k not in ignore}
+        cmd=["python","train.py","--sample_prompts","prompts.txt"]
+        plan=SimpleNamespace(problems=[],stages=[SimpleNamespace(name="Training",cmd=cmd)],
+                             dataset_toml='holdout_file = "held.json"',console=[])
+        rb.adjust_plan(SimpleNamespace(key="krea2",n_blocks=28),v,plan)
+        assert not plan.problems
+        assert cmd[-6:]==["--family_option","replay_research=calibration","--family_option",
+                          "replay_calibration_lr=0.00045","--family_option","replay_final=dynamic"]
+        assert not any(x.startswith("selective_strategy=") for x in cmd)
