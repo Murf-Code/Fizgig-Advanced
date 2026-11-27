@@ -85,7 +85,7 @@ def test_native_step_and_resume(name,device,mode):
         assert [(g["lr"],g["weight_decay"]) for g in opt.param_groups]==original[j]
         sch.step()
         assert all(math.isclose(g["lr"],lr*.9) for g,(lr,wd) in zip(opt.param_groups,original[j]))
-    # Serialize/reload the compensated state and compare after reactivation.
+    # Serialize/reload, first resume into a reduced-mask step, then reactivate.
     # Use serialization, not shared live tensor aliases.
     import io
     buf=io.BytesIO()
@@ -96,12 +96,14 @@ def test_native_step_and_resume(name,device,mode):
     new_opt=_make(name,new_params,device,mode)
     new_opt.load_state_dict(sd)
     validate_optimizer(new_opt,name)
-    for ps,opt in ((all_params[1],opts[1]),(new_params,new_opt)):
-        for p,g in zip(ps,grads[2]): p.grad=g.clone()
-        compensated_step(opt,name,1.)
-    for p,q in zip(all_params[1],new_params):
-        assert torch.equal(p,q)
-        _state_equal(opts[1].state[p],new_opt.state[q])
+    for k,scale in ((2,c),(3,1.)):
+        for ps,opt in ((all_params[1],opts[1]),(new_params,new_opt)):
+            for i,p in enumerate(ps):
+                p.grad = None if k==2 and i==1 else grads[k][i].clone()
+            compensated_step(opt,name,scale)
+        for p,q in zip(all_params[1],new_params):
+            assert torch.equal(p,q)
+            _state_equal(opts[1].state[p],new_opt.state[q])
 
 
 def test_restores_groups_on_failure(monkeypatch):

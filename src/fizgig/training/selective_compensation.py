@@ -14,10 +14,9 @@ def active_count_multiplier(active: int, total: int) -> float:
 def validate_optimizer(optimizer, name):
     """Fail closed: don't mistake a fallback or external optimizer for a supported one."""
     import torch
-    from fizgig.training.muon import Muon, BatchedMuon
-
     name = str(name).strip().lower()
     if name == "muon":
+        from fizgig.training.muon import Muon, BatchedMuon
         if type(optimizer) not in (Muon, BatchedMuon) or any(
                 g.get("adjust_lr_fn") != "match_rms_adamw" for g in optimizer.param_groups):
             raise RuntimeError("Selective compensation requires built-in Muon with match_rms_adamw")
@@ -48,9 +47,6 @@ def _adamw_group_values(group):
 
 
 def _check_bnb_config(optimizer):
-    # The all-active warmup must initialize BNB's internal override manager first.
-    if not getattr(optimizer, "initialized", False):
-        raise RuntimeError("Selective compensation requires an initialized 8-bit optimizer")
     for gi, group in enumerate(optimizer.param_groups):
         for pi, p in enumerate(group["params"]):
             if p.grad is None:
@@ -82,6 +78,13 @@ def compensated_step(optimizer, name, multiplier):
     saved = [(g, *_adamw_group_values(g)) for g in optimizer.param_groups]
     is_bnb = name in ("adamw8bit", "pagedadamw8bit")
     if is_bnb:
+        # A resumed reduced-mask step may be BNB's first call. Resolve its
+        # module overrides before validating rates, then let native step
+        # perform its ordinary initialization and state device placement.
+        if not getattr(optimizer, "initialized", False):
+            if not callable(getattr(optimizer, "check_overrides", None)):
+                raise RuntimeError("Unsupported bitsandbytes initialization API")
+            optimizer.check_overrides()
         _check_bnb_config(optimizer)
     try:
         for g, lr, wd in saved:
