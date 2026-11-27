@@ -52,15 +52,21 @@ class CacheRegressionTests(unittest.TestCase):
             return cr.prepare_caches(self.body, self.configs, "krea2drv")
 
     def test_mask_and_gpu_recipe_fixed_across_arms(self):
-        for gpu, masks, swap, compile_mode in [(12, False, "24", "Off"),
-                                                (24, True, "0", "outside"),
-                                                (None, False, "24", "Off")]:
-            arms = cr.settings("test", str(self.root), "prompt", masked=masks, gpu_gb=gpu)
+        for gpu, masks, swap, compile_mode in [("4070-ti", False, "24", "Off"),
+                                                ("3090", True, "0", "outside"),
+                                                ("3090", False, "0", "outside"),
+                                                ("4070-ti", True, "24", "Off")]:
+            arms = cr.settings("test", str(self.root), "prompt", masked=masks, gpu_profile=gpu)
             self.assertEqual(len(arms), 4)
             for arm in arms:
                 self.assertEqual(arm["MASKED_TRAINING"], masks)
                 self.assertEqual(arm["BLOCKS_SWAP"], swap)
                 self.assertEqual(arm["COMPILE_BLOCKS"], compile_mode)
+                self.assertEqual(arm["__cache_gpu_profile"], gpu)
+
+    def test_unknown_gpu_profile_refused(self):
+        with self.assertRaises(ValueError):
+            cr.settings("test", str(self.root), "prompt", gpu_profile="auto")
 
     def test_four_stage_plans(self):
         expected = [["Training"], ["Text Encoder Caching", "Training"],
