@@ -46,7 +46,7 @@ def optimize(paths, w, fit, sign_lr, warmup=0, steps=200, callback=None,
                       for i in range(0, len(w), 256))
         fenergy = sum(float(y.square().sum(dtype=torch.float64)) for x,g,y,dx in fit)
         genergy = sum(float(dx.square().sum(dtype=torch.float64)) for x,g,y,dx in fit)
-    if min(wenergy, fenergy, genergy) <= 0:
+    if not all(math.isfinite(v) and v>0 for v in (wenergy,fenergy,genergy)):
         raise ValueError("zero teacher energy")
     initial = [v.detach() >= 0 for v in signs]
     prev = [v.clone() for v in initial]
@@ -87,7 +87,8 @@ def optimize(paths, w, fit, sign_lr, warmup=0, steps=200, callback=None,
                          "scale_multiplier_max": max(float(v.max()) for v in scales),
                          "scale_near_zero_fraction": sum(int((v.abs()<.01).sum()) for v in scales)/sum(v.numel() for v in scales),
                          "smooth_saturation_fraction": sum(int((v.abs()>.03).sum()) for v in signs)/sum(v.numel() for v in signs)}
-                callback(paths, stats)
+                with torch.enable_grad():
+                    callback(paths, stats)
     for v in signs:
         v.requires_grad_(True)
 
@@ -227,7 +228,8 @@ def run(w,key,args,stock,trace,split,int8,archive,row,save):
             if step==0 or step in CHECKPOINTS:
                 gc=gain.detach().cpu().bfloat16()
                 _,val=score(op_for(gc),dev,dr)
-                history.append({"step":step,"prior_development_objective":val})
+                err=e.error(w,[(da,db,torch.ones(m,dtype=torch.bfloat16),torch.ones(n,dtype=torch.bfloat16),gc)])
+                history.append({"step":step,"prior_development_objective":val,"weight_error":err})
                 if best is None or val<best[0]: best=(val,gc,step)
             if step==200: break
             opt.zero_grad(set_to_none=True)
