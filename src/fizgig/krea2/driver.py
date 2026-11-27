@@ -548,6 +548,21 @@ class Krea2Driver(FamilyDriver):
         target, _, _ = patchify_block(noise - latent, patch)
         base = prior_base(prior, loss_mask, lambda: self._forward(dit, noised, t, cond))
         pred = self._forward(dit, noised, t, cond)
+        if str(getattr(self, "options", {}).get("cache_regression", "")) == "1":
+            count = getattr(self, "_cache_regression_calls", 0)
+            self._cache_regression_calls = count + 1
+            if count < 24:
+                import logging
+                def stats(x):
+                    x = x.detach().float()
+                    return {"rms": float(x.square().mean().sqrt()),
+                            "absmax": float(x.abs().amax()),
+                            "finite": bool(torch.isfinite(x).all())}
+                logging.getLogger(__name__).info(
+                    "[cache-regression] loss call %d grad=%s t=%s tokens=%d latent=%s text=%s pred=%s target=%s",
+                    count + 1, torch.is_grad_enabled(), t.detach().cpu().tolist(),
+                    int(cond["attention_mask"].sum()), stats(latent), stats(cond["hidden_states"]),
+                    stats(pred), stats(target))
         w = None
         if diff_ref is not None and diff_weight > 0.0:
             d, _, _ = patchify_block((latent - diff_ref.to(device=latent.device, dtype=DTYPE)).abs(), patch)
@@ -677,8 +692,22 @@ class Krea2Driver(FamilyDriver):
                     v = u + cfg * (v - u)
                 img = img + (tp - tc) * v
         from einops import rearrange
-        return rearrange(img, "b (h w) (c ph pw) -> b c 1 (h ph) (w pw)", ph=patch, pw=patch,
-                         h=height // 16, w=width // 16)
+        result = rearrange(img, "b (h w) (c ph pw) -> b c 1 (h ph) (w pw)", ph=patch, pw=patch,
+                           h=height // 16, w=width // 16)
+        if str(getattr(self, "options", {}).get("cache_regression", "")) == "1":
+            import logging
+            from pathlib import Path
+            from safetensors.torch import save_file
+            count = getattr(self, "_cache_regression_previews", 0)
+            self._cache_regression_previews = count + 1
+            out = self.options.get("cache_regression_dir")
+            if out:
+                path = Path(out) / f"preview-latent-{count:02d}.safetensors"
+                save_file({"latent": result.detach().cpu().contiguous()}, str(path))
+            z = result.detach().float()
+            logging.getLogger(__name__).info("[cache-regression] preview %d pre-decode latent rms=%g finite=%s",
+                                            count, float(z.square().mean().sqrt()), bool(torch.isfinite(z).all()))
+        return result
 
     @torch.no_grad()
     def decode(self, vae, latents, width, height):
