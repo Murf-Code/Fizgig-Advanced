@@ -2360,8 +2360,11 @@ def _run_stages(stages, out_dir):
                             history.feed_loss(_run.get("history_id"), upd.get("epoch"), upd.get("average_loss_text"))
         ret = proc.wait()
         if diag_case:
-            with open(os.path.join(out_dir, "diagnostic.log"), "a", encoding="utf-8") as f:
-                f.write(f"\n[cache-regression] {stage.name} exit code {ret}\n")
+            try:
+                with open(os.path.join(out_dir, "diagnostic.log"), "a", encoding="utf-8") as f:
+                    f.write(f"\n[cache-regression] {stage.name} exit code {ret}\n")
+            except OSError:
+                pass
         with _lock:
             stopped = _run["state"] == "stopped"
         if stopped:
@@ -5031,6 +5034,7 @@ class Handler(BaseHTTPRequestHandler):
                 configs = cache_regression.settings(group, root, prompt)
                 entries, plans = [], []
                 source = None
+                held = None
                 for vals in configs:
                     desc, inputs, plan = _plan("krea2", vals, folder)
                     if plan.problems:
@@ -5038,6 +5042,11 @@ class Handler(BaseHTTPRequestHandler):
                     out, name = inputs["LORA_OUTPUT_DIR"], inputs["LORA_NAME"]
                     if os.path.exists(out) or name_taken(vals, inputs) or webqueue.clashes(out, name):
                         return self.json({"error": "Diagnostic output already exists."}, 400)
+                    arm_held = cache_regression.holdout_paths(plan)
+                    if held is None:
+                        held = arm_held
+                    elif held != arm_held:
+                        return self.json({"error": "Validation hold-out changed between diagnostic plans."}, 400)
                     if source is None:
                         source = launch.dataset_toml(desc, inputs)
                     plans.append({"case": vals["__cache_regression"], "dataset_toml": plan.dataset_toml,
@@ -5046,7 +5055,7 @@ class Handler(BaseHTTPRequestHandler):
                 output = os.path.join(root, group)
                 os.makedirs(output, exist_ok=False)
                 try:
-                    snapshot = cache_regression.prepare_caches(source, configs, desc.arch_id)
+                    snapshot = cache_regression.prepare_caches(source, configs, desc.arch_id, held or [])
                     with open(os.path.join(output, "diagnostic-settings.json"), "w", encoding="utf-8") as f:
                         json.dump({"dataset": folder, "cases": configs, "snapshot": snapshot, "plans": plans}, f, indent=2)
                 except (OSError, ValueError) as exc:
