@@ -20,7 +20,16 @@ GPU_PROFILES = {
 }
 
 
-def settings(group, root, prompt, *, gpu_profile, masked=False):
+# Only cache-related fields may cross from the user's normal training form.
+# Do not inherit optimizer, replay, LR, precision, swap, seed or sample settings.
+DATASET_KEYS = (
+    "DATASET_MEGAPIXELS", "ENABLE_BUCKET", "BUCKET_NO_UPSCALE",
+    "DATASET_CAPTION_EXT", "TAG_SHUFFLE", "TAG_KEEP_FIRST", "TAG_DROPOUT",
+    "TAG_VARIANTS", "TAG_VARIANT_CAP", "CAPTION_DROPOUT",
+)
+
+
+def settings(group, root, prompt, *, gpu_profile, masked=False, dataset_values=None):
     if gpu_profile not in GPU_PROFILES:
         raise ValueError("Choose the RTX 3090 or RTX 4070 Ti cache test.")
     profile = GPU_PROFILES[gpu_profile]
@@ -51,6 +60,8 @@ def settings(group, root, prompt, *, gpu_profile, masked=False):
                 OPTIMIZER_TYPE="polora", FAMILY_PRECISION="INT8 (8-bit, fastest)",
                 BLOCKS_SWAP=str(swap), LEARNING_RATE="0.02",
                 OPTIMIZER_ARGS="magnitude_scale=3 curvature_beta=0.99 compile=True")
+    if gpu_profile == "4070-ti" and dataset_values is not None:
+        base.update({key: dataset_values[key] for key in DATASET_KEYS if key in dataset_values})
     return [dict(base, __cache_regression=case, __cache_prompt=prompt, __cache_gpu_profile=gpu_profile,
                  LORA_NAME=f"{group}-{case}", LORA_OUTPUT_DIR=os.path.join(root, group, case))
             for case in CASES]
@@ -179,7 +190,11 @@ def prepare_caches(source_body, configs, arch, held_paths=()):
             if not file.is_file():
                 raise ValueError(f"Existing cache missing: {file}. Use the complete cache from the failing run with the same validation selection.")
         if ImageDataset.latent_cache_matches_reso(str(lat), selector.get_bucket_resolution((w,h)), arch) is not True:
-            raise ValueError(f"Existing latent has the wrong bucket: {lat}. Match the failing run's 1 MP cache.")
+            raise ValueError(f"Existing latent has the wrong bucket: {lat}. "
+                             f"Expected {selector.get_bucket_resolution((w, h))} pixels at target {g['resolution']}. "
+                             "For RTX 4070 Ti, set Target Megapixels and bucket options to those used to create "
+                             "the existing cache. RTX 3090 uses the original fixed 1 MP recipe. "
+                             "Do not regenerate the source cache before testing.")
         expected.extend([(lat, "latents", rel / lat.name), (te, "text", rel / te.name)])
         if is_held:
             continue
