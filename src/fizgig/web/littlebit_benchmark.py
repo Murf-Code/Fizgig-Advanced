@@ -56,6 +56,22 @@ def arg(cmd, flag):
     return cmd[cmd.index(flag) + 1]
 
 
+def require_resolved(cmd, flag, expected):
+    """Validate using the native parser's type, not its text formatting."""
+    actual = arg(cmd, flag)
+    # form.inputs converts NETWORK_ALPHA to float; launch emits "32.0".
+    # Integer options remain strict because argparse's int rejects "32.0".
+    if flag == "--network_alpha":
+        try:
+            matches = float(actual) == float(expected)
+        except (ValueError, TypeError):
+            matches = False
+    else:
+        matches = actual == expected
+    if not matches:
+        raise ValueError(f"Unexpected resolved trainer setting: {flag} (expected {expected}, got {actual})")
+
+
 def adjust_plan(desc, values, plan, repo, resume=False):
     case = values.get("__littlebit_case")
     if not case or plan.problems:
@@ -82,8 +98,7 @@ def adjust_plan(desc, values, plan, repo, resume=False):
                     "--network_dim":"32", "--network_alpha":"32", "--seed":"42",
                     "--max_train_epochs":str(EPOCHS), "--optimizer_type":"muon"}
         for flag, val in expected.items():
-            if arg(cmd, flag) != val:
-                raise ValueError(f"Unexpected resolved trainer setting: {flag}")
+            require_resolved(cmd, flag, val)
         if any(x in cmd for x in ("--finetune","--resume","--adaptive_lr","--training_adapter",
                                   "--context_lora_path","--sample_prompts","--save_state",
                                   "--save_state_on_train_end","--int8_rotated_backward",
