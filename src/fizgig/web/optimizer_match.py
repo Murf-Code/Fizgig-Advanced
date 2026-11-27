@@ -29,6 +29,8 @@ SELECTIVE_RATES = {"ademamix8bit": .00025, "pagedademamix8bit": .00025,
                    "lion8bit": .000025, "polora": .02, "lora_tsd": .005,
                    "prodigy": 1., "automagic3": 1e-6, "automagic4": 1e-6}
 SELECTIVE_BASE = {f"{name}-{mode}": name for name in SELECTIVE_RATES for mode in ("full", "selective")}
+EFFECTIVE_CASES = {f"{name}-effective": name for name in ("polora", "lora_tsd")}
+SELECTIVE_BASE.update(EFFECTIVE_CASES)
 START.update({case: SELECTIVE_RATES[name] for case, name in SELECTIVE_BASE.items()})
 
 
@@ -37,7 +39,7 @@ def expected_updates(case):
 
 
 def selective_arm(case):
-    return case in SELECTIVE_BASE and case.endswith("-selective")
+    return case in SELECTIVE_BASE and case.endswith(("-selective", "-effective"))
 
 
 def optimizer_name(case):
@@ -118,10 +120,24 @@ def selective_settings(group, prompt, names=None):
     return rows
 
 
+def effective_settings(group, prompt):
+    """Six matched arms; reuse the original full and Selective recipes."""
+    group = Path(group)
+    rows = []
+    for name in ("polora", "lora_tsd"):
+        pair = selective_settings(group, prompt, [name])
+        case = name + "-effective"
+        rows.extend(pair)
+        rows.append({**pair[1], "__optimizer_match": case, "LORA_NAME": f"{group.name}-{case}",
+                     "LORA_OUTPUT_DIR": str(group / case)})
+    return rows
+
+
 def attach(plan, values, family, resume=""):
     name = values["__optimizer_match"]
     group = Path(values["LORA_OUTPUT_DIR"]).parent
-    choices = (selective_settings(group, values.get("SAMPLE_PROMPT", ""), [SELECTIVE_BASE[name]]) if name in SELECTIVE_BASE
+    choices = (effective_settings(group, values.get("SAMPLE_PROMPT", "")) if name in EFFECTIVE_CASES
+               else selective_settings(group, values.get("SAMPLE_PROMPT", ""), [SELECTIVE_BASE[name]]) if name in SELECTIVE_BASE
                else soap_settings(group, values.get("SAMPLE_PROMPT", "")) if name in SOAP_SWEEP else settings(group))
     expected = next((r for r in choices if r["__optimizer_match"] == name), None)
     if not expected or family != "krea2" or resume or values.get("RESUME_TRAINING"):
@@ -388,7 +404,7 @@ def refresh(group):
                     "not_exercised" if not reduced or not r["reactivated_blocks"] else
                     "reactivation_movement_missing" if r["reactivated_blocks"] != r["reactivated_moved_blocks"] else
                     "passed" if all(x["inactive_state_unchanged"] for x in rows) else "failed")
-        report = {**manifest, "runs": runs, "experiment": "selective_native_compatibility",
+        report = {**manifest, "runs": runs, "experiment": ("selective_effective_alignment" if any(r["case"] in EFFECTIVE_CASES for r in runs) else "selective_native_compatibility"),
                   "external_compensation": False, "pilot_only": True}
         _write(group / REPORT, report)
         return report

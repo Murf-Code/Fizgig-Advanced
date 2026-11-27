@@ -232,7 +232,8 @@ class Krea2Driver(FamilyDriver):
         """The generic trainer must call backward_training_loss after applying its per-image scale."""
         return self.global_replay
 
-    def configure_selective_global_replay(self, dit, net, *, warmup_updates=8, reactivate_every=8, score_decay=0.5):
+    def configure_selective_global_replay(self, dit, net, *, warmup_updates=8, reactivate_every=8, score_decay=0.5,
+                                         effective_score=False):
         """Track the direction of each block's actual optimizer update and selectively compute adapter gradients.
 
         All blocks participate in the initial probe window. At each later probe update, all blocks are briefly
@@ -249,6 +250,7 @@ class Krea2Driver(FamilyDriver):
             raise RuntimeError("Selective replay can only be configured for Selective global replay training.")
         n = len(dit.blocks)
         by_block = {i: [] for i in range(n)}
+        pair_specs = {i: [] for i in range(n)}
         for full, wrapped in net.wrapped.items():
             if TRAINABLE not in wrapped.adapters:
                 continue
@@ -260,13 +262,21 @@ class Krea2Driver(FamilyDriver):
                 continue
             index = int(parts[1])
             if index in by_block:
-                by_block[index].extend(list(wrapped.adapters[TRAINABLE].parameters()))
+                ad = wrapped.adapters[TRAINABLE]
+                ps = list(ad.parameters())
+                if effective_score:
+                    if len(ps) != 2 or not isinstance(ad, torch.nn.Sequential) or len(ad) != 2 or ps[0] is not ad[0].weight or ps[1] is not ad[1].weight:
+                        raise RuntimeError("Effective Selective research requires ordered linear A/B pairs")
+                    pair_specs[index].append((len(by_block[index]), float(wrapped.scales[TRAINABLE])))
+                by_block[index].extend(ps)
         missing = [i for i, values in by_block.items() if not values]
         if missing:
             raise RuntimeError("Selective global replay could not find trainable LoRA parameters in transformer "
                                f"blocks: {missing}.")
 
         self._selective_params_by_block = by_block
+        self._selective_effective_score = bool(effective_score)
+        self._selective_pair_specs = pair_specs
         self._selective_block_count = n
         self._selective_warmup_updates = max(1, int(warmup_updates))
         self._selective_reactivate_every = max(1, int(reactivate_every))
@@ -306,6 +316,8 @@ class Krea2Driver(FamilyDriver):
         (before the step), on CPU so the check does not increase VRAM use. Then re-anchor at the current weights."""
         if not self.selective_probe_due:
             return None
+        if getattr(self, "_selective_effective_score", False):
+            return self._effective_snapshot_before_step()
         cosines = {}
         for index in range(self._selective_block_count):
             block_params = self._selective_params_by_block[index]
@@ -326,6 +338,45 @@ class Krea2Driver(FamilyDriver):
                 cosines[index] = cosine
         return {"cosines": cosines}
 
+    def _effective_snapshot_before_step(self):
+        from fizgig.training.selective_effective_score import pair_terms, block_score
+        import time
+
+        start = time.perf_counter()
+        cosines, diagnostics = {}, {}
+        for index, params in self._selective_params_by_block.items():
+            now = self._selective_flat(params)
+            anchor = self._selective_anchor.get(index)
+            self._selective_anchor[index] = now
+            if anchor is None or anchor.shape != now.shape or not all(p.requires_grad and p.grad is not None for p in params):
+                diagnostics[index] = {"score": None, "observability": None, "reason": "missing_anchor_or_gradient"}
+                continue
+            grad = torch.cat([p.grad.detach().float().reshape(-1) for p in params]).cpu()
+            delta = now-anchor
+            denom = grad.norm()*delta.norm()
+            factor = float((-torch.dot(grad,delta)/denom).clamp(-1.,1.)) if torch.isfinite(denom) and float(denom)>1e-20 else None
+            offsets = [0]
+            for p in params:
+                offsets.append(offsets[-1]+p.numel())
+            def part(flat,j):
+                return flat[offsets[j]:offsets[j+1]].view(params[j].shape)
+            terms = []
+            for j, scale in self._selective_pair_specs[index]:
+                try:
+                    terms.append(pair_terms(part(now,j),part(now,j+1),part(anchor,j),part(anchor,j+1),
+                                            part(grad,j),part(grad,j+1),scale))
+                except torch.linalg.LinAlgError:
+                    terms.append(None)
+            result = block_score(terms)
+            if result["observability"] is not None and result["observability"] <= 1e-12:
+                result.update(score=None, reason="unobservable_displacement")
+            result["factor_cosine"] = factor if factor is not None and np.isfinite(factor) else None
+            diagnostics[index] = result
+            if result["score"] is not None:
+                cosines[index] = result["score"]
+        return {"cosines": cosines, "effective_diagnostics": diagnostics,
+                "effective_probe_seconds": time.perf_counter()-start}
+
     def finish_selective_optimizer_step(self, snapshot):
         """Score a probe and choose active blocks for the next optimizer window. Returns a status for logging."""
         if not self.selective_global_replay:
@@ -333,6 +384,11 @@ class Krea2Driver(FamilyDriver):
         self._selective_optimizer_steps += 1
         step = self._selective_optimizer_steps
         if snapshot is not None:
+            if getattr(self, "_selective_effective_score", False):
+                # Unknown current evidence must not keep a stale negative EMA frozen.
+                for i in range(self._selective_block_count):
+                    if i not in snapshot.get("cosines", {}):
+                        self._selective_scores[i] = None
             for index, cosine in snapshot.get("cosines", {}).items():
                 old = self._selective_scores[index]
                 decay = self._selective_score_decay
@@ -362,7 +418,8 @@ class Krea2Driver(FamilyDriver):
     def selective_state_dict(self):
         if not self.selective_global_replay or not hasattr(self, "_selective_optimizer_steps"):
             return None
-        return {"version": 1, "optimizer_steps": self._selective_optimizer_steps,
+        return {"version": 1, "effective_score": getattr(self, "_selective_effective_score", False),
+                "optimizer_steps": self._selective_optimizer_steps,
                 "warmup_updates": self._selective_warmup_updates,
                 "reactivate_every": self._selective_reactivate_every,
                 "score_decay": self._selective_score_decay,
@@ -371,6 +428,8 @@ class Krea2Driver(FamilyDriver):
     def load_selective_state_dict(self, state):
         if not self.selective_global_replay or not isinstance(state, dict) or state.get("version") != 1:
             raise RuntimeError("The saved Selective global replay state is missing or unsupported.")
+        if bool(state.get("effective_score", False)) != getattr(self, "_selective_effective_score", False):
+            raise RuntimeError("Selective score mode differs from saved run state.")
         if (int(state.get("warmup_updates", -1)) != self._selective_warmup_updates
                 or int(state.get("reactivate_every", -1)) != self._selective_reactivate_every
                 or float(state.get("score_decay", -1)) != self._selective_score_decay):

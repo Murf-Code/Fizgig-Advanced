@@ -64,3 +64,18 @@ def test_selective_compat_recipe(tmp_path):
         assert not full["KREA2_SELECTIVE_COMPENSATION"] and not sel["KREA2_SELECTIVE_COMPENSATION"]
         assert expected_updates(sel["__optimizer_match"]) == 65
     assert len(selective_settings(tmp_path / "group", "fixed prompt", ["polora"])) == 2
+
+
+def test_effective_selective_recipe(tmp_path):
+    from fizgig.web.optimizer_match import effective_settings, selective_arm, expected_updates, optimizer_name
+    rows = effective_settings(tmp_path / "group", "fixed prompt")
+    assert [r["__optimizer_match"] for r in rows] == [
+        "polora-full","polora-selective","polora-effective",
+        "lora_tsd-full","lora_tsd-selective","lora_tsd-effective"]
+    for i,row in enumerate(rows):
+        case = row["__optimizer_match"]
+        assert expected_updates(case)==65
+        assert selective_arm(case)==(i%3!=0)
+        assert row["KREA2_SELECTIVE_BLOCK_CHECK"]==selective_arm(case)
+        assert not row["KREA2_SELECTIVE_COMPENSATION"]
+        assert row["OPTIMIZER_TYPE"]==optimizer_name(case)

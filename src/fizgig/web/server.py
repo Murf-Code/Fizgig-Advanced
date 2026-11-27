@@ -5042,8 +5042,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": f"{name} is already there."}, 400)
                 os.makedirs(new)
                 return self.json({"ok": True, "path": new})
-            if path in ("/api/queue/selective_optimizer_smoke", "/api/queue/optimizer_match", "/api/queue/soap_sweep", "/api/queue/selective_compat"):
-                if path.endswith(("/optimizer_match", "/soap_sweep", "/selective_compat")):
+            if path in ("/api/queue/selective_optimizer_smoke", "/api/queue/optimizer_match", "/api/queue/soap_sweep", "/api/queue/selective_compat", "/api/queue/selective_effective"):
+                if path.endswith(("/optimizer_match", "/soap_sweep", "/selective_compat", "/selective_effective")):
                     from fizgig.web import optimizer_match as smoke
                 else:
                     from fizgig.web import selective_optimizer_smoke as smoke
@@ -5070,7 +5070,9 @@ class Handler(BaseHTTPRequestHandler):
                         previous = json.loads((prior / smoke.REPORT).read_text(encoding="utf-8"))
                         if os.path.normcase(os.path.abspath(previous["dataset"])) != os.path.normcase(os.path.abspath(folder)):
                             raise ValueError("Calibration must use the same dataset folder.")
-                    if path.endswith("/selective_compat"):
+                    if path.endswith("/selective_effective"):
+                        cases = smoke.effective_settings(group, b.get("sample_prompt") or "")
+                    elif path.endswith("/selective_compat"):
                         cases = smoke.selective_settings(group, b.get("sample_prompt") or "", b.get("optimizers"))
                     elif path.endswith("/soap_sweep"):
                         cases = smoke.soap_settings(group, b.get("sample_prompt") or "")

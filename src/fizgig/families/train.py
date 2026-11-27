@@ -2545,7 +2545,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             logger.info(f"[blocks] the LoRA trains {len(blocks)} of {len(known)} blocks only: {', '.join(train_blocks)}")
         net.add_trainable(network_dim, network_alpha, blocks=blocks, kind=network_type, factor=lokr_factor)
         if selective_global_replay:
-            driver.configure_selective_global_replay(dit, net, warmup_updates=8, reactivate_every=8, score_decay=0.5)
+            driver.configure_selective_global_replay(dit, net, warmup_updates=8, reactivate_every=8, score_decay=0.5,
+                effective_score=bool(optimizer_match and optimizer_match.endswith("-effective")))
             logger.info("[selective-replay] all blocks train for the first 8 optimizer updates; then each block's "
                         "displacement since its last probe is scored against the fresh global-loss gradient. Uphill "
                         "blocks skip LoRA-factor gradients; all blocks are reactivated for one probe update every 8 "
@@ -3750,6 +3751,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 match_previous_active = set(row["active_blocks"])
                 row["inactive_state_unchanged"] = (not selective_arm(optimizer_match) or
                     match_inactive == selective_audit(optimizer, driver, optimizer_match, match_active))
+            if selective_snapshot is not None:
+                row["selective_probe"] = selective_snapshot
             row["group_lrs"] = [float(g["lr"]) for g in optimizer.param_groups]
             if torch.cuda.is_available():
                 row["cuda_peak_allocated_bytes"] = torch.cuda.max_memory_allocated()
