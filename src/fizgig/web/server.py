@@ -2128,6 +2128,12 @@ def _start_one(family_key, values, image_folder, resume, ft_continue, note, mode
     desc, inputs, plan = _plan(family_key, values, image_folder, resume, ft_continue, models)
     if plan.problems:
         return {"problems": plan.problems}
+    if values.get("__cache_regression"):
+        from fizgig.web import cache_regression
+        try:
+            cache_regression.verify_start(plan, values)
+        except (OSError, ValueError, KeyError, StopIteration) as exc:
+            return {"error": f"Cache regression: {exc}"}
     lk = desc.preview_look() if desc is not None else None
     if lk is not None and lk.fetch_on_use and (values or {}).get("FAMILY_PREVIEW_LOOK"):
         # a run started with the SFT look ticked (from the queue, a script or a helper's lead) fetches it as the
