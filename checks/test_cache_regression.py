@@ -45,7 +45,7 @@ class CacheRegressionTests(unittest.TestCase):
                     "--dataset_config", config])], dataset_toml=self.body,
                   files=[(config, self.body)], dirs=[], console=[])
         launch = NS(Stage=lambda name, cmd: NS(name=name, cmd=cmd),
-                    cache_command=lambda desc, inputs, stage: ["cache", "--model", stage, "--skip_existing"])
+                    cache_command=lambda desc, inputs, stage: ["cache", "--model", stage, "--dataset_config", inputs["DATASET_CONFIG"], "--skip_existing"])
         cr.configure_plan(NS(key="krea2"), dict(values, DATASET_CONFIG=config), plan, values, launch)
         return plan
 
@@ -105,6 +105,46 @@ class CacheRegressionTests(unittest.TestCase):
             cr.configure_plan(NS(key="krea2"), dict(v, DATASET_CONFIG=config), plan, v, NS())
             self.assertIn(flag, plan.problems[0])
             self.assertEqual(plan.dataset_toml, self.body)
+
+    def test_private_baseline_plan_and_snapshot(self):
+        for gpu, fresh in [("4070-ti", False), ("3090", True)]:
+            arms = cr.settings("test-" + gpu, str(self.root), "prompt",
+                               gpu_profile=gpu, fresh_baseline=fresh)
+            first = self.make_plan(arms[0])
+            self.assertFalse(first.problems)
+            self.assertEqual([s.name for s in first.stages],
+                             ["Baseline Latent Caching", "Baseline Text Caching", "Training"])
+            out = Path(arms[0]["LORA_OUTPUT_DIR"])
+            baseline = out.parent / "baseline-cache"
+            body = next(body for path, body in first.files if str(path).endswith("baseline-dataset.toml"))
+            self.assertEqual(toml.loads(body)["datasets"][0]["cache_directory"], str(baseline.resolve()))
+            self.assertEqual(toml.loads(first.dataset_toml)["datasets"][0]["cache_directory"],
+                             str((out / "isolated-cache").resolve()))
+            self.assertEqual(first.stages[0].cmd[first.stages[0].cmd.index("--dataset_config") + 1],
+                             str(out.parent / "baseline-dataset.toml"))
+            self.assertFalse((out / "isolated-cache").exists())
+            baseline.mkdir(parents=True)
+            (out.parent / "baseline-dataset.toml").write_text(body, encoding="utf-8")
+            manifest_path = out.parent / "diagnostic-settings.json"
+            manifest_path.write_text(json.dumps({"gpu_profile": gpu, "cases": arms, "snapshot": {
+                "baseline_pending": True, "baseline_config": body, "arch": "krea2drv",
+                "holdout": [], "files": []}}), encoding="utf-8")
+            for n in self.names:
+                (baseline / n).write_bytes(n.encode())
+            with patch.dict(sys.modules, self.fake_modules):
+                self.assertTrue(cr.finish_baseline(out))
+            snap = json.loads(manifest_path.read_text())["snapshot"]
+            self.assertEqual(snap["provenance"], "fresh_private_baseline")
+            self.assertFalse(cr.finish_baseline(out))
+            self.assertEqual(len(snap["files"]), 3)
+            for v, names in zip(arms, [self.names, self.names[:1], self.names[1:], []]):
+                cache = Path(v["LORA_OUTPUT_DIR"]) / "isolated-cache"
+                self.assertEqual({p.name for p in cache.iterdir()}, set(names))
+
+    def test_3090_defaults_to_original_cache(self):
+        arms = cr.settings("test", str(self.root), "prompt", gpu_profile="3090")
+        self.assertFalse(arms[0]["__cache_fresh_baseline"])
+        self.assertEqual([s.name for s in self.make_plan(arms[0]).stages], ["Training"])
 
     def test_four_stage_plans(self):
         expected = [["Training"], ["Text Encoder Caching", "Training"],
