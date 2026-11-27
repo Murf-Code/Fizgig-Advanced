@@ -1282,6 +1282,9 @@ def _plan(family_key, values, image_folder, resume="", ft_continue=None, models=
     if values.get("__selective_optimizer_smoke"):
         from fizgig.web.selective_optimizer_smoke import attach
         attach(plan, values, desc.key, resume)
+    if values.get("__optimizer_match"):
+        from fizgig.web.optimizer_match import attach
+        attach(plan, values, desc.key, resume)
     return desc, inputs, plan
 
 
@@ -4998,8 +5001,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": f"{name} is already there."}, 400)
                 os.makedirs(new)
                 return self.json({"ok": True, "path": new})
-            if path == "/api/queue/selective_optimizer_smoke":
-                from fizgig.web import selective_optimizer_smoke as smoke
+            if path in ("/api/queue/selective_optimizer_smoke", "/api/queue/optimizer_match"):
+                if path.endswith("/optimizer_match"):
+                    from fizgig.web import optimizer_match as smoke
+                else:
+                    from fizgig.web import selective_optimizer_smoke as smoke
                 folder = str(b.get("image_folder") or "").strip()
                 if not folder or not os.path.isdir(folder):
                     raise ValueError("Select the original small 15-image Krea 2 dataset first.")
@@ -5013,7 +5019,17 @@ class Handler(BaseHTTPRequestHandler):
                     import uuid
                     group = os.path.join(default_output_dir(), "selective_optimizer_tests",
                                          "optimizer-smoke-" + time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6])
-                    cases = smoke.settings(group)
+                    previous = None
+                    if path.endswith("/optimizer_match") and b.get("previous_group"):
+                        from pathlib import Path
+                        root = Path(default_output_dir(), "selective_optimizer_tests").resolve()
+                        prior = Path(str(b["previous_group"])).resolve()
+                        if prior.parent != root:
+                            raise ValueError("Choose an existing optimizer test output folder.")
+                        previous = json.loads((prior / smoke.REPORT).read_text(encoding="utf-8"))
+                        if os.path.normcase(os.path.abspath(previous["dataset"])) != os.path.normcase(os.path.abspath(folder)):
+                            raise ValueError("Calibration must use the same dataset folder.")
+                    cases = smoke.settings(group, previous) if path.endswith("/optimizer_match") else smoke.settings(group)
                     rows = []
                     for vals in cases:
                         desc, inputs, plan = _plan("krea2", vals, folder)

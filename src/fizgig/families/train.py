@@ -1586,6 +1586,17 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     compensation_optimizer = str(optimizer_type).strip().lower()
     optimizer_smoke = (family_options or {}).get("selective_optimizer_smoke")
     smoke_rows, smoke_validation = [], []
+    optimizer_match = (family_options or {}).get("optimizer_match")
+    match_rows, match_initial = [], None
+    if optimizer_match:
+        from fizgig.web.optimizer_match import START
+        if (optimizer_match not in START or optimizer_match != compensation_optimizer
+                or not global_replay or selective_global_replay or selective_compensation
+                or resume_state_dir or finetune or adaptive_lr or per_image_lr
+                or max_train_epochs != 1 or int(seed) != 42 or int(network_dim) != 32
+                or float(network_alpha) != 32 or lr_scheduler != "constant"
+                or validation_early_stop or not validation_loss or not validation_holdout):
+            raise RuntimeError("Optimizer match requires the fixed fresh one-epoch recipe")
     if optimizer_smoke:
         from fizgig.web.selective_optimizer_smoke import CASES
         if (optimizer_smoke not in CASES or optimizer_smoke != compensation_optimizer
@@ -2610,6 +2621,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             _oargs = (_oargs + f" weight_decay={desc.optimizer_weight_decay:g}").strip()
         optimizer, opt_label = create_optimizer(optimizer_type, opt_params, learning_rate, _oargs,
                                                 eps_floor_8bit=desc.optimizer_eps_floor_8bit)
+    if optimizer_match and "fallback" in opt_label.lower():
+        raise RuntimeError("Optimizer match refuses optimizer fallback")
     if selective_compensation:
         from fizgig.training.selective_compensation import validate_optimizer
         validate_optimizer(optimizer, compensation_optimizer)
@@ -2754,7 +2767,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     # ceil(steps / N) and the schedule runs in those updates. Sliders already backpropagate two poles per step: 1.
     accum = 1 if slider else max(1, int(gradient_accumulation_steps or 1))
     updates_per_epoch = math.ceil(steps_per_epoch / accum)
-    if optimizer_smoke and (updates_per_epoch != 13 or accum != 1 or bsz != 1):
+    if (optimizer_smoke or optimizer_match) and (updates_per_epoch != 13 or accum != 1 or bsz != 1):
         raise RuntimeError("Optimizer smoke test requires 13 training batches after the two-image holdout. Select the original 15-image dataset.")
     if accum > 1:
         logger.info(f"[grad_accum] {accum} micro-batches per optimizer step (effective batch {accum}); "
@@ -3623,7 +3636,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             adaptive.record_clip(gn, max_grad_norm)
 
     def _update():
-        nonlocal pending
+        nonlocal pending, match_initial
         if ftr is not None and ftr.fused is not None:
             pending = 0                    # every parameter already stepped from its own gradient hook
             lr_acc.clear()
@@ -3639,6 +3652,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             held = [g["lr"] for g in optimizer.param_groups]        # Adam is invariant to a constant on the gradient)
             for g in optimizer.param_groups:
                 g["lr"] = g["lr"] * m
+        match_before = None
+        if optimizer_match and len(match_rows) < 8:
+            from fizgig.web.optimizer_match import snapshot, fingerprint
+            match_before = snapshot(net)
+            if match_initial is None:
+                match_initial = fingerprint(match_before)
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
         if selective_compensation:
             scale = driver.selective_learning_multiplier()
@@ -3659,6 +3678,13 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             logger.debug("[selective-compensation] update %d learning multiplier %.6f", global_step + 1, scale)
         else:
             optimizer.step()
+        if match_before is not None:
+            from fizgig.web.optimizer_match import movement
+            row = movement(match_before, net)
+            row["update"] = len(match_rows) + 1
+            row["group_lrs"] = [float(g["lr"]) for g in optimizer.param_groups]
+            match_rows.append(row)
+            logger.info("[optimizer-match] %s update %d: effective movement %.6g", optimizer_match, row["update"], row["norm"])
         if selective_global_replay:
             selective_status = driver.finish_selective_optimizer_step(selective_snapshot)
             if selective_status is not None:
@@ -4014,7 +4040,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             return
         v, per_t, sec = r
         require_finite_score(v, f"validation loss at step {global_step}")
-        if optimizer_smoke:
+        if optimizer_smoke or optimizer_match:
             smoke_validation.append({"step": global_step, "epoch": epoch_no, "loss": float(v),
                                      "per_t": [float(x) for x in per_t], "images": len(validator.batches)})
         last_val[0] = v                   # adaptive LR judges on it at this epoch's end
@@ -4695,6 +4721,10 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     shutil.copyfile(final, os.path.join(output_dir, f"{output_name}-{max_train_epochs:06d}.safetensors"))
     if save_state_on_train_end:
         state(max_train_epochs)
+    if optimizer_match:
+        from fizgig.web.optimizer_match import finish as finish_match
+        finish_match(output_dir, optimizer_match, type(optimizer).__name__, box_learning_rate,
+                     match_rows, smoke_validation, match_initial)
     if optimizer_smoke:
         from fizgig.web.selective_optimizer_smoke import finish
         state_dtypes = {}
