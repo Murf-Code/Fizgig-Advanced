@@ -3,7 +3,7 @@ name: Checks
 on:
   pull_request:
   push:
-    branches: [master, fizgig-advanced, test/caption-workbench, wip, test/stream-sync-integration]
+    branches: [master, fizgig-advanced, test/caption-workbench, WIP, test/stream-sync-integration, test/selective-optimizer-support]
 
 jobs:
   checks:
