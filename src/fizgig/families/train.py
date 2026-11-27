@@ -1641,6 +1641,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     "this off.")
     device = torch.device("cuda")
     quant.apply_vram_cap()          # FIZGIG_SIM_VRAM_GB: behave like a smaller card
+    if str((family_options or {}).get("cache_regression", "")) == "1":
+        random.seed(seed)  # the dataset blueprint draws its shuffle seed from Python RNG
+        np.random.seed(int(seed) % (2 ** 32))
     torch.manual_seed(seed)
     os.makedirs(output_dir, exist_ok=True)
 
