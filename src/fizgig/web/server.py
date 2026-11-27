@@ -5031,7 +5031,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": "Finish or stop the active run/caption job before snapshotting the cache."}, 400)
                 group = "cache-regression-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
                 root = os.path.join(default_output_dir(), "polora_diagnostics")
-                configs = cache_regression.settings(group, root, prompt)
+                # This diagnostic is restricted to the selected ordinary image folder.
+                mask_count = launch.mask_report(get_family("krea2"), {"image_folder": folder})["with"]
+                gpu = _chosen_gpu(list_gpus(), os.environ.get("CUDA_VISIBLE_DEVICES") or load_prefs().get("cuda_device"))
+                gpu_gb = float(gpu["total_gb"]) if gpu and gpu.get("total_gb") else None
+                configs = cache_regression.settings(group, root, prompt, masked=bool(mask_count), gpu_gb=gpu_gb)
                 entries, plans = [], []
                 source = None
                 held = None
