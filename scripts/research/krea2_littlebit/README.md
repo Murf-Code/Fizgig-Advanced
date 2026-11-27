@@ -317,3 +317,51 @@ bit-identical 448/448 captured tensors per update on a reduced 28-block
 model, with synthetic random weights. The actual Krea2 attention key and
 MLP up matrices showed lower Q6 Hadamard error at equal bytes. These are
 reviewer-reported V4 results, not newly measured V5 results.
+
+## Milestone 9 — offline activation-fitted private corrections
+
+V5 stays unchanged; run this after its stock arm completes. Inspired by
+Astra's cross-layer review: independent Q6 beat all tested shared pairs
+as a whole, but block 0 attention key's private rank-76 BF16 + Q5 residual
+improved 2.35% to 1.69% weight error at slightly fewer bytes. These were
+reviewer measurements, not new results from this code.
+
+From repository root in PowerShell (replace the raw path):
+
+```powershell
+.\venv\Scripts\python.exe scripts\research\krea2_littlebit\offline_corrections.py --raw "H:\path\to\krea2_raw_bf16.safetensors" --comparisons output_loras\littlebit_comparisons --out output_loras\littlebit-correction-report.json
+```
+
+Or pass `--stock <comparison>/stock` to choose a specific completed stock
+arm. The input is the actual stock folder, not the report zip (which does
+not include the capture tensors). The source SHA256 must match preparation.
+Output must be fresh. Default 40 fit steps, four CPU threads. No new GPU
+training, no shared-weight loader, no modified native swap or LoRA export.
+
+Three predefined pairs: keys 0/1, keys 18/20, MLP up 0/1. Each pair's budget
+is two actual Q6 Hadamard payloads plus a fixed 4 KiB descriptor allowance.
+Compare independent Q5/Q6 Hadamard, private BF16 balanced SVD factors plus
+Q5 Hadamard residual, shared BF16 input basis plus unique BF16 coefficients
+and Q5 residual, and their activation-fitted counterparts. Half and full
+budget-derived ranks are tested; raw projection error and exact payload
+bytes are recorded. The fit uses raw-minus-decoded-residual forward and
+input-gradient targets, normalized separately by raw action energy. The
+Q5 residual is fixed during fitting. Factors are optimized in FP32 with
+straight-through BF16 rounding and the best fit objective retained.
+This is an offline local surrogate, not task-gradient or LoRA training.
+
+Group existing captures by item ID; require three distinct IDs minimum.
+Fit on all but two groups, choose candidates on one development group,
+then read the last group for confirmation of Q6, the best private variant
+and the development winner. No confirmation selection. These are
+disjoint capture image IDs, NOT new unseen images relative to V5 LoRA
+training, and not near-duplicate-independent. Very small sample sizes.
+Report per-image/text token subset, timestep, raw BF16 and CPU native
+INT8 operator-relative errors. Native INT8 is a CPU approximation to
+the actual GPU training path. The teacher that generated X/G was INT8.
+Report is JSON only; no deployment archives yet, no automatic promotion,
+no arbitrary retention requirement. CPU memory and conversion time are
+not estimated by the packed-byte budget.
+
+New tests: `checks/test_littlebit_private_correction.py`. Full-size offline
+run requires a completed capture set and the original checkpoint.

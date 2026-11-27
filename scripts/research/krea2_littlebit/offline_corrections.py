@@ -36,7 +36,8 @@ def run_pair(weights,keys,stock,trace,split,int8_module,steps):
         raise ValueError("expected equal-shape raw BF16 pair")
     budget=pc.ranks(m,n)
     refs=[codec.stock_layer(w,int8_module) for w in weights]
-    captures={name:[[read_capture(stock,k,r,trace) for r in rs] for k in keys] for name,rs in split.items()}
+    captures={name:[[read_capture(stock,k,r,trace) for r in rs] for k in keys]
+              for name,rs in split.items() if name!="confirmation"}
     report={"keys":list(keys),**budget,"candidates":{}}
     # All variants live as small BF16 factors plus actual packed residuals.
     # Retain only the candidates' payloads until their development selection.
@@ -69,21 +70,32 @@ def run_pair(weights,keys,stock,trace,split,int8_module,steps):
         res=[codec.encode(w,name,rank=0) for w in weights]
         add(name,res)
         evaluate(name,"development")
-    for shared in (False,True):
-        label="shared" if shared else "private"
-        rank=budget[label+"_rank"]
-        if not rank: continue
-        aa,bb=pc.svd_factors(weights,rank,shared)
-        res=[pc.residual(w,aa[0 if shared else i],bb[i]) for i,w in enumerate(weights)]
-        add(label+"-svd-q5",res,aa,bb)
-        evaluate(label+"-svd-q5","development")
-        targets=[[pc.fit_target(w,*res[i],c) for c in captures["fit"][i]] for i,w in enumerate(weights)]
-        fa,fb,fit=pc.fit_factors(aa,bb,targets,steps)
-        add(label+"-task-q5",res,fa,fb,fit)
-        evaluate(label+"-task-q5","development")
     def value(name):
         v=report["candidates"][name]["development"]["raw_proxy"]
         return float("inf") if v is None else v
+    # At most the best private and shared candidate are retained in host RAM.
+    # All development measurements remain in the report.
+    for shared in (False,True):
+        label="shared" if shared else "private"
+        limit=budget[label+"_rank"]
+        if not limit: continue
+        best=None
+        for rank in sorted({max(1,limit//2),limit}):
+            aa,bb=pc.svd_factors(weights,rank,shared)
+            res=[pc.residual(w,aa[0 if shared else i],bb[i]) for i,w in enumerate(weights)]
+            name=label+f"-svd-r{rank}-q5"
+            add(name,res,aa,bb)
+            evaluate(name,"development")
+            targets=[[pc.fit_target(w,*res[i],c) for c in captures["fit"][i]] for i,w in enumerate(weights)]
+            fa,fb,fit=pc.fit_factors(aa,bb,targets,steps)
+            fitted=label+f"-task-r{rank}-q5"
+            add(fitted,res,fa,fb,fit)
+            evaluate(fitted,"development")
+            eligible=[k for k in (best,name,fitted) if k is not None]
+            best=min(eligible,key=lambda k:(value(k),report["candidates"][k]["charged_bytes"],k))
+            for k in eligible:
+                if k!=best: del models[k]
+            del targets,aa,bb,fa,fb,res
     private=[k for k in models if k.startswith("private-")]
     winner=min(models,key=lambda k:(value(k),report["candidates"][k]["charged_bytes"],k))
     if value(winner)==float("inf"): raise ValueError("no valid development signal")
@@ -91,6 +103,7 @@ def run_pair(weights,keys,stock,trace,split,int8_module,steps):
     # Freeze selection before evaluating the reserved capture group.
     finalists=list(dict.fromkeys(k for k in ("q6-had",best_private,winner) if k is not None))
     report.update(development_winner=winner,best_private=best_private,confirmation_candidates=finalists)
+    captures["confirmation"]=[[read_capture(stock,k,r,trace) for r in split["confirmation"]] for k in keys]
     for name in finalists: evaluate(name,"confirmation")
     report["scope"]="local operator diagnostics, not portable LoRA quality; no promotion gate"
     return report
@@ -99,17 +112,28 @@ def run_pair(weights,keys,stock,trace,split,int8_module,steps):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--raw",type=Path,required=True)
-    p.add_argument("--stock",type=Path,required=True,help="V5 comparison's stock directory")
+    group=p.add_mutually_exclusive_group(required=True)
+    group.add_argument("--stock",type=Path,help="V5 comparison's stock directory")
+    group.add_argument("--comparisons",type=Path,help="find latest completed V5 stock under this directory")
     p.add_argument("--out",type=Path,required=True,help="fresh JSON report path")
     p.add_argument("--fit-steps",type=int,default=40)
     p.add_argument("--threads",type=int,default=4)
     a=p.parse_args()
+    if a.comparisons:
+        stocks=sorted(a.comparisons.glob("littlebit-*/stock/trace.json"),key=lambda p:p.stat().st_mtime,reverse=True)
+        for t in stocks:
+            tr=json.loads(t.read_text(encoding="utf-8"))
+            if tr.get("case")=="stock" and tr.get("completed_updates") and (t.parent/"prepare.json").is_file():
+                a.stock=t.parent
+                break
+        if a.stock is None: p.error("no completed stock trace found")
     if a.out.exists(): p.error("fresh output path required")
     if a.fit_steps<1 or a.threads<1: p.error("positive fit steps and threads required")
     a.out.parent.mkdir(parents=True,exist_ok=True)
     torch.set_num_threads(a.threads)
     started=time.monotonic()
     result={"status":"running","protocol":"private-correction-v1","pairs":[],"fit_steps":a.fit_steps,
+            "stock_directory":str(a.stock.resolve()),"rank_fractions":[0.5,1.0],
             "capture_teacher":"native INT8 training trajectory; local references Raw BF16 and CPU native INT8",
             "limitations":"image-key-disjoint stock training captures, not independent LoRA holdout; tiny sample; CPU only"}
     try:
