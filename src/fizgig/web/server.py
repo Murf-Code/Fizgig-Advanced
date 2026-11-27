@@ -2290,6 +2290,19 @@ def _run_stages(stages, out_dir):
             if str((_run.get("progress") or {}).get("note") or "").startswith("Caching"):
                 _run["progress"] = None          # the last stage's cache count isn't this stage's
         append_log(f"\n▶ {stage.name}\n")
+        if diag_case == "a-existing" and stage.name == "Training":
+            try:
+                from fizgig.web import cache_regression
+                if cache_regression.finish_baseline(out_dir):
+                    append_log("[cache-regression] Private baseline cached and copied into all four arms.\n")
+            except (OSError, ValueError, KeyError, RuntimeError) as e:
+                append_log(f"✖ Cache regression baseline preparation failed: {e}\n" + _log_where())
+                with _lock:
+                    _run.update(state="failed", proc=None, ended_at=time.time())
+                history.end(_run.get("history_id"), "failed", _run.get("progress"))
+                push_notifications.emit("failed", _run.get("lora"))
+                webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
+                return
         try:
             with _lock:
                 # Atomically claim the next stage and its subprocess. Stop must
@@ -5046,6 +5059,7 @@ class Handler(BaseHTTPRequestHandler):
                                                     masked=bool(mask_count), dataset_values=dataset_values)
                 entries, plans = [], []
                 source = None
+                baseline_config = None
                 held = None
                 for vals in configs:
                     desc, inputs, plan = _plan("krea2", vals, folder)
@@ -5061,13 +5075,23 @@ class Handler(BaseHTTPRequestHandler):
                         return self.json({"error": "Validation hold-out changed between diagnostic plans."}, 400)
                     if source is None:
                         source = launch.dataset_toml(desc, inputs)
+                        if profile == "4070-ti":
+                            baseline_config = next((body for path, body in plan.files
+                                                    if os.path.basename(path) == "baseline-dataset.toml"), None)
+                            if baseline_config is None:
+                                return self.json({"error": "Baseline preparation plan missing."}, 400)
                     plans.append({"case": vals["__cache_regression"], "dataset_toml": plan.dataset_toml,
                                   "stages": [{"name": s.name, "cmd": s.cmd} for s in plan.stages]})
                     entries.append(("krea2", vals, folder, name, out))
                 output = os.path.join(root, group)
                 os.makedirs(output, exist_ok=False)
                 try:
-                    snapshot = cache_regression.prepare_caches(source, configs, desc.arch_id, held or [])
+                    if profile == "4070-ti":
+                        snapshot = {"baseline_pending": True, "baseline_config": baseline_config,
+                                    "arch": desc.arch_id, "holdout": held or [], "files": []}
+                    else:
+                        snapshot = cache_regression.prepare_caches(source, configs, desc.arch_id, held or [])
+                        snapshot["provenance"] = "original_existing_cache"
                     with open(os.path.join(output, "diagnostic-settings.json"), "w", encoding="utf-8") as f:
                         json.dump({"dataset": folder, "gpu_profile": profile, "cases": configs, "snapshot": snapshot, "plans": plans}, f, indent=2)
                 except (OSError, ValueError) as exc:
