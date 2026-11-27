@@ -1278,7 +1278,11 @@ def _plan(family_key, values, image_folder, resume="", ft_continue=None, models=
                       resuming=True)
     if resume or ft_continue or str(values.get("RESUME_TRAINING") or "").strip():
         inputs["recache"] = _size_changed(name, out_dir, values)
-    return desc, inputs, launch.plan(desc, inputs)
+    plan = launch.plan(desc, inputs)
+    if values.get("__cache_regression"):
+        from fizgig.web import cache_regression
+        cache_regression.configure_plan(desc, inputs, plan, values, launch)
+    return desc, inputs, plan
 
 
 _SIZE_KEYS = ("DATASET_MEGAPIXELS", "CLIP_MEGAPIXELS")
@@ -2120,6 +2124,12 @@ def _start_one(family_key, values, image_folder, resume, ft_continue, note, mode
     desc, inputs, plan = _plan(family_key, values, image_folder, resume, ft_continue, models)
     if plan.problems:
         return {"problems": plan.problems}
+    if values and values.get("__cache_regression"):
+        from fizgig.web import cache_regression
+        try:
+            cache_regression.verify_start(plan, values)
+        except (OSError, ValueError, KeyError, StopIteration) as exc:
+            return {"error": f"Cache regression: {exc}"}
     lk = desc.preview_look() if desc is not None else None
     if lk is not None and lk.fetch_on_use and (values or {}).get("FAMILY_PREVIEW_LOOK"):
         # a run started with the SFT look ticked (from the queue, a script or a helper's lead) fetches it as the
@@ -2264,6 +2274,7 @@ def _run_stages(stages, out_dir):
         _run["training_at"] = None             # the Training stage's start (the run summary's Training time)
         _stats["vram_peak"] = 0                # this run's peak, not the server's
     push_notifications.emit("started", _run.get("lora"))
+    diag_case = (_run.get("values") or {}).get("__cache_regression")
     for stage in stages:
         with _lock:
             if _run["state"] == "stopped":
@@ -2304,6 +2315,12 @@ def _run_stages(stages, out_dir):
             return
         mem = oom.Watch()                       # GPU / system-RAM messages, and the Auto plan the trainer chose
         for line in proc.stdout:
+            if diag_case:
+                try:
+                    with open(os.path.join(out_dir, "diagnostic.log"), "a", encoding="utf-8") as f:
+                        f.write(line)
+                except OSError:
+                    pass
             append_log(line)
             _es = early_stop_note(line)
             if _es:
@@ -2342,6 +2359,9 @@ def _run_stages(stages, out_dir):
                         if upd.get("kind") == "training":
                             history.feed_loss(_run.get("history_id"), upd.get("epoch"), upd.get("average_loss_text"))
         ret = proc.wait()
+        if diag_case:
+            with open(os.path.join(out_dir, "diagnostic.log"), "a", encoding="utf-8") as f:
+                f.write(f"\n[cache-regression] {stage.name} exit code {ret}\n")
         with _lock:
             stopped = _run["state"] == "stopped"
         if stopped:
@@ -2358,7 +2378,7 @@ def _run_stages(stages, out_dir):
             with _lock:
                 _run.update(state="failed", proc=None, ended_at=time.time())
             history.end(_run.get("history_id"), "failed", _run.get("progress"))
-            if kind and _oom_recover(kind, stage.name, mem.plan):
+            if kind and not diag_case and _oom_recover(kind, stage.name, mem.plan):
                 return                           # it carries on by itself: the queue waits for that run
             push_notifications.emit("oom" if kind else "failed", _run.get("lora"))
             webqueue.on_run_ended("failed", _run.get("lora"), _queue_starter)
@@ -4994,6 +5014,49 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": f"{name} is already there."}, 400)
                 os.makedirs(new)
                 return self.json({"ok": True, "path": new})
+            if path == "/api/queue/cache-regression":
+                from fizgig.web import cache_regression
+                folder = str(b.get("image_folder") or "").strip()
+                prompt = str(b.get("prompt") or "").strip()
+                if b.get("family") != "krea2" or not os.path.isdir(folder):
+                    return self.json({"error": "Select Krea 2 and the original training folder."}, 400)
+                if any(h.get("share") for h in (load_prefs().get("helpers") or [])):
+                    return self.json({"error": "Disable shared training helpers for this diagnostic."}, 400)
+                with _lock:
+                    busy = _run["state"] in ("starting", "running", "paused")
+                if busy or captions.status()["state"] in ("loading", "running", "translating"):
+                    return self.json({"error": "Finish or stop the active run/caption job before snapshotting the cache."}, 400)
+                group = "cache-regression-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+                root = os.path.join(default_output_dir(), "polora_diagnostics")
+                configs = cache_regression.settings(group, root, prompt)
+                entries, plans = [], []
+                source = None
+                for vals in configs:
+                    desc, inputs, plan = _plan("krea2", vals, folder)
+                    if plan.problems:
+                        return self.json({"problems": [vals["__cache_regression"] + ": " + p for p in plan.problems]}, 400)
+                    out, name = inputs["LORA_OUTPUT_DIR"], inputs["LORA_NAME"]
+                    if os.path.exists(out) or name_taken(vals, inputs) or webqueue.clashes(out, name):
+                        return self.json({"error": "Diagnostic output already exists."}, 400)
+                    if source is None:
+                        source = launch.dataset_toml(desc, inputs)
+                    plans.append({"case": vals["__cache_regression"], "dataset_toml": plan.dataset_toml,
+                                  "stages": [{"name": s.name, "cmd": s.cmd} for s in plan.stages]})
+                    entries.append(("krea2", vals, folder, name, out))
+                output = os.path.join(root, group)
+                os.makedirs(output, exist_ok=False)
+                try:
+                    snapshot = cache_regression.prepare_caches(source, configs, desc.arch_id)
+                    with open(os.path.join(output, "diagnostic-settings.json"), "w", encoding="utf-8") as f:
+                        json.dump({"dataset": folder, "cases": configs, "snapshot": snapshot, "plans": plans}, f, indent=2)
+                except (OSError, ValueError) as exc:
+                    # Only this newly created diagnostic group is removed, never the source cache.
+                    shutil.rmtree(output, ignore_errors=True)
+                    return self.json({"error": str(exc)}, 400)
+                items = webqueue.add_many(entries)
+                if not webqueue.status()["held"]:
+                    webqueue.start_next(_queue_starter)
+                return self.json({"ok": True, "ids": [i["id"] for i in items], "output": output})
             if path in ("/api/queue/add", "/api/queue/update"):   # Add to queue (or a queued run edited): checked
                 fam, vals, folder = b.get("family", ""), b.get("values") or {}, b.get("image_folder") or ""  # like Start
                 editing = str(b.get("id") or "") if path == "/api/queue/update" else ""
