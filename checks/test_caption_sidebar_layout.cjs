@@ -13,7 +13,7 @@ assert.match(app,/right\.querySelector\("\.studio-image-tags-heading"\)/);
 assert.match(app,/right\.querySelector\("\.studio-add-tag"\),tags,word/);
 assert.match(app,/while\(right\.firstChild\)tagIndexPane\.append\(right\.firstChild\)/);
 assert.match(app,/rightDock\.append\(showAll,showAi\)/);
-assert.match(app,/right\.append\(editorPane,tagHeader,tagIndexPane,aiPane\)/);
+assert.match(app,/right\.append\(editorPane,tagHeader,tagHeightGrip,tagIndexPane,aiPane\)/);
 assert.match(app,/const showAll=btn\("All Tags",\(\)=>\{/);
 assert.match(app,/const showAi=btn\("Auto-Captioner",\(\)=>\{/);
 assert.doesNotMatch(app,/editorPane\.hidden\s*=/);
