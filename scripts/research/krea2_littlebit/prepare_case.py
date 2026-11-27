@@ -147,6 +147,7 @@ def main():
             cached=None; cached_specs={}
             if cache and cache.is_file():
                 try:
+                    result["compressed_cache"]["sha256"]=pc.verify_checksum(cache)
                     candidate=stack.enter_context(safe_open(str(cache),framework="pt",device="cpu"))
                     cached_specs=pc.inspect_archive(candidate,cache_ident,shapes)
                     cached=candidate
@@ -226,6 +227,7 @@ def main():
             if full_cache:
                 try:
                     result["compressed_cache"]["published"]=pc.link_or_copy(archive,cache)
+                    result["compressed_cache"]["sha256"]=pc.write_checksum(cache)
                 except (OSError,ValueError) as exc:
                     result["compressed_cache"]["publish_warning"]=str(exc)
                     print(f"[LittleBit] Run archive ready; persistent cache not published: {exc}",flush=True)

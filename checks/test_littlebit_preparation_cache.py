@@ -6,7 +6,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"scripts/research/krea
 from native_codec import encode,linear
 from screen import evaluate
 from fast_screen import q6_probes
-from preparation_cache import references,link_or_copy
+from preparation_cache import references,link_or_copy,write_checksum,verify_checksum
 
 
 def test_q6_probe_reuse_exact():
@@ -35,3 +35,13 @@ def test_archive_link(tmp_path):
     assert link_or_copy(source,dest) in ("hardlink","copy")
     assert dest.read_bytes()==source.read_bytes()
     with pytest.raises(FileExistsError): link_or_copy(source,dest)
+
+
+def test_cache_checksum_rejects_damage(tmp_path):
+    path=tmp_path/"archive.safetensors"
+    path.write_bytes(b"archive")
+    expected=write_checksum(path)
+    assert verify_checksum(path)==expected
+    path.write_bytes(b"damage!")
+    with pytest.raises(ValueError,match="SHA256 mismatch"):
+        verify_checksum(path)

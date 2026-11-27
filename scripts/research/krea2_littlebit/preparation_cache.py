@@ -69,6 +69,29 @@ def link_or_copy(source,dest):
             tmp.unlink(missing_ok=True)
 
 
+def checksum_path(archive):
+    return archive.with_suffix(".sha256")
+
+
+def write_checksum(archive):
+    path=checksum_path(archive)
+    tmp=path.with_name(path.name+"."+uuid.uuid4().hex+".tmp")
+    value=sha256(archive)
+    try:
+        tmp.write_text(value+"\n",encoding="ascii")
+        os.replace(tmp,path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return value
+
+
+def verify_checksum(archive):
+    expected=checksum_path(archive).read_text(encoding="ascii").strip()
+    if len(expected)!=64 or sha256(archive)!=expected:
+        raise ValueError("compressed archive SHA256 mismatch")
+    return expected
+
+
 def reference_path(root, ident, key):
     return root/"stock-projection-reference"/digest(ident)/(key+".safetensors")
 
