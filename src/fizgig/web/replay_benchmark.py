@@ -150,6 +150,7 @@ def final_settings(group, output_root, *, dynamic_only=False):
     v = next(x for x in settings(group, output_root)
              if x["__replay_compare"] == "calibration-unrestricted-lr450")
     return [{**v, "__replay_compare":case, "SEED":seed,
+             "LEARNING_RATE":"0.00025" if mode == "dynamic" else v["LEARNING_RATE"],
              "FAMILY_EMA":"0.98 (recommended)",
              "SAVE_STATE":False, "SAVE_STATE_ON_TRAIN_END":False,
              "KREA2_SELECTIVE_BLOCK_CHECK":mode != "full",
@@ -205,7 +206,9 @@ def adjust_plan(desc, values, plan):
             stages[0].cmd.extend(["--family_option", "movement_dual=1"])
     if case in FINAL_CASES:
         mode, seed = FINAL_CASES[case]
-        if (values.get("LEARNING_RATE") != "0.00045" or values.get("MAX_TRAIN_EPOCHS") != "5"
+        reference_lr = mode == "dynamic" and values.get("LEARNING_RATE") == "0.00025"
+        if ((not reference_lr and values.get("LEARNING_RATE") != "0.00045")
+                or values.get("OPTIMIZER_TYPE") != "muon" or values.get("MAX_TRAIN_EPOCHS") != "5"
                 or values.get("KREA2_SELECTIVE_BLOCK_CHECK") != (mode != "full")
                 or not values.get("SAMPLE_ENABLED") or values.get("SEED") != seed
                 or values.get("VALIDATION_SEED") != "42"):
@@ -213,6 +216,8 @@ def adjust_plan(desc, values, plan):
         stages[0].cmd.extend(["--family_option","replay_research=calibration",
                               "--family_option","replay_calibration_lr=0.00045",
                               "--family_option",f"replay_final={mode}"])
+        if reference_lr:
+            stages[0].cmd.extend(["--family_option", "replay_lr_convention=adamw_reference"])
         if mode in ("balanced","compensated"):
             stages[0].cmd.extend(["--family_option","selective_strategy=balanced_step",
                                   "--family_option","selective_budget=14",

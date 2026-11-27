@@ -2484,7 +2484,7 @@ A small wooden boat on a quiet lake surrounded by autumn trees, distant mountain
       const mode = document.getElementById("streamSyncMode");
       const queue = document.getElementById("btnQueue");
       const note = document.getElementById("streamSyncNote");
-      const description = "Dynamic Selective 7G.1 · 2 runs × 5 epochs · paired seeds 42/43 · rank 32 · Muon · INT8 · 22 swaps · samples enabled";
+      const description = "Dynamic Selective 7G.1 · 2 runs × 5 epochs · paired seeds 42/43 · LR 0.00025 (Muon native 0.00045) · rank 32 · INT8 · 22 swaps · samples enabled";
       let busy = false;
       mode.addEventListener("change", () => {
         note.textContent = mode.checked ? description : "";

@@ -1577,6 +1577,22 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         if (final_mode not in MODES or research_mode != "calibration" or movement_pilot_step
                 or (family_options or {}).get("movement_allocation") is not None):
             raise RuntimeError("Invalid isolated final replay benchmark")
+    lr_convention = (family_options or {}).get("replay_lr_convention")
+    if lr_convention is not None:
+        if (lr_convention != "adamw_reference" or final_mode != "dynamic"
+                or desc.key != "krea2" or finetune or resume_state_dir
+                or adaptive_lr or per_image_lr or str(optimizer_type).strip().lower() != "muon"
+                or float(learning_rate) != .00025):
+            raise RuntimeError("AdamW-reference conversion is restricted to fresh fixed-LR 7G.1 Muon runs")
+        from fizgig.training.replay_lr import reference_rate
+        requested_lr, learning_rate, lr_factor = reference_rate(optimizer_type, learning_rate)
+        # Convert before optimizer and scheduler construction; exactly once.
+        # Muon's matrix RMS adjustment and Selective learning_multiplier remain independent.
+        _rr.record(logger, kind="lr_convention", convention=lr_convention,
+                   optimizer="muon", reference_lr=requested_lr,
+                   native_lr=learning_rate, factor=lr_factor)
+        logger.info("[learning rate] AdamW reference %.5g × %.3g -> Muon native %.5g",
+                    requested_lr, lr_factor, learning_rate)
     allocation_mode = (family_options or {}).get("movement_allocation")
     if allocation_mode is not None:
         from fizgig.training.replay_attenuation import MODES

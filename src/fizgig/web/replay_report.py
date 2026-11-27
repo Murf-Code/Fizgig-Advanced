@@ -337,6 +337,19 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                                 raise ValueError("invalid final mask or multiplier")
                         if mode == "dynamic":
                             from fizgig.training.replay_final import REFERENCE_INIT, DYNAMIC_CAP
+                            if run["settings"]["LEARNING_RATE"] == "0.00025":
+                                from fizgig.training.replay_lr import reference_rate
+                                ref_lr, native_lr, factor = reference_rate("muon", .00025)
+                                conversions = [r for r in rows if r.get("kind")=="lr_convention"]
+                                optimizers = [r for r in rows if r.get("kind")=="optimizer"]
+                                if (len(conversions)!=1 or conversions[0] != {
+                                        "kind":"lr_convention", "convention":"adamw_reference",
+                                        "optimizer":"muon", "reference_lr":ref_lr,
+                                        "native_lr":native_lr, "factor":factor}
+                                        or len(optimizers)!=1 or not optimizers[0]["groups"]
+                                        or any(g["lr"]!=native_lr or g["adjust_lr_fn"]!="match_rms_adamw"
+                                               for g in optimizers[0]["groups"])):
+                                    raise ValueError("incorrect AdamW-reference LR conversion")
                             control = [r for r in rows if r.get("kind")=="dynamic_control"]
                             if (len(control)!=1 or control[0].get("reference")!="7G"
                                     or control[0].get("cap")!=DYNAMIC_CAP
@@ -367,6 +380,8 @@ def update(output, case, status, *, log_path=None, reason="", wall_seconds=None)
                             run["final_replay"]["first_update_audit"] = steps[0]["first_update_audit"]
                         if mode == "dynamic":
                             scales = [a["multiplier"] for a in steps]
+                            if run["settings"]["LEARNING_RATE"] == "0.00025":
+                                run["final_replay"].update(lr_convention=conversions[0])
                             run["final_replay"].update(reference="7G", reference_initial_match=True,
                                 mean_multiplier=sum(scales)/len(scales),
                                 max_multiplier=max(scales),
