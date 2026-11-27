@@ -2569,18 +2569,25 @@
         }
         const prompt = window.prompt("Enter one fixed preview prompt, including the character trigger word.");
         if (!prompt || !prompt.trim()) return;
-        if (!window.confirm("Queue four two-epoch INT8 PoLoRA runs using the fixed " + profile.label + " profile? Use the button matching your GPU. Finish or remove any existing queued jobs first. Masking is enabled only if usable masks exist. Copies the existing complete cache (including matching validation hold-outs) into separate directories, then regenerates selected axes. " + (profile.key === "3090" ? "RTX 3090 uses the original fixed 1 MP recipe. " : "RTX 4070 Ti uses your saved Krea 2 Target Megapixels, bucket and caption settings; match them to the existing cache before proceeding. ") + " Original caches are not changed. Do not edit images/captions/settings while testing.")) return;
+        if (!window.confirm("Queue four two-epoch INT8 PoLoRA runs using " + profile.label + "? Finish or remove existing queued jobs first. Masks are automatic. " + (profile.key === "3090" ? "The 3090 uses the original fixed 1 MP recipe and prefers compatible existing caches. If those are unavailable, it creates a private baseline first. " : "The 4070 Ti uses your saved Krea 2 dataset settings and creates a fresh private baseline first. ") + "No original caches are changed. Do not edit images/captions/settings while testing.")) return;
         profiles.forEach(p => { p.button.disabled = true; });
-        note.textContent = "Checking and copying the existing cache...";
+        note.textContent = "Preparing the cache comparison...";
         try {
-          const response = await fetch("/api/queue/cache-regression", {
-            method: "POST",
-            headers: {"Content-Type": "application/json", "X-Fizgig-Token": document.querySelector('meta[name="fizgig-token"]').content},
-            body: JSON.stringify({family: family.value, image_folder: folder, prompt: prompt.trim(), gpu_profile: profile.key})
-          });
-          const result = await response.json();
+          const request = async fresh => {
+            const response = await fetch("/api/queue/cache-regression", {
+              method: "POST",
+              headers: {"Content-Type": "application/json", "X-Fizgig-Token": document.querySelector('meta[name="fizgig-token"]').content},
+              body: JSON.stringify({family: family.value, image_folder: folder, prompt: prompt.trim(), gpu_profile: profile.key, fresh_baseline: fresh})
+            });
+            return response.json();
+          };
+          let result = await request(profile.key === "4070-ti");
+          if (!result.ok && result.can_prepare_baseline) {
+            note.textContent = "Original cache unavailable; preparing a separate fresh baseline...";
+            result = await request(true);
+          }
           if (!result.ok) throw new Error(result.error || (result.problems || []).join("; ") || "Queue failed");
-          note.textContent = profile.label + ": four two-epoch PoLoRA runs queued. Look for [cache-regression] in the log. Samples, logs and manifest: " + result.output;
+          note.textContent = profile.label + (result.fresh_baseline ? ": private baseline will be created before training. " : ": existing cache snapshotted. ") + "Four two-epoch PoLoRA runs queued. Look for [cache-regression] in the log. Samples, logs and manifest: " + result.output;
         } catch (error) {
           note.textContent = error.message || String(error);
         } finally {
