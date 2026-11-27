@@ -131,7 +131,7 @@ def run(w,key,args,stock,trace,split,int8,archive,row,save):
     save()
 
 
-def main():
+def main(run_fn=run, protocol="binary-rank-v1"):
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--raw",type=Path,required=True)
     ap.add_argument("--stock",type=Path,required=True)
@@ -145,7 +145,7 @@ def main():
     torch.set_num_threads(a.threads)
     a.out.parent.mkdir(parents=True,exist_ok=True)
     start=time.monotonic()
-    report={"status":"running","protocol":"binary-rank-v1","torch":torch.__version__,
+    report={"status":"running","protocol":protocol,"torch":torch.__version__,
             "threads":a.threads,"max_rank":a.max_rank,"projections":[],
             "scope":"offline local actions; no compression archive or training; no new independent LoRA holdout"}
     def save():
@@ -181,7 +181,7 @@ def main():
                 if w.dtype!=torch.bfloat16: raise ValueError("Raw BF16 required")
                 row={"key":key,"status":"running"}
                 report["projections"].append(row)
-                run(w,key,a,a.stock,trace,split,int8,archive,row,save)
+                run_fn(w,key,a,a.stock,trace,split,int8,archive,row,save)
                 del w
         if codec.sha256(a.raw)!=raw_hash: raise ValueError("raw changed")
         if a.archive and codec.sha256(a.archive)!=report["archive_sha256"]: raise ValueError("archive changed")
