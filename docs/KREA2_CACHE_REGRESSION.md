@@ -1,6 +1,6 @@
 # Krea 2 cache regression queue
 
-This is a diagnostic, not a production cache fix. The original seven-arm PoLoRA NaN test remains available.
+This is a diagnostic, not a production cache fix. The former seven-arm PoLoRA NaN test is retired from the Run card and queue API; shared numerical instrumentation is retained.
 
 ## Run
 
