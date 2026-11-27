@@ -131,7 +131,7 @@ def run(w,key,args,stock,trace,split,int8,archive,row,save):
     save()
 
 
-def main(run_fn=run, protocol="binary-rank-v1"):
+def main(run_fn=run, protocol="binary-rank-v1", fit_partition_used=False):
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--raw",type=Path,required=True)
     ap.add_argument("--stock",type=Path,required=True)
@@ -163,7 +163,7 @@ def main(run_fn=run, protocol="binary-rank-v1"):
         report["split"]={k:[{"file":r["file"],"step":r["step"],"sha256":codec.sha256(a.stock/r["file"])}
                            for r in records] for k,records in split.items()}
         # Fit partition is reserved for a later task-aware fitting experiment.
-        report["fit_partition_used"]=False
+        report["fit_partition_used"]=fit_partition_used
         save()
         root=Path(__file__).resolve().parents[3]
         int8=codec.import_file("binary_int8",root/"src/fizgig/modules/int8_train.py")
