@@ -127,6 +127,17 @@ def configure_plan(desc, inputs, plan, values, launch):
         stages.append(launch.Stage("Cache Preparation", lat))
     if fresh_text:
         stages.append(launch.Stage("Text Encoder Caching", txt))
+    # All 4070 Ti arms compare against one freshly created, private baseline.
+    # Arm A builds it before training; the server snapshots it into every arm.
+    seed_baseline = values.get("__cache_gpu_profile") == "4070-ti" and case == "a-existing"
+    if seed_baseline:
+        baseline = dest.parent.parent / "baseline-cache"
+        baseline_config = str(dest.parent.parent / "baseline-dataset.toml")
+        plan.files.append((baseline_config, isolated_config(body, baseline)))
+        for cmd in (lat, txt):
+            cmd[cmd.index("--dataset_config") + 1] = baseline_config
+        stages = [launch.Stage("Baseline Latent Caching", lat),
+                  launch.Stage("Baseline Text Caching", txt)]
     prompt = str(values.get("__cache_prompt") or "").strip()
     if not prompt or len(prompt) > 2000 or "\n" in prompt or "\r" in prompt:
         plan.problems.append("Provide one fixed sample prompt (up to 2000 characters).")
@@ -141,7 +152,8 @@ def configure_plan(desc, inputs, plan, values, launch):
                          "--vae", lat[lat.index("--model") + 1],
                          "--text_encoder", txt[txt.index("--model") + 1]])
     plan.stages = stages + train
-    plan.dirs.append(str(dest))
+    if not seed_baseline:
+        plan.dirs.append(str(dest))
     plan.console.append(f"[cache-regression] {values.get('__cache_gpu_profile', 'unknown GPU')} / {case}: PoLoRA, 2 epochs, isolated cache {dest}.")
 
 
@@ -176,8 +188,8 @@ def prepare_caches(source_body, configs, arch, held_paths=()):
     selector = BucketSelector(tuple(g["resolution"]), g.get("enable_bucket", True),
                               g.get("bucket_no_upscale", True), 16)
     tags = TagSettings.from_params(shuffle=g.get("tag_shuffle", False),
-        keep_first=g.get("keep_first_tags", 1), tag_dropout=g.get("tag_dropout", 0),
-        caption_dropout=g.get("caption_dropout", 0), variants=g.get("caption_variants", 4),
+        keep_first=g.get("keep_first_tags", 1), tag_dropout=float(g.get("tag_dropout", 0)) / 100,
+        caption_dropout=float(g.get("caption_dropout", 0)) / 100, variants=g.get("caption_variants", 4),
         keep_words=ds.get("keep_words") or g.get("keep_words"), cap=g.get("caption_variant_cap", 4))
     expected = []
     for p in paths:
@@ -251,6 +263,13 @@ def verify_start(plan, values):
         raise ValueError("Diagnostic plan changed after snapshot; start a new comparison.")
     if any(out.glob("*.safetensors")) or (out / "diagnostic.log").exists():
         raise ValueError("This cache regression arm has already run; create a new comparison.")
+    if manifest["snapshot"].get("baseline_pending"):
+        if values.get("__cache_gpu_profile") != "4070-ti" or case != "a-existing":
+            raise ValueError("Baseline preparation has not completed; start a new comparison.")
+        for p in (out / "isolated-cache", out.parent / "baseline-cache"):
+            if p.exists() and any(p.iterdir()):
+                raise ValueError("Baseline or arm cache already contains files; start a new comparison.")
+        return
     fresh_lat, fresh_text = CASES[case]
     expected = {r["file"]: r for r in manifest["snapshot"]["files"]
                 if (r["axis"] == "latents" and not fresh_lat) or (r["axis"] == "text" and not fresh_text)}
@@ -261,6 +280,32 @@ def verify_start(plan, values):
     for name, record in expected.items():
         if digest(cache / name) != record["sha256"]:
             raise ValueError(f"Isolated cache bytes changed before start: {name}.")
+
+
+def finish_baseline(out_dir):
+    """After both private cache stages succeed, snapshot before A trains."""
+    out = Path(out_dir)
+    path = out.parent / "diagnostic-settings.json"
+    with path.open(encoding="utf-8") as f:
+        manifest = json.load(f)
+    pending = manifest["snapshot"]
+    if not pending.get("baseline_pending"):
+        return False
+    if manifest.get("gpu_profile") != "4070-ti" or out.name != "a-existing":
+        raise ValueError("Unexpected baseline preparation run.")
+    body = (out.parent / "baseline-dataset.toml").read_text(encoding="utf-8")
+    if body != pending["baseline_config"]:
+        raise ValueError("Baseline dataset recipe changed.")
+    _, source = source_config(body)
+    if source != (out.parent / "baseline-cache").resolve():
+        raise ValueError("Baseline cache is not isolated.")
+    snap = prepare_caches(body, manifest["cases"], pending["arch"], pending["holdout"])
+    snap["provenance"] = "fresh_private_baseline"
+    manifest["snapshot"] = snap
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    os.replace(temp, path)
+    return True
 
 
 def holdout_paths(plan):
