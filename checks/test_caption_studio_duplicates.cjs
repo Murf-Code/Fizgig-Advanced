@@ -8,7 +8,7 @@ const image=fs.readFileSync("src/fizgig/web/image_edit.py","utf8");
 const css=fs.readFileSync("src/fizgig/web/static/style.css","utf8");
 const duplicates=fs.readFileSync("src/fizgig/web/caption_duplicates.py","utf8");
 assert.match(app,/function captionDuplicatePanel\(ext\)/);
-const duplicatePanel=app.slice(app.indexOf("function captionDuplicatePanel(ext)"),app.indexOf("function captionDuplicatePanel(ext)")+16000);
+const duplicatePanel=app.slice(app.indexOf("function captionDuplicatePanel(ext)"),app.indexOf("\nfunction studioHistory()",app.indexOf("function captionDuplicatePanel(ext)")));
 assert.doesNotMatch(duplicatePanel,/text:"View caption"/);
 assert.match(app,/\.studio-duplicate-card > img/);
 assert.match(app,/\.st-preview, \.studio-duplicate-cards/);
@@ -26,7 +26,7 @@ assert.match(css,/\.studio-duplicate-caption\.expanded/);
 assert.match(duplicatePanel,/text:"Side by side"/);
 assert.match(duplicatePanel,/text:"Overlay"/);
 assert.match(duplicatePanel,/choice\.kept\.size\+" kept/);
-assert.match(duplicatePanel,/text:" Merge tags into kept images"/);
+assert.match(duplicatePanel,/el\("label",\{class:"field-row"\},copyBox," Merge tags into kept images"\)/);
 assert.doesNotMatch(duplicatePanel,/text:"Difference"/);
 
 
@@ -35,7 +35,7 @@ assert.match(app,/state\.strictness/);
 assert.match(app,/choice\.kept\.add\(pic\.path\)/);
 assert.match(app,/function captionDuplicatePanel[\s\S]*"\/api\/captions\/duplicates\/merge_group"/);
 assert.match(app,/\/api\/captions\/remove/);
-assert.match(app,/Move unkept images to removed\//);
+assert.match(app,/Move the unkept images, captions and masks into removed\//);
 assert.match(app,/Preview copied tags/);
 assert.match(app,/Apply copied tags to keepers/);
 assert.match(server,/path == "\/api\/captions\/duplicates\/scan"/);
