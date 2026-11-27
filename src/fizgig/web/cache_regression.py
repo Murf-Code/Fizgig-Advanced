@@ -98,6 +98,15 @@ def configure_plan(desc, inputs, plan, values, launch):
     if len(train) != 1 or any(s.name not in ("Training", "Cache Preparation", "Text Encoder Caching") for s in plan.stages):
         plan.problems.append("Cache regression requires a single standard training stage.")
         return
+    # Fail closed if the launcher ever substitutes a normal training recipe.
+    cmd = train[0].cmd
+    expected = {"--max_train_epochs": "2", "--optimizer_type": "polora",
+                "--output_dir": str(inputs["LORA_OUTPUT_DIR"]),
+                "--dataset_config": str(inputs["DATASET_CONFIG"])}
+    for flag, want in expected.items():
+        if cmd.count(flag) != 1 or cmd.index(flag) + 1 >= len(cmd) or str(cmd[cmd.index(flag) + 1]) != want:
+            plan.problems.append(f"Cache regression refuses unexpected training argument {flag}; expected {want}.")
+            return
     try:
         dest = Path(inputs["LORA_OUTPUT_DIR"]) / "isolated-cache"
         body = isolated_config(plan.dataset_toml, dest)
@@ -133,7 +142,7 @@ def configure_plan(desc, inputs, plan, values, launch):
                          "--text_encoder", txt[txt.index("--model") + 1]])
     plan.stages = stages + train
     plan.dirs.append(str(dest))
-    plan.console.append(f"[cache-regression] {case}: isolated cache, fixed validation hold-out, two epochs.")
+    plan.console.append(f"[cache-regression] {values.get('__cache_gpu_profile', 'unknown GPU')} / {case}: PoLoRA, 2 epochs, isolated cache {dest}.")
 
 
 def digest(path):
