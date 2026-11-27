@@ -5055,8 +5055,10 @@ class Handler(BaseHTTPRequestHandler):
                 if profile == "4070-ti":
                     saved = (load_state().get("values") or {}).get("krea2") or {}
                     dataset_values = {**form.DEFAULTS, **saved}
+                fresh_baseline = profile == "4070-ti" or b.get("fresh_baseline") is True
                 configs = cache_regression.settings(group, root, prompt, gpu_profile=profile,
-                                                    masked=bool(mask_count), dataset_values=dataset_values)
+                                                    masked=bool(mask_count), dataset_values=dataset_values,
+                                                    fresh_baseline=fresh_baseline)
                 entries, plans = [], []
                 source = None
                 baseline_config = None
@@ -5075,7 +5077,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self.json({"error": "Validation hold-out changed between diagnostic plans."}, 400)
                     if source is None:
                         source = launch.dataset_toml(desc, inputs)
-                        if profile == "4070-ti":
+                        if fresh_baseline:
                             baseline_config = next((body for path, body in plan.files
                                                     if os.path.basename(path) == "baseline-dataset.toml"), None)
                             if baseline_config is None:
@@ -5086,7 +5088,7 @@ class Handler(BaseHTTPRequestHandler):
                 output = os.path.join(root, group)
                 os.makedirs(output, exist_ok=False)
                 try:
-                    if profile == "4070-ti":
+                    if fresh_baseline:
                         snapshot = {"baseline_pending": True, "baseline_config": baseline_config,
                                     "arch": desc.arch_id, "holdout": held or [], "files": []}
                     else:
@@ -5094,6 +5096,9 @@ class Handler(BaseHTTPRequestHandler):
                         snapshot["provenance"] = "original_existing_cache"
                     with open(os.path.join(output, "diagnostic-settings.json"), "w", encoding="utf-8") as f:
                         json.dump({"dataset": folder, "gpu_profile": profile, "cases": configs, "snapshot": snapshot, "plans": plans}, f, indent=2)
+                except cache_regression.CacheUnavailable as exc:
+                    shutil.rmtree(output, ignore_errors=True)
+                    return self.json({"error": str(exc), "can_prepare_baseline": not fresh_baseline}, 400)
                 except (OSError, ValueError) as exc:
                     # Only this newly created diagnostic group is removed, never the source cache.
                     shutil.rmtree(output, ignore_errors=True)
@@ -5105,7 +5110,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": str(exc)}, 400)
                 if not webqueue.status()["held"]:
                     webqueue.start_next(_queue_starter)
-                return self.json({"ok": True, "ids": [i["id"] for i in items], "output": output})
+                return self.json({"ok": True, "ids": [i["id"] for i in items], "output": output,
+                                  "fresh_baseline": fresh_baseline})
             if path in ("/api/queue/add", "/api/queue/update"):   # Add to queue (or a queued run edited): checked
                 fam, vals, folder = b.get("family", ""), b.get("values") or {}, b.get("image_folder") or ""  # like Start
                 editing = str(b.get("id") or "") if path == "/api/queue/update" else ""
