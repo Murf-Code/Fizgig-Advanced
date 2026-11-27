@@ -1054,8 +1054,8 @@
                 <button class="btn" id="btnQueue" title="Checked like Start, then lined up: it starts when the runs before it finish">Add to queue</button>
                 <button class="btn" id="btnCacheRegression3090" title="Four cache comparison runs: RTX 3090, 24 GB, zero block swap">Krea 2 cache test — RTX 3090</button>
                 <button class="btn" id="btnCacheRegression4070Ti" title="Four cache comparison runs: RTX 4070 Ti, 12 GB, 24 swapped blocks">Krea 2 cache test — RTX 4070 Ti</button>
-                <button class="btn" id="btnShuffleAudit3090" title="Cache-only, no training or preview">Quick shuffle audit — RTX 3090</button>
-                <button class="btn" id="btnShuffleAudit4070Ti" title="Cache-only, no training or preview">Quick shuffle audit — RTX 4070 Ti</button>
+                <button class="btn" id="btnShuffleAudit3090" title="Cache-only, no training or preview">Cache integrity audit — RTX 3090</button>
+                <button class="btn" id="btnShuffleAudit4070Ti" title="Cache-only, no training or preview">Cache integrity audit — RTX 4070 Ti</button>
                 <button class="btn btn-warning" id="btnPause">Pause</button>
                 <button class="btn" id="btnSampleNow" style="display:none" title="Make the previews now, after the current training step, without waiting for the epoch to end">Sample now</button>
                 <button class="btn btn-lilac is-off" id="btnImageLoss" style="display:none" title="Each training image's loss by epoch, against the rest of the dataset: which images are still being learned, which are done, and what the loss watch decided about each">Per-image loss</button>
@@ -2571,7 +2571,7 @@
           note.textContent = "Select Krea 2 and the original training dataset.";
           return;
         }
-        if (!window.confirm(profile.audit ? "Run a quick fresh text cache audit with shuffle ON and four variants per caption? No training or preview generation. Original caches are not changed." : "Queue four two-epoch INT8 PoLoRA runs using " + profile.label + "? The first nonempty dataset caption is used for all sample images. Finish or remove existing queued jobs first. Masks are automatic. " + (profile.key === "3090" ? "The 3090 uses the original fixed 1 MP recipe and prefers compatible existing caches. If those are unavailable, it creates a private baseline first. " : "The 4070 Ti uses your saved Krea 2 dataset settings and creates a fresh private baseline first. ") + "No original caches are changed. Do not edit images/captions/settings while testing.")) return;
+        if (!window.confirm(profile.audit ? "Run a fresh latent and text cache integrity audit with shuffle ON and four variants per caption? No training or preview generation. Original caches are not changed." : "Queue four two-epoch INT8 PoLoRA runs using " + profile.label + "? The first nonempty dataset caption is used for all sample images. Finish or remove existing queued jobs first. Masks are automatic. " + (profile.key === "3090" ? "The 3090 uses the original fixed 1 MP recipe and prefers compatible existing caches. If those are unavailable, it creates a private baseline first. " : "The 4070 Ti uses your saved Krea 2 dataset settings and creates a fresh private baseline first. ") + "No original caches are changed. Do not edit images/captions/settings while testing.")) return;
         profiles.forEach(p => { p.button.disabled = true; });
         note.textContent = "Preparing the cache comparison...";
         try {
@@ -2589,7 +2589,7 @@
             result = await request(true);
           }
           if (!result.ok) throw new Error(result.error || (result.problems || []).join("; ") || "Queue failed");
-          note.textContent = profile.audit ? "Quick shuffle audit queued. Send cache-audit.jsonl from the a-existing subfolder of " + result.output : profile.label + (result.fresh_baseline ? ": private baseline will be created before training. " : ": existing cache snapshotted. ") + "Four two-epoch PoLoRA runs queued. Look for [cache-regression] in the log. Samples, logs and manifest: " + result.output;
+          note.textContent = profile.audit ? "Cache integrity audit queued. Send cache-integrity-report.json, cache-audit.jsonl and latent-audit.jsonl from the a-existing subfolder of " + result.output : profile.label + (result.fresh_baseline ? ": private baseline will be created before training. " : ": existing cache snapshotted. ") + "Four two-epoch PoLoRA runs queued. Look for [cache-regression] in the log. Samples, logs and manifest: " + result.output;
         } catch (error) {
           note.textContent = error.message || String(error);
         } finally {

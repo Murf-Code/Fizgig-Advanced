@@ -190,18 +190,19 @@ class CacheRegressionTests(unittest.TestCase):
                     self.assertEqual(toml.loads(body)["general"]["holdout_file"],
                                      cfg["general"]["holdout_file"])
 
-    def test_short_audit_has_only_fresh_text_stage(self):
+    def test_short_audit_has_only_cache_stages(self):
         for gpu in cr.GPU_PROFILES:
             arm = cr.settings("audit", str(self.root), "", gpu_profile=gpu)[0]
             arm["__cache_audit_only"] = True
             plan = self.make_plan(arm)
             self.assertFalse(plan.problems)
-            self.assertEqual([stage.name for stage in plan.stages], ["Shuffle Text Cache Audit"])
-            cmd = plan.stages[0].cmd
-            self.assertIn("--cache_audit", cmd)
-            self.assertNotIn("--skip_existing", cmd)
-            self.assertNotIn("--sample_at_first", cmd)
-            self.assertNotIn("--optimizer_type", cmd)
+            self.assertEqual([stage.name for stage in plan.stages], ["Latent Cache Audit", "Shuffle Text Cache Audit"])
+            for stage in plan.stages:
+                cmd = stage.cmd
+                self.assertIn("--cache_audit", cmd)
+                self.assertNotIn("--skip_existing", cmd)
+                self.assertNotIn("--sample_at_first", cmd)
+                self.assertNotIn("--optimizer_type", cmd)
 
     def test_3090_defaults_to_original_cache(self):
         arms = cr.settings("test", str(self.root), "prompt", gpu_profile="3090")

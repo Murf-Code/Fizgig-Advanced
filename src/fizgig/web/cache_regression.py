@@ -149,9 +149,10 @@ def configure_plan(desc, inputs, plan, values, launch):
         if has_holdout:
             cmd.append("--holdout_cache")
     if values.get("__cache_audit_only"):
-        # No VAE, training, preview, or original-cache access.
+        # Cache-only: no training, preview or original-cache access.
+        lat.extend(["--cache_audit", str(dest.parent / "latent-audit.jsonl")])
         txt.extend(["--cache_audit", str(dest.parent / "cache-audit.jsonl")])
-        plan.stages = [launch.Stage("Shuffle Text Cache Audit", txt)]
+        plan.stages = [launch.Stage("Latent Cache Audit", lat), launch.Stage("Shuffle Text Cache Audit", txt)]
         plan.dirs.append(str(dest))
         plan.console.append("[cache-regression] Cache-only audit: shuffle ON, four variants, no training or sampling.")
         return

@@ -29,7 +29,8 @@ class CacheAuditTests(unittest.TestCase):
                 self.assertEqual(rows[1]["all_zero_rows"], 1)
                 self.assertEqual(rows[1]["valid_zero"], 2)
                 self.assertEqual(rows[1]["valid_tokens"], 2)
-                self.assertEqual(rows[2]["summary"]["readback/variant"]["embeddings"], 1)
+                self.assertEqual(rows[-1]["summary"]["readback/variant"]["embeddings"], 1)
+                self.assertEqual(rows[-1]["summary"]["compact_roundtrip"]["mismatches"], 0)
             finally:
                 cache_audit._path = None
                 cache_audit._totals.clear()

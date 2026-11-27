@@ -72,6 +72,10 @@ def _source_mtime_ns(path):
 def save_latents(desc, item, latent, controls=(), extra=None, vae_encoder=""):
     """extra: further tensors the driver stores beside the latent (e.g. a clip's audio rows), keyed as given."""
     os.makedirs(os.path.dirname(item.latent_cache_path), exist_ok=True)
+    if cache_audit.active():
+        w, h = item.bucket_size
+        expected = (16, h // 8, w // 8)
+        cache_audit.latent("latent_before_clean", item.item_key, latent, expected)
     sd = {_latent_key(latent): _clean(latent, "latent", item.item_key)}
     for k, v in (extra or {}).items():
         sd[k] = _clean(v, k, item.item_key)
@@ -84,6 +88,12 @@ def save_latents(desc, item, latent, controls=(), extra=None, vae_encoder=""):
         **({"alpha": item.alpha} if getattr(item, "alpha", "") else {}),
         **({"source_mtime_ns": ns} if ns else {}),
         **({"vae_encoder": vae_encoder} if vae_encoder else {})})
+    if cache_audit.active():
+        from safetensors.torch import load_file
+        restored = load_file(item.latent_cache_path)[_latent_key(latent)]
+        cache_audit.latent("latent_readback", item.latent_cache_path, restored, expected)
+        cache_audit.check("latent_roundtrip", item.latent_cache_path,
+                          ok=bool(torch.equal(sd[_latent_key(latent)], restored)))
 
 
 def _ref_sizes(item):
@@ -274,6 +284,8 @@ def main():
             for ds in held:
                 os.makedirs(ds.cache_directory, exist_ok=True)
             _stage(args, desc, driver, held, device, aux, pairs, variants=False)
+    if args.stage == "text" and cache_audit.active():
+        cache_audit.provenance_probe(_cached_matches)
     cache_audit.finish()
 
 
@@ -338,6 +350,9 @@ def _stage(args, desc, driver, datasets, device, aux, pairs, variants=True):
         post_process(datasets, files, paths, args.keep_cache)
         if variants:
             _encode_tag_variants(args, datasets, driver, te, desc)
+        if cache_audit.active():
+            workers = args.num_workers if args.num_workers is not None else max(1, os.cpu_count() - 1)
+            cache_audit.inspect_text(datasets, lambda caps: driver.encode_text(te(), caps), enc, workers, variants)
         te.unload(driver.unload_text_encoder)
 
 
