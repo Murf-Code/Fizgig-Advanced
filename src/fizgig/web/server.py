@@ -5036,7 +5036,12 @@ class Handler(BaseHTTPRequestHandler):
                 root = os.path.join(default_output_dir(), "polora_diagnostics")
                 # This diagnostic is restricted to the selected ordinary image folder.
                 mask_count = launch.mask_report(get_family("krea2"), {"image_folder": folder})["with"]
-                configs = cache_regression.settings(group, root, prompt, gpu_profile=profile, masked=bool(mask_count))
+                dataset_values = None
+                if profile == "4070-ti":
+                    saved = (load_state().get("values") or {}).get("krea2") or {}
+                    dataset_values = {**form.DEFAULTS, **saved}
+                configs = cache_regression.settings(group, root, prompt, gpu_profile=profile,
+                                                    masked=bool(mask_count), dataset_values=dataset_values)
                 entries, plans = [], []
                 source = None
                 held = None
