@@ -142,7 +142,7 @@ def finish(output, name, implementation, lr, rows, validation, initial):
     output = Path(output)
     if output.name != name or name not in START:
         raise ValueError("Invalid optimizer match output")
-    status = ("measured" if len(rows) == 8 and [r["update"] for r in rows] == list(range(1, 9))
+    status = ("measured" if len(rows) == EXPECTED_UPDATES and [r["update"] for r in rows] == list(range(1, EXPECTED_UPDATES+1))
               and validation and validation[-1]["step"] == EXPECTED_UPDATES
               and all(math.isfinite(r["norm"]) for r in rows) else "incomplete")
     _write(output / AUDIT, {"case": name, "implementation": implementation, "native_lr": lr,
@@ -177,14 +177,20 @@ def refresh(group):
             r["status"] = "initialization_mismatch"
             continue
         # Skip first update: SOAP may initialize its preconditioner without moving.
-        base = statistics.median(x["norm"] for x in ref["steps"][1:])
-        value = statistics.median(x["norm"] for x in r["steps"][1:])
+        base = statistics.median(x["norm"] for x in ref["steps"][1:8])
+        value = statistics.median(x["norm"] for x in r["steps"][1:8])
+        vals = [x["norm"] for x in r["steps"][1:]]
+        qs = statistics.quantiles(vals, n=10, method="inclusive")
+        r["movement_summary"] = {"p10": qs[0], "median": statistics.median(vals),
+                                 "p90": qs[-1], "max": max(vals),
+                                 "post_warmup_median": statistics.median(vals[7:])}
+        r["pilot_only"] = True
         if base <= 0 or value <= 0:
             r["status"] = "zero_movement"
             continue
         ratio = value / base
         r["ratio"] = ratio
-        r["status"] = "matched" if .9 <= ratio <= 1.1 else "not_matched"
+        r["status"] = "matched" if .9 <= ratio <= 1.1 else "not_matched"  # pilot only; independent seed required
         if r["case"] not in SPECIAL:
             r["suggested_lr"] = r["native_lr"] if r["status"] == "matched" else r["native_lr"] * min(4., max(.25, 1. / ratio))
         else:

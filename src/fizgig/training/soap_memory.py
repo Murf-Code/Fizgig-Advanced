@@ -3,8 +3,9 @@
 ChunkedSOAP retains full state and tiles covariance updates only.
 OffloadedSOAP retains full state and executes the original step on CPU.
 CompactSOAP approximates covariance with truncated factors and represents the
-orthogonal completion implicitly with Householder reflectors. Its second moment
-is reset when the coordinate system changes, rather than pretending it is exact.
+orthogonal completion implicitly with Householder reflectors. Diagonal second
+moments are transported in bounded tiles, approximating the old covariance as
+independent in the old coordinates; off-diagonal history is not retained.
 No CUDA fit or quality guarantees. Based on vendored MIT SOAP.
 """
 import math
@@ -44,8 +45,33 @@ class ChunkedSOAP(SOAP):
 
 class OffloadedSOAP(SOAP):
     """CPU state and CPU arithmetic, one factor at a time. Research fresh runs only."""
+    def __init__(self, params, **kwargs):
+        super().__init__(params, **kwargs)
+        self._ram_checked = False
+
+    def _check_ram(self):
+        # Conservative planning estimate, not an OS reservation. Full CPU
+        # state is huge even if GPU memory is free.
+        import psutil
+        persistent, biggest = 0, 0
+        for group in self.param_groups:
+            for p in group["params"]:
+                persistent += 8*p.numel()
+                for d in p.shape:
+                    if d <= group["max_precond_dim"]:
+                        persistent += 8*d*d
+                        biggest = max(biggest, d*d)
+        required = persistent + 32*biggest + 2*1024**3
+        available = psutil.virtual_memory().available
+        if available < required:
+            raise RuntimeError(f"SOAP offload RAM preflight: need about {required/1024**3:.1f} GiB "
+                               f"available, found {available/1024**3:.1f} GiB")
+        self._ram_checked = True
+
     @torch.no_grad()
     def step(self, closure=None):
+        if not self._ram_checked:
+            self._check_ram()
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
@@ -109,6 +135,51 @@ def _rotate(x, bases, inverse=False):
     return out
 
 
+def _transport_axis(var, old, new, tile=32):
+    """diag(R diag(v) R.T), R=Q_new.T @ Q_old, in tiles of new coordinates.
+
+    var has the transformed axis first. Never materialize a full wide R.
+    This is exact for a diagonal old covariance, not for the true covariance
+    with cross-coordinate correlations. ORMQR's internal workspace is backend
+    dependent, so the tile limits explicit tensors, not total CUDA allocations.
+    """
+    n = var.shape[0]
+    result = torch.empty_like(var)
+    for start in range(0, n, tile):
+        end = min(n, start + tile)
+        eye = torch.zeros((n, end-start), device=var.device, dtype=var.dtype)
+        ids = torch.arange(end-start, device=var.device)
+        eye[start+ids, ids] = 1.
+        new_columns = torch.ormqr(new[0], new[1], eye, left=True, transpose=False)
+        overlap = torch.ormqr(old[0], old[1], new_columns.contiguous(),
+                              left=True, transpose=True)
+        result[start:end] = overlap.square().T @ var
+    return result
+
+
+def _transport_variance(var, old, new, tile=32):
+    out = _transport_axis(var, old[0], new[0], tile)
+    out = _transport_axis(out.T.contiguous(), old[1], new[1], tile).T.contiguous()
+    return out.clamp_min_(0.)
+
+
+def _variance_floor(avg, b1, b2, age):
+    """Cauchy bound for EMA history: repair impossible m/v combinations.
+
+    For beta1**2 < beta2, m**2 <= v*C where C is the finite geometric
+    sum of squared first-moment EMA weights divided by second-moment weights.
+    Applying the bound after approximate diagonal transport avoids retaining
+    large momentum with an artificially tiny denominator.
+    """
+    if not (0 < b2 < 1 and 0 <= b1 < 1):
+        raise ValueError("CompactSOAP requires 0 < beta2 < 1 and 0 <= beta1 < 1")
+    ratio = b1*b1/b2
+    if ratio >= 1:
+        raise ValueError("CompactSOAP requires beta1**2 < beta2")
+    bound = (1-b1)**2 / (1-b2) * (1-ratio**age) / (1-ratio)
+    return avg.square() / max(bound, 1e-30)
+
+
 class CompactSOAP(SOAP):
     """Rank-limited covariance, implicit full orthogonal basis, FP32 moments."""
     def __init__(self, params, *, compact_rank=64, **kwargs):
@@ -128,6 +199,8 @@ class CompactSOAP(SOAP):
             if group["merge_dims"] or group["normalize_grads"]:
                 raise ValueError("CompactSOAP pilot supports ordinary 2D LoRA factors only")
             b1, b2 = group["betas"]
+            if not (0 < b2 < 1 and 0 <= b1 < 1 and b1*b1 < b2):
+                raise ValueError("CompactSOAP requires beta1**2 < beta2 and valid betas")
             beta = group["shampoo_beta"] if group["shampoo_beta"] >= 0 else b2
             for p in group["params"]:
                 if p.grad is None:
@@ -159,11 +232,14 @@ class CompactSOAP(SOAP):
                 s["factors"] = [_covariance_factor(old, x, beta, self.compact_rank)
                                 for old, x in zip(s["factors"], (g, g.T))]
                 if s["step"] % group["precondition_frequency"] == 0:
-                    original = _rotate(avg, s["bases"], True)
-                    s["bases"] = [_reflectors(f) for f in s["factors"]]
-                    s["exp_avg"] = _rotate(original, s["bases"])
-                    # Coordinate-wise variance cannot be rotated exactly without
-                    # cross-covariance. Explicitly restart it on a basis change.
-                    s["exp_avg_sq"].zero_()
-                    s["variance_age"] = 0
+                    old_bases = s["bases"]
+                    new_bases = [_reflectors(f) for f in s["factors"]]
+                    original = _rotate(avg, old_bases, True)
+                    new_avg = _rotate(original, new_bases)
+                    new_var = _transport_variance(var, old_bases, new_bases)
+                    new_var = torch.maximum(new_var, _variance_floor(
+                        new_avg, b1, b2, s["variance_age"]))
+                    s["bases"] = new_bases
+                    s["exp_avg"] = new_avg
+                    s["exp_avg_sq"] = new_var
         return loss

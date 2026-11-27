@@ -3653,7 +3653,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             for g in optimizer.param_groups:
                 g["lr"] = g["lr"] * m
         match_before = None
-        if optimizer_match and len(match_rows) < 8:
+        if optimizer_match and len(match_rows) < 13:
             from fizgig.web.optimizer_match import snapshot, fingerprint
             match_before = snapshot(net)
             if match_initial is None:
@@ -3683,6 +3683,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             row = movement(match_before, net)
             row["update"] = len(match_rows) + 1
             row["group_lrs"] = [float(g["lr"]) for g in optimizer.param_groups]
+            if torch.cuda.is_available():
+                row["cuda_peak_allocated_bytes"] = torch.cuda.max_memory_allocated()
+                row["cuda_peak_reserved_bytes"] = torch.cuda.max_memory_reserved()
             match_rows.append(row)
             logger.info("[optimizer-match] %s update %d: effective movement %.6g", optimizer_match, row["update"], row["norm"])
         if selective_global_replay:
