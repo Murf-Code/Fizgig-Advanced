@@ -72,13 +72,17 @@ def add(family, values, image_folder, lora, output_dir):
     return item
 
 
-def add_many(entries):
+def add_many(entries, *, require_empty=False):
     """Append all preflighted diagnostic arms before starting the first."""
     items = [{"id": uuid.uuid4().hex[:10], "family": family, "values": dict(values),
               "image_folder": folder, "lora": lora, "output_dir": out,
               "queued_at": time.strftime("%Y-%m-%d %H:%M")}
              for family, values, folder, lora, out in entries]
     with _lock:
+        if require_empty and _q["items"]:
+            raise ValueError("Cache test requires an empty training queue. Remove or finish existing jobs first.")
+        if require_empty:
+            _q.update(held=False, reason="", waiting="", for_pause=False)
         _q["items"].extend(items)
         _q["batch"] = True
         _save()
