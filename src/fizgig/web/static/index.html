@@ -1052,8 +1052,6 @@
               <div class="field-row">
                 <button class="btn btn-primary" id="btnStart">Start Training</button>
                 <button class="btn" id="btnQueue" title="Checked like Start, then lined up: it starts when the runs before it finish">Add to queue</button>
-                <button class="btn" id="btnCacheRegression3090" title="Four cache comparison runs: RTX 3090, 24 GB, zero block swap">Krea 2 cache test — RTX 3090</button>
-                <button class="btn" id="btnCacheRegression4070Ti" title="Four cache comparison runs: RTX 4070 Ti, 12 GB, 24 swapped blocks">Krea 2 cache test — RTX 4070 Ti</button>
                 <button class="btn" id="btnShuffleAudit3090" title="Cache-only, no training or preview">Cache integrity audit — RTX 3090</button>
                 <button class="btn" id="btnShuffleAudit4070Ti" title="Cache-only, no training or preview">Cache integrity audit — RTX 4070 Ti</button>
                 <button class="btn btn-warning" id="btnPause">Pause</button>
@@ -2559,10 +2557,8 @@
       note.className = "field-hint";
       note.setAttribute("role", "status");
       const profiles = [
-        {button: document.getElementById("btnCacheRegression3090"), key: "3090", label: "RTX 3090 (24 GB)"},
-        {button: document.getElementById("btnCacheRegression4070Ti"), key: "4070-ti", label: "RTX 4070 Ti (12 GB)"},
-        {button: document.getElementById("btnShuffleAudit3090"), key: "3090", label: "RTX 3090 (24 GB)", audit: true},
-        {button: document.getElementById("btnShuffleAudit4070Ti"), key: "4070-ti", label: "RTX 4070 Ti (12 GB)", audit: true}
+        {button: document.getElementById("btnShuffleAudit3090"), key: "3090", label: "RTX 3090 (24 GB)"},
+        {button: document.getElementById("btnShuffleAudit4070Ti"), key: "4070-ti", label: "RTX 4070 Ti (12 GB)"}
       ];
       profiles[0].button.parentElement.after(note);
       async function queueCacheTest(profile) {
@@ -2571,25 +2567,18 @@
           note.textContent = "Select Krea 2 and the original training dataset.";
           return;
         }
-        if (!window.confirm(profile.audit ? "Run a fresh latent and text cache integrity audit with shuffle ON and four variants per caption? No training or preview generation. Original caches are not changed." : "Queue four two-epoch INT8 PoLoRA runs using " + profile.label + "? The first nonempty dataset caption is used for all sample images. Finish or remove existing queued jobs first. Masks are automatic. " + (profile.key === "3090" ? "The 3090 uses the original fixed 1 MP recipe and prefers compatible existing caches. If those are unavailable, it creates a private baseline first. " : "The 4070 Ti uses your saved Krea 2 dataset settings and creates a fresh private baseline first. ") + "No original caches are changed. Do not edit images/captions/settings while testing.")) return;
+        if (!window.confirm("Run a fresh latent and text cache integrity audit with shuffle ON and four variants per caption? No training or preview generation. Original caches are not changed. Finish or remove existing queued jobs first.")) return;
         profiles.forEach(p => { p.button.disabled = true; });
-        note.textContent = "Preparing the cache comparison...";
+        note.textContent = "Preparing the cache integrity audit...";
         try {
-          const request = async fresh => {
-            const response = await fetch("/api/queue/cache-regression", {
-              method: "POST",
-              headers: {"Content-Type": "application/json", "X-Fizgig-Token": document.querySelector('meta[name="fizgig-token"]').content},
-              body: JSON.stringify({family: family.value, image_folder: folder, gpu_profile: profile.key, fresh_baseline: fresh, audit_only: !!profile.audit})
-            });
-            return response.json();
-          };
-          let result = await request(profile.key === "4070-ti");
-          if (!result.ok && result.can_prepare_baseline) {
-            note.textContent = "Original cache unavailable; preparing a separate fresh baseline...";
-            result = await request(true);
-          }
+          const response = await fetch("/api/queue/cache-regression", {
+            method: "POST",
+            headers: {"Content-Type": "application/json", "X-Fizgig-Token": document.querySelector('meta[name="fizgig-token"]').content},
+            body: JSON.stringify({family: family.value, image_folder: folder, gpu_profile: profile.key, audit_only: true})
+          });
+          const result = await response.json();
           if (!result.ok) throw new Error(result.error || (result.problems || []).join("; ") || "Queue failed");
-          note.textContent = profile.audit ? "Cache integrity audit queued. Send cache-integrity-report.json, cache-audit.jsonl and latent-audit.jsonl from the a-existing subfolder of " + result.output : profile.label + (result.fresh_baseline ? ": private baseline will be created before training. " : ": existing cache snapshotted. ") + "Four two-epoch PoLoRA runs queued. Look for [cache-regression] in the log. Samples, logs and manifest: " + result.output;
+          note.textContent = "Cache integrity audit queued. Send cache-integrity-report.json, cache-audit.jsonl and latent-audit.jsonl from the a-existing subfolder of " + result.output;
         } catch (error) {
           note.textContent = error.message || String(error);
         } finally {
