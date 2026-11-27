@@ -391,6 +391,21 @@ class Krea2Driver(FamilyDriver):
     def selective_active_blocks(self):
         return sorted(getattr(self, "_selective_active", set()))
 
+    def validate_selective_compensation_optimizer(self, optimizer):
+        # The experiment covered only the main transformer adapters.
+        expected = {id(p) for ps in self._selective_params_by_block.values() for p in ps}
+        actual = [id(p) for group in optimizer.param_groups for p in group["params"]]
+        if len(actual) != len(expected) or set(actual) != expected or self._selective_block_count != 28:
+            raise RuntimeError("Selective compensation requires exactly the adapters of all 28 Krea 2 blocks.")
+
+    def selective_learning_multiplier(self):
+        from fizgig.training.selective_compensation import active_count_multiplier
+        active = self._selective_active
+        for block, ps in self._selective_params_by_block.items():
+            if any((p.grad is not None) != (block in active) for p in ps):
+                raise RuntimeError("Selective compensation: adapter-gradient mask differs from active block mask")
+        return active_count_multiplier(len(active), self._selective_block_count)
+
     @staticmethod
     def _block_local_objective(pred, target, mask_weight=None, base=None, prior=None):
         """Same token-weighted Krea 2 loss as loss_at, evaluated on the saved replay readout.

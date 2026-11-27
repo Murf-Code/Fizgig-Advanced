@@ -1581,6 +1581,11 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         driver.options.pop("training_method", None)
     global_replay = bool(desc.key == "krea2" and getattr(driver, "global_replay", False))
     selective_global_replay = bool(global_replay and getattr(driver, "selective_global_replay", False))
+    selective_compensation = str((family_options or {}).get("selective_compensation", "")).strip().lower() in (
+        "1", "true", "on", "yes")
+    if selective_compensation and (not selective_global_replay or str(optimizer_type).strip().lower() != "muon"):
+        raise RuntimeError("Experimental Selective LR compensation requires Krea 2 Global replay, "
+                           "Selective block check and the built-in Muon optimizer.")
     if global_replay:
         unsupported = []
         if str(network_type or "lora").lower() != "lora":
@@ -2591,6 +2596,14 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             _oargs = (_oargs + f" weight_decay={desc.optimizer_weight_decay:g}").strip()
         optimizer, opt_label = create_optimizer(optimizer_type, opt_params, learning_rate, _oargs,
                                                 eps_floor_8bit=desc.optimizer_eps_floor_8bit)
+    if selective_compensation:
+        from fizgig.training.muon import Muon, BatchedMuon
+        if not isinstance(optimizer, (Muon, BatchedMuon)) or any(
+                g.get("adjust_lr_fn") != "match_rms_adamw" for g in optimizer.param_groups):
+            raise RuntimeError("Selective LR compensation needs built-in Muon with match_rms_adamw")
+        driver.validate_selective_compensation_optimizer(optimizer)
+        logger.info("[selective-compensation] experimental: active learning term × min(1.5, sqrt(total/active)); "
+                    "native group LR, full probes, decay and skipped momentum are unchanged.")
     _polora = optimizer.__class__.__name__ == "Polora"
     if _polora:
         # PoLoRA: Adaptive LR and per-image LR move its learning rate, as with every other optimizer (Min/Max are real
@@ -2657,6 +2670,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         _fresh_lrs = [g["lr"] for g in optimizer.param_groups] if optimizer is not None else []
         start_epoch, global_step, meta = _load_state(resume_state_dir, net, optimizer, device, state_arch,
                                                      untagged_own=desc.resumes_untagged_states, driver=driver)
+        if bool(meta.get("selective_compensation", False)) != selective_compensation:
+            raise RuntimeError("Resume requires the same Selective LR compensation setting as the saved state.")
+        if selective_compensation and (not meta.get("own_state") or meta.get("selective_global_replay") is None):
+            raise RuntimeError("Compensated Selective resume requires its own saved replay state.")
+        if selective_compensation and any(g.get("adjust_lr_fn") != "match_rms_adamw" for g in optimizer.param_groups):
+            raise RuntimeError("Compensated Selective resume requires match_rms_adamw.")
         if isinstance(meta.get("mid_epoch"), dict) and meta["own_state"]:
             resume_mid = meta["mid_epoch"]
         saved_batch_size = int(meta.get("batch_size", 1))
@@ -2926,6 +2945,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 "training_features": {
                     "training_method": _fo.get("training_method", "standard") if desc.key == "krea2" else "standard",
                     "selective_block_check": bool(selective_global_replay),
+                    "selective_compensation": selective_compensation,
                     "masked_training": bool(masked_training),
                     "mask_floor": float(mask_floor) if masked_training else None,
                     "mask_prior": float(mask_prior) if masked_training else None,
@@ -3358,6 +3378,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                                       if _reg_capped else {}),
                                    **({"early_stop": es.state_dict()} if es is not None else {}),
                                    **({"batch_size": bsz} if bsz > 1 else {}),
+                                   **({"selective_compensation": True} if selective_compensation else {}),
                                    **({"selective_global_replay": driver.selective_state_dict()}
                                       if selective_global_replay else {}),
                                    # the pictures set aside for validation: a resume holds out the same ones
@@ -3598,12 +3619,22 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             for g in optimizer.param_groups:
                 g["lr"] = g["lr"] * m
         selective_snapshot = driver.selective_snapshot_before_step() if selective_global_replay else None
-        optimizer.step()
+        if selective_compensation:
+            scale = driver.selective_learning_multiplier()
+            optimizer.step(learning_multiplier=scale)
+            logger.debug("[selective-compensation] update %d learning multiplier %.6f", global_step + 1, scale)
+        else:
+            optimizer.step()
         if selective_global_replay:
             selective_status = driver.finish_selective_optimizer_step(selective_snapshot)
             if selective_status is not None:
                 if selective_status["kind"] == "probe":
                     skipped = selective_status["total"] - selective_status["active"]
+                    if selective_compensation:
+                        from fizgig.training.selective_compensation import active_count_multiplier
+                        logger.info("[selective-compensation] selected %d/%d blocks; nominal learning multiplier %.6f between probes",
+                                    selective_status["active"], selective_status["total"],
+                                    active_count_multiplier(selective_status["active"], selective_status["total"]))
                     logger.info(f"[selective-replay] probe {driver.selective_state_dict()['optimizer_steps']}: "
                                 f"{selective_status['active']}/{selective_status['total']} blocks active; "
                                 f"{skipped} uphill/neutral blocks skip adapter-gradient computation until rechecked.")

@@ -62,6 +62,18 @@ KREA2 = FamilyDescription(
         hint="Every 8 steps, pauses blocks that are making the loss worse.",
         summary="Selective block check",
     ), FamilyOption(
+        key="KREA2_SELECTIVE_COMPENSATION",
+        label="Selective LR compensation (experimental)",
+        kind="check",
+        tokens="selective_compensation=1",
+        default="",
+        section="other",
+        mode="lora",
+        requires="KREA2_SELECTIVE_BLOCK_CHECK",
+        hint="Krea 2 Global replay + Selective + Muon only. Boosts active adapter updates by sqrt(total/active), "
+             "capped at 1.5×. Full probes and weight decay stay unchanged. Off by default.",
+        summary="Selective LR compensation",
+    ), FamilyOption(
         key="KREA2_DIRECTION_EDIT",
         label="Text-fusion calibration",
         kind="check",
