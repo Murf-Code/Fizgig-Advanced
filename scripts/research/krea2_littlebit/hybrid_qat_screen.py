@@ -1,6 +1,5 @@
 """LB-G: byte-matched SVD8 primary + binary residual, local research only."""
 import copy
-import binary_qat_stabilization as f
 import math
 import torch
 from torch import nn
@@ -33,7 +32,6 @@ def optimize(paths, w, fit, sign_lr, warmup=0, steps=200, callback=None,
     """Same row stream across arms; pooled target energy; separate Adam groups."""
     signs = [v for p in paths for v in (p.a, p.b)]
     scales = [v for p in paths for v in (p.row, p.col, p.latent)]
-    params = signs + scales
     opt = torch.optim.Adam([{"params": signs, "lr": sign_lr},
                             {"params": scales, "lr": SCALE_LR}])
     gen = torch.Generator(device=w.device).manual_seed(seed)
@@ -46,7 +44,7 @@ def optimize(paths, w, fit, sign_lr, warmup=0, steps=200, callback=None,
     if not all(math.isfinite(v) and v>0 for v in (wenergy,fenergy,genergy)):
         raise ValueError("zero teacher energy")
     # Frozen SVD8 path, decoded once to FP32 for fitting.
-    fixed = tuple(t.to(w.device, dtype=torch.float32) for t in fixed) if fixed is not None else None
+    fixed = tuple(t.detach().to(w.device, dtype=torch.float32) for t in fixed) if fixed is not None else None
     fixed_fit = [(q.actions(fixed,x,g) if fixed is not None else (0.,0.)) for x,g,y,dx in fit]
     initial = [v.detach() >= 0 for v in signs]
     prev = [v.clone() for v in initial]
@@ -91,6 +89,17 @@ def optimize(paths, w, fit, sign_lr, warmup=0, steps=200, callback=None,
                     callback(paths, stats)
     for v in signs:
         v.requires_grad_(True)
+
+
+def allocation(m,n,budget,top,pct):
+    if not 0<pct<100:
+        raise ValueError("hybrid share must be between 0 and 100")
+    r8=mix.budget_rank(m,n,8,8,budget*pct//100,top)
+    if not r8 or r8>=top: return None
+    nb8=mix.pair_bytes(m,n,r8,8,8)
+    rr=q.ranks(m,n,budget-nb8,top-r8,1)
+    if not rr: return None
+    return r8,rr[0],nb8
 
 
 def run(w,key,args,stock,trace,split,int8,archive,row,save):
@@ -207,14 +216,13 @@ def run(w,key,args,stock,trace,split,int8,archive,row,save):
     def hybrid_arm(prefix,cap,budget,pct):
         # Charge SVD8 factors and binary scales; allocate remainder to residual.
         # Total rank cap applies across both branches.
-        r8=mix.budget_rank(m,n,8,8,budget*pct//100,top)
-        if not r8: return
-        da,db,nb8=svd_pair(r8)
-        rr=q.ranks(m,n,budget-nb8,top-r8,1) if top>r8 else []
-        if not rr:
-            row.setdefault("skipped_hybrids",[]).append({"cap":cap,"svd_percent":pct,"reason":"no residual rank"})
+        alloc=allocation(m,n,budget,top,pct)
+        if alloc is None:
+            row.setdefault("skipped_hybrids",[]).append({"cap":cap,"svd_percent":pct,"reason":"no feasible two-path allocation"})
             save(); return
-        r=rr[0]
+        r8,r,expected=alloc
+        da,db,nb8=svd_pair(r8)
+        if nb8!=expected: raise ValueError("SVD8 allocation mismatch")
         fixed=(da,db,torch.ones(m,dtype=torch.bfloat16),
                torch.ones(n,dtype=torch.bfloat16),torch.ones(r8,dtype=torch.bfloat16))
         with torch.no_grad():
