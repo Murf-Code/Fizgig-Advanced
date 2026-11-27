@@ -2,6 +2,7 @@
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -19,14 +20,19 @@ from native_codec import ELIGIBLE,MODULES,FORMAT,encode,linear,validate,stock_la
 from geometry_codec import compatible,HQQ,HYBRID
 from screen import evaluate,compare
 from mixed_selector import choose
+import preparation_cache as pc
+from fast_screen import q6_probes
 
 
-def publish(archive,payload,specs,source_hash):
+def publish(archive,payload,specs,source_hash,cache_identity=None):
     if not payload or set(payload)!=set(specs) or archive.exists():
         raise ValueError("empty, inconsistent or existing archive")
     tmp=archive.with_suffix(".tmp")
     try:
-        save_file(payload,str(tmp),metadata={FORMAT:json.dumps(specs),"source_sha256":source_hash})
+        metadata={FORMAT:json.dumps(specs),"source_sha256":source_hash}
+        if cache_identity is not None:
+            metadata["littlebit_cache_identity"]=json.dumps(cache_identity,sort_keys=True)
+        save_file(payload,str(tmp),metadata=metadata)
         tmp.replace(archive)
     finally:
         tmp.unlink(missing_ok=True)
@@ -83,14 +89,18 @@ def main():
     result={"case":a.case,"status":"checking","screen":"real stock training activation/cotangent rows; no error cutoff",
             "storage_scope":"224 eligible main-block weights and scales only; not total VRAM","projections":{},"families":{}}
     try:
-        torch.set_num_threads(4)
+        threads=int(os.environ.get("FIZGIG_LITTLEBIT_CPU_THREADS",min(8,os.cpu_count() or 4)))
+        if threads<1: raise ValueError("LittleBit CPU thread count must be positive")
+        torch.set_num_threads(threads)
+        result["cpu_threads"]=threads
         hold=Path(tomllib.loads(a.dataset.read_text(encoding="utf-8"))["general"]["holdout_file"])
         result["holdout_sha256"]=bench.sha(hold)
         result["raw_sha256"]=bench.sha(a.raw)
         with safe_open(str(a.raw),framework="pt",device="cpu") as f:
             if not ELIGIBLE<=set(f.keys()) or any(f.get_slice(k).get_dtype()!="BF16" for k in ELIGIBLE):
                 raise ValueError("expected original Raw BF16 weights")
-            sizes={k:math.prod(f.get_slice(k).get_shape())+4*f.get_slice(k).get_shape()[0] for k in ELIGIBLE}
+            shapes={k:f.get_slice(k).get_shape() for k in ELIGIBLE}
+            sizes={k:math.prod(shape)+4*shape[0] for k,shape in shapes.items()}
         result["int8_sizes"]=sizes; result["int8_target_bytes"]=sum(sizes.values())
         if a.case=="stock":
             result["status"]="stock_verified"; return 0
@@ -121,24 +131,58 @@ def main():
         int8=import_file("littlebit_queue_int8",REPO/"src/fizgig/modules/int8_train.py")
         result.update(codec=name,rank=rank)
         accepted={}; specs={}
+        cache_ident=pc.identity(result["raw_sha256"],name,rank,64) if name=="q6-had" else None
+        cache=pc.cache_path(root,cache_ident) if cache_ident else None
+        result["compressed_cache"]={"path":str(cache) if cache else None,"hit":False}
+        ref_ident={"raw_sha256":result["raw_sha256"],"calibration_sha256":result["calibration_sha256"],
+                   "int8_source":bench.sha(REPO/"src/fizgig/modules/int8_train.py"),
+                   "native_codec":bench.sha(Path(__file__).with_name("native_codec.py")),
+                   "torch":str(torch.__version__),"threads":threads}
+        result["reference_cache_hits"]=0
+        done=0; processed_bytes=0; screen_start=time.monotonic()
+        print(f"[LittleBit] Screening {len(ELIGIBLE)} projections using {threads} CPU threads",flush=True)
         with ExitStack() as stack:
             f=stack.enter_context(safe_open(str(a.raw),framework="pt",device="cpu"))
             probes=[stack.enter_context(safe_open(str(path),framework="pt",device="cpu")) for path in calibration]
+            cached=None; cached_specs={}
+            if cache and cache.is_file():
+                try:
+                    candidate=stack.enter_context(safe_open(str(cache),framework="pt",device="cpu"))
+                    cached_specs=pc.inspect_archive(candidate,cache_ident,shapes)
+                    cached=candidate
+                    result["compressed_cache"]["hit"]=True
+                    print("[LittleBit] Reusing verified-provenance compressed archive; fresh task screening",flush=True)
+                except (ValueError,KeyError,OSError,RuntimeError) as exc:
+                    raise ValueError(f"Invalid compressed cache {cache}; move it aside and retry: {exc}") from exc
             for suffix in MODULES:
                 rows=[]; payload={}; manifest={}; result["projections"][suffix]=rows
                 for block in range(28):
-                    key=f"blocks.{block}.{suffix}.weight"; w=f.get_tensor(key); m,n=w.shape
+                    key=f"blocks.{block}.{suffix}.weight"; m,n=shapes[key]
+                    print(f"[LittleBit] Preparing {done+1}/{len(ELIGIBLE)}: {key}",flush=True)
                     if not compatible(name,m,n,rank):
-                        rows.append({"key":key,"reason":"incompatible dimensions"}); continue
-                    pck,spec=encode(w,name,rank=rank,group=64); validate(pck,spec)
-                    native=stock_layer(w,int8)
+                        rows.append({"key":key,"reason":"incompatible dimensions"})
+                        done+=1; processed_bytes+=sizes[key]
+                        continue
+                    w=None; native=None
+                    if cached is not None:
+                        pck,spec=cached.get_tensor(key),cached_specs[key]
+                    else:
+                        w=f.get_tensor(key)
+                        pck,spec=encode(w,name,rank=rank,group=64)
+                    validate(pck,spec)
+                    pairs=[(probe.get_tensor(key+".x").bfloat16(),probe.get_tensor(key+".dy").bfloat16()) for probe in probes]
+                    def reference(x,dy):
+                        nonlocal w,native
+                        if native is None:
+                            if w is None: w=f.get_tensor(key)
+                            native=stock_layer(w,int8)
+                        return evaluate(native,x,dy)
+                    refs,hit=pc.references(pc.reference_path(root,ref_ident,key),pairs,reference)
+                    result["reference_cache_hits"]+=int(hit)
+                    outputs=q6_probes(pck,spec,pairs) if name=="q6-had" else [evaluate(lambda t:linear(t,pck,spec),x,dy) for x,dy in pairs]
                     row={"key":key,"packed_bytes":pck.nbytes,"int8_bytes":sizes[key],"probes":[]}
                     rows.append(row)
-                    for index,probe in enumerate(probes):
-                        x=probe.get_tensor(key+".x").bfloat16()
-                        dy=probe.get_tensor(key+".dy").bfloat16()
-                        y,dx=evaluate(lambda t:linear(t,pck,spec),x,dy)
-                        ref,rdx=evaluate(native,x,dy)
+                    for index,((y,dx),(ref,rdx)) in enumerate(zip(outputs,refs)):
                         fw,bw=compare(y,ref),compare(dx,rdx)
                         row["probes"].append({"step":result["calibration_steps"][index],
                             "reference_forward_norm":float(ref.float().norm()),
@@ -154,7 +198,10 @@ def main():
                     else:
                         payload[key]=pck; manifest[key]=spec
                     print(key,name,row["probes"],flush=True)
-                    del w,native
+                    done+=1; processed_bytes+=sizes[key]
+                    remaining=(time.monotonic()-screen_start)*(sum(sizes.values())-processed_bytes)/processed_bytes
+                    print(f"[LittleBit] {done}/{len(ELIGIBLE)} projections ({100*done/len(ELIGIBLE):.1f}%); rough screening ETA {remaining/60:.1f} min (weight-size estimate)",flush=True)
+                    del w,native,refs,outputs,pairs
                 good=len(payload)==28
                 if good:
                     accepted.update(payload); specs.update(manifest)
@@ -167,10 +214,21 @@ def main():
         if not accepted:
             result["status"]="rejected"; return 3
         total=sum(p.nbytes for p in accepted.values())
-        if shutil.disk_usage(a.out).free < total+2*1024**3:
-            raise ValueError("insufficient disk space for compact archive")
         if bench.sha(a.raw)!=result["raw_sha256"]: raise ValueError("raw source changed")
-        publish(a.out/"compact.safetensors",accepted,specs,result["raw_sha256"])
+        archive=a.out/"compact.safetensors"
+        full_cache=cache is not None and set(specs)==ELIGIBLE
+        if full_cache and result["compressed_cache"]["hit"]:
+            result["compressed_cache"]["run_archive"]=pc.link_or_copy(cache,archive)
+        else:
+            if shutil.disk_usage(a.out).free < total+2*1024**3:
+                raise ValueError("insufficient disk space for compact archive")
+            publish(archive,accepted,specs,result["raw_sha256"],cache_ident if full_cache else None)
+            if full_cache:
+                try:
+                    result["compressed_cache"]["published"]=pc.link_or_copy(archive,cache)
+                except (OSError,ValueError) as exc:
+                    result["compressed_cache"]["publish_warning"]=str(exc)
+                    print(f"[LittleBit] Run archive ready; persistent cache not published: {exc}",flush=True)
         saved=sum(sizes[k]-p.nbytes for k,p in accepted.items())
         result.update(status="ready",compact_projections=len(specs),archive_bytes=(a.out/"compact.safetensors").stat().st_size,
                       target_bytes_saved=saved,estimated_target_bytes_after_compression=sum(sizes.values())-saved,

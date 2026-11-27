@@ -382,3 +382,9 @@ Run the integration tests from the full checkout:
 ```powershell
 .\venv\Scripts\python.exe -m pytest -q checks/test_littlebit_private_correction.py
 ```
+
+## Preparation reuse and progress (experimental)
+
+Q6 Hadamard screening reuses decoded BF16 tiles across the four probes, retaining each probe's original GEMM shape, FP32 inter-tile accumulation and final BF16 cast. No training kernel or optimizer change. CPU threads default to min(8, logical CPUs); override with FIZGIG_LITTLEBIT_CPU_THREADS. Progress reports completed/total projections and a rough weight-size-weighted ETA, not a training completion estimate.
+
+Complete Q6 archives with all 224 projections are cached under the comparison parent _compressed_cache (override FIZGIG_LITTLEBIT_CACHE_DIR). Cache keys include raw SHA256, codec, group, rank, format, encoder source hashes and PyTorch version. Reuse validates manifest, shapes and payload lengths; this is provenance/structural validation, not a cryptographic payload integrity check. Run archives are hardlinked where possible, copied with a disk-space check otherwise. Partial layouts are not cached. Older archives without cache identity are not automatically adopted. Never edit cached/run archives in place. Fresh captures and family eligibility screening are still required. Stock projection outputs/cotangents are cached within each comparison by raw/capture/code identity and CPU thread count. No reference reuse across different capture sets. Interrupted encoding before full archive publication is not resumable. GPU encoding and fused training kernels remain separate validation work. No redistribution until upstream terms are verified.
