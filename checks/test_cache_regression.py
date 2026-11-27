@@ -51,6 +51,17 @@ class CacheRegressionTests(unittest.TestCase):
         with patch.dict(sys.modules, self.fake_modules):
             return cr.prepare_caches(self.body, self.configs, "krea2drv")
 
+    def test_mask_and_gpu_recipe_fixed_across_arms(self):
+        for gpu, masks, swap, compile_mode in [(12, False, "24", "Off"),
+                                                (24, True, "0", "outside"),
+                                                (None, False, "24", "Off")]:
+            arms = cr.settings("test", str(self.root), "prompt", masked=masks, gpu_gb=gpu)
+            self.assertEqual(len(arms), 4)
+            for arm in arms:
+                self.assertEqual(arm["MASKED_TRAINING"], masks)
+                self.assertEqual(arm["BLOCKS_SWAP"], swap)
+                self.assertEqual(arm["COMPILE_BLOCKS"], compile_mode)
+
     def test_four_stage_plans(self):
         expected = [["Training"], ["Text Encoder Caching", "Training"],
                     ["Cache Preparation", "Training"], ["Cache Preparation", "Text Encoder Caching", "Training"]]
