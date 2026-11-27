@@ -5054,15 +5054,21 @@ class Handler(BaseHTTPRequestHandler):
                 if profile == "4070-ti":
                     saved = (load_state().get("values") or {}).get("krea2") or {}
                     dataset_values = {**form.DEFAULTS, **saved}
-                fresh_baseline = profile == "4070-ti" or b.get("fresh_baseline") is True
+                audit_only = b.get("audit_only") is True
+                fresh_baseline = not audit_only and (profile == "4070-ti" or b.get("fresh_baseline") is True)
                 configs = cache_regression.settings(group, root, "", gpu_profile=profile,
                                                     masked=bool(mask_count), dataset_values=dataset_values,
                                                     fresh_baseline=fresh_baseline)
-                try:
-                    sample_image, prompt = cache_regression.first_sample_caption(
-                        folder, configs[0]["DATASET_CAPTION_EXT"])
-                except (OSError, ValueError) as exc:
-                    return self.json({"error": str(exc)}, 400)
+                if audit_only:
+                    configs = configs[:1]
+                    configs[0]["__cache_audit_only"] = True
+                    sample_image, prompt = "", ""
+                else:
+                    try:
+                        sample_image, prompt = cache_regression.first_sample_caption(
+                            folder, configs[0]["DATASET_CAPTION_EXT"])
+                    except (OSError, ValueError) as exc:
+                        return self.json({"error": str(exc)}, 400)
                 for vals in configs:
                     vals["__cache_prompt"] = prompt
                 entries, plans = [], []
@@ -5094,7 +5100,10 @@ class Handler(BaseHTTPRequestHandler):
                 output = os.path.join(root, group)
                 os.makedirs(output, exist_ok=False)
                 try:
-                    if fresh_baseline:
+                    if audit_only:
+                        snapshot = {"audit_only": True, "holdout": held or [], "files": [],
+                                    "provenance": "fresh_text_audit"}
+                    elif fresh_baseline:
                         snapshot = {"baseline_pending": True, "baseline_config": baseline_config,
                                     "arch": desc.arch_id, "holdout": held or [], "files": []}
                     else:

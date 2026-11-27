@@ -79,6 +79,10 @@ def save(sd: dict, path: str, metadata: dict | None = None, compact_it: bool = T
     if compact_it and enabled():
         sd, metadata = compact(sd, metadata)
     save_file(sd, path, metadata=metadata)
+    from fizgig.dataset import cache_audit
+    if cache_audit.active():
+        cache_audit.record("readback", "variant" if (metadata or {}).get("fizgig_tags") == "1" else "base",
+                           str(path).removesuffix(".tmp"), load(path))
 
 
 def is_compact(path: str) -> bool:

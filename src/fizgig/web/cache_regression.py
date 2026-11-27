@@ -24,8 +24,7 @@ GPU_PROFILES = {
 # Do not inherit optimizer, replay, LR, precision, swap, seed or sample settings.
 DATASET_KEYS = (
     "DATASET_MEGAPIXELS", "ENABLE_BUCKET", "BUCKET_NO_UPSCALE",
-    "DATASET_CAPTION_EXT", "TAG_SHUFFLE", "TAG_KEEP_FIRST", "TAG_DROPOUT",
-    "TAG_VARIANTS", "TAG_VARIANT_CAP", "CAPTION_DROPOUT",
+    "DATASET_CAPTION_EXT",
 )
 
 
@@ -69,7 +68,9 @@ def settings(group, root, prompt, *, gpu_profile, masked=False, dataset_values=N
         "KREA2_SELECTIVE_BLOCK_CHECK": False, "INT8_ROTATED_BACKWARD": False,
         "RESUME_TRAINING": "", "CONTEXT_LORA_PATH": "",
     }
-    base.update(MAX_TRAIN_EPOCHS="2", VALIDATION_LOSS=True, VALIDATION_HOLDOUT=True,
+    base.update(TAG_SHUFFLE=True, TAG_KEEP_FIRST="1", TAG_VARIANTS="4",
+                TAG_VARIANT_CAP="4", TAG_DROPOUT="0", CAPTION_DROPOUT="Off",
+                MAX_TRAIN_EPOCHS="2", VALIDATION_LOSS=True, VALIDATION_HOLDOUT=True,
                 VALIDATION_GROUPS="1", VALIDATION_IMAGES="4", VALIDATION_SEED="42",
                 VALIDATION_TIMESTEPS="4", ADAPTIVE_LR=False, KREA2_PER_IMAGE_LR=False,
                 KREA2_LOSS_WATCH=False, KREA2_DIRECTION_EDIT=False, SAMPLE_ENABLED=False,
@@ -147,6 +148,13 @@ def configure_plan(desc, inputs, plan, values, launch):
         cmd[:] = [v for v in cmd if v not in ("--skip_existing", "--holdout_cache")]
         if has_holdout:
             cmd.append("--holdout_cache")
+    if values.get("__cache_audit_only"):
+        # No VAE, training, preview, or original-cache access.
+        txt.extend(["--cache_audit", str(dest.parent / "cache-audit.jsonl")])
+        plan.stages = [launch.Stage("Shuffle Text Cache Audit", txt)]
+        plan.dirs.append(str(dest))
+        plan.console.append("[cache-regression] Cache-only audit: shuffle ON, four variants, no training or sampling.")
+        return
     stages = []
     fresh_lat, fresh_text = CASES[case]
     if fresh_lat:
@@ -287,6 +295,13 @@ def verify_start(plan, values):
         raise ValueError("Diagnostic plan changed after snapshot; start a new comparison.")
     if any(out.glob("*.safetensors")) or (out / "diagnostic.log").exists():
         raise ValueError("This cache regression arm has already run; create a new comparison.")
+    if values.get("__cache_audit_only"):
+        if not manifest["snapshot"].get("audit_only") or case != "a-existing":
+            raise ValueError("Invalid cache-only audit manifest.")
+        cache = out / "isolated-cache"
+        if (cache.exists() and any(cache.iterdir())) or (out / "cache-audit.jsonl").exists():
+            raise ValueError("Audit cache already exists; start a new test.")
+        return
     if manifest["snapshot"].get("baseline_pending"):
         if not values.get("__cache_fresh_baseline") or case != "a-existing":
             raise ValueError("Baseline preparation has not completed; start a new comparison.")

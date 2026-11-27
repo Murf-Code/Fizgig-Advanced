@@ -102,6 +102,10 @@ class CacheRegressionTests(unittest.TestCase):
             for key in cr.DATASET_KEYS:
                 if key in saved:
                     self.assertEqual(arm[key], saved[key])
+            self.assertTrue(arm["TAG_SHUFFLE"])
+            self.assertEqual(arm["TAG_VARIANTS"], "4")
+            self.assertEqual(arm["TAG_DROPOUT"], "0")
+            self.assertEqual(arm["CAPTION_DROPOUT"], "Off")
             self.assertEqual(arm["BLOCKS_SWAP"], "24")
             self.assertEqual(arm["LEARNING_RATE"], "0.02")
             self.assertFalse(arm["MASKED_TRAINING"])
@@ -185,6 +189,19 @@ class CacheRegressionTests(unittest.TestCase):
                                 if str(path).endswith("baseline-dataset.toml"))
                     self.assertEqual(toml.loads(body)["general"]["holdout_file"],
                                      cfg["general"]["holdout_file"])
+
+    def test_short_audit_has_only_fresh_text_stage(self):
+        for gpu in cr.GPU_PROFILES:
+            arm = cr.settings("audit", str(self.root), "", gpu_profile=gpu)[0]
+            arm["__cache_audit_only"] = True
+            plan = self.make_plan(arm)
+            self.assertFalse(plan.problems)
+            self.assertEqual([stage.name for stage in plan.stages], ["Shuffle Text Cache Audit"])
+            cmd = plan.stages[0].cmd
+            self.assertIn("--cache_audit", cmd)
+            self.assertNotIn("--skip_existing", cmd)
+            self.assertNotIn("--sample_at_first", cmd)
+            self.assertNotIn("--optimizer_type", cmd)
 
     def test_3090_defaults_to_original_cache(self):
         arms = cr.settings("test", str(self.root), "prompt", gpu_profile="3090")

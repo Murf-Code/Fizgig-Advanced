@@ -29,6 +29,7 @@ from fizgig.dataset.config import (BlueprintGenerator, ConfigSanitizer,  # noqa:
                                    generate_dataset_group_by_blueprint, load_user_config)
 from fizgig.dataset.image_dataset import dtype_to_str, source_stamp  # noqa: E402
 from fizgig.families.registry import get  # noqa: E402
+from fizgig.dataset import cache_audit  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +202,12 @@ def _encode_tag_variants(args, datasets, driver, te, desc):
     if not any(settings_of(ds) for ds in datasets):
         return
     workers = args.num_workers if args.num_workers is not None else max(1, os.cpu_count() - 1)
-    build_for_datasets(datasets, lambda caps: driver.encode_text(te(), caps), arch=desc.arch_id, num_workers=workers,
+    def encode(caps):
+        result = driver.encode_text(te(), caps)
+        for cap, cond in zip(caps, result):
+            cache_audit.record("before_clean", "variant", cap, cond)
+        return result
+    build_for_datasets(datasets, encode, arch=desc.arch_id, num_workers=workers,
                        batch=min(int(args.batch_size or 8), 64), clean=lambda v, k: _clean(v, k, "caption variant"),
                        compact=getattr(desc, "text_cache_trim", False))
 
@@ -224,7 +230,10 @@ def main():
                    help="also cache the validation hold-out's pictures (the TOML's holdout_file), for validation only")
     p.add_argument("--aux", action="append", default=[], metavar="KEY=VALUE",
                    help="a further model file or option for the family's own caching (e.g. audio_vae=PATH)")
+    p.add_argument("--cache_audit", default="", help="diagnostic JSONL of real-token values before cleaning and after saving")
     args = p.parse_args()
+    if args.cache_audit:
+        cache_audit.enable(args.cache_audit)
     from fizgig.families.quant import apply_vram_cap
     apply_vram_cap()                # FIZGIG_SIM_VRAM_GB: behave like a smaller card
 
@@ -265,6 +274,7 @@ def main():
             for ds in held:
                 os.makedirs(ds.cache_directory, exist_ok=True)
             _stage(args, desc, driver, held, device, aux, pairs, variants=False)
+    cache_audit.finish()
 
 
 def _stage(args, desc, driver, datasets, device, aux, pairs, variants=True):
@@ -319,6 +329,7 @@ def _stage(args, desc, driver, datasets, device, aux, pairs, variants=True):
 
         def encode(batch):
             for it, c in zip(batch, driver.encode_text(te(), [it.caption for it in batch])):
+                cache_audit.record("before_clean", "base", it.item_key, c)
                 save_cond(desc, it, c, encoder=enc)
         try:
             process_batches(args, datasets, files, paths, encode)
