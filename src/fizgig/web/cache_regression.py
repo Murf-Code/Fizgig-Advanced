@@ -31,7 +31,7 @@ def settings(group, root, prompt):
         "KREA2_SELECTIVE_BLOCK_CHECK": False, "INT8_ROTATED_BACKWARD": False,
         "RESUME_TRAINING": "", "CONTEXT_LORA_PATH": "",
     }
-    base.update(MAX_TRAIN_EPOCHS="2", VALIDATION_LOSS=True, VALIDATION_HOLDOUT=False,
+    base.update(MAX_TRAIN_EPOCHS="2", VALIDATION_LOSS=True, VALIDATION_HOLDOUT=True,
                 VALIDATION_GROUPS="1", VALIDATION_IMAGES="4", VALIDATION_SEED="42",
                 VALIDATION_TIMESTEPS="4", ADAPTIVE_LR=False, KREA2_PER_IMAGE_LR=False,
                 KREA2_LOSS_WATCH=False, KREA2_DIRECTION_EDIT=False, SAMPLE_ENABLED=False,
@@ -52,8 +52,8 @@ def source_config(body):
     if len(sets) != 1 or not sets[0].get("image_directory"):
         raise ValueError("Cache regression requires one ordinary image dataset.")
     ds = sets[0]
-    if ds.get("control_directory") or cfg.get("general", {}).get("holdout_file"):
-        raise ValueError("Cache regression uses one non-held-out, unpaired dataset.")
+    if ds.get("control_directory"):
+        raise ValueError("Cache regression uses an unpaired dataset.")
     return cfg, Path(ds.get("cache_directory") or ds["image_directory"]).resolve()
 
 
@@ -111,7 +111,7 @@ def configure_plan(desc, inputs, plan, values, launch):
                          "--text_encoder", txt[txt.index("--model") + 1]])
     plan.stages = stages + train
     plan.dirs.append(str(dest))
-    plan.console.append(f"[cache-regression] {case}: isolated cache, fixed validation panel (not held out), two epochs.")
+    plan.console.append(f"[cache-regression] {case}: isolated cache, fixed validation hold-out, two epochs.")
 
 
 def digest(path):
@@ -122,7 +122,7 @@ def digest(path):
     return h.hexdigest()
 
 
-def prepare_caches(source_body, configs, arch):
+def prepare_caches(source_body, configs, arch, held_paths=()):
     """Snapshot only the expected item files into A, then copy retained axes from A.
     No links, no writes to the source, no silently repairing a missing retained axis.
     """
@@ -134,6 +134,9 @@ def prepare_caches(source_body, configs, arch):
     ds, g = cfg["datasets"][0], cfg["general"]
     ext = g.get("caption_extension", ".txt")
     paths = glob_images(ds["image_directory"], caption_extension=ext)
+    held = {Path(p).resolve() for p in held_paths}
+    if not held.issubset({Path(p).resolve() for p in paths}):
+        raise ValueError("Hold-out contains pictures outside the diagnostic dataset.")
     if not paths:
         raise ValueError("No captioned images found.")
     stems = [Path(p).stem for p in paths]
@@ -149,41 +152,55 @@ def prepare_caches(source_body, configs, arch):
     for p in paths:
         stem = Path(p).stem
         w, h, _ = _header(p)
-        lat = source / f"{stem}_{w:04d}x{h:04d}_{arch}.safetensors"
-        te = source / f"{stem}_{arch}_te.safetensors"
+        is_held = Path(p).resolve() in held
+        rel = Path("_fizgig_holdout") if is_held else Path()
+        latent_name = f"{stem}_{w:04d}x{h:04d}_{arch}.safetensors"
+        text_name = f"{stem}_{arch}_te.safetensors"
+        # Use the original validation cache if present, otherwise an existing
+        # ordinary cache; never invent missing training variants.
+        src = source / rel
+        lat = src / latent_name
+        te = src / text_name
+        if is_held and not (lat.is_file() and te.is_file()):
+            lat, te = source / latent_name, source / text_name
         var = Path(variants_path(str(te)))
         for file in (lat, te):
             if not file.is_file():
-                raise ValueError(f"Existing cache missing: {file}. Use the complete no-holdout cache from the failing run.")
+                raise ValueError(f"Existing cache missing: {file}. Use the complete cache from the failing run with the same validation selection.")
         if ImageDataset.latent_cache_matches_reso(str(lat), selector.get_bucket_resolution((w,h)), arch) is not True:
             raise ValueError(f"Existing latent has the wrong bucket: {lat}. Match the failing run's 1 MP cache.")
-        expected.extend([(lat, "latents"), (te, "text")])
+        expected.extend([(lat, "latents", rel / lat.name), (te, "text", rel / te.name)])
+        if is_held:
+            continue
         caption = read_caption(str(Path(p).with_suffix(ext))).strip()
         if variant_captions(caption, tags) or tags.caption_dropout:
             if not var.is_file():
                 raise ValueError(f"Existing caption variants missing: {var}. Do not rebuild the source before the test.")
-            expected.append((var, "text"))
+            expected.append((var, "text", rel / var.name))
         elif var.is_file():
-            expected.append((var, "text"))
+            expected.append((var, "text", rel / var.name))
     control = Path(configs[0]["LORA_OUTPUT_DIR"]) / "isolated-cache"
     control.mkdir(parents=True, exist_ok=False)
     records = []
-    for file, axis in expected:
+    for file, axis, relative in expected:
         before = file.stat()
-        dst = control / file.name
+        dst = control / relative
+        dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(file, dst)
         after = file.stat()
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             raise ValueError(f"Source cache changed during snapshot: {file}")
-        records.append({"file": file.name, "axis": axis, "sha256": digest(dst), "bytes": dst.stat().st_size})
+        records.append({"file": relative.as_posix(), "source": str(file), "axis": axis, "sha256": digest(dst), "bytes": dst.stat().st_size})
     for values in configs[1:]:
         fresh_lat, fresh_text = CASES[values["__cache_regression"]]
         dest = Path(values["LORA_OUTPUT_DIR"]) / "isolated-cache"
         dest.mkdir(parents=True, exist_ok=False)
         for record in records:
             if (record["axis"] == "latents" and not fresh_lat) or (record["axis"] == "text" and not fresh_text):
-                shutil.copy2(control / record["file"], dest / record["file"])
-    return {"source": str(source), "images": paths, "files": records}
+                dst = dest / record["file"]
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(control / record["file"], dst)
+    return {"source": str(source), "images": paths, "holdout": [str(p) for p in held_paths], "files": records}
 
 
 def verify_start(plan, values):
@@ -194,7 +211,8 @@ def verify_start(plan, values):
         manifest = json.load(f)
     recipe = next(p for p in manifest["plans"] if p["case"] == case)
     actual = [{"name": s.name, "cmd": s.cmd} for s in plan.stages]
-    if plan.dataset_toml != recipe["dataset_toml"] or actual != recipe["stages"]:
+    if (plan.dataset_toml != recipe["dataset_toml"] or actual != recipe["stages"]
+            or holdout_paths(plan) != manifest["snapshot"].get("holdout", [])):
         raise ValueError("Diagnostic plan changed after snapshot; start a new comparison.")
     if any(out.glob("*.safetensors")) or (out / "diagnostic.log").exists():
         raise ValueError("This cache regression arm has already run; create a new comparison.")
@@ -202,9 +220,17 @@ def verify_start(plan, values):
     expected = {r["file"]: r for r in manifest["snapshot"]["files"]
                 if (r["axis"] == "latents" and not fresh_lat) or (r["axis"] == "text" and not fresh_text)}
     cache = out / "isolated-cache"
-    actual_files = {p.name for p in cache.iterdir()}
+    actual_files = {p.relative_to(cache).as_posix() for p in cache.rglob("*") if p.is_file()}
     if actual_files != set(expected):
         raise ValueError("Isolated cache contents changed before start; create a new comparison.")
     for name, record in expected.items():
         if digest(cache / name) != record["sha256"]:
             raise ValueError(f"Isolated cache bytes changed before start: {name}.")
+
+
+def holdout_paths(plan):
+    """Read this arm's planned hold-out list, not a previous run's disk state."""
+    for path, body in plan.files:
+        if str(path).endswith("_holdout.json"):
+            return json.loads(body).get("paths") or []
+    return []
