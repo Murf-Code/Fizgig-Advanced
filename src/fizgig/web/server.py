@@ -5032,6 +5032,8 @@ class Handler(BaseHTTPRequestHandler):
                 profile = str(b.get("gpu_profile") or "")
                 if profile not in cache_regression.GPU_PROFILES:
                     return self.json({"error": "Choose the RTX 3090 or RTX 4070 Ti cache test."}, 400)
+                if webqueue.status()["items"]:
+                    return self.json({"error": "Cache test requires an empty training queue. Remove or finish existing jobs first."}, 400)
                 group = "cache-regression-" + profile + "-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
                 root = os.path.join(default_output_dir(), "polora_diagnostics")
                 # This diagnostic is restricted to the selected ordinary image folder.
@@ -5072,7 +5074,11 @@ class Handler(BaseHTTPRequestHandler):
                     # Only this newly created diagnostic group is removed, never the source cache.
                     shutil.rmtree(output, ignore_errors=True)
                     return self.json({"error": str(exc)}, 400)
-                items = webqueue.add_many(entries)
+                try:
+                    items = webqueue.add_many(entries, require_empty=True)
+                except ValueError as exc:
+                    shutil.rmtree(output, ignore_errors=True)
+                    return self.json({"error": str(exc)}, 400)
                 if not webqueue.status()["held"]:
                     webqueue.start_next(_queue_starter)
                 return self.json({"ok": True, "ids": [i["id"] for i in items], "output": output})
