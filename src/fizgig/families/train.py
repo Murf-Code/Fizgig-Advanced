@@ -1584,7 +1584,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     selective_compensation = str((family_options or {}).get("selective_compensation", "")).strip().lower() in (
         "1", "true", "on", "yes")
     if selective_compensation and (not selective_global_replay or str(optimizer_type).strip().lower() != "muon"):
-        raise RuntimeError("Experimental Selective LR compensation requires Krea 2 Global replay, "
+        raise RuntimeError("Selective LR compensation requires Krea 2 Global replay, "
                            "Selective block check and the built-in Muon optimizer.")
     if global_replay:
         unsupported = []
@@ -2602,7 +2602,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 g.get("adjust_lr_fn") != "match_rms_adamw" for g in optimizer.param_groups):
             raise RuntimeError("Selective LR compensation needs built-in Muon with match_rms_adamw")
         driver.validate_selective_compensation_optimizer(optimizer)
-        logger.info("[selective-compensation] experimental: active learning term × min(1.5, sqrt(total/active)); "
+        logger.info("[selective-compensation] enabled: active learning term × min(1.5, sqrt(total/active)); "
                     "native group LR, full probes, decay and skipped momentum are unchanged.")
     _polora = optimizer.__class__.__name__ == "Polora"
     if _polora:

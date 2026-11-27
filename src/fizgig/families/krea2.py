@@ -63,7 +63,7 @@ KREA2 = FamilyDescription(
         summary="Selective block check",
     ), FamilyOption(
         key="KREA2_SELECTIVE_COMPENSATION",
-        label="Selective LR compensation (experimental)",
+        label="Selective LR compensation",
         kind="check",
         tokens="selective_compensation=1",
         default="",
