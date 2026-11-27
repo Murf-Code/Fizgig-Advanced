@@ -22,10 +22,12 @@ sys.path.insert(0,str(ROOT/"src"))
 
 def error(a,b):
     a,b=a.float(),b.float()
+    finite=bool(torch.isfinite(a).all().item() and torch.isfinite(b).all().item())
+    if not finite:
+        return {"relative_l2":None,"max_abs":None,"finite":False}
     den=b.norm().item()
     return {"relative_l2":(a-b).norm().item()/max(den,1e-30),
-            "max_abs":(a-b).abs().max().item(),
-            "finite":bool(torch.isfinite(a).all().item())}
+            "max_abs":(a-b).abs().max().item(),"finite":True}
 
 
 def measure(fn, warmup, repeat):
@@ -156,11 +158,16 @@ def main():
             del w
             def stock_f():
                 return layer(x)
+            # Build the frozen native graph once, outside backward timing.
+            # Retaining it measures dX rather than a second forward plus dX.
+            z=x.detach().requires_grad_(True)
+            with torch.enable_grad():
+                stock_y=layer(z)
             def stock_b():
-                with torch.enable_grad():
-                    z=x.detach().requires_grad_(True)
-                    return torch.autograd.grad(layer(z),z,dy)[0]
+                return torch.autograd.grad(stock_y,z,dy,retain_graph=True)[0]
             rec["arms"]["stock-int8"]=attempt(stock_f,stock_b,y,dx,args)
+            rec["arms"]["stock-int8"]["backward_graph"]="prebuilt retained native graph; included in memory baseline"
+            del stock_y,z
             # Stock errors are relative to Q6, not an equivalence gate.
             rec["arms"]["stock-int8"]["error_reference"]="q6-reference (different quantization)"
             save()
