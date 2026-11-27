@@ -85,6 +85,7 @@ def configure_plan(desc, inputs, plan, values, launch):
     plan.files.append((prompt_path, prompt + "\n"))
     train[0].cmd.extend(["--family_option", "polora_diagnostic=1",
                          "--family_option", "cache_regression=1",
+                         "--family_option", f"cache_regression_dir={inputs['LORA_OUTPUT_DIR']}",
                          "--sample_prompts", prompt_path, "--sample_every_n_epochs", "1",
                          "--sample_at_first", "--sample_seed", "42", "--sample_width", "768",
                          "--sample_height", "768", "--sample_steps", "24", "--sample_cfg_scale", "3.5",
