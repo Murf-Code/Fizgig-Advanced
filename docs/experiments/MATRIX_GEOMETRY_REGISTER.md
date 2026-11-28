@@ -85,3 +85,6 @@ See [full results](MUON_SEVEN_RANK_CPU_20261127.md). Similar normalized error cu
 
 ### Round 5 implementation ready for isolated GPU test
 [Async activation offload protocol and review request](ASYNC_ACTIVATION_OFFLOAD_20261127.md). Seven CPU tests pass, one CUDA skipped. Four paired arms, no compressed momentum, no new optimizer strategy. Click Test async activation, same dataset. Actual full-model parity and clean speed pending; backward live-memory profiling remains separate.
+
+### Round 5 GPU feasibility result
+[Async activation GPU results](ASYNC_ACTIVATION_OFFLOAD_20261127.md): 4/4 arms, 52 updates, tiny CUDA preflight 3/3, no allocator OOM/retries, exact accounting 364 restores and 420 MiB host peak, zero live/waits. Async step 2.8194 s vs sync 2.9909 and control 2.6064 (44.6% of sync overhead removed). Async forward -405 MiB, backward only -14.25 MiB, reserved -204 MiB vs control, +80 MiB vs sync. Shared GPU sampled higher. A/A first update divergence repeated; async step2 sampled gradient error 490% vs A/A 152%, not attributable on diverged trajectories. Operational feasibility passed, full-model numerical gate open. Next fixed-state repeated actual backward + live-memory profiling, clean timing after correctness. No combined/production promotion.
