@@ -30,3 +30,21 @@ Core commit 13077523; runner eb7ba380; regression tests f3033360. Isolated CPU c
 ```
 
 If direct conditional optimum substantially improves fit/dev over initial and competes with H5 QAT, investigate alternating direct gain solves and changes to outer scale fitting. If it improves fit but not dev, investigate objective conditioning/generalization. If limited fit improvement, focus on sign/outer-scale geometry, not repeated latent gain LR tuning. No conclusion about intrinsic capacity until signs and outer-scale restrictions are challenged. Hybrid remains parked.
+
+
+## Completed H6 results — 2026-11-27
+
+User littlebit-latent-scale.json SHA256 13d7e3bde45cdaa199759005f977c41f8c31ff44929614744f5657565ce508af; completed 174.093s, torch2.15.0+cu134, key14 1536x6144, same raw hash f99bb0ff8e362b77342bc4994e0c50906fe7ef7074864b181b7d48d2fa6d03d7, fit64/2048 rows, dev8, confirmation_scored=false. Zero QAT steps. Both initial dev objectives and weight errors exactly reproduce H5 initialization. Each rank597+597, payload1179348 B, .9997456868 effective bits.
+
+| Arm/stage | Dev objective | Dev forward RMS | Dev dX RMS | Pooled FP64 fit J | Weight RMS |
+|---|---:|---:|---:|---:|---:|
+| ordinary initial | .193984625 | .333137274 | .526297261 | .225719355 | .598044310 |
+| ordinary BF16 solved | .181820087 | .292814440 | .527162097 | .216061826 | .603665081 |
+| weighted initial | .184095456 | .332503964 | .507574651 | .186563092 | .613900247 |
+| weighted BF16 solved | .170310003 | .284302127 | .509698251 | .174654651 | .622191460 |
+
+Continuous optimum fit J ordinary .216060440044, weighted .174653434512. BF16 rounding adds only .000001386 and .000001217 to J, respectively. Both systems retain all1194 eigenmodes, normalized Gram condition 2.1288485 / 2.4142166, relative normal residual 6.16e-16 / 5.91e-16. No negative/zero gains or gain sign changes. Ordinary mean gain ratio 1.09506, weighted1.10470. Weighted dev objective improves 7.4882%, fit J improves 6.3831%, forward RMS improves 14.4966%; dX RMS increases .21236 percentage points (only 3/8 dev captures improve dX, same for ordinary). Weight error increases. Weighted solution still worse than H5 100-step QAT dev .140023256/dX .485581665. Pooled FP64 fit J is not the same metric as H5 equal-capture fixed-fit score. Numerical failure or BF16 gain rounding cannot explain the remaining gap for these fixed atoms; optimizing gains alone is insufficient. This does not establish intrinsic one-bit capacity or exclude benefits of gain solves after changes to signs or outer scales. No actual LoRA transfer/VRAM validation.
+
+Timings: normal equations .594/.578s, eigensolve .078/.063s (combined1.313s); initializations2.953/3.016s; four evaluations13.859/14.062/14.250/14.219s; load fit/dev17.594s; metric .188s; continuous metrics .531/.547s. Total reported phases82.632s (remaining ~91.5s unattributed, includes validation/hashing and other runner overhead; cannot assign exact breakdown). End-to-end H6 ~11.1x shorter than H5 but different candidate counts/optimization, not equivalent-quality speedup.
+
+Recommended H7 diagnostic: freeze signs, alternate conditional optimization of latent, row and column scales, with same original normalized .2/.4/.4 pooled objective and exact same payload. Each scale block is linear while other fields fixed; use matrix-free normal-operator CG (or a tractable exact row system), diagonal preconditioning, residual/iteration limits, compare against explicit tiny design matrices, guard BF16 rounded fit acceptance and gauge drift. Limit to weighted-50 plus initial/H6 controls, a few sweeps, record fit and dev after each, save packed factors for reuse and profile evaluation/validation. If fit barely improves despite well-converged conditional solves, change binary sign/atom construction rather than run additional gain sweeps. No further confirmation on old bank; fresh capture needed before promotion. Hybrid parked. This is a proposed next test, not implemented in this review.
