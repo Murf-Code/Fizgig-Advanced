@@ -25,3 +25,22 @@ On PyTorch 2.10 CPU, reconstructed the exact rate/optimize excerpt (4062 charact
 ## Next gate
 
 Review H1 results, then narrow sign schedules and use fresh capture bank before promoting any winner. Investigate unequal binary ranks, activation-aware initialization, latent rotation, sign-specific optimizers only where evidence warrants. Preserve scope: maximize pure binary, validate complete block and actual LoRA transfer, then return to hybrid.
+
+
+## H1 completed GPU results — 2026-11-27
+
+User littlebit-convergence.json, completed, 232.188 s, CUDA torch 2.15.0+cu134, key14 only, seven candidates, raw/capture hashes match LB-G, no archive supplied. All candidates use rank597+597, 1179348 packed B, .99974569 effective bits; optimized decoded BF16 factors 18372948 B and 9169920 theoretical MACs/token (97.17% dense). F2/F5 100-step objectives reproduce LB-G exactly.
+
+| Arm | Selected step | Dev | Prior confirmation | Dev at 1000 |
+|---|---:|---:|---:|---:|
+| H0 | 0 | .196482 | .210136 | — |
+| H1 | 100 | .161681 | .178545 | .194367 |
+| H2 | 100 | .161586 | .177727 | .184091 |
+| H3 | 100 | .161586 | .177727 | .176659 |
+| H4 | 200 | .159367 | .175588 | .171938 |
+| H5 | 100 | .161586 | .177727 | .163012 |
+| H6 | 100 | .183758 | .197204 | .207813 |
+
+H4 best selected checkpoint improves F5 by 1.373% dev and 1.204% prior confirmation objective; prior confirmation RMS .419032, raw forward .219933 and dX .550278, versus E3 .330163/.557911. Weight error .608102 versus E3 .598044 (worse). No arm improves after 200 at measured checkpoints; H3 and H5 reduce late degradation but do not beat their shared step100. Element-count weighted cumulative flips (weights .4/.1/.4/.1 for A/B of equal rank paths) H1 .25060 at100 -> 8.46816 at1000; H3 .16896 -> 7.14044; H4 .43128 at200 -> 7.08405 at1000; H5 .16896 unchanged from100 to1000, confirms sign freeze. H1 net flips at1000 13.247%, far smaller than cumulative events. H6 fixed shadow signs but signed scale multiplier min -.133621 at1000, max 1.921392; effective factor signs can change through negative scales despite fixed binary codes. No near-zero fraction at logged checkpoints does not exclude crossing zero between checkpoints. H5 weight/action deterioration despite no additional shadow flips, and H6 late deterioration without any shadow flips, show oscillation is not the sole possible explanation. Fit minibatch losses use variable sampled rows and are not directly comparable; no deterministic full fit loss series in report, so overfitting is a hypothesis, not established.
+
+Decision: retain H4 and F5 as pure-binary reference, do not repeat 1000-step sweeps on old captures. Next priority fresh diverse calibration with locked fit/dev/untouched confirmation and separate fixed-panel fit forward/dX diagnostics. Then targeted pure LittleBit objective/initialization study for key14 (backward fidelity is limiting): compare pooled versus per-capture normalization, balanced versus backward-emphasized objective, with weight-preserving control and short 100–200 step schedules; isolate each change, consider positive scale parameterization and unequal rank allocation afterward. Need independent review before major math changes. Do not treat H4 as universal winner or revive hybrid research. No trainer/code changes during result review, no deployment or portability/VRAM claim.
