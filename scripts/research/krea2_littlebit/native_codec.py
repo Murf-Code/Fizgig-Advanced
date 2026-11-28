@@ -17,6 +17,7 @@ import torch.nn.functional as F
 from safetensors import safe_open
 from safetensors.torch import save_file
 import geometry_codec as geometry
+import qh_runtime as qh
 
 FORMAT = "fizgig-independent-compact-v2"
 MODULES = ("attn.wq","attn.wk","attn.wv","attn.gate","attn.wo","mlp.up","mlp.gate","mlp.down")
@@ -71,6 +72,10 @@ def _bf(p):
 
 
 def encode(weight, codec, rank=128, group=64, qat_steps=0):
+    if codec in qh.NAMES:
+        if qat_steps or group!=64 or weight.ndim!=2 or weight.dtype!=torch.bfloat16 or not torch.isfinite(weight).all():
+            raise ValueError('QH requires finite raw BF16, group64 and no QAT')
+        return qh.encode(weight,codec,_pack)
     if codec in geometry.EXTRA:
         if qat_steps or weight.ndim != 2 or not weight.is_floating_point() or not torch.isfinite(weight).all():
             raise ValueError('geometry codecs require finite floating matrices and no QAT')
@@ -137,6 +142,8 @@ def _encode_original(weight, codec, rank=128, group=64, qat_steps=0, latent_hada
 
 
 def validate(p,s):
+    if s["codec"] in qh.NAMES:
+        return qh.validate(p,s,_unpack)
     if s["codec"] in geometry.EXTRA:
         return geometry.validate(p,s,validate)
     m,n = s["shape"]
@@ -189,6 +196,8 @@ class Frozen(torch.autograd.Function):
     def forward(ctx,x,p,s):
         ctx.save_for_backward(p)
         ctx.spec=s
+        if s["codec"] in qh.NAMES:
+            return qh.forward(x,p,s,_unpack)
         if s["codec"] in geometry.EXTRA:
             return geometry.forward(x,p,s,_unpack,factors)
         if s["codec"] not in ("q4","q6"):
@@ -202,6 +211,8 @@ class Frozen(torch.autograd.Function):
     def backward(ctx,dy):
         p,=ctx.saved_tensors
         s=ctx.spec
+        if s["codec"] in qh.NAMES:
+            return qh.backward(dy,p,s,_unpack),None,None
         if s["codec"] in geometry.EXTRA:
             return geometry.backward(dy,p,s,_unpack,factors),None,None
         if s["codec"] not in ("q4","q6"):
