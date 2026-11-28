@@ -48,3 +48,36 @@ Command:
   --key blocks.14.attn.wk.weight `
   --out output_loras\littlebit-coverage.json
 ```
+
+
+## H3 coverage results — 2026-11-27
+
+User littlebit-coverage.json SHA256 db20a74cec129a233f291f345024eef226eadda62c9811a20f1d5b36b7f26187; completed 3820.938 s, CUDA torch 2.15.0+cu134, key14 1536x6144, selection_locked=true. Eleven candidates, identical rank597+597 and packed payload1179348 B (.9997456868 bits); decoded BF16 factors18372948 B and 9169920 theoretical MAC/token, not measured resident VRAM or runtime throughput. All reported scales near-zero fraction zero.
+
+| Arm | Selected step | Dev objective | Conf objective | Conf forward RMS | Conf dX RMS | Relative weight error |
+|---|---:|---:|---:|---:|---:|---:|
+| E3 | 0 | .193985 | .203538 | .332393 | .544602 | .598044 |
+| 2 control | 150 | .163330 | .172623 | .231746 | .539945 | .607661 |
+| 2 weight50 | 100 | .161366 | .169544 | .232512 | .533878 | .598994 |
+| 8 control | 150 | .156375 | .164359 | .216871 | .530740 | .608724 |
+| 8 weight50 | 100 | .156405 | .164293 | .223251 | .527963 | .600043 |
+| 16 control | 150 | .152792 | .163123 | .214063 | .529549 | .609070 |
+| 16 weight50 | 100 | .153009 | .162578 | .220762 | .525757 | .600595 |
+| 32 control | 100 | .148481 | .158598 | .209811 | .522662 | .610693 |
+| 32 weight50 | 100 | .151130 | .160177 | .221259 | .520960 | .601668 |
+| 64 control | 100 | .143724 | .156816 | .210848 | .518821 | .611684 |
+| 64 weight50 | 100 | .147270 | .158849 | .220579 | .518694 | .602384 |
+
+Preselected dev winner 64 control also best confirmation joint objective: -22.955% vs E3, -9.157% vs matched 2 control on same bank. Confirmation forward 33.239% ->21.085%, dX54.460% ->51.882%; dX improved on all eight confirmation captures. Weight50 at64 marginally lower confirmation dX (51.869%) and weight error but worse joint objective; no re-selection on confirmation. Both objectives improve monotonically on this single nested bank. 64 control dev dX49.237% and fit dX38.032% at selected100; 2 control dev52.225%, fit21.088% at150. More diverse fitting reduces fit/dev gap, but fit metrics have differing examples. 64 control dev objective .143724 at100 then .146464/.148239 at150/200, weight error .611684 -> .618300; more updates alone not warranted.
+
+| Fit count | x span energy | dy span energy | x numerical rank | dy numerical rank | dy entropy rank | dy 99% energy rank |
+|---:|---:|---:|---:|---:|---:|---:|
+| 2 | .32066 | .13528 | 64 | 64 | 4.359 | 31 |
+| 8 | .48712 | .36676 | 256 | 256 | 14.981 | 106 |
+| 16 | .58076 | .58656 | 512 | 512 | 22.434 | 175 |
+| 32 | .70126 | .85884 | 1024 | 1024 | 42.119 | 288 |
+| 64 | .82335 | 1.0 | 2048 | 1536 | 77.544 | 459 |
+
+At 64 fit, cotangent numerical row span reaches full 1536 output dimensions (relative singular threshold 1e-4); 100% projected energy is expected for full span, not 100% fidelity or well-conditioned coverage. dy energy concentration remains high: 95% energy rank167, participation rank33.513. x entropy rank265.987 and 99% energy rank1508. Data coverage explains part, not all, of the gap. Remaining error could be binary representation, initialization, objective conditioning or optimization. Cannot identify which from this run. Single nested bank, unequal timesteps, shared evolving stock trajectory, one matrix; no portable LoRA or model-wide retention measured. Confirmation bank now consumed for key14, must not be treated as untouched in subsequent adaptive experiments.
+
+Next H4: diagnose representation versus fitting limits before more captures or expensive optimizer sweeps. On key14 and existing fit/dev bank compute exact dense truncated-SVD rank1194 oracle (rank-matched, NOT bit-matched/deployable), plus optional task-weighted continuous rank1194 oracle with same joint objective and regularization; compare pure binary unequal rank splits and initialization/rotation only if oracle indicates headroom. Compare direct Q2/Q3/Q4/Q6 controls on identical new dev bank; do not compare absolute errors from old panels as matched. Predeclare next candidates and evaluate future winners on fresh confirmation bank. Keep pure binary scope, hybrid parked. No runtime changes in this review.
