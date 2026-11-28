@@ -29,3 +29,25 @@ Independent reconstructed FP64 toy calculation on torch2.10 CPU (19x31 rank7, an
   --key blocks.14.attn.wk.weight `
   --out output_loras\littlebit-rank-reference.json
 ```
+
+
+## Completed H4 GPU report — 2026-11-27
+
+User littlebit-rank-reference.json SHA256 e28eba88fe15134bfaf5ef78af40e94a8af571a274423d51aeee8897107de296; completed 212.922 s, torch 2.15.0+cu134, CUDA joint optimization, key14 1536x6144, total rank1194, binary reference rank597+597. Same H3 raw hash and development step IDs [8,22,33,5,17,55,1,28]; confirmation_scored=false. Eight candidates.
+
+| Candidate | Effective bits | Relative weight error | Dev forward RMS | Dev dX RMS | Dev objective |
+|---|---:|---:|---:|---:|---:|
+| Q2 odd Had | 2.25 | .346405 | .133683 | .319930 | .060113020 |
+| Q3 odd Had | 3.25 | .192979 | .068013 | .177567 | .018077896 |
+| Q4 Had | 4.25 | .106891 | .036395 | .098653 | .005528511 |
+| Q6 Had | 6.25 | .024149 | .008610 | .022454 | .000289158 |
+| stock INT8 | 8.005208 | not measured | .018000 | .014105 | .000261474 |
+| continuous SVD | 15.546875 | .178350 | .060381 | .125227 | .009663882 |
+| backward-weighted SVD | 15.546875 | .182103 | .061963 | .102131 | .007135082 |
+| joint continuous | 15.546875 | .183740 | .045023 | .103398 | .006359152 |
+
+Exact FP64 optimal weight relative error .178334980; joint fit lower bounds .006360673 (weight only), .006917052406 (weight+backward). Pooled FP32 joint fit objective for SVD .013383109, backward-weighted .008433890, joint at100 .007680915 (11.043% above the stronger lower bound; comparison subject to FP32 numerical error). Joint initialized from weighted SVD by fit objective, dev checkpoints0/10/20/50/100 .007135091/.006505431/.006414741/.006366356/.006359152; small gain after50. Weight-backward SVD has best dX among continuous references; joint improves balanced objective and forward at slight dX/weight cost.
+
+Against H3 64-control dev .143724/dX .49237 and weight error .611684, continuous rank-joint has 95.575% lower dev objective; weighted SVD has 79.257% lower dX RMS. These are feasible rank-matched high-precision references, NOT bit-matched and NOT attainable binary guarantees. Rank alone demonstrably cannot explain binary error; cannot yet separate binary representation capacity, initialization/rotation/scales and optimizer failure. The fit lower bound is not a held-out bound, and joint is not certified optimal. Direct Q2 still substantially better than current binary at 2.25x effective bits; no deployable 1-bit training result. No further confirmation was scored.
+
+Next **H5 pure binary initialization and rank allocation**: screen equal 50/50 control, primary/residual 75/25 and 25/75 (optionally one path with exact byte accounting), ordinary vs backward-weighted continuous initialization in original weight coordinates, residual against actual BF16-rounded decoded first path. Keep cap1 bit, predeclare variants; verify actual packed bytes and compare total ranks because overhead differs. Weighted initialization must undo Cholesky transform before binarizing (no stored dense transform). Measure continuous pre-binarization, immediate binary, and after identical short scale warmup/QAT to isolate loss sources. Prioritize cheap initialization screen and only a small number of matched QAT finalists (100 steps on H3 64 fit, dev8), using H3 control as reference and no further confirmation scoring on old bank. Fresh independent confirmation required for future promotion. No code changes in this review; hybrid remains parked.
