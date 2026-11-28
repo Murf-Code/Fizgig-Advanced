@@ -28,7 +28,8 @@ def allocations(m,n,cap,top):
     total=sum(equal)
     result={}
     for share in SHARES:
-        a=(total*share+50)//100
+        small=total//4
+        a={50:total//2,75:total-small,25:small}[share]
         b=total-a
         if min(a,b)<1 or q.size(m,n,a)+q.size(m,n,b)>cap:
             raise ValueError("rank split exceeds budget or has empty path")
@@ -153,6 +154,7 @@ def run(w,key,args,stock,trace,split,int8,row,save):
     finalists=[control,*others[:2]]
     row["qat_finalists"]=finalists
     save()
+    initial={k:initial[k] for k in finalists}
     for name in finalists:
         paths=initial.pop(name).to(device)
         history=[]
