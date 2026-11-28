@@ -35,11 +35,15 @@ SELECTIVE_BASE.update(EFFECTIVE_CASES)
 EFFECTIVE_SIX = {f"{name}-geometry-{mode}": name for name in ("polora", "lora_tsd")
                  for mode in ("full", "selective", "effective")}
 SELECTIVE_BASE.update(EFFECTIVE_SIX)
+PAIR_COMP_CASES = {f"{name}-comp-{mode}-{selector}": name
+                   for name in ("polora", "lora_tsd")
+                   for selector in ("selective", "effective") for mode in ("off", "on")}
+SELECTIVE_BASE.update(PAIR_COMP_CASES)
 START.update({case: SELECTIVE_RATES[name] for case, name in SELECTIVE_BASE.items()})
 
 
 def expected_updates(case):
-    if case in EFFECTIVE_SIX:
+    if case in EFFECTIVE_SIX or case in PAIR_COMP_CASES:
         return 78
     return 65 if case in SOAP_SWEEP or case in SELECTIVE_BASE else EXPECTED_UPDATES
 
@@ -141,10 +145,24 @@ def effective_settings(group, prompt, *, epochs=6):
     return rows
 
 
+def pair_comp_settings(group, prompt):
+    group = Path(group)
+    rows = []
+    for name in ("polora", "lora_tsd"):
+        template = selective_settings(group, prompt, [name])[1]
+        for selector in ("selective", "effective"):
+            for mode in ("off", "on"):
+                case = f"{name}-comp-{mode}-{selector}"
+                rows.append({**template, "MAX_TRAIN_EPOCHS": "6", "__optimizer_match": case,
+                             "LORA_NAME": f"{group.name}-{case}", "LORA_OUTPUT_DIR": str(group / case)})
+    return rows
+
+
 def attach(plan, values, family, resume=""):
     name = values["__optimizer_match"]
     group = Path(values["LORA_OUTPUT_DIR"]).parent
-    choices = (effective_settings(group, values.get("SAMPLE_PROMPT", ""), epochs=6) if name in EFFECTIVE_SIX
+    choices = (pair_comp_settings(group, values.get("SAMPLE_PROMPT", "")) if name in PAIR_COMP_CASES
+               else effective_settings(group, values.get("SAMPLE_PROMPT", ""), epochs=6) if name in EFFECTIVE_SIX
                else effective_settings(group, values.get("SAMPLE_PROMPT", ""), epochs=5) if name in EFFECTIVE_CASES
                else selective_settings(group, values.get("SAMPLE_PROMPT", ""), [SELECTIVE_BASE[name]]) if name in SELECTIVE_BASE
                else soap_settings(group, values.get("SAMPLE_PROMPT", "")) if name in SOAP_SWEEP else settings(group))
@@ -397,7 +415,25 @@ def refresh(group):
             r["peak_reserved_bytes"] = max(x.get("cuda_peak_reserved_bytes",0) for x in rows)
             if selective_arm(r["case"]):
                 base_suffix = "-geometry-full" if r["case"] in EFFECTIVE_SIX else "-full"
-                base = by_case.get(SELECTIVE_BASE[r["case"]] + base_suffix, {})
+                case = r["case"]
+                if case in PAIR_COMP_CASES:
+                    # Compare each compensated arm to its own fresh uncompensated selector.
+                    # Off arms compare to the common Existing off reference (including itself).
+                    base_case = (case.replace("-comp-on-", "-comp-off-") if "-comp-on-" in case
+                                 else SELECTIVE_BASE[case] + "-comp-off-selective")
+                    base = by_case.get(base_case, {})
+                    r["paired_control"] = base_case
+                    r["compensation_updates"] = sum(x.get("pair_compensation_multiplier", 1.) > 1. for x in rows)
+                    r["max_multiplier"] = max(x.get("pair_compensation_multiplier", 1.) for x in rows)
+                    r["lr_restored"] = all(x.get("pair_compensation_lr_restored") is True for x in rows)
+                    caps = [x["tsd_cap_stats"] for x in rows if "tsd_cap_stats" in x]
+                    if caps:
+                        r["tsd_capped_pairs"] = sum(x["capped"] for x in caps)
+                        r["tsd_updated_pairs"] = sum(x["pairs"] for x in caps)
+                        r["tsd_cap_fraction"] = (r["tsd_capped_pairs"] / r["tsd_updated_pairs"]
+                                                 if r["tsd_updated_pairs"] else None)
+                else:
+                    base = by_case.get(SELECTIVE_BASE[case] + base_suffix, {})
                 r["paired_inputs"] = (base.get("status") == "measured"
                     and bool(r.get("initial_fingerprint"))
                     and r["initial_fingerprint"] == base.get("initial_fingerprint")
@@ -410,12 +446,16 @@ def refresh(group):
                 r["reactivated_blocks"] = sorted({b for x in rows for b in x["reactivated_blocks"]})
                 r["reactivated_moved_blocks"] = sorted({b for x in rows for b in x["reactivated_blocks"]
                                                        if x["blocks"].get(str(b),0) > 0})
-                r["compatibility"] = ("input_mismatch" if not r["paired_inputs"] else
+                r["compatibility"] = ("lr_restore_failed" if case in PAIR_COMP_CASES and not r["lr_restored"] else
+                    "compensation_not_exercised" if case in PAIR_COMP_CASES and "-comp-on-" in case and not r["compensation_updates"] else
+                    "input_mismatch" if not r["paired_inputs"] else
                     "not_exercised" if not reduced or not r["reactivated_blocks"] else
                     "reactivation_movement_missing" if r["reactivated_blocks"] != r["reactivated_moved_blocks"] else
                     "passed" if all(x["inactive_state_unchanged"] for x in rows) else "failed")
-        report = {**manifest, "runs": runs, "experiment": ("selective_effective_alignment" if any(r["case"] in EFFECTIVE_CASES or r["case"] in EFFECTIVE_SIX for r in runs) else "selective_native_compatibility"),
-                  "external_compensation": False, "pilot_only": True}
+        pair_comp = any(r["case"] in PAIR_COMP_CASES for r in runs)
+        report = {**manifest, "runs": runs, "experiment": ("selective_pair_compensation" if pair_comp else
+                  "selective_effective_alignment" if any(r["case"] in EFFECTIVE_CASES or r["case"] in EFFECTIVE_SIX for r in runs) else "selective_native_compatibility"),
+                  "external_compensation": pair_comp, "pilot_only": True}
         _write(group / REPORT, report)
         return report
     if runs[0]["case"] in SOAP_SWEEP:

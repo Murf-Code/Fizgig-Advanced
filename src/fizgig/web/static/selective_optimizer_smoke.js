@@ -22,6 +22,8 @@
   soap.insertAdjacentElement("afterend", compat);
   const effective = make("button", button.className, "Test Mode · Effective Selective");
   effective.type = "button"; compat.insertAdjacentElement("afterend", effective);
+  const pairComp = make("button", button.className, "Test Mode · Selective LR compensation");
+  pairComp.type = "button"; effective.insertAdjacentElement("afterend", pairComp);
   const optimizerChoices = [
     ["ademamix8bit", "AdEMAMix 8-bit", "0.00025"],
     ["pagedademamix8bit", "Paged AdEMAMix 8-bit", "0.00025"],
@@ -53,6 +55,7 @@
     if (researchDialog) return;
     const selective = mode === "selective";
     const geometry = mode === "effective";
+    const compensation = mode === "pairComp";
     const dlg = make("dialog", "modal-window");
     researchDialog = dlg;
     dlg.setAttribute("aria-labelledby", "researchTestTitle");
@@ -63,12 +66,12 @@
     dlg.classList.add("research-test");
     dlg.append(sheet);
     const header = make("div", "modal-header");
-    const title = make("span", "", geometry ? "Effective-weight Selective comparison" : selective ? "Selective optimizer comparison" : "SOAP learning-rate comparison");
+    const title = make("span", "", compensation ? "Selective LR compensation comparison" : geometry ? "Effective-weight Selective comparison" : selective ? "Selective optimizer comparison" : "SOAP learning-rate comparison");
     title.id = "researchTestTitle";
     const close = make("button", "btn", "✕"); close.type = "button"; close.setAttribute("aria-label","Close");
     header.append(title,close);
     const body = make("div", "modal-body");
-    body.append(make("p", "", geometry ? "Compare unrestricted, existing Selective and effective-weight Selective for PoLoRA and LoRA-TSD. No LR compensation." : selective
+    body.append(make("p", "", compensation ? "Compare both finalist selectors with native LR compensation off and on for each optimizer. Same fixed prompts and six epochs." : geometry ? "Compare unrestricted, existing Selective and effective-weight Selective for PoLoRA and LoRA-TSD. No LR compensation." : selective
       ? "Each selected optimizer runs twice: Global Replay, then Selective Global Replay. External LR compensation stays off."
       : "Compare SOAP-512 and Compact SOAP-32 at two learning rates each."));
     const checks = [];
@@ -95,6 +98,8 @@
       all.onclick = () => { checks.forEach(c => c.checked = true); update(); };
       none.onclick = () => { checks.forEach(c => c.checked = false); update(); };
       checks.forEach(c => c.addEventListener("change",update));
+    } else if (compensation) {
+      body.append(make("p","field-hint","PoLoRA 0.02 · maximum 1.5×; LoRA-TSD 0.005 · maximum 1.25×. Magnitude 3 and TSD cap unchanged. Full probes use native LR."));
     } else if (geometry) {
       body.append(make("p","field-hint","PoLoRA 0.02 · LoRA-TSD 0.005 · three matched arms each. Unreliable effective scores remain active."));
     } else {
@@ -119,8 +124,8 @@
     dlg.append(header,body,footer);
     let busy = false;
     function update() {
-      const count = geometry ? 6 : selective ? checks.filter(c => c.checked).length * 2 : 4;
-      const epochs = geometry ? 6 : 5;
+      const count = compensation ? 8 : geometry ? 6 : selective ? checks.filter(c => c.checked).length * 2 : 4;
+      const epochs = geometry || compensation ? 6 : 5;
       summary.textContent = count + " runs · " + epochs + " epochs each · " + count * epochs * 13 + " training updates";
       submit.textContent = busy ? "Queueing…" : "Queue " + count + " tests";
       submit.disabled = busy || count === 0 || !prompt.value.trim() || prompt.value.trim().length > 4000;
@@ -136,13 +141,13 @@
       try {
         const payload = {image_folder:folder,sample_prompt:prompt.value.trim()};
         if (selective) payload.optimizers = checks.filter(c => c.checked).map(c => c.value);
-        const res = await fetch(geometry ? "/api/queue/selective_effective" : selective ? "/api/queue/selective_compat" : "/api/queue/soap_sweep", {
+        const res = await fetch(compensation ? "/api/queue/selective_pair_comp" : geometry ? "/api/queue/selective_effective" : selective ? "/api/queue/selective_compat" : "/api/queue/soap_sweep", {
           method:"POST",headers:{"Content-Type":"application/json",
             "X-Fizgig-Token":document.querySelector('meta[name="fizgig-token"]').content},
           body:JSON.stringify(payload)});
         const data = await res.json();
         if (!res.ok || !data.ok) throw Error(data.error || (data.problems || []).join("; ") || "Could not queue tests");
-        note.textContent = data.count + (geometry ? " six-epoch" : " five-epoch") + " runs queued. Press Start queue. Report: " + data.output_dir;
+        note.textContent = data.count + (geometry || compensation ? " six-epoch" : " five-epoch") + " runs queued. Press Start queue. Report: " + data.output_dir;
         busy = false; dlg.close();
       } catch (e) {
         busy = false; close.disabled = cancel.disabled = false; error.textContent = e.message; update();
@@ -156,6 +161,7 @@
   soap.addEventListener("click",() => openResearch("soap",soap));
   compat.addEventListener("click",() => openResearch("selective",compat));
   effective.addEventListener("click",() => openResearch("effective",effective));
+  pairComp.addEventListener("click",() => openResearch("pairComp",pairComp));
   const skip = document.createElement("button");
   skip.type = "button";
   skip.className = button.className;

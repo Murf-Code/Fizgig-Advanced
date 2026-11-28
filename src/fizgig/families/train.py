@@ -1590,7 +1590,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     match_rows, match_initial = [], None
     match_previous_active = set(range(28))
     if optimizer_match:
-        from fizgig.web.optimizer_match import START, optimizer_name, expected_updates, SOAP_SWEEP, SELECTIVE_BASE, selective_arm
+        from fizgig.web.optimizer_match import START, optimizer_name, expected_updates, SOAP_SWEEP, SELECTIVE_BASE, PAIR_COMP_CASES, selective_arm
         from fizgig.web.optimizer_match import require_recipe
         require_recipe({
             "case": optimizer_match in START,
@@ -2662,6 +2662,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             if estimate is not None and estimate > available:
                 raise RuntimeError("Optimizer persistent state exceeds available CUDA memory")
         driver._optimizer_match_audit = True
+        if optimizer_match in PAIR_COMP_CASES and compensation_optimizer == "lora_tsd":
+            optimizer.log_every = 1  # every-step cap telemetry, equally for all TSD comparison arms
         if selective_arm(optimizer_match):
             driver.validate_selective_compensation_optimizer(optimizer)
     if selective_compensation:
@@ -3711,7 +3713,18 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             driver.selective_learning_multiplier()  # validate actual gradient mask only; do not scale
             match_inactive = selective_audit(optimizer, driver, optimizer_match, match_active)
             _match_step_started = time.perf_counter()
-        if selective_compensation:
+        pair_comp_audit = None
+        if optimizer_match and optimizer_match in PAIR_COMP_CASES:
+            from fizgig.training.pair_compensation import pair_multiplier, pair_step
+            scale = pair_multiplier(compensation_optimizer, len(match_active), 28,
+                                    enabled="-comp-on-" in optimizer_match)
+            pair_comp_audit = pair_step(optimizer, compensation_optimizer, scale)
+            if compensation_optimizer == "lora_tsd":
+                stats = optimizer.last_stats
+                if not stats or stats["step"] != optimizer._step_count:
+                    raise RuntimeError("Missing current LoRA-TSD cap telemetry")
+                pair_comp_audit["tsd_cap_stats"] = dict(stats)
+        elif selective_compensation:
             scale = driver.selective_learning_multiplier()
             from fizgig.training.selective_compensation import compensated_step
             if optimizer_smoke:
@@ -3751,6 +3764,8 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                 match_previous_active = set(row["active_blocks"])
                 row["inactive_state_unchanged"] = (not selective_arm(optimizer_match) or
                     match_inactive == selective_audit(optimizer, driver, optimizer_match, match_active))
+            if pair_comp_audit is not None:
+                row.update(pair_comp_audit)
             if selective_snapshot is not None:
                 row["selective_probe"] = selective_snapshot
             row["group_lrs"] = [float(g["lr"]) for g in optimizer.param_groups]

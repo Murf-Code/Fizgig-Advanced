@@ -89,3 +89,22 @@ def test_effective_legacy_recipe_unchanged(tmp_path):
         "polora-full", "polora-selective", "polora-effective",
         "lora_tsd-full", "lora_tsd-selective", "lora_tsd-effective"]
     assert all(r["MAX_TRAIN_EPOCHS"] == "5" and expected_updates(r["__optimizer_match"]) == 65 for r in rows)
+
+
+def test_pair_comp_recipe(tmp_path):
+    from types import SimpleNamespace
+    from fizgig.web.optimizer_match import pair_comp_settings, expected_updates, selective_arm, attach
+    rows = pair_comp_settings(tmp_path / "pair", "fixed prompt")
+    assert len(rows) == 8
+    assert len({r["__optimizer_match"] for r in rows}) == 8
+    for off,on in zip(rows[::2],rows[1::2]):
+        assert off["__optimizer_match"].replace("-comp-off-", "-comp-on-") == on["__optimizer_match"]
+        assert all(off[k]==on[k] for k in off if k not in ("__optimizer_match","LORA_NAME","LORA_OUTPUT_DIR"))
+    for row in rows:
+        assert row["MAX_TRAIN_EPOCHS"] == "6"
+        assert expected_updates(row["__optimizer_match"]) == 78
+        assert selective_arm(row["__optimizer_match"])
+        assert not row["KREA2_SELECTIVE_COMPENSATION"]
+        plan = SimpleNamespace(problems=[], stages=[SimpleNamespace(name="Training",cmd=[])])
+        attach(plan,row,"krea2")
+        assert plan.stages[0].cmd == ["--family_option", "optimizer_match="+row["__optimizer_match"]]
