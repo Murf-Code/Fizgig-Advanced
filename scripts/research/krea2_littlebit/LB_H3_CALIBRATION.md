@@ -28,3 +28,23 @@ Timestep range .119578–.930930, mean .607109; five equal-width bins [0,.2), [.
 RTX4070Ti torch 2.15.0+cu134: 0/4/8/12 swaps OOM, 16 succeeded. Successful worker 664.907s (attempt 668.625s); total attempt wall times 766.189s excluding prep/cache. Peak allocated 9.589 GiB, reserved 10.299 GiB (allocator cap), sampled WDDM dedicated 10.455 GiB, shared 1.830 GiB. No claim of all-resident or compression savings. OOM retries worked as designed. For subsequent capture runs, starting near previously successful 16 swaps is an optional efficiency change, not needed for this bank.
 
 Next: offline H3 coverage screen, key14 first; validate files, shapes, finite tensors, metadata/raw hashes; compute fit activation/cotangent rank/energy and development span coverage before fitting; do not expose confirmation diagnostics until selection frozen. Use fixed E3 initialization, 1-bit budget and matched H4 (.2/.4/.4) and Weight50 (.5/.25/.25) schedules for nested 2/8/16/32/64 fit sizes, same update count and seed, bounded memory; objective fit aggregation and batching must be documented and matched across sizes. Compare held-out backward/forward and weight fidelity, then confirm locked comparisons. No need to regenerate bank. No runtime code changes in this review. Hybrid parked.
+
+
+## H3 offline coverage runner implemented
+
+binary_qat_coverage.py (1a050428, CLI import fix 5a71811e). Default key14, one projection per invocation. Uses completed stock bank, verifies prepare/raw hash, matching trace and capture-bank manifests, capture hashes and deterministic split; rechecks source/capture hashes at completion. Actual tensors checked for shape, floating dtype and finite values when read. No confirmation tensors decoded or scored until all per-arm checkpoints and overall development winner are locked; hashes may be verified earlier. Report all eleven prespecified comparisons on confirmation, never reselect on confirmation.
+
+One E3 baseline + ten binary arms: nested 2/8/16/32/64 capture prefixes, each H4 control (.2/.4/.4) and Weight50 (.5/.25/.25). Same E3 initialization and one-bit cap, same H2 optimizer, seed42, sign LR .00005, scale .001, warmup20, 200 steps, checkpoints 0/20/50/100/150/200. All fit rows concatenated into one FP32 action objective per update; pooled energies exactly equivalent algebraically to H2 per-capture sums but finite precision reduction order differs. No sampling of fit rows inside updates, only weight-row sampling from H2. Concatenation avoids 64 separate autograd graphs, actual memory and runtime not measured. BF16 packed CPU per-capture evaluation with raw and stock INT8 reference, equal per-capture balanced RMS score selects checkpoints, plus fixed-fit and weight error diagnostics.
+
+Before fitting, calculate FP64 CPU row Gram eigensystems separately for x and dy per nested fit prefix; report singular spectra, numerical rank (relative singular threshold 1e-4), entropy/participation effective ranks, 95/99% energy ranks and fraction of development signal energy projected into numerical fit row span. These are uncentered energy-weighted directions, not intrinsic semantic dimensionality. No dense feature covariance or dense task gradients; row Gram can reach 2048x2048. Fit counts and timestep coverage remain confounded; preserve split. No confirmation span diagnostic used for selection. All selected factors held on CPU until final scoring; report saves after each checkpoint, not a resumable model archive.
+
+Isolated reconstructed geometry and pooled-fit code executed on torch 2.10 CPU: synthetic rank-deficient span (rank2 and rank1, both 50% projected energy), concatenated teacher outputs, pooled objective and dense toy gradient parity within 1e-6 passed. Added checks/test_littlebit_coverage.py. Full repo tests and real CUDA runner not executed here. No production, hybrid or prior runner changes. Independent model-wide LoRA validation still pending.
+
+Command:
+```powershell
+.\venv\Scripts\python.exe scripts\research\krea2_littlebit\binary_qat_coverage.py `
+  --raw "H:\Stable_Diffusion\Data\Packages\sd-webui-forge-neo - Krea2\models\Stable-diffusion\krea2_raw_bf16.safetensors" `
+  --stock "output_loras\littlebit_comparisons\littlebit-20261127-162827-376f37\stock" `
+  --key blocks.14.attn.wk.weight `
+  --out output_loras\littlebit-coverage.json
+```
