@@ -75,9 +75,9 @@ def run(w,key,args,stock,trace,split,int8,row,save):
         tmp.replace(path)
         return dict(file=path.name,sha256=codec.sha256(path),payload_bytes=nb,file_bytes=path.stat().st_size)
 
-    def record(name,d,ar,zz,xx,transform,**extra):
+    def record(name,d,ar,zz,xx,had_size,**extra):
         fit_score=hs.metrics(zz,xx,g,d,COMMON)
-        ds=panel_score(operator(d,transform),dev,dr)
+        ds=panel_score(operator(d,had_size),dev,dr)
         row["candidates"][name]={"payload_bytes":ar["payload_bytes"],
             "effective_bits":8*ar["payload_bytes"]/(m*n),"development":ds,
             "pooled_fit_fp64":fit_score,"weight_error":math.sqrt(fit_score["weight_relative_squared"]),
