@@ -116,7 +116,7 @@ def run(w,key,args,stock,trace,split,int8,row,save):
                warmup=20,max_steps=100,phase_boundary=40,selection_rule="fixed final step 100")
     def make_primary():
         return copy.deepcopy(primary).to(device)
-    def make_residual(first):
+    def fit_residual(first):
         target=(Lg.T@residual_target(wg,first).double()).float()
         with torch.random.fork_rng(devices=[device.index or 0] if device.type=="cuda" else []):
             torch.manual_seed(43)
@@ -125,6 +125,9 @@ def run(w,key,args,stock,trace,split,int8,row,save):
         del target,u,s,v
         a,b=unwhiten(a,b,Lg)
         return init(a,b)
+    first=make_primary()
+    shared_residual=fit_residual(first).cpu()
+    del first
     def archive(name,cs,nb):
         tensors={}
         for i,(a,b,r,s,c) in enumerate(cs):
@@ -162,6 +165,8 @@ def run(w,key,args,stock,trace,split,int8,row,save):
             entry["phases"].append({"paths":len(paths),"updates":steps,"warmup":warmup,
                                     "seed":42,"seconds_including_evaluations":time.monotonic()-t})
             save()
+        def make_residual(first):
+            return fit_residual(first) if name=="progressive" else copy.deepcopy(shared_residual).to(device)
         paths=schedule.run_schedule(name,make_primary,make_residual,optimize,record)
         cs,nb=e.packed(paths,m,n)
         if len(paths)!=2 or nb!=sum(q.size(m,n,r) for r in ranks): raise ValueError("final payload mismatch")
@@ -170,6 +175,14 @@ def run(w,key,args,stock,trace,split,int8,row,save):
         del paths,cs
         if device.type=="cuda": torch.cuda.empty_cache()
         save()
+    joint=row["candidates"]["joint"]["history"]
+    reset=row["candidates"]["joint-reset"]["history"]
+    for step in (0,20):
+        a=next(v for v in joint if v["step"]==step)
+        b=next(v for v in reset if v["step"]==step)
+        if abs(a["development"]["objective"]-b["development"]["objective"])>1e-5 or abs(a["pooled_fit_fp64"]["objective"]-b["pooled_fit_fp64"]["objective"])>1e-5:
+            raise ValueError("joint/reset prefix parity failed")
+    row["joint_reset_prefix_parity"]=True
     row["development_winner"]=min(row["candidates"],key=lambda k:row["candidates"][k]["final"]["development"]["objective"])
     row["status"]="finished"
     save()
