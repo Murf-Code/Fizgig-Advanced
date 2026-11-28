@@ -144,6 +144,7 @@ def main():
     p.add_argument("--archive", type=Path)
     p.add_argument("--case", default="legacy")
     p.add_argument("--stock-trace", type=Path)
+    p.add_argument("--capture-bank",action="store_true")
     p.add_argument("--match-stock-swaps",type=Path)
     argv = sys.argv[1:]
     cut = argv.index("--")
@@ -156,6 +157,10 @@ def main():
         command += ["--archive",str(a.archive)]
     if a.stock_trace:
         command += ["--stock-trace",str(a.stock_trace)]
+    if a.capture_bank:
+        if a.case!="stock" or a.archive or a.stock_trace or a.match_stock_swaps:
+            raise ValueError("capture bank requires a fresh stock-only run")
+        command += ["--capture-bank"]
     command += ["--",*args]
     schedule=None
     if a.match_stock_swaps:
