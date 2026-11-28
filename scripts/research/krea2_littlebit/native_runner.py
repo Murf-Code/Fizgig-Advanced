@@ -75,6 +75,7 @@ def main():
     p.add_argument("--archive",type=Path)
     p.add_argument("--case",default="legacy")
     p.add_argument("--stock-trace",type=Path)
+    p.add_argument("--capture-bank",action="store_true")
     p.add_argument("--attempt-result",type=Path)
     p.add_argument("--dit",type=Path)
     p.add_argument("--snapshot",type=Path)
@@ -100,7 +101,13 @@ def main():
         if a.archive:
             quant.load_base=compact_loader(a.archive,original)
         observer=None
-        if a.case=="timing":
+        if a.capture_bank:
+            if a.case!="stock" or a.archive or a.stock_trace:
+                raise ValueError("capture bank requires fresh native stock")
+            from calibration_bank import CaptureBank
+            observer=CaptureBank()
+            train._LITTLEBIT_TRACE=observer
+        elif a.case=="timing":
             from timing_trace import TimingTrace
             observer=TimingTrace()
             train._LITTLEBIT_TRACE=observer
