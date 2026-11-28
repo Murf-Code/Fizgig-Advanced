@@ -41,7 +41,9 @@ def run(w,key,args,stock,trace,split,int8,row,save):
     fit=[read_panel(stock,key,r,trace,m,n) for r in split["fit"]]
     dev=[read_panel(stock,key,r,trace,m,n) for r in split["development"]]
     native=codec.stock_layer(w,int8)
-    dr=[base.refs(w,c,native) for c in dev]
+    # Reference backward uses autograd even though allocation is offline.
+    with torch.enable_grad():
+        dr=[base.refs(w,c,native) for c in dev]
     z=geo.hadamard(w.float())
     x=geo.hadamard(torch.cat([c["x"].float() for c in fit]))
     g=torch.cat([c["dy"].float() for c in fit])
