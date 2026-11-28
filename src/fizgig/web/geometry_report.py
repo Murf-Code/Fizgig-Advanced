@@ -39,7 +39,7 @@ def _save(root, report):
     report["updated_at"] = time.time()
     _atomic(root / REPORT, json.dumps(report, indent=2, allow_nan=False))
     lines = ["Fizgig Matrix Geometry optimizer pilot", "Status: " + report["status"],
-             "Dataset: " + report["dataset"], "", "Case | Rank | MP | Status | updates | step ms | CUDA allocated GiB | CUDA reserved GiB | GPU peak GiB | RAM peak GiB | process shared GPU GiB | post-training validation"]
+             "Dataset: " + report["dataset"], "", "Case | Rank | MP | Status | updates | fixed trials | step ms | CUDA allocated GiB | CUDA reserved GiB | GPU peak GiB | RAM peak GiB | process shared GPU GiB | post-training validation"]
     for r in report["runs"]:
         perf = r.get("performance", {})
         val = r.get("validation", [])
@@ -47,7 +47,7 @@ def _save(root, report):
         config = r.get("settings", {})
         gib = lambda key: round(fit[key] / 2**30, 3) if key in fit else "-"
         lines.append(" | ".join(map(str, [r["case"], config.get("NETWORK_DIM", "-"),
-                     config.get("DATASET_MEGAPIXELS", "-"), r["status"], fit.get("updates", perf.get("steps", "-")),
+                     config.get("DATASET_MEGAPIXELS", "-"), r["status"], fit.get("updates", perf.get("steps", "-")), fit.get("trials", "-"),
                      perf.get("step_ms", "-"), gib("cuda_peak_allocated_bytes"), gib("cuda_peak_reserved_bytes"),
                      perf.get("vram_peak_gb", "-"), perf.get("system_ram_peak_gib", "-"),
                      perf.get("process_shared_gpu_peak_gib", "-"),
@@ -86,7 +86,7 @@ def create(root, dataset, configs):
         runs = [{"case": v["__geometry_compare"], "name": v["LORA_NAME"], "lr": v["LEARNING_RATE"],
                  "output": v["__geometry_compare"], "status": "queued", "logs": [],
                  "settings": {k: x for k, x in v.items() if not k.startswith("__")}} for v in configs]
-        _save(root, {"version": 1, "dataset": str(dataset), "created_at": time.time(), "scope": ("paired numerical diagnostic; sampled gradients and displacements; timings include instrumentation" if any(r["case"] in memory_benchmark.PAIR_NAMES for r in runs) else "one-seed feasibility pilot; provisional optimizer rates"), "runs": runs})
+        _save(root, {"version": 1, "dataset": str(dataset), "created_at": time.time(), "scope": ("fixed-state backward diagnostic; zero optimizer updates; synchronized allocator boundaries" if any(r["case"] in memory_benchmark.FIXED_NAMES for r in runs) else "paired numerical diagnostic; sampled gradients and displacements; timings include instrumentation" if any(r["case"] in memory_benchmark.PAIR_NAMES for r in runs) else "one-seed feasibility pilot; provisional optimizer rates"), "runs": runs})
 
 
 def parse_log(text):
@@ -123,6 +123,10 @@ def parse_log(text):
         if m:
             feasibility = {"updates": int(m[1]), "cuda_peak_allocated_bytes": int(m[2]),
                            "cuda_peak_reserved_bytes": int(m[3]), "training_wall_seconds": float(m[4])}
+        m = re.search(r"\[geometry-fixed-fit\] complete trials=(\d+) updates=0 allocated_bytes=(\d+) reserved_bytes=(\d+) wall_seconds=" + NUM, line)
+        if m:
+            feasibility = {"trials": int(m[1]), "updates": 0, "cuda_peak_allocated_bytes": int(m[2]),
+                           "cuda_peak_reserved_bytes": int(m[3]), "diagnostic_wall_seconds": float(m[4])}
     return {**memory_benchmark.parse_memory_log(text), "epochs": epochs, "validation": validation, "feasibility": feasibility,
             "reported_buckets": buckets, "failure_kind": failure,
             "optimizer_timing": optimizer_timing, "tsd_stats": tsd_stats, "tangent_stats": tangent_stats,

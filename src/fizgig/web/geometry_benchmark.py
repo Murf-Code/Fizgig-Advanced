@@ -153,9 +153,9 @@ def muon_me_settings(group, output_root):
             for case, opt, lr, args, swap, epochs in MUON_ME_CASES]
 
 
-def memory_settings(group, output_root, paired=False, async_test=False):
+def memory_settings(group, output_root, paired=False, async_test=False, fixed_test=False):
     common = next(v for v in muon_me_settings(group, output_root) if v['__geometry_compare'] == 'muon-me-chunk128')
-    return memory_benchmark.settings(group, output_root, common, paired=paired, async_test=async_test)
+    return memory_benchmark.settings(group, output_root, common, paired=paired, async_test=async_test, fixed_test=fixed_test)
 
 
 def resolution_settings(group, output_root):

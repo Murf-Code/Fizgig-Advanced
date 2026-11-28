@@ -548,6 +548,9 @@ class Krea2Driver(FamilyDriver):
         target, _, _ = patchify_block(noise - latent, patch)
         base = prior_base(prior, loss_mask, lambda: self._forward(dit, noised, t, cond))
         pred = self._forward(dit, noised, t, cond)
+        fixed_output = getattr(self, "_geometry_fixed_output", None)
+        if fixed_output is not None:
+            fixed_output(pred)
         w = None
         if diff_ref is not None and diff_weight > 0.0:
             d, _, _ = patchify_block((latent - diff_ref.to(device=latent.device, dtype=DTYPE)).abs(), patch)

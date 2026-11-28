@@ -1578,6 +1578,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         raise ValueError("invalid activation transfer mode")
     memory_h2d = str((family_options or {}).get("geometry_memory_require_h2d", "0")) == "1"
     pair_case = str((family_options or {}).get("geometry_memory_pair", "") or "")
+    fixed_case = str((family_options or {}).get("geometry_fixed_probe", "") or "")
     if memory_mode not in ("off", "passive", "peaks") or not 0 <= activation_mib <= 4096 or host_floor_mib < 1024:
         raise ValueError("invalid geometry memory options")
     memory_research = memory_mode != "off" or activation_mib > 0 or memory_h2d
@@ -1590,10 +1591,13 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         raise ValueError("Geometry feasibility requires fresh rank 16/32/64 Krea 2 PoLoRA or LoRA-TSD, alpha=rank, one epoch, accumulation 1.")
     if pair_case and (not memory_fit or pair_case not in ("pair-fp32-control", "pair-fp32-repeat", "pair-bf16", "pair-int8-64", "pair-splitmax-64", "pair-activation-sync", "pair-activation-async")):
         raise ValueError("paired correctness requires the fixed memory research queue")
-    if (activation_mode == "async") != (pair_case == "pair-activation-async"):
-        raise ValueError("async activation is restricted to the paired research arm")
+    if fixed_case and (pair_case or not memory_fit or fixed_case not in ("fixed-control", "fixed-repeat", "fixed-sync", "fixed-async")
+                       or activation_mib != (512 if fixed_case in ("fixed-sync", "fixed-async") else 0)):
+        raise ValueError("invalid fixed-state backward diagnostic configuration")
+    if (activation_mode == "async") != (pair_case == "pair-activation-async" or fixed_case == "fixed-async"):
+        raise ValueError("async activation is restricted to research arms")
     driver = desc.load_driver()
-    driver.set_options({k:v for k,v in (family_options or {}).items() if k not in ("geometry_feasibility_steps", "geometry_optimizer_timing", "geometry_memory_phase", "geometry_activation_mib", "geometry_host_floor_mib", "geometry_memory_require_h2d", "geometry_memory_pair", "geometry_activation_mode")})      # before the data: an option may shape the dataset
+    driver.set_options({k:v for k,v in (family_options or {}).items() if k not in ("geometry_feasibility_steps", "geometry_optimizer_timing", "geometry_memory_phase", "geometry_activation_mib", "geometry_host_floor_mib", "geometry_memory_require_h2d", "geometry_memory_pair", "geometry_activation_mode", "geometry_fixed_probe")})      # before the data: an option may shape the dataset
     _method = str((family_options or {}).get("training_method", "") or "").strip()
     if desc.key == "krea2" and _method and not getattr(driver, "global_replay", False):
         # a method from the test build that was not kept (Blockwise flow, Residual-path hybrid): train Standard
@@ -1674,7 +1678,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         torch.cuda.synchronize(device)
         torch.cuda.empty_cache()
         logger.info("[geometry-activation-preflight] %s", json.dumps(activation_preflight))
-    if pair_case:
+    if pair_case or fixed_case:
         # Dataset blueprint draws its shuffle seed from Python random, not torch.
         import numpy as np
         random.seed(int(seed))
@@ -2373,7 +2377,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     dit, swapped = quant.load_base(driver, dit_path, device, precision, blocks_to_swap, send_only=send_only)
     if memory_research:
         actual_offloader = type(getattr(dit, "offloader", None)).__name__
-        logger.info("[geometry-memory-config] %s", json.dumps(dict(mode=memory_mode, activation_mib=activation_mib, activation_mode=activation_mode if activation_mib else "off", activation_preflight=activation_preflight, host_floor_mib=host_floor_mib, offloader=actual_offloader, swap=blocks_to_swap, checkpointing=gradient_checkpointing)))
+        logger.info("[geometry-memory-config] %s", json.dumps(dict(mode=memory_mode, activation_mib=activation_mib, activation_mode=activation_mode if activation_mib else "off", activation_preflight=activation_preflight, fixed_case=fixed_case, host_floor_mib=host_floor_mib, offloader=actual_offloader, swap=blocks_to_swap, checkpointing=gradient_checkpointing)))
         if memory_h2d and actual_offloader != "LoRAStreamOffloader":
             raise RuntimeError("memory research requires actual H2D-only offloader; fallback would invalidate comparison")
     if int8_rotated_backward:            # experimental, opt-in (modules/int8_train.py): an INT8 backward too
@@ -4310,6 +4314,29 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
             if i == 0:
                 step_clock["dirty"] = True     # an epoch's first step carries its start-up work
             latents = batch["latents"].to(device)
+            if fixed_case:
+                # Exit before the normal training path, optimizer update, save or preview.
+                from fizgig.training.fixed_probe import run_fixed
+                from fizgig.families.lora import TRAINABLE as _FIXED_TRAINABLE
+                targets = {name: (list(w.adapters[_FIXED_TRAINABLE].parameters()), w.scales[_FIXED_TRAINABLE])
+                           for name,w in net.wrapped.items() if _FIXED_TRAINABLE in w.adapters}
+                if {id(p) for ps,_ in targets.values() for p in ps} != {id(p) for p in params}:
+                    raise RuntimeError("fixed trace target manifest differs from trained parameters")
+                if _loss_mask(batch) is not None or any(k.startswith("latents_control_") for k in batch):
+                    raise RuntimeError("fixed diagnostic requires ordinary unmasked training input")
+                torch.set_num_threads(min(4, torch.get_num_threads()))
+                meta = run_fixed(driver, dit, targets, optimizer, latents, driver.batch_cond(batch, device),
+                                 batch.get("item_keys") or [], case=fixed_case, output_dir=output_dir,
+                                 seed=seed, min_t=min_timestep, max_t=max_timestep, phase=_memory_phase,
+                                 emit=lambda marker, rec: logger.info("%s %s", marker, json.dumps(rec, allow_nan=False, separators=(",", ":"))))
+                torch.cuda.synchronize(device)
+                allocated, reserved = _memory_training_peaks()
+                if geometry_updates or optimizer.state:
+                    raise RuntimeError("fixed diagnostic must not update optimizer")
+                logger.info("[geometry-fixed-fit] complete trials=%d updates=0 allocated_bytes=%d reserved_bytes=%d wall_seconds=%.3f",
+                            meta["trials"], allocated, reserved, time.monotonic() - geometry_fit_started)
+                progress.close()
+                return None
             # a batched step only when this step really holds more than one item: a single-item bucket in a batched
             # run (an H3 clip or voice, which always train alone, or a bucket's last picture) takes the one-item path
             _many = bsz > 1 and len(batch.get("item_keys") or [None] * latents.shape[0]) > 1
