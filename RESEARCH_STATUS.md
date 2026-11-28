@@ -187,6 +187,8 @@ Owner: `research/krea2-littlebit`. [README](https://github.com/Murf-Code/Fizgig-
 
 2026-11-28 QH-4B first real attempt failed before first candidate at key0 (qh-allocation.json SHA256 0baa5467ba342a538c00238b25c030540b7a95e20566d00c5006db05e36d0d2b,45.125s): no grad_fn in native reference backward under runner no_grad. Raw/split verified. Fix 769f9ad1fb5af01e1e4f67e46ddbbb53abc0ed08 enables grad only for reference calls. CPU synthetic custom-autograd reproduction and scoped parity passed; native CUDA full rerun pending. Preserve failure JSON, retry new basename qh-allocation-retry.json. No allocation protocol changes or candidate results.
 
+2026-11-28 QH-4B retry provenance: qh-allocation(1).json byte-identical to original failure SHA256 0baa5467ba342a538c00238b25c030540b7a95e20566d00c5006db05e36d0d2b. User believes retry; cannot establish distinct execution from report. Remote enable_grad fix verified; CPU exact refs/stock_layer excerpts with standalone custom INT8 reproduction confirm original error and patched bit-identical outputs. Runner 8a991e89c7246f7b65a28f78b72da5dbf791a358 adds automatic synthetic 19-arm preflight using actual native INT8 module/runner, --self-test, source hash, stage/full traceback. New full preflight and CUDA run not executed locally; no allocation protocol changes, no new results. Use qh-allocation-v2.json fresh basename.
+
 ## 6. Matrix geometry and optimizer memory — active, separate
 
 Owners: `research/lora-matrix-geometry` (geometry/resolution) and `research/polora-kernel-efficiency` (kernel/state/memory).
