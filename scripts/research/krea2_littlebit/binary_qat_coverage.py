@@ -1,10 +1,14 @@
 """LB-H3: offline pure-binary coverage ablation on the locked 80-image bank."""
+import argparse
 import copy
 import json
 import math
+import time
 from pathlib import Path
 import torch
 from torch import nn
+from safetensors import safe_open
+from fit_queue import atomic_json
 import native_codec as codec
 import binary_rank_screen as base
 import binary_rank_core as old
@@ -256,7 +260,6 @@ def main():
         split=validate_bank(a.stock,trace)
         report["split"]={k:[{"file":r["file"],"step":r["step"],"sha256":codec.sha256(a.stock/r["file"])}
                            for r in records] for k,records in split.items()}
-        # Fit partition is reserved for a later task-aware fitting experiment.
         report["fit_partition_used"]=True
         save()
         root=Path(__file__).resolve().parents[3]
