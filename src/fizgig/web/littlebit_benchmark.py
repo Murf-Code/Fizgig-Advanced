@@ -41,13 +41,14 @@ def sha(path):
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
-def settings(root,full=False):
+def settings(root,full=False,capture_bank=False):
     root = Path(root).resolve()
     return [{**COMMON, "__littlebit_case": case, "__littlebit_impl": IMPLEMENTATION,
+             **({"__littlebit_capture_bank": True} if capture_bank else {}),
              "BLOCKS_SWAP": "0",
              "FAMILY_PRECISION": "4-bit NF4 (smallest)" if case=="nf4" else "INT8 (8-bit, fastest)",
              "LORA_NAME": root.name + "-" + case, "LORA_OUTPUT_DIR": str(root / case)}
-            for case in (("stock","stock-repeat",*(k for k in CASES if k not in ("stock","stock-repeat"))) if full else SMOKE_CASES)]
+            for case in (("stock",) if capture_bank else (("stock","stock-repeat",*(k for k in CASES if k not in ("stock","stock-repeat"))) if full else SMOKE_CASES))]
 
 
 def arg(cmd, flag):
@@ -83,6 +84,9 @@ def adjust_plan(desc, values, plan, repo, resume=False):
             raise ValueError("LittleBit comparisons must be fresh Krea2 runs; resume is not supported.")
         if any(values.get(k) != v for k,v in COMMON.items()):
             raise ValueError("LittleBit comparison settings are fixed. Remove and queue again.")
+        capture_bank=values.get("__littlebit_capture_bank",False)
+        if type(capture_bank) is not bool or (capture_bank and case!="stock"):
+            raise ValueError("Calibration bank must be stock-only.")
         initial_swaps = 0
         precision = "nf4" if case=="nf4" else "int8"
         if values.get("FAMILY_PRECISION") != ("4-bit NF4 (smallest)" if case=="nf4" else "INT8 (8-bit, fastest)"):
@@ -139,12 +143,14 @@ def adjust_plan(desc, values, plan, repo, resume=False):
                     "--case",case,"--out",str(out),"--dataset",arg(cmd,"--dataset_config")]
         from fizgig.families.launch import Stage
         plan.stages.insert(0, Stage("LittleBit projection screen",prep_cmd))
-        if case=="stock":
+        if case=="stock" and not capture_bank:
             plan.stages.insert(0,Stage("CUDA packed swap equivalence", [cmd[0],str(prepare.with_name("cuda_equivalence.py")),
                 "--repo",str(repo),"--out",str(out/"cuda-equivalence.json")]))
         stock_name = root.name + "-stock"
         stock = root / "stock"
         worker = [cmd[0],str(prepare.with_name("fit_queue.py")),"--repo",str(repo),"--case",case]
+        if capture_bank:
+            worker += ["--capture-bank"]
         if case not in ("stock","stock-repeat","nf4"):
             worker += ["--archive",str(archive)]
         if case != "stock":
@@ -170,7 +176,10 @@ def adjust_plan(desc, values, plan, repo, resume=False):
             plan.stages.append(Stage("Separate common-swap and residency timing", [
                 cmd[0],str(prepare.with_name("performance.py")),"--repo",str(repo),"--archive",str(archive),
                 "--stock",str(stock),"--candidate",str(out),"--out",str(out/"clean-performance.json"),"--",*cmd[2:]]))
-        plan.console.append(f"[LittleBit test] {case}: one epoch or 200 updates; matched common swaps for Q6; no retention cutoff.")
+        if capture_bank:
+            plan.console.append("[LB-H3] Stock capture only: 80 unique training images, 32 valid token rows, three projections. Use 100+ distinct images.")
+        else:
+            plan.console.append(f"[LittleBit test] {case}: one epoch or 200 updates; matched common swaps for Q6; no retention cutoff.")
     except (ValueError, OSError, TypeError) as e:
         plan.problems.append(str(e))
     return plan
@@ -219,6 +228,8 @@ def update(values, status, log=None):
     entry["repeatability"] = read_json(out/"repeatability.json")
     entry["clean_performance"] = read_json(out/"clean-performance.json")
     entry["trace"] = read_json(out/"trace.json")
+    if values.get("__littlebit_capture_bank"):
+        entry["capture_bank"] = read_json(out/"capture-bank.json")
     entry["fit"] = read_json(out/"fit-report.json")
     entry["selected_swaps"] = (entry["fit"] or {}).get("selected_swaps")
     for p in out.glob(".perf_*.json"):
