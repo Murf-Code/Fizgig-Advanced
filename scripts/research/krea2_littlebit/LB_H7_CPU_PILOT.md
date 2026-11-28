@@ -1,0 +1,17 @@
+# LB-H7 — CPU-first scale optimization feasibility
+
+2026-11-27: CPU prototype executed locally in torch2.10.0+cpu, four CPU threads, ~2.007s total including tiny parity tests and nine synthetic trials. This is not an actual Krea2 test. No production changes.
+
+For two paths with frozen signs, let W_hat=sum_p diag(r_p) B_p diag(c_p) A_p diag(s_p). With all other fields frozen, a single family of coefficients (row, column or latent, across both paths) is a linear map F(v). For E=W_hat-W and original-teacher energy-normalized weights alpha=.2/||W||², beta=.4/||XW^T||², gamma=.4/||GW||², define K(E)=alpha E+beta E X^T X+gamma G^T G E. Conditional normal system F* K F delta = F* K(W-F(v)). Use matrix-free FP64 diagonally preconditioned conjugate gradients, zero initial displacement, max100 iterations, relative preconditioned residual tolerance1e-8. Accept BF16-rounded coefficients only when direct pooled fit J does not increase. No sign planes modified. Row/column diagonal derived per atom: for row basis e_i t_i^T, alpha||t_i||²+beta||X t_i||²+gamma||G e_i||²||t_i||²; column basis t_j e_j^T analogous. Latent diagonal uses rank-one atom norms. Full cross-path coupling remains in operator. Prototype dense weight-sized intermediates and FP64 CPU only, not a production memory claim.
+
+Tiny 5x9 two-path rank3 test checked adjoint, explicit normal Gram symmetry/diagonal, reconstruction parity, and solve residual against explicit matrix for all three families. CG iterations row10, col19, latent6, relative preconditioned residual 7.72e-17/1.03e-13/1.78e-16.
+
+Nine trials: 128x512, two rank34 paths, 8136 packed bytes (0.9931640625 bits), seeds1/2/3, Gaussian / exponentially decaying singular spectrum (exp(-i/40)) / decaying spectrum with lognormal row/column outliers (.6 log std). Fit192/dev96 independent Gaussian X/G rows, shared anisotropy log std .7. Synthetic init uses truncated SVD and 10 polar rotations with mean absolute outer scales, BF16-rounded coefficients and actual decoded residual, NOT exact H5 initialization. Pooled dev J includes weight error (.2/.4/.4), not H3 per-capture action-only dev metric. One latent CG solve then three row/col/latent sweeps, all90 rounded substeps accepted; max16 iterations per substep and max residual <1e-8. Mean dev objectives:
+
+| Family | Initial | Latent only | Sweep1 | Sweep2 | Sweep3 | Initial dX RMS | Final dX RMS |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Gaussian | .616885 | .614454 | .606315 | .605579 | .605483 | .787840 | .767288 |
+| Decay | .366747 | .350816 | .343943 | .343727 | .343706 | .605152 | .577108 |
+| Outlier | .283809 | .262542 | .247022 | .246341 | .246254 | .541354 | .511071 |
+
+Mean per-seed dev reductions vs init: 1.843%,6.268%,13.292%; incremental vs latent-only 1.454%,2.018%,6.258%. Mean normalized dev curves (initial=100): Gaussian 100/99.6057/98.2912/98.1725/98.1572; decay 100/95.6598/93.7958/93.7378/93.7322; outlier 100/92.4841/86.9844/86.7399/86.7081. Small late dev regressions on individual seeds despite monotone fit. First sweep recovers most gains. Recommend at most 1–3 sweeps on real weighted-50, preserve exact one-bit budget and H3 evaluation; no long QAT rerun. Synthetic result does not establish real matrix improvement, LoRA transfer or GPU savings. Real raw weights and calibration tensors unavailable in CPU environment. Next H8 discrete sign optimization also CPU-first. H7 actual Krea2 runner not implemented at this stage. Hybrid parked.
