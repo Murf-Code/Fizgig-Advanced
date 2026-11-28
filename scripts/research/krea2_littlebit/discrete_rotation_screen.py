@@ -169,6 +169,23 @@ def run(w,key,args,stock,trace,split,int8,row,save):
     cs,nb,_=timed("baseline_initialization",lambda:initialize("baseline"))
     control=start_arm("H7-control",cs,nb)
     shared=warmup("H7-control",control,cs)
+    if args.h7_report is not None:
+        prior=json.loads(args.h7_report.read_text(encoding="utf-8"))
+        oldrow=next(p for p in prior["projections"] if p["key"]==key)
+        prev=oldrow["candidates"]["weighted-50"]
+        if prev["payload_bytes"]!=nb or prev["completed_sweeps"]!=2:
+            raise ValueError("H7 reference budget or sweep mismatch")
+        expected=prev["history"][-1]
+        actual=control["history"][-1]
+        delta={k:actual["development"][k]-expected["development"][k]
+               for k in ("objective","raw_forward_rms","raw_dx_rms")}
+        fit_delta=actual["pooled_fit_fp64"]["objective"]-expected["pooled_fit_fp64"]["objective"]
+        row["H7_reference_parity"]={"file":str(args.h7_report),"sha256":codec.sha256(args.h7_report),
+                                    "development_delta":delta,"fit_delta":fit_delta,
+                                    "within_tolerance":max([abs(v) for v in delta.values()]+[abs(fit_delta)])<=1e-5}
+        save()
+        if not row["H7_reference_parity"]["within_tolerance"]:
+            raise ValueError("H7 reference metrics differ; stop before refinement")
     timed("H7-control_archive",lambda:archive("H7-control",shared,control))
     for name,mode,refit in (("H8-A","baseline",False),("H8-B","baseline",True),
                             ("H9-A","weight",True),("H9-B","task",True)):
@@ -207,6 +224,7 @@ def main():
     ap.add_argument("--max-rank",type=int,default=2048)
     ap.add_argument("--threads",type=int,default=8)
     ap.add_argument("--key",choices=KEYS,default=KEYS[1])
+    ap.add_argument("--h7-report",type=Path)
     ap.add_argument("--sign-sweeps",type=int,default=2,choices=(1,2,3))
     ap.add_argument("--cg-iterations",type=int,default=40)
     ap.add_argument("--gram-mib",type=int,default=2048)
@@ -232,6 +250,11 @@ def main():
         split=validate_bank(a.stock,trace)
         report["split"]={k:[{"file":r["file"],"step":r["step"],"sha256":codec.sha256(a.stock/r["file"])}
                            for r in records] for k,records in split.items()}
+        if a.h7_report is not None:
+            prior=json.loads(a.h7_report.read_text(encoding="utf-8"))
+            if (prior.get("status")!="completed" or prior.get("protocol")!="lb-h7-alternating-scales-v1"
+                or prior.get("raw_sha256")!=raw_hash or prior.get("split")!=report["split"]):
+                raise ValueError("H7 reference raw hash or split mismatch")
         report["fit_partition_used"]=True
         report["confirmation_scored"]=False
         save()
