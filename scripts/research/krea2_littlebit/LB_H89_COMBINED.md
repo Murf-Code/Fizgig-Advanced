@@ -7,3 +7,31 @@ Core discrete_rotation_core.py Git blob ee43466364fdb33b5c939873d7780979e1638923
 CPU profile exact core torch2.10.0+cpu four threads, synthetic Gaussian W/X/G and random continuous factors, actual key14 dimensions 1536x6144 rank597+597 fit2048. One sign sweep both paths14.95827855s fit1.861174384->1.522292171, 3,622,702 flips accepted; per-plane attempts 1/4/1/5; weight rotation one path2.25862610s fit1.421315700->1.414914325, 268/298 pairs; task rotation one path6.89288358s fit1.421966866->1.412706985,264/298 pairs. Smaller 7x13 rank5 and 128x512 rank34 also executed. All residual/monotonicity/scale-preservation checks passed; additional 35 explicit negative singleton/pair delta checks max abs discrepancy5.5511e-17. Profile JSON SHA256 47d1dc96f6bc1c67bd3bfb55c5af81885abd416f33e433f0f55b83b53ff13b6f. Random synthetic numbers are engineering profile, not expected Krea2 accuracy. CPU memory peak not measured; H7 outer Gram cap is for Gram allocations only. Full runner on real Krea2 not executed here; no claim of total runtime, transfer or VRAM savings. No further fresh confirmation until candidate locked. Hybrid parked.
 
 Command: from research/krea2-littlebit, run scripts/research/krea2_littlebit/discrete_rotation_screen.py with H7 raw/stock/key, --h7-report output_loras/littlebit-outer-scale.json --out output_loras/littlebit-h89.json. Upload report, keep archives. A new output basename is required on repeat to avoid overwriting report/archive files.
+
+
+## Completed real Krea2 combined test — 2026-11-27
+
+Parsed complete user report littlebit-h89.json, SHA256 0b12ab20daf0275d9d9d85d224059a25542c6d6e910dc5e668094a989406d75d. Completed 530.422s, torch2.15.0+cu134, 8 CPU threads; raw SHA f99bb0ff8e362b77342bc4994e0c50906fe7ef7074864b181b7d48d2fa6d03d7. Key14 1536x6144, rank597+597, payload1179348B/.9997456868489584 bits, fit64/2048 rows, reused dev8, unscored confirmation8. H7 reference SHA348bf29dd1c9da32bbc5b57254d844125e88cafda90562a5599a31eb223ff0dd, exact zero deltas for dev J/fwd/dX and pooled fit. No QAT.
+
+| Arm | Initial dev J | Warmup dev J | Sign1 dev J | Final dev J | Final fwd RMS | Final dX RMS | Final fit J | Final fit dX RMS | Weight RMS |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| H7-control | .184095456213 | .162078364650 | — | .162078364650 | .261141226839 | .505926861260 | .164625209517 | .388394270742 | .622054899267 |
+| H8-A | — | .162078364650 | .161092661689 | .160932832718 | .256053929664 | .506262827530 | .160992752572 | .379122684560 | .622697245434 |
+| H8-B | — | .162078364650 | .159858136445 | .158739005691 | .251906581252 | .504005045317 | .155912763797 | .366596661039 | .620939902333 |
+| H9-A | .180265087288 | .160712541861 | .159006040770 | .158287865520 | .251286151828 | .503419309263 | .158277167672 | .375341570317 | .620544971662 |
+| H9-B | .177062862873 | .163458034291 | .162150693658 | .161843644392 | .251274958194 | .510439207123 | .160280674714 | .375147527099 | .627723451435 |
+
+H9-A reported dev winner, 2.3387% lower dev J vs H7, only ~0.2842% lower than H8-B. H8-B improves 2.0603% vs H7 and achieves best pooled fit J (5.2923% improvement vs H7). H8-A improves .7068%, H9-B .1448%; both worsen aggregate dev dX. Dev joint wins vs H7 6/8,7/8,6/8,4/8 for H8-A/B,H9-A/B; dX wins 4/8,7/8,6/8,2/8. H9-A remains 13.044% higher dev J than H5 weighted-50 QAT .140023255602. The H9-B initial dev advantage disappears after scale fitting; fit and dev selection differ. No independent generalization claim.
+
+| Arm | Sweep1 proposed / accepted | Sweep2 proposed / accepted |
+|---|---:|---:|
+| H8-A | 2680498 / 950 | 2613927 / 284 |
+| H8-B | 2680498 / 950 | 2553044 / 998 |
+| H9-A | 2673234 / 906 | 2561585 / 258 |
+| H9-B | 2617451 / 1218 | 2508664 / 25 |
+
+9,169,920 binary coefficients. H8-B only 1948 accepted flip events across two sweeps (~.0212% of plane population, not unique changed bits), ~.0372% of proposed events. All 32 factor-plane proposals accepted only after 5–6 attempts. This implicates excessive coupling in whole-plane batch proposals and coarse subset fallback, not proof binary representation has reached capacity. Synthetic sequential atom-level H8 differs from this implementation. H9-A weight rotation accepted147/298 and152/298 pairs, H9-B task258/298 and249/298; all four joint passes accepted on first attempt. All scale/sign substeps accepted, all20 outer PCG solves converged (28–39 iterations). Report records five archives each1179348 payload bytes/1180180 file bytes, not independently opened here.
+
+Measured timed sign sweeps76.469s total (9.109–9.923s each); development evaluations193.202s; all listed phases428.534s, remaining101.888s outside listed timers. Runtime not matched to H5 multi-arm QAT. Actual frozen-base training transfer, kernel VRAM/speed and fresh confirmation still untested.
+
+Decision recommendation: preserve all archives. Do not promote H9-A over H5 or interpret this as rejection of direct sign fitting. Before spending more time on rotation, isolate whole-plane acceptance bottleneck with bounded latent blocks / coordinate-local batches and compare to existing H8-B from packed H7 control; optionally use H5 QAT warm start in a separate matched arm. H10 progressive residual fitting remains pending. No new runner or production changes in this results update. Hybrid parked.
