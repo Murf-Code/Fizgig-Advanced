@@ -3,6 +3,10 @@ import argparse
 import json
 import math
 import time
+import traceback
+import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 from pathlib import Path
 import torch
 from safetensors import safe_open
@@ -34,22 +38,29 @@ def pack_rows(c,bits):
 @torch.no_grad()
 def run(w,key,args,stock,trace,split,int8,row,save):
     m,n=w.shape
+    row["stage"]="capture_read"
     device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # FP32 action matmuls, FP64 scalar reductions on both devices; bounded
     # memory for MLP. Dev continues using original CPU BF16 execution.
     torch.set_float32_matmul_precision("highest")
     fit=[read_panel(stock,key,r,trace,m,n) for r in split["fit"]]
     dev=[read_panel(stock,key,r,trace,m,n) for r in split["development"]]
+    row["stage"]="stock_reference"
+    save()
     native=codec.stock_layer(w,int8)
     # Reference backward uses autograd even though allocation is offline.
     with torch.enable_grad():
         dr=[base.refs(w,c,native) for c in dev]
+    row["stage"]="quantizer_initialization"
+    save()
     z=geo.hadamard(w.float())
     x=geo.hadamard(torch.cat([c["x"].float() for c in fit]))
     g=torch.cat([c["dy"].float() for c in fit])
     c2,s2=hs.initial_codes(z,2,tile=8192)
     c3,s3=hs.initial_codes(z,3,tile=8192)
     d2,d3=hs.decode(c2,s2,2),hs.decode(c3,s3,3)
+    row["stage"]="allocation_initialization"
+    save()
     model=ac.Allocation(z,x,g,d2,d3,device=device,dtype=torch.float32)
     zg=z.to(device)
     row.update(shape=[m,n],device=str(device),group=64,transform=64,fit_count=len(fit),fit_rows=len(x),
@@ -87,6 +98,7 @@ def run(w,key,args,stock,trace,split,int8,row,save):
             tmp.unlink(missing_ok=True)
         return dict(file=path.name,sha256=codec.sha256(path),payload_bytes=nb,file_bytes=path.stat().st_size)
     def record(name,d,ar,fit_score=None,**extra):
+        row["stage"]="score:"+name
         score=direct(d) if fit_score is None else fit_score
         ds=panel_score(operator(d,64),dev,dr)
         row["candidates"][name]={"payload_bytes":ar["payload_bytes"],"effective_bits":8*ar["payload_bytes"]/(m*n),
@@ -122,6 +134,8 @@ def run(w,key,args,stock,trace,split,int8,row,save):
         masks={}
         for label,order in ranks.items():
             mask=torch.zeros(m,dtype=torch.bool); mask[order[:count]]=True; masks[label]=mask
+        row["stage"]="refinement:"+tag
+        save()
         joint,info=model.refine(masks["targeted"])
         # Independent direct full-action FP32 check for the final joint mask.
         # Fall back to targeted if the direct check does not confirm improvement.
@@ -158,29 +172,72 @@ def run(w,key,args,stock,trace,split,int8,row,save):
     row["budget_winners"]={f"{cap/8:g}":min((k for k,v in row["candidates"].items() if v["effective_bits"]<=cap/8),
         key=lambda k:row["candidates"][k]["development"]["objective"]) for cap in ac.CAPS}
     row["status"]="finished"
+    row["stage"]="finished"
     save()
+
+
+def preflight(int8):
+    """Exercise the actual 19-arm runner with synthetic tensors and real INT8 code."""
+    rng=torch.Generator().manual_seed(123)
+    m,n=41,128
+    w=torch.randn(m,n,generator=rng).bfloat16()
+    panels={}
+    for i in range(4):
+        panels[i]={"x":torch.randn(17,n,generator=rng).bfloat16(),
+                   "dy":torch.randn(17,m,generator=rng).bfloat16(),
+                   "step":i,"item":str(i),"timestep":.5}
+    split={"fit":[0,1],"development":[2,3]}
+    with tempfile.TemporaryDirectory(prefix="qh-allocation-preflight-") as tmp:
+        root=Path(tmp)
+        ref=root/"reference.json"
+        ref.write_text(json.dumps({"projections":[]}),encoding="utf-8")
+        args=SimpleNamespace(reference=ref,out=root/"test.json")
+        row={}
+        with patch(__name__+".read_panel",side_effect=lambda stock,key,r,trace,m,n:panels[r]):
+            run(w,"synthetic",args,root,{},split,int8,row,lambda:None)
+        if row.get("status")!="finished" or len(row["candidates"])!=19:
+            raise ValueError("allocation preflight incomplete")
+        if len(list(root.glob("*.safetensors")))!=19:
+            raise ValueError("allocation preflight archive count mismatch")
+        return {"status":"passed","candidates":19,"device":row["device"]}
 
 
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--raw",type=Path,required=True)
-    ap.add_argument("--stock",type=Path,required=True)
-    ap.add_argument("--out",type=Path,required=True)
-    ap.add_argument("--reference",type=Path,required=True)
+    ap.add_argument("--raw",type=Path)
+    ap.add_argument("--stock",type=Path)
+    ap.add_argument("--out",type=Path)
+    ap.add_argument("--reference",type=Path)
+    ap.add_argument("--self-test",action="store_true",help="run only a small end-to-end synthetic preflight")
     ap.add_argument("--threads",type=int,default=8)
     ap.add_argument("--key",choices=KEYS,default=None,help="omit to test all three captured projections")
     a=ap.parse_args()
-    if a.threads<1 or a.out.exists(): ap.error("positive settings and fresh report required")
+    if a.threads<1: ap.error("positive threads required")
     torch.set_num_threads(a.threads)
+    root=Path(__file__).resolve().parents[3]
+    int8=codec.import_file("binary_int8",root/"src/fizgig/modules/int8_train.py")
+    source_sha=codec.sha256(Path(__file__))
+    print("QH-4B runner revision: preflight-v2",source_sha,flush=True)
+    if a.self_test:
+        print("Preflight:",preflight(int8),flush=True)
+        return
+    if any(v is None for v in (a.raw,a.stock,a.out,a.reference)) or a.out.exists():
+        ap.error("raw, stock, out, reference and fresh report required")
     a.out.parent.mkdir(parents=True,exist_ok=True)
     start=time.monotonic()
     report={"status":"running","protocol":"qh-allocation-v1","torch":torch.__version__,
+            "runner_revision":"preflight-v2","runner_sha256":source_sha,
             "threads":a.threads,"budgets":[v/8 for v in ac.CAPS],"projections":[],
             "scope":"offline QH-4B allocation curve on reused H3 fit/development; no confirmation or deployment"}
     def save():
         report["seconds"]=time.monotonic()-start
         atomic_json(a.out,report)
     try:
+        report["stage"]="preflight"
+        save()
+        report["preflight"]=preflight(int8)
+        report["stage"]="bank_verification"
+        save()
         trace=json.loads((a.stock/"trace.json").read_text(encoding="utf-8"))
         prep=json.loads((a.stock/"prepare.json").read_text(encoding="utf-8"))
         if trace.get("case")!="stock" or not trace.get("completed_updates") or prep.get("status")!="stock_verified":
@@ -199,8 +256,7 @@ def main():
         report["fit_partition_used"]=True
         report["confirmation_scored"]=False
         save()
-        root=Path(__file__).resolve().parents[3]
-        int8=codec.import_file("binary_int8",root/"src/fizgig/modules/int8_train.py")
+        report["stage"]="projection_screen"
         from contextlib import ExitStack
         with ExitStack() as stack:
             raw=stack.enter_context(safe_open(str(a.raw),framework="pt",device="cpu"))
@@ -217,8 +273,9 @@ def main():
             for r in records:
                 if codec.sha256(a.stock/r["file"])!=r["sha256"]: raise ValueError("capture changed")
         report["status"]="completed"
+        report["stage"]="completed"
     except Exception as e:
-        report.update(status="error",error=str(e))
+        report.update(status="error",error=str(e),traceback=traceback.format_exc())
         raise
     finally:
         save()
