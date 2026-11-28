@@ -15,3 +15,36 @@ User qh-allocation.json SHA256 0baa5467ba342a538c00238b25c030540b7a95e20566d00c5
 ## Retry provenance hardening
 
 Second upload qh-allocation(1).json is byte-identical to first (both SHA256 0baa5467ba342a538c00238b25c030540b7a95e20566d00c5006db05e36d0d2b, same 45.125s). It does not establish a distinct failed run; user believes it was retry. Remote scoped enable_grad fix independently inspected. Local CPU reproduction using exact stock_layer and refs excerpts with standalone frozen INT8 autograd implementation reproduces original error and confirms all four reference outputs bit-identical after scoped fix. Added runner revision preflight-v2, source SHA256 logging, full traceback, stage reporting, automatic synthetic 19-arm preflight using actual imported native INT8 and actual runner with synthetic panel inputs; temporary archives automatically cleaned. --self-test runs only the preflight without raw checkpoint or capture bank. No math, allocation settings or real evaluation changed. New runner commit 8a991e89c7246f7b65a28f78b72da5dbf791a358. Complete new preflight/real CUDA execution not run locally; preflight will execute on user's system before bank hashing. Retry with new basename qh-allocation-v2.json and retain original reports. No claim of new measured results.
+
+
+## Completed real QH-4B — 2026-11-28
+
+qh-allocation-v2.json SHA256 65f5fd7e9e28c2fa341d2c824859523ccc592b67a3bc8d3f37decc5b087efcca. Runner preflight-v2 SHA256 5cfe899b0823ef48fe401a9bf6d00b0369cde5dd29a3064897b08793cb7e8dc9; torch2.15.0+cu134 CUDA,8 threads,2197.703s. Automatic 19-arm preflight passed CUDA. All57 actual candidates finished, fit64/2048 rows/dev8 on each of3 projections, confirmation unscored. Raw SHA f99bb0ff8e362b77342bc4994e0c50906fe7ef7074864b181b7d48d2fa6d03d7. All five prior key14 development comparisons exactly zero delta (Q2,Q3,Q2g32,2.5 random,targeted). Archives reported 754558976 payload bytes /754587432 file bytes; not independently opened. No real training or peak memory measurement.
+
+Development objective table (rows random/weight/targeted/joint at each cap):
+
+| Candidate | Key0 | Key14 | MLP up0 |
+|---|---:|---:|---:|
+| Q2 | .036391462 | .060113020 | .008337417 |
+| Q3 | .009618848 | .018077896 | .001492783 |
+| Q2 group32 | .035692690 | .057908124 | .009595286 |
+| 2.375 random | .026239961 | .054364825 | .007348313 |
+| 2.375 weight | .020002386 | .043411562 | .003949379 |
+| 2.375 targeted | .012465512 | .040195077 | .003619136 |
+| 2.375 joint | .012721405 | .040224319 | .003675749 |
+| 2.5 random | .025347002 | .049324320 | .006431103 |
+| 2.5 weight | .019320210 | .036933493 | .002660716 |
+| 2.5 targeted | .011504861 | .032939902 | .002611745 |
+| 2.5 joint | .011699986 | .033093575 | .002617900 |
+| 2.75 random | .019877357 | .038880818 | .004697733 |
+| 2.75 weight | .016454130 | .027291975 | .002022650 |
+| 2.75 targeted | .010671879 | .024910903 | .002005672 |
+| 2.75 joint | .010750103 | .024819942 | .002008405 |
+| 3 random | .012343327 | .028269355 | .003008425 |
+| 3 weight | .012992717 | .021364320 | .001683393 |
+| 3 targeted | .010034787 | .020536460 | .001675073 |
+| 3 joint | .010058109 | .020518206 | .001674858 |
+
+Targeted beats random and weight-only all12 matched projection-budget comparisons, and baseline Q2 all12. At 2.5 cap, reductions vs Q2 68.386%/45.203%/68.674%; versus random54.611%/33.218%/59.389%; versus weight40.452%/10.813%/1.841%. At 2.375 key0 targeted already approaches Q3 (J29.595% higher) but key14 is 122.344% above Q3 and MLP142.442% above Q3; absolute objective varies markedly by projection. At 3 bits targeted gaps to Q3 4.324%/13.600%/12.211%. At 2.5 targeted forward/dX RMS respectively key0 .037927620/.146871436, key14 .112506500/.230699136, MLP .060782/.039103. MLP weight-only close to task-aware at higher caps; potential cheap heuristic for uncalibrated layers, not validated across model. All12 joint direct guards accepted, total559 swap events (34/30/26/23 key0,7/41/38/40 key14,127/51/75/67 MLP). Mean relative fit improvement .197467%; development improvement only3/12 (key14 2.75/3, MLP3), all tiny <=.365%. Recommend retain isolated task ranking, park joint refinement.
+
+User clarified actual goal: minimize swapped blocks or raise resolution, not simply make model fit; test maximum1 MP, not above. Proposed next stage: move toward actual frozen packed model runtime rather than more allocation sweeps. Need full model inventory and reliable packed forward/backward (LoRA and block swap compatible, no persistent decoded BF16 copies), benchmark runtime and transient memory, then full-model pilot with INT8 reference and uniform Q2/Q3 plus mixed candidate if coverage permits. Q6 high-fidelity control already researched; include if practical. Task-aware ranking only validated on 3 captured matrices; cannot automatically claim 2.5-bit targeted allocation for every layer without calibration coverage. Consider weight-only fallback explicitly labeled or extend capture coverage before fitting full model. Keep independent fresh-bank confirmation / training dataset disjointness, do not equate reconstruction error with training retention. At fixed rank32 and matched settings, memory envelope at .25/.5/.75/1MP, minimum stable block swap, dedicated/shared GPU peaks and step time; one epoch stability then 5 epoch sample/validation comparison of promising arms. User's ideal 1MP zero swap aspirational, not measured. This is results and roadmap update, no new runtime or model yet.
