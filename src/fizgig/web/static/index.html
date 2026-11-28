@@ -1053,6 +1053,7 @@
                 <button class="btn btn-primary" id="btnStart">Start Training</button>
                 <button class="btn" id="btnQueue" title="Checked like Start, then lined up: it starts when the runs before it finish">Add to queue</button>
                 <label title="Krea2 Raw only; fixed research comparison"><input type="checkbox" id="littlebitMode"> LittleBit Test Mode</label>
+                <label id="littlebitBankLabel" hidden title="Collect 80 unique stock INT8 calibration images; no compressed comparison"><input type="checkbox" id="littlebitBank"> Calibration only (LB-H3)</label>
                 <span id="littlebitNote" role="status"></span>
                 <button class="btn btn-warning" id="btnPause">Pause</button>
                 <button class="btn" id="btnSampleNow" style="display:none" title="Make the previews now, after the current training step, without waiting for the epoch to end">Sample now</button>
@@ -2554,27 +2555,30 @@
 <script>
 (function(){
  const mode=document.getElementById("littlebitMode"), queue=document.getElementById("btnQueue"),
-       note=document.getElementById("littlebitNote");
+       note=document.getElementById("littlebitNote"), bank=document.getElementById("littlebitBank"),
+       bankLabel=document.getElementById("littlebitBankLabel");
  let busy=false;
- mode.addEventListener("change",()=>{
-   note.textContent=mode.checked?"Krea2 · V5 GPU smoke · CUDA equivalence first · INT8 + repeat + Q6 Hadamard · common swaps · three-base scoring":"";
- });
+ function refresh(){
+   bankLabel.hidden=!mode.checked;
+   note.textContent=!mode.checked?"":bank.checked?"LB-H3 · stock INT8 only · 80 distinct captures · use 100+ diverse images":"Krea2 · V5 GPU smoke · CUDA equivalence first · INT8 + repeat + Q6 Hadamard · common swaps · three-base scoring";
+ }
+ mode.addEventListener("change",refresh);bank.addEventListener("change",refresh);refresh();
  document.addEventListener("click",async event=>{
    if(!mode.checked || !queue.contains(event.target))return;
    event.preventDefault();event.stopImmediatePropagation();
    if(busy)return;
    const folder=document.getElementById("imageFolder").value.trim();
    if(!folder){note.textContent="Select your Krea2 dataset.";return;}
-   busy=true;mode.disabled=true;queue.disabled=true;
+   busy=true;mode.disabled=true;bank.disabled=true;queue.disabled=true;
    try{
      const response=await fetch("/api/queue/littlebit",{method:"POST",headers:{"Content-Type":"application/json",
        "X-Fizgig-Token":document.querySelector('meta[name="fizgig-token"]').content},
-       body:JSON.stringify({image_folder:folder})});
+       body:JSON.stringify({image_folder:folder,capture_bank:bank.checked})});
      const result=await response.json();
      if(!result.ok)throw new Error(result.error||(result.problems||[]).join("; ")||"Could not queue test");
      note.textContent=result.ids.length+" fixed cases queued. Report: "+result.report;
    }catch(error){note.textContent=error.message||String(error);}
-   finally{busy=false;mode.disabled=false;queue.disabled=false;}
+   finally{busy=false;mode.disabled=false;bank.disabled=false;queue.disabled=false;}
  },true);
 })();
 </script>
