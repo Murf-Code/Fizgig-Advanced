@@ -53,3 +53,21 @@ Runner binary_qat_objective.py (ca674382), tests checks/test_littlebit_objective
 Optional --fresh-stock points to another completed V5 stock folder, with original raw SHA256, distinct captured item IDs (at least three), and unique capture hashes disjoint from the old bank. Generate using existing LittleBit Test Mode with a genuinely separate dataset (unique file stems, no reused/near-duplicate source images), let stock complete, then use its stock directory. Keep original --stock as fit/dev source; score the fresh bank on preselected checkpoints only after selecting the overall development winner; do not retune on fresh scores. IDs/hashes are necessary but not sufficient for independent data provenance. If omitted, fresh_capture_bank=null and results remain exploratory; no new calibration was generated here. No separate new stock-only queue or fresh-fit split implemented. First run key14 only, then narrow finalists. Fresh data remains a required gate before promotion.
 
 Static source inspection completed; regression tests added for H4 control parity, finite gradients on all weights, and fresh-bank overlap/hash checks. Complete pytest and CUDA execution not performed in this environment. No production, hybrid, or previous runner changes. No new independent reviewer feedback, deployment or portable LoRA claim.
+
+
+## H2 completed GPU results — 2026-11-27
+
+User littlebit-objective.json (SHA256 d077d8d8bbb831c203fda77df9a56ee4209fed8b3e966531d2639172e9678123), completed, 205.141 s, CUDA torch 2.15.0+cu134, key14 only. Six candidates, rank597+597, 1179348 B, .99974569 effective bits; same raw/capture hashes as H1; fresh_capture_bank=null. Control reproduces H4 exactly at 200.
+
+| Arm | Selected step | Fixed fit | Prior dev | Prior conf | Weight relative error |
+|---|---:|---:|---:|---:|---:|
+| E3 | 0 | .2043226 | .1964817 | .2101363 | .5980443 |
+| Control | 200 | .0238822 | .1593672 | .1755880 | .6081022 |
+| Backward60 | 200 | .0238048 | .1602583 | .1792430 | .6091004 |
+| Backward70 | 150 | .0263263 | .1634235 | .1797467 | .6083474 |
+| Weight50 | 150 | .0361766 | .1588897 | .1754735 | .6013487 |
+| Backward only | 20 | .1942949 | .1955971 | .2088052 | .5984554 |
+
+Weight50 selected on prior dev, improves control .300% dev, .065% prior conf, 1.111% relative weight error; practically tied pending fresh data, weight error still worse than E3. Control fit objective decreases 88.31% vs E3, dev 18.89%, prior conf 16.44%. At selected control checkpoint, fit RMS forward/dX 11.967/18.288%, dev 21.257/52.302%, prior conf 21.993/55.028%. Weight50 fit 14.991/22.334%, dev 21.694/52.030%, prior conf 22.234/54.910%. Backward60/70 reduce selected fit dX to 16.975/15.772% but do not improve prior conf dX (55.581/55.465%). Backward-only at step200 (not selected): fixed fit dX RMS 10.549% vs initial54.374%; dev dX 54.034% vs initial52.932%; weight error .625376 vs .598044; dev joint objective .205674 vs .196482. Strong direct evidence of calibration-specific fitting; does not prove more captures alone will solve the bottleneck. No measured model-wide training retention or actual VRAM/speed. Prior conf is reused, not independent.
+
+Next priority **H3 calibration coverage and generalization**, not more loss-weight or LR sweeps: build stock-only capture workflow with disjoint image-level fit/dev/untouched confirmation banks, more diverse timesteps and token coverage, explicit source provenance and reproducibility. Before fitting, measure effective ranks/singular values and cross-bank overlap of activation and cotangent directions, with input-gradient projection of unseen cotangents onto fit span. Compare matched pure binary E3, H4 control and Weight50 on progressively larger fit banks with fixed development/confirmation, identical update count/seed and bounded memory. Consider held-out random isotropic weight-action probes and covariance regularization as diagnostics, not substitutes for real training captures. Keep pure binary architecture, packed bit budget and optimizer fixed for coverage ablation. If broader coverage fails, investigate unequal ranks/initialization and structural approximation limits. Fresh stock option in H2 can confirm old-fit candidates but does not implement broader-fit capture workflow. No code changes during H2 result review. Hybrid remains parked.
