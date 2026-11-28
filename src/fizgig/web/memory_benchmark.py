@@ -19,13 +19,15 @@ PAIR_CASES = (
     ('pair-splitmax-64', 'splitmax', 0),
     ('pair-activation-sync', 'fp32', 512),
 )
-PAIR_NAMES = {case for case, _, _ in PAIR_CASES}
-CASE_MAP = {name:(storage, activation) for name,storage,activation in CASES + PAIR_CASES}
+ASYNC_CASES = (PAIR_CASES[0], PAIR_CASES[1], PAIR_CASES[-1],
+               ('pair-activation-async', 'fp32', 512))
+PAIR_NAMES = {case for case, _, _ in PAIR_CASES + ASYNC_CASES}
+CASE_MAP = {name:(storage, activation) for name,storage,activation in CASES + PAIR_CASES + ASYNC_CASES}
 
 
-def settings(group, output_root, common, paired=False):
+def settings(group, output_root, common, paired=False, async_test=False):
     result=[]
-    for case, storage, activation in (PAIR_CASES if paired else CASES):
+    for case, storage, activation in (ASYNC_CASES if async_test else PAIR_CASES if paired else CASES):
         args=' '.join(arg for arg in common['OPTIMIZER_ARGS'].split() if not arg.startswith('chunk_memory_mib='))
         args += f' chunk_memory_mib={CHUNK_MEMORY_MIB}'
         if storage!='fp32': args += f' momentum_storage={storage} momentum_block=64'
@@ -55,6 +57,8 @@ def apply_flags(cmd,case):
                 '--family_option',f'geometry_activation_mib={activation}','--family_option','geometry_host_floor_mib=6144'])
     if case in PAIR_NAMES:
         cmd.extend(['--family_option',f'geometry_memory_pair={case}'])
+    if case == 'pair-activation-async':
+        cmd.extend(['--family_option','geometry_activation_mode=async'])
 
 
 def parse_memory_log(text):
@@ -107,4 +111,13 @@ def verify_memory_run(case,run):
         last=states[-1].get('activation',{})
         if not last.get('accepted') or last.get('live')!=0 or last.get('peak',0)>last.get('cap',0):
             return 'No offloaded inputs or activation budget/lifetime failure.'
+    if case == 'pair-activation-async':
+        if config[-1].get('activation_mode')!='async' or (config[-1].get('activation_preflight') or {}).get('passed') is not True:
+            return 'Missing CUDA async activation preflight.'
+        for state in states:
+            a=state.get('activation',{})
+            if (a.get('live')!=0 or not a.get('accepted') or a.get('peak',0)>a.get('cap',0)
+                or not a.get('d2h_bytes') or a.get('h2d_bytes',0)<a['d2h_bytes']
+                or a.get('restores',0)<a['accepted']):
+                return 'Async activation transfer accounting/lifetime mismatch.'
     return None

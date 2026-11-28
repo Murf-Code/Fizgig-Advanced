@@ -47,3 +47,27 @@ def test_paired_queue_preserves_feasibility_and_requires_trace(tmp_path):
     raw+='[geometry-pair-complete] {"initial_sha256":"y","modules":1,"sample":["a"],"horizons":[1],"expected_steps":1}\n'
     r=m.parse_memory_log(raw);r['feasibility']={'updates':1}
     assert m.verify_memory_run('pair-fp32-control',r) is None
+
+
+def test_async_queue_isolated_and_requires_real_transfers():
+    configs = m.settings('g','out',{'OPTIMIZER_ARGS':'x=1'},async_test=True)
+    assert [c['__geometry_compare'] for c in configs] == [
+        'pair-fp32-control','pair-fp32-repeat','pair-activation-sync','pair-activation-async']
+    assert len({c['OPTIMIZER_ARGS'] for c in configs}) == 1
+    for c in configs:
+        cmd = []
+        m.apply_flags(cmd,c['__geometry_compare'])
+        assert ('geometry_activation_mode=async' in cmd) == (c['__geometry_compare']=='pair-activation-async')
+    cfg = dict(offloader='LoRAStreamOffloader',activation_mib=512,activation_mode='async',
+               activation_preflight={'passed':True})
+    state = dict(step=1,state_by_dtype={'torch.float32':10},optimizer_state=10,
+                 activation=dict(live=0,cap=512,peak=512,accepted=2,d2h_bytes=512,h2d_bytes=512,restores=2))
+    run = dict(memory_config=[cfg],memory_phases=[dict(phase=p,step=1,ok=True,peak_bytes=[1,1])
+               for p in ('forward','backward','optimizer')],memory_states=[state],feasibility={'updates':1},
+               pair_complete=[dict(expected_steps=1,initial_sha256='x',modules=1,sample=['m'],horizons=[1])],
+               pair_steps=[dict(step=1,input_sha256='x',metrics={'m':{}})])
+    assert m.verify_memory_run('pair-activation-async',run) is None
+    state['activation']['h2d_bytes']=0
+    assert 'accounting' in m.verify_memory_run('pair-activation-async',run)
+    cfg['activation_preflight']=None
+    assert 'preflight' in m.verify_memory_run('pair-activation-async',run)

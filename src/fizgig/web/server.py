@@ -5077,7 +5077,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": f"{name} is already there."}, 400)
                 os.makedirs(new)
                 return self.json({"ok": True, "path": new})
-            if path in ("/api/queue/geometry-compare", "/api/queue/geometry-feasibility", "/api/queue/geometry-resolution", "/api/queue/geometry-tsd-fit", "/api/queue/geometry-quality", "/api/queue/geometry-round10", "/api/queue/geometry-muon-me", "/api/queue/geometry-memory", "/api/queue/geometry-memory-paired"):
+            if path in ("/api/queue/geometry-compare", "/api/queue/geometry-feasibility", "/api/queue/geometry-resolution", "/api/queue/geometry-tsd-fit", "/api/queue/geometry-quality", "/api/queue/geometry-round10", "/api/queue/geometry-muon-me", "/api/queue/geometry-memory", "/api/queue/geometry-memory-paired", "/api/queue/geometry-activation-async"):
                 from fizgig.web import geometry_benchmark, geometry_report
                 folder = str(b.get("image_folder") or "").strip()
                 if not os.path.isdir(folder):
@@ -5091,10 +5091,11 @@ class Handler(BaseHTTPRequestHandler):
                 round10 = path == "/api/queue/geometry-round10"
                 muon_me = path == "/api/queue/geometry-muon-me"
                 paired = path == "/api/queue/geometry-memory-paired"
-                memory = paired or path == "/api/queue/geometry-memory"
-                group = ("geometry-memory-paired-" if paired else "geometry-memory-" if memory else "geometry-muon-me-" if muon_me else "geometry-round10-" if round10 else "geometry-tsd-fit-" if tsd_fit else "geometry-quality-" if quality else "geometry-resolution-" if resolution else "geometry-r64-fit-" if feasibility else "geometry-pilot-") + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+                async_test = path == "/api/queue/geometry-activation-async"
+                memory = paired or async_test or path == "/api/queue/geometry-memory"
+                group = ("geometry-activation-async-" if async_test else "geometry-memory-paired-" if paired else "geometry-memory-" if memory else "geometry-muon-me-" if muon_me else "geometry-round10-" if round10 else "geometry-tsd-fit-" if tsd_fit else "geometry-quality-" if quality else "geometry-resolution-" if resolution else "geometry-r64-fit-" if feasibility else "geometry-pilot-") + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
                 root = os.path.join(default_output_dir(), "matrix_geometry_comparisons")
-                configs = (geometry_benchmark.memory_settings(group, root, paired=paired) if memory else
+                configs = (geometry_benchmark.memory_settings(group, root, paired=paired, async_test=async_test) if memory else
                            geometry_benchmark.muon_me_settings(group, root) if muon_me else
                            geometry_benchmark.round10_settings(group, root) if round10 else
                            geometry_benchmark.optimizer_settings(group, root, short=tsd_fit) if tsd_fit or quality else

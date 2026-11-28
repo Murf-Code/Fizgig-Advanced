@@ -377,13 +377,20 @@ class SingleStreamDiT(nn.Module):
         self.gradient_checkpointing = False
         self.activation_offload_budget = None
 
-    def enable_activation_offload(self, cap_bytes, host_floor_bytes):
+    def enable_activation_offload(self, cap_bytes, host_floor_bytes, *, mode='sync'):
         if not self.gradient_checkpointing:
             raise RuntimeError('activation offload requires gradient checkpointing')
         import psutil
         from fizgig.training.activation_offload import HostBudget
-        self.activation_offload_budget = HostBudget(cap_bytes, host_floor_bytes=host_floor_bytes,
-                                                     available=lambda: psutil.virtual_memory().available)
+        if mode == 'async':
+            from fizgig.training.activation_async import AsyncHostBudget
+            cls = AsyncHostBudget
+        elif mode == 'sync':
+            cls = HostBudget
+        else:
+            raise ValueError('unknown activation offload mode')
+        self.activation_offload_budget = cls(cap_bytes, host_floor_bytes=host_floor_bytes,
+                                             available=lambda: psutil.virtual_memory().available)
 
     # Block swap (CPU offloading of the main SingleStreamBlocks). Mirrors the other
     # musubi architectures: the trainer calls enable_block_swap + move_to_device_except_swap_blocks

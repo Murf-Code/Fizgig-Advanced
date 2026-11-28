@@ -1573,6 +1573,9 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     memory_mode = str((family_options or {}).get("geometry_memory_phase", "off")).lower()
     activation_mib = int((family_options or {}).get("geometry_activation_mib", 0) or 0)
     host_floor_mib = int((family_options or {}).get("geometry_host_floor_mib", 6144) or 6144)
+    activation_mode = str((family_options or {}).get("geometry_activation_mode", "sync"))
+    if activation_mode not in ("sync", "async") or (activation_mode == "async" and not activation_mib):
+        raise ValueError("invalid activation transfer mode")
     memory_h2d = str((family_options or {}).get("geometry_memory_require_h2d", "0")) == "1"
     pair_case = str((family_options or {}).get("geometry_memory_pair", "") or "")
     if memory_mode not in ("off", "passive", "peaks") or not 0 <= activation_mib <= 4096 or host_floor_mib < 1024:
@@ -1585,10 +1588,12 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                                or int(max_train_epochs) != 1
                                or int(gradient_accumulation_steps) != 1 or resume_state_dir):
         raise ValueError("Geometry feasibility requires fresh rank 16/32/64 Krea 2 PoLoRA or LoRA-TSD, alpha=rank, one epoch, accumulation 1.")
-    if pair_case and (not memory_fit or pair_case not in ("pair-fp32-control", "pair-fp32-repeat", "pair-bf16", "pair-int8-64", "pair-splitmax-64", "pair-activation-sync")):
+    if pair_case and (not memory_fit or pair_case not in ("pair-fp32-control", "pair-fp32-repeat", "pair-bf16", "pair-int8-64", "pair-splitmax-64", "pair-activation-sync", "pair-activation-async")):
         raise ValueError("paired correctness requires the fixed memory research queue")
+    if (activation_mode == "async") != (pair_case == "pair-activation-async"):
+        raise ValueError("async activation is restricted to the paired research arm")
     driver = desc.load_driver()
-    driver.set_options({k:v for k,v in (family_options or {}).items() if k not in ("geometry_feasibility_steps", "geometry_optimizer_timing", "geometry_memory_phase", "geometry_activation_mib", "geometry_host_floor_mib", "geometry_memory_require_h2d", "geometry_memory_pair")})      # before the data: an option may shape the dataset
+    driver.set_options({k:v for k,v in (family_options or {}).items() if k not in ("geometry_feasibility_steps", "geometry_optimizer_timing", "geometry_memory_phase", "geometry_activation_mib", "geometry_host_floor_mib", "geometry_memory_require_h2d", "geometry_memory_pair", "geometry_activation_mode")})      # before the data: an option may shape the dataset
     _method = str((family_options or {}).get("training_method", "") or "").strip()
     if desc.key == "krea2" and _method and not getattr(driver, "global_replay", False):
         # a method from the test build that was not kept (Blockwise flow, Residual-path hybrid): train Standard
@@ -1662,6 +1667,13 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     "this off.")
     device = torch.device("cuda")
     quant.apply_vram_cap()          # FIZGIG_SIM_VRAM_GB: behave like a smaller card
+    activation_preflight = None
+    if activation_mode == "async":
+        from fizgig.training.activation_async import cuda_preflight
+        activation_preflight = cuda_preflight(device)
+        torch.cuda.synchronize(device)
+        torch.cuda.empty_cache()
+        logger.info("[geometry-activation-preflight] %s", json.dumps(activation_preflight))
     if pair_case:
         # Dataset blueprint draws its shuffle seed from Python random, not torch.
         import numpy as np
@@ -2361,7 +2373,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
     dit, swapped = quant.load_base(driver, dit_path, device, precision, blocks_to_swap, send_only=send_only)
     if memory_research:
         actual_offloader = type(getattr(dit, "offloader", None)).__name__
-        logger.info("[geometry-memory-config] %s", json.dumps(dict(mode=memory_mode, activation_mib=activation_mib, host_floor_mib=host_floor_mib, offloader=actual_offloader, swap=blocks_to_swap, checkpointing=gradient_checkpointing)))
+        logger.info("[geometry-memory-config] %s", json.dumps(dict(mode=memory_mode, activation_mib=activation_mib, activation_mode=activation_mode if activation_mib else "off", activation_preflight=activation_preflight, host_floor_mib=host_floor_mib, offloader=actual_offloader, swap=blocks_to_swap, checkpointing=gradient_checkpointing)))
         if memory_h2d and actual_offloader != "LoRAStreamOffloader":
             raise RuntimeError("memory research requires actual H2D-only offloader; fallback would invalidate comparison")
     if int8_rotated_backward:            # experimental, opt-in (modules/int8_train.py): an INT8 backward too
@@ -2378,7 +2390,7 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
         driver.enable_gradient_checkpointing(dit, True)
         dit.gc_off_blocks = gc_off_blocks       # the compiled blocks / H3's loop leave the last ones un-checkpointed
     if activation_mib:
-        dit.enable_activation_offload(activation_mib * 2**20, host_floor_mib * 2**20)
+        dit.enable_activation_offload(activation_mib * 2**20, host_floor_mib * 2**20, mode=activation_mode)
     net = FamilyLoRA(dit, driver, device=device)
     driver.prepare_training(dit, group, net)
     if calibration_info and calibration_info.get("lora") and os.path.isfile(calibration_info["lora"]):
@@ -4420,7 +4432,13 @@ def _train_family(family, dit_path, dataset_config, output_dir, output_name, *, 
                     info = optimizer_inventory(optimizer)
                     ab = getattr(dit, "activation_offload_budget", None)
                     if ab is not None:
-                        info["activation"] = {k:getattr(ab,k) for k in ("cap","live","peak","accepted","skipped","layout_skipped")}
+                        if activation_mode == "async":
+                            ab.drain()
+                            info["activation"] = ab.snapshot()
+                            if ab.live:
+                                raise RuntimeError("async activation leases remain live after backward")
+                        else:
+                            info["activation"] = {k:getattr(ab,k) for k in ("cap","live","peak","accepted","skipped","layout_skipped")}
                     info["step"] = global_step + 1
                     info["weight_transfers"] = dict(getattr(getattr(dit, "offloader", None), "transfers", {}))
                     logger.info("[geometry-memory-state] %s", json.dumps(info, separators=(",",":")))

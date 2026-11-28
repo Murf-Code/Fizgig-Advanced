@@ -1016,7 +1016,7 @@
                 <button class="btn" id="btnQueue" title="Checked like Start, then lined up: it starts when the runs before it finish">Add to queue</button>
                 <button class="btn" id="btnGeometryQueue" title="Rank 16 six-way optimizer quality pilot, five epochs each">Queue optimizer comparison</button>
                 <button class="btn" id="btnGeometryMuonME" title="Rank 64 matched Muon-ME training and 16-block-swap stress tests">Test Muon-ME</button>
-                 <button class="btn" id="btnGeometryMemory" title="Six paired rank-64 numerical correctness probes; not a speed test">Test memory correctness</button>
+                 <button class="btn" id="btnGeometryMemory" title="Four paired activation probes; async CUDA preflight and transfer accounting">Test async activation</button>
                 <button class="btn" id="btnGeometryRound10" title="Muon repeat and five experimental TSD variants">Test adaptive TSD</button>
                 <button class="btn" id="btnGeometryTSD" title="Short repaired LoRA-TSD balanced and unbalanced stability tests">Test LoRA-TSD stability</button>
                 <button class="btn" id="btnGeometryFit" title="PoLoRA ranks 16 and 32 at 0.25–1 MP, plus matched rank 64 controls">Test PoLoRA resolution</button>
@@ -2496,7 +2496,7 @@
       const folder = document.getElementById("imageFolder").value.trim();
       if (!folder) { alert("Select the Krea 2 training dataset first."); return; }
       if (!confirm(memArch
-          ? "Queue six paired rank-64 numerical correctness probes? FP32 control and repeat, BF16, INT8, Split-Max and synchronous activation offload. Fixed 0.25 MP, swap 22, 192 MiB, one epoch or 20 updates. Hashes all initial factors and actual inputs; compares sampled gradients and effective-weight displacements. Keeps bounded reference tensors locally, not in ZIP. Diagnostic timings are not performance benchmarks."
+          ? "Queue four paired activation probes? FP32 control and repeat, synchronous and asynchronous checkpoint offload. Same rank64, 0.25 MP, swap22, 192 MiB, one epoch or 20 updates. Both offload arms capped at 512 MiB host payload. Async first runs a small CUDA parity preflight. Diagnostic timings are not clean performance benchmarks."
           : memory
           ? "Queue six rank-64 Muon comparisons? Four at 22 swapped blocks for five epochs (reference, repeat, shape-local, 128 MiB), then two one-epoch stress tests at 16 swapped blocks. Fixed 0.25 MP, holdout and previews. OOM is recorded, not automatically recovered."
           : adaptive
@@ -2508,14 +2508,14 @@
           : "Queue six rank 16 optimizer runs, five epochs each, with fixed holdout and previews? Only proceed after reviewing the short TSD stability test. CUDA parity is a separate gate.")) return;
       button.disabled = true;
       try {
-        const response = await fetch(memArch ? "/api/queue/geometry-memory-paired" : memory ? "/api/queue/geometry-muon-me" : adaptive ? "/api/queue/geometry-round10" : short ? "/api/queue/geometry-tsd-fit" : feasibility ? "/api/queue/geometry-resolution" : "/api/queue/geometry-quality", {
+        const response = await fetch(memArch ? "/api/queue/geometry-activation-async" : memory ? "/api/queue/geometry-muon-me" : adaptive ? "/api/queue/geometry-round10" : short ? "/api/queue/geometry-tsd-fit" : feasibility ? "/api/queue/geometry-resolution" : "/api/queue/geometry-quality", {
           method: "POST", headers: {"Content-Type": "application/json",
             "X-Fizgig-Token": document.querySelector('meta[name="fizgig-token"]').content},
           body: JSON.stringify({image_folder: folder})
         });
         const result = await response.json();
         if (!result.ok) throw Error(result.error || (result.problems || []).join("\n") || "Could not queue test");
-        alert((memArch ? "Six paired memory correctness probes queued." : memory ? "Six Muon-ME comparison runs queued." : adaptive ? "Seven adaptive TSD comparison runs queued." : short ? "Two TSD stability tests queued." : feasibility ? "Ten PoLoRA resolution and memory tests queued." : "Six optimizer comparison runs queued.") + " Report folder:\n" + result.output);
+        alert((memArch ? "Four paired activation probes queued." : memory ? "Six Muon-ME comparison runs queued." : adaptive ? "Seven adaptive TSD comparison runs queued." : short ? "Two TSD stability tests queued." : feasibility ? "Ten PoLoRA resolution and memory tests queued." : "Six optimizer comparison runs queued.") + " Report folder:\n" + result.output);
       } catch (error) { alert(error.message); }
       finally { button.disabled = false; }
     };

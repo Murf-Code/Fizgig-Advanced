@@ -49,6 +49,11 @@ def checkpoint_bounded(block, activation, *args, budget, enabled=True, cpu_test=
     def pack(x):
         n = x.numel()*x.element_size()
         # No closure strong reference to the original activation in the hooks.
+        if id(x) == target and hasattr(budget, 'pack_host'):
+            lease = budget.pack_host(x)
+            if lease is not None:
+                return ('async',lease,x.device,weakref.ref(x),x._version,weakref.ref(x._base) if x._base is not None else None)
+            return ('keep',x.detach(),None,None,x._version,None)
         if id(x) == target and budget.acquire(n):
             try:
                 host = x.detach().to('cpu',copy=True,non_blocking=False)
@@ -67,7 +72,7 @@ def checkpoint_bounded(block, activation, *args, budget, enabled=True, cpu_test=
         if source is None and base_ref is not None: source=base_ref()
         if source is not None and source._version != version:
             raise RuntimeError('offloaded checkpoint input modified in place')
-        return value.to(dev,non_blocking=False)
+        return value.restore() if kind == 'async' else value.to(dev,non_blocking=False)
     with torch.autograd.graph.saved_tensors_hooks(pack,unpack):
         return direct()
 
