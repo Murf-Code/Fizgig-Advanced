@@ -1005,7 +1005,7 @@ const CaptionStudioViz = (() => {
     return min+(largest-min)*t;
   }
   function tagbenchConstellation(model,onPick,pickedTag=null,options={}){
-    const stage=document.createElement("div");stage.className="studio-tb-constellation";
+    const stage=document.createElement("div");stage.className="studio-tb-constellation";stage.tabIndex=0;
     if(!model.nodes.length&&!options.resume){stage.textContent="No tagged images in this dataset.";return stage;}
     const NS="http://www.w3.org/2000/svg",svg=document.createElementNS(NS,"svg");
     svg.setAttribute("role","group");svg.setAttribute("aria-label","Interactive tag constellation");
@@ -1040,7 +1040,9 @@ const CaptionStudioViz = (() => {
     const visual=new Map();
     let labelOrder=nodes,overviewCamera=null,overviewZoom=1;
     let rarePage=0,activePair=null,collection=null,collectionMotion=null;
-    let branchTrail=[],globalShared=new Map();
+    let branchTrail=[],globalShared=new Map(),multiSelecting=false,removing=false;
+    const selectedTags=()=>multiSelecting?branchTrail:(picked?[picked]:[]);
+    const isSelected=tag=>selectedTags().includes(tag);
     const rarePageSize=16,primaryTags=new Set(nodes.map(n=>n.tag));
     const extraPositions=new Map(),maxZoom=8;
     const minZoom=()=>Math.min(.35,overviewZoom*.65);
@@ -1277,7 +1279,7 @@ const CaptionStudioViz = (() => {
         const dx=to.x-from.x,dy=to.y-from.y;
         const cx=(from.x+to.x)/2-dy*.09,cy=(from.y+to.y)/2+dx*.09;
         const path="M "+from.x+" "+from.y+" Q "+cx+" "+cy+" "+to.x+" "+to.y;
-        const strength=associationStrength(tag,shared.get(tag));
+        const strength=associationStrength(tag,edge.count??shared.get(tag));
         edge.line.setAttribute("d",path);edge.hit.setAttribute("d",path);
         edge.line.setAttribute("stroke-width",1.25+9.5*strength);
         edge.line.setAttribute("stroke-opacity",activePair===tag?1:.42+.48*strength);
@@ -1351,13 +1353,15 @@ const CaptionStudioViz = (() => {
       visual.set(n.tag,{g,core,halo,ripple,ring,lossRing,warning,hit,artwork,number,label,grad,id,title});
       g.addEventListener("pointerdown",e=>{
         if(e.button!==0)return;e.stopPropagation();dismissMenu();cancelMotion();
-        const p=point(e);drag={kind:"node",tag:n.tag,dx:p.x-n.x,dy:p.y-n.y,x:e.clientX,y:e.clientY,moved:false};
+        g.focus?.({preventScroll:true});
+        const p=point(e);drag={kind:"node",tag:n.tag,dx:p.x-n.x,dy:p.y-n.y,x:e.clientX,y:e.clientY,moved:false,multi:!!(e.ctrlKey||e.metaKey)};
         svg.setPointerCapture(e.pointerId);
       });
       g.addEventListener("keydown",e=>{
         if(e.key==="Enter"||e.key===" "){
           e.preventDefault();e.stopPropagation();
-          if(n.tag===picked&&options.collectionItems)openCollection(n.tag);
+          if(e.ctrlKey||e.metaKey)toggleTag(n.tag);
+          else if(n.tag===picked&&options.collectionItems)openCollection(n.tag);
           else choose(n.tag);
         }
         if(e.key==="ContextMenu"||(e.shiftKey&&e.key==="F10")){e.preventDefault();const r=g.getBoundingClientRect();openMenu(n.tag,r.left,r.bottom);}
@@ -1468,7 +1472,7 @@ const CaptionStudioViz = (() => {
           if(score<bestScore){best={box,x,y};bestScore=score;}
           if(!score)break;
         }
-        const show=bestScore===0||n.tag===picked||(!picked&&n===labelOrder[0]);
+        const show=bestScore===0||isSelected(n.tag)||(!picked&&n===labelOrder[0]);
         if(show){
           v.label.textContent=label;
           v.label.setAttribute("x",best.x);v.label.setAttribute("y",best.y+sz*.32);
@@ -1590,7 +1594,7 @@ const CaptionStudioViz = (() => {
       const focus=picked,neighbors=shared;
       labelOrder=picked?[...focusedTags].map(tag=>at.get(tag)):nodes;
       for(const n of at.values()){
-        const v=visual.get(n.tag),selected=n.tag===picked,related=!focus||focusedTags.has(n.tag);
+        const v=visual.get(n.tag),selected=isSelected(n.tag),related=!focus||focusedTags.has(n.tag);
         v.g.style.display=related?"":"none";
         v.g.setAttribute("opacity",1);
         v.label.style.display=related?"":"none";
@@ -1598,10 +1602,10 @@ const CaptionStudioViz = (() => {
         const sharedCount=neighbors.get(n.tag);
         v.number.textContent=String(sharedCount??n.count);
         v.g.setAttribute("aria-label",n.tag+", "+n.count+" images"+
-          (selected?", selected":sharedCount!==undefined?", "+sharedCount+" shared with "+picked:""));
+          (selected?", selected":sharedCount!==undefined?", "+sharedCount+" shared with "+(multiSelecting?branchTrail.join(" and "):picked):""));
         v.core.setAttribute("fill",selected?"#efd16e":prefs.glassNodes?"url(#"+v.id+")":n.color);
         v.ring.setAttribute("opacity",selected?"1":"0");
-        v.halo.setAttribute("opacity",n.tag===focus?".24":"0");
+        v.halo.setAttribute("opacity",selected?".24":"0");
         v.label.setAttribute("fill",selected?"#efd16e":"color-mix(in srgb, "+n.color+" 82%, var(--text-primary))");
         v.label.setAttribute("font-weight",selected?750:650);
         v.label.setAttribute("opacity",related?"1":".38");
@@ -1612,9 +1616,9 @@ const CaptionStudioViz = (() => {
       spotlight.replaceChildren();spotlight.hidden=!picked||!at.has(picked);if(spotlight.hidden)return;
       const n=at.get(picked),head=html("p","",undefined,spotlight);
       head.style.color=n.color;
-      html("strong","",n.tag,head);
-      html("span","",String(n.count),head);
-      html("div","studio-tb-pair-count",((100*n.count/Math.max(1,model.imageCount||n.count)).toFixed(1))+"% of tagged items",spotlight);
+      html("strong","",multiSelecting?branchTrail.join(" + "):n.tag,head);
+      html("span","",String(multiSelecting?(options.collectionItems?.(picked,null,branchTrail)?.length??0):n.count),head);
+      if(!multiSelecting)html("div","studio-tb-pair-count",((100*n.count/Math.max(1,model.imageCount||n.count)).toFixed(1))+"% of tagged items",spotlight);
       if(lossEnabled){
         const row=lossData?.tags.get(n.tag);
         const detail=html("div","studio-tb-pair-count",row?.measured?
@@ -1637,7 +1641,10 @@ const CaptionStudioViz = (() => {
         if(!warning)html("div","studio-tb-pair-count","No repeated-tag or formatting-variant warnings",spotlight);
       }
       const scoped=branchTrail.length>1?options.collectionItems?.(picked,null,branchTrail)?.length??n.count:n.count;
-      if(branchTrail.length>1){
+      if(multiSelecting){
+        html("div","studio-tb-pair-count",scoped+" images containing every selected tag",spotlight);
+        html("div","studio-tb-pair-count","Ctrl-click a selected tag to deselect it.",spotlight);
+      }else if(branchTrail.length>1){
         html("div","studio-tb-pair-count",branchTrail.join(" → "),spotlight);
         html("div","studio-tb-pair-count",scoped+" images matching the entire branch",spotlight);
         button(spotlight,"← Back one tag","Back one branch level",backBranch).className="studio-tb-pair-action";
@@ -1646,12 +1653,12 @@ const CaptionStudioViz = (() => {
         "View images tagged "+picked,()=>openCollection(picked)).className="studio-tb-pair-action";
       if(options.openWaterfall)button(spotlight,"Open in Waterfall","Open "+picked+" in Waterfall",
         ()=>options.openWaterfall(picked,null,collectionState(picked,null))).className="studio-tb-pair-action";
-      if(!shared.size)html("div","studio-tb-pair-empty","No co-occurring tags",spotlight);
+      if(!shared.size)html("div","studio-tb-pair-empty",multiSelecting?"No additional shared tags":"No co-occurring tags",spotlight);
       if(activePair)renderPairPreview();
       const rare=[...shared.keys()].filter(tag=>!primaryTags.has(tag));
       const rareTotal=rare.length,rareShown=new Set(rare.slice(rarePage*rarePageSize,(rarePage+1)*rarePageSize));
       if(shared.size)html("div","studio-tb-pair-count",
-        focusEdges.size+" of "+shared.size+" connections on map",spotlight);
+        [...shared.keys()].filter(tag=>focusEdges.has(tag)).length+" of "+shared.size+" connections on map",spotlight);
       if(rareTotal)html("div","studio-tb-pair-count",rareTotal+" additional tags · list only",spotlight);
       if(rareTotal>rarePageSize){
         const pages=Math.ceil(rareTotal/rarePageSize);
@@ -1666,8 +1673,8 @@ const CaptionStudioViz = (() => {
       for(const [tag,w] of shared){
         if(!focusedTags.has(tag)&&!rareShown.has(tag))continue;
         const item=html("li","",undefined,list);
-        const direction=tagDirection(globalShared.get(tag)||0,n.count,all.get(tag).count);
-        const b=button(item,(direction===1?"→ ":direction===-1?"← ":"")+tag,"Focus "+tag,()=>{choose(tag);if(!primaryTags.has(tag))center(tag);});b.style.color=model.colors.get(tag)||"";
+        const direction=multiSelecting?0:tagDirection(globalShared.get(tag)||0,n.count,all.get(tag).count);
+        const b=button(item,(direction===1?"→ ":direction===-1?"← ":"")+tag,"Focus "+tag,event=>{if(event?.ctrlKey||event?.metaKey)toggleTag(tag);else choose(tag);if(!primaryTags.has(tag))center(tag);});b.style.color=model.colors.get(tag)||"";
         if(options.branching&&direction===1)
           button(item,"→","Follow branch to "+tag,()=>followBranch(tag)).className="studio-tb-pair-count-button";
         const pair=button(item,String(w),"Preview "+w+" shared images with "+tag,()=>inspectPair(tag));
@@ -1683,7 +1690,7 @@ const CaptionStudioViz = (() => {
       const total=globalShared.get(activePair)||0,a=at.get(picked).count,b=all.get(activePair).count;
       html("div","studio-tb-pair-count",Math.round(100*total/a)+"% of "+picked+" images also "+activePair+
         " · "+Math.round(100*total/b)+"% in reverse",preview);
-      if(options.branching&&!branchTrail.includes(activePair))
+      if(options.branching&&!multiSelecting&&!branchTrail.includes(activePair))
         button(preview,"Follow branch →","Follow branch to "+activePair,()=>followBranch(activePair)).className="studio-tb-pair-action";
       const tiles=html("div","studio-tb-pair-thumbs",undefined,preview);
       for(const {src,name} of matches){
@@ -1714,7 +1721,7 @@ const CaptionStudioViz = (() => {
     }
     function collectionState(tag,peer,image=null,imageIndex=0,offset=0){
       return {tag,peer,path:image?.path,imageIndex,offset,zoom,pan:{...pan},overviewCamera,
-        query:input.value,picked,branchTrail:[...branchTrail],related:tag===picked?[...shared.keys()].slice(0,8):[],
+        query:input.value,picked,branchTrail:[...branchTrail],multiSelecting,related:tag===picked?[...shared.keys()].slice(0,8):[],
         positions:nodes.map(n=>[n.tag,n.x,n.y]),qualityEnabled};
     }
     function openCollection(tag,peer=null,resume=null,animate=true){
@@ -1807,23 +1814,27 @@ const CaptionStudioViz = (() => {
       if(!picked){clearTemporaryTags();return;}
       // Focus is a filter over the existing map, not a new layout.
       // Long-tail relationships stay in the panel until explicitly opened.
-      const peers=[...shared.keys()].filter(tag=>primaryTags.has(tag));
-      clearTemporaryTags(new Set([picked]));
+      const anchors=multiSelecting?branchTrail.filter(tag=>tag!==picked):[];
+      const anchorCount=anchors.length?(options.collectionItems?.(picked,null,branchTrail)?.length??0):0;
+      const peers=[...anchors,...[...shared.keys()].filter(tag=>primaryTags.has(tag))];
+      clearTemporaryTags(new Set([picked,...anchors]));
+      for(const tag of anchors)ensureTag(tag);
       focusedTags.add(picked);
       const anchor=at.get(picked);
       peers.forEach(tag=>{
         const n=at.get(tag);
         focusedTags.add(tag);
-        const count=shared.get(tag);
+        const selectedPeer=anchors.includes(tag);
+        const count=selectedPeer?anchorCount:shared.get(tag);
         const control=make("g",{role:"button",tabindex:0,class:"studio-tb-pair-edge",
-          "aria-label":picked+" and "+tag+", "+count+(count===1?" shared image":" shared images")},edgeLayer);
+          "aria-label":(multiSelecting?branchTrail.join(" + ")+(selectedPeer?"":" + "+tag):picked+" and "+tag)+", "+count+(count===1?" shared image":" shared images")},edgeLayer);
         const line=make("path",{fill:"none",stroke:n.color,"vector-effect":"non-scaling-stroke","pointer-events":"none"},control);
         const hit=make("path",{fill:"none",stroke:"transparent","stroke-width":16,
           "vector-effect":"non-scaling-stroke","pointer-events":"stroke"},control);
         const caption=make("text",{"text-anchor":"middle",fill:"var(--text-primary)",stroke:"var(--bg-deep)",
           "paint-order":"stroke","font-weight":750,"pointer-events":"none","aria-hidden":"true"},control);
         caption.textContent=count;
-        const direction=tagDirection(globalShared.get(tag)||0,anchor.count,n.count);
+        const direction=multiSelecting?0:tagDirection(globalShared.get(tag)||0,anchor.count,n.count);
         let arrow=null,arrowHit=null;
         if(direction){
           arrow=make("path",{fill:n.color,stroke:n.color,"stroke-width":.6,"pointer-events":"none",
@@ -1837,13 +1848,13 @@ const CaptionStudioViz = (() => {
             arrowHit.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();follow(e);}});
           }
         }
-        const openRelationship=()=>options.collectionItems?openCollection(picked,tag):inspectPair(tag);
+        const openRelationship=()=>options.collectionItems?openCollection(picked,selectedPeer?null:tag):!selectedPeer&&inspectPair(tag);
         control.addEventListener("click",openRelationship);
         control.addEventListener("keydown",event=>{
           if(event.key!=="Enter"&&event.key!==" ")return;
           event.preventDefault();openRelationship();
         });
-        focusEdges.set(tag,{line,hit,caption,arrow,arrowHit,direction});
+        focusEdges.set(tag,{line,hit,caption,arrow,arrowHit,direction,count});
       });
     }
     function selectNeighborhood(tag){
@@ -1863,28 +1874,43 @@ const CaptionStudioViz = (() => {
       layoutNeighborhood();view();renderPanel();updateAppearance();
     }
     function choose(tag,toggle=true,keepBranch=false){
-      if(tag&&toggle&&tag===picked)tag=null;
+      if(tag&&toggle&&tag===picked&&!multiSelecting)tag=null;
       if(tag&&!ensureTag(tag))return;
-      if(!keepBranch)branchTrail=tag?[tag]:[];
+      if(!keepBranch){branchTrail=tag?[tag]:[];multiSelecting=false;}
       if(pulse){visual.get(pulse.tag)?.ripple.setAttribute("opacity","0");pulse=null;}
       selectNeighborhood(tag);
-      onPick?.(picked);
+      onPick?.(picked,multiSelecting?[...branchTrail]:[]);
       if(picked&&!reduced()&&prefs.elasticity>0){pulse={tag:picked,start:performance.now(),amount:0};wake();}
     }
+    function toggleTag(tag){
+      if(!options.relationsForTag||!ensureTag(tag))return;
+      const prior=selectedTags();
+      const next=prior.includes(tag)?prior.filter(value=>value!==tag):[...prior,tag];
+      if(next.length<2){choose(next[0]||null,false);return;}
+      branchTrail=next;multiSelecting=true;
+      choose(next[next.length-1],false,true);
+    }
+    async function removeSelection(tag=null){
+      if(!options.removeTags||removing)return;
+      const tags=tag&&!isSelected(tag)?[tag]:[...selectedTags()];
+      if(!tags.length)return;
+      dismissMenu();removing=true;
+      try{await options.removeTags(tags);}finally{removing=false;}
+    }
     function followBranch(tag){
-      if(!options.branching||!picked||!shared.has(tag)||branchTrail.includes(tag))return;
+      if(multiSelecting||!options.branching||!picked||!shared.has(tag)||branchTrail.includes(tag))return;
       branchTrail=[...(branchTrail.length?branchTrail:[picked]),tag];
       choose(tag,false,true);center(tag);
     }
     function backBranch(){
-      if(branchTrail.length<2)return false;
+      if(multiSelecting||branchTrail.length<2)return false;
       branchTrail.pop();const tag=branchTrail[branchTrail.length-1];
       choose(tag,false,true);center(tag);return true;
     }
     function openMenu(tag,x,y){
       dismissMenu();const rect=stage.getBoundingClientRect();
       menu.hidden=false;menu.style.left=Math.max(4,Math.min(x-rect.left,rect.width-185))+"px";
-      menu.style.top=Math.max(4,Math.min(y-rect.top,rect.height-150))+"px";
+      menu.style.top=Math.max(4,Math.min(y-rect.top,rect.height-(options.removeTags?185:150)))+"px";
       button(menu,"Focus tag","Focus "+tag,()=>{choose(tag,false);dismissMenu();});
       button(menu,"Center tag","Center "+tag,()=>{choose(tag,false);center(tag);dismissMenu();});
       if(options.collectionItems)button(menu,"View images","View images tagged "+tag,()=>{
@@ -1892,6 +1918,10 @@ const CaptionStudioViz = (() => {
       });
       if(options.onNavigate)for(const [label,mode] of [["View in Tags","list"],["View in Waterfall","waterfall"]])
         button(menu,label,label,()=>{choose(tag,false);dismissMenu();options.onNavigate(mode,tag);});
+      if(options.removeTags){
+        const many=isSelected(tag)&&selectedTags().length>1;
+        button(menu,many?"Remove Selected Tags":"Remove Tag",many?"Remove selected tags from dataset":"Remove "+tag+" from dataset",()=>void removeSelection(tag));
+      }
       menu.querySelector("button")?.focus({preventScroll:true});
     }
     function cameraTo(nextZoom,nextPan,animate=true){
@@ -1910,7 +1940,7 @@ const CaptionStudioViz = (() => {
     }
     function zoomBy(factor,e=null){
       const next=Math.min(maxZoom,Math.max(minZoom(),zoom*factor));
-      if(factor<1&&branchTrail.length>1&&next<=overviewZoom*.95){backBranch();return;}
+      if(factor<1&&!multiSelecting&&branchTrail.length>1&&next<=overviewZoom*.95){backBranch();return;}
       if(next===zoom)return;
       let target={...pan};
       if(e){const p=point(e),ratio=zoom/next;
@@ -1933,8 +1963,8 @@ const CaptionStudioViz = (() => {
     const searchMatches=()=>{
       matches.replaceChildren();const q=input.value.toLowerCase().trim();if(!q)return;
       const found=model.all.filter(n=>n.tag.includes(q)).sort((a,b)=>(b.tag===q)-(a.tag===q)||b.count-a.count).slice(0,8);
-      for(const n of found){const b=button(matches,n.tag+" · "+n.count,"Focus "+n.tag,()=>{
-        input.value=n.tag;choose(n.tag,false);center(n.tag);matches.replaceChildren();
+      for(const n of found){const b=button(matches,n.tag+" · "+n.count,"Focus "+n.tag,event=>{
+        input.value=n.tag;if(event?.ctrlKey||event?.metaKey)toggleTag(n.tag);else choose(n.tag,false);center(n.tag);matches.replaceChildren();stage.focus?.({preventScroll:true});
       });b.style.color=model.colors.get(n.tag)||"var(--text-primary)";}
       if(!found.length)html("span","studio-tb-panel-caption","No matching tags",matches);
     };
@@ -1995,9 +2025,10 @@ const CaptionStudioViz = (() => {
       if(!drag)return;const prev=drag;drag=null;
       if(prev.kind==="node"&&!prev.moved&&!cancel){
         const now=performance.now();
-        if(lastClick?.tag===prev.tag&&now-lastClick.time<330){choose(prev.tag,false);center(prev.tag);lastClick=null;}
+        if(prev.multi||e.ctrlKey||e.metaKey){toggleTag(prev.tag);lastClick=null;stage.focus?.({preventScroll:true});}
+        else if(lastClick?.tag===prev.tag&&now-lastClick.time<330){choose(prev.tag,false);center(prev.tag);lastClick=null;}
         else{choose(prev.tag);lastClick={tag:prev.tag,time:now};}
-      }else if(prev.kind==="pan"&&!prev.moved&&!cancel){choose(null);lastClick=null;}
+      }else if(prev.kind==="pan"&&!prev.moved&&!cancel){choose(null);lastClick=null;stage.focus?.({preventScroll:true});}
       const offsets=new Map([...at.values()].filter(n=>n.ox||n.oy).map(n=>[n.tag,{x:n.ox,y:n.oy}]));
       if(offsets.size&&!reduced()&&prefs.elasticity>0){settling={start:performance.now(),offsets};wake();}
       else{
@@ -2061,7 +2092,13 @@ const CaptionStudioViz = (() => {
         closeCollection();
       }
     },{capture:true,passive:false});
-    stage.addEventListener("keydown",e=>{if(e.key==="Escape"){e.preventDefault();e.stopPropagation();if(collection)closeCollection();else if(!menu.hidden)dismissMenu();else choose(null);}});
+    stage.addEventListener("keydown",e=>{
+      if(e.key==="Escape"){e.preventDefault();e.stopPropagation();if(collection)closeCollection();else if(!menu.hidden)dismissMenu();else choose(null);return;}
+      if(e.key==="Delete"&&!e.repeat&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&!e.shiftKey&&!collection&&
+         !e.target?.closest?.("input,textarea,select,[contenteditable]")){
+        e.preventDefault();e.stopPropagation();if(options.removeTags&&selectedTags().length)void removeSelection();
+      }
+    });
     stage.addEventListener("pointerdown",e=>{if(!menu.contains(e.target))dismissMenu();if(!search.contains(e.target))matches.replaceChildren();});
     stage.setPreferences=value=>{
       prefs=constellationPrefs(value);stage.classList.toggle("no-celestial",!prefs.celestial);
@@ -2094,6 +2131,7 @@ const CaptionStudioViz = (() => {
     if(pickedTag&&ensureTag(pickedTag)){
       branchTrail=options.resume?.branchTrail?.filter(tag=>all.has(tag))||[pickedTag];
       if(branchTrail[branchTrail.length-1]!==pickedTag)branchTrail=[pickedTag];
+      multiSelecting=!!options.resume?.multiSelecting&&branchTrail.length>1;
       selectNeighborhood(pickedTag);
     }
     stage.resumeMap=state=>{
@@ -2104,6 +2142,7 @@ const CaptionStudioViz = (() => {
       if(state.branchTrail?.length&&picked){
         branchTrail=state.branchTrail.filter(tag=>all.has(tag));
         if(branchTrail[branchTrail.length-1]!==picked)branchTrail=[picked];
+        multiSelecting=!!state.multiSelecting&&branchTrail.length>1;
         selectNeighborhood(picked);
       }else if(picked)layoutNeighborhood();
       if(state.overviewCamera)overviewCamera=state.overviewCamera;

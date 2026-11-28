@@ -16594,16 +16594,19 @@ function renderCaptionStudio(host,items,ext){
           const scopedRows=(tag,trail=[])=>rowsForTag(tag).filter(({tags})=>trail.every(t=>tags.has(t)));
           const collectionItems=(tag,peer,trail=[])=>scopedRows(tag,trail)
             .filter(({it,tags})=>it.size&&(!peer||tags.has(peer))).map(({it})=>it);
-          const network=CaptionStudioViz.tagbenchConstellation(model,tag=>{
+          const network=CaptionStudioViz.tagbenchConstellation(model,(tag,selectedTags=[])=>{
 
           S.cap.studioExplorePickedTag=tag;
-          const exact=tag?JSON.stringify(tag):"";
+          const exact=tag?(selectedTags.length>1?waterfallQuery({tag,branchTrail:selectedTags}):JSON.stringify(tag)):"";
           S.cap.studioQuery=exact;
           S.cap.page=0;
           S.cap.studioExploreNeedRedraw=true;
           if(tag){
-            const matches=it=>studioTokens(it.caption,studioCaptionMode(it))
-              .some(value=>value.toLocaleLowerCase()===tag.toLocaleLowerCase());
+            const matches=it=>{
+              if(studioCaptionMode(it)!=="tags")return false;
+              const present=new Set(studioTokens(it.caption,"tags").map(value=>value.toLocaleLowerCase()));
+              return (selectedTags.length?selectedTags:[tag]).every(value=>present.has(value.toLocaleLowerCase()));
+            };
             const first=items.find(matches)||S.cap.items.find(matches);
             if(first){
               // If a prior name/missing-only filter hides the matching image,
@@ -16637,6 +16640,7 @@ function renderCaptionStudio(host,items,ext){
                 encodeURIComponent(TOKEN)+"&v="+(S.cap.studioThumbRevisions?.get(it.path)||0);
             },
             collectionItems,
+            removeTags:tags=>deletePickedTags(null,tags),
             branching:true,
             directWaterfall:true,
             waterfallScale:()=>S.cap.studioWaterfallScale,
@@ -16884,15 +16888,16 @@ function renderCaptionStudio(host,items,ext){
   // Delete Tag removes the *selected tags* from the *selected images*
   // (or the active image if no images are selected). It never assumes an
   // entire dataset as the deletion scope. Ctrl-click allows multiple tags.
-  const deletePickedTags=async(contextTag=null)=>{
-    const picked=contextTag&&selectionState.has(contextTag)?
-      [...selectionState]:contextTag?[contextTag]:[...selectionState];
+  const deletePickedTags=async(contextTag=null,graphTags=null)=>{
+    const picked=graphTags??(contextTag&&selectionState.has(contextTag)?
+      [...selectionState]:contextTag?[contextTag]:[...selectionState]);
     const wanted=new Set(picked.map(tag=>tag.toLowerCase()));
     if(!wanted.size)return false;
-    const chosen=imageTargets();
-    if(!chosen.length)return say("Select an image before removing its tags.");
+    const chosen=graphTags?S.cap.items.filter(it=>studioCaptionMode(it)==="tags"&&
+      studioTokens(it.caption,"tags").some(tag=>wanted.has(tag.toLowerCase()))):imageTargets();
+    if(!chosen.length)return say(graphTags?"No dataset captions contain those tags.":"Select an image before removing its tags.");
     if(chosen.length>1000){
-      say("Select at most 1000 images for one tag removal.");return true;
+      say(graphTags?"One atomic tag removal supports up to 1000 matching dataset images. Use Tags to remove from smaller selections.":"Select at most 1000 images for one tag removal.");return true;
     }
     if(chosen.some(it=>S.cap.studioReviewed?.has(it.path))){
       say("Unlock reviewed images before removing their tags.");return true;
@@ -16912,6 +16917,7 @@ function renderCaptionStudio(host,items,ext){
     if(!changes.length){say("None of the selected images contain those tags.");return true;}
     if(!(await captionConfirmRemoval({
       detail:"This can be undone.",...captionTagRemovalConfirmation(picked,changes.map(row=>row.before)),
+      ...(graphTags?{title:captionTagRemovalTitle(picked,changes.length),detail:"Across the entire dataset: remove each selected tag wherever it occurs, not just from the shared images. Images are not deleted. This can be undone."}:{}),
       compact:true,confirmLabel:"Remove"
     })))return true;
     try{
@@ -16924,6 +16930,10 @@ function renderCaptionStudio(host,items,ext){
         if(item)item.caption=row.after;
       }
       selectionState.clear();
+      if(graphTags){
+        S.cap.studioExplorePickedTag=null;S.cap.studioConstellationReturn=null;
+        S.cap.studioQuery="";S.cap.studioExploreNeedRedraw=true;
+      }
       S.cap.studioRevision=(S.cap.studioRevision||0)+1;
       renderCaptions();
     }catch(error){say("Remove selected tags: "+error.message);}

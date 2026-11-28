@@ -341,6 +341,49 @@ try {
   assert.ok(!allIn(branch).some(n=>n.textContent==="20 images matching the entire branch"));
   branch.dispose();
 
+  // Ctrl-selection uses AND over actual caption rows, not pairwise overlap.
+  {
+    const deleted=[],multiPicks=[];
+    const multi=Viz.tagbenchConstellation(branchModel,(tag,selected)=>multiPicks.push([tag,selected]),"feline",{
+      branching:true,
+      relationsForTag:(tag,trail=[])=>{
+        const counts=new Map();
+        for(const row of matching(tag,trail))for(const peer of row.tags)
+          if(peer!==tag)counts.set(peer,(counts.get(peer)||0)+1);
+        return counts;
+      },
+      collectionItems:(tag,peer,trail=[])=>matching(tag,trail).filter(r=>!peer||r.tags.includes(peer)),
+      openWaterfall:(tag,peer,state)=>{handed=state;},
+      removeTags:tags=>deleted.push(tags)
+    });
+    const orb=tag=>allIn(multi).find(n=>n.attrs["data-tag"]===tag);
+    const key=(tag,ctrlKey=true)=>orb(tag).handlers.keydown({key:"Enter",ctrlKey,preventDefault(){},stopPropagation(){}});
+    key("lion");
+    assert.deepEqual(multiPicks.at(-1),["lion",["feline","lion"]]);
+    assert.equal(orb("feline").attrs["aria-pressed"],"true");
+    assert.equal(orb("lion").attrs["aria-pressed"],"true");
+    assert.equal(orb("tiger").style.display,"none");
+    assert.ok(allIn(multi).some(n=>n.textContent==="20 images containing every selected tag"));
+    assert.ok(byLabel(multi,"feline + lion + mane, 12 shared images"));
+    byLabel(multi,"Open lion in Waterfall").handlers.click();
+    assert.deepEqual(handed.branchTrail,["feline","lion"]);
+    assert.equal(handed.multiSelecting,true);
+    key("mane");
+    assert.ok(allIn(multi).some(n=>n.textContent==="12 images containing every selected tag"));
+    key("mane");
+    assert.ok(allIn(multi).some(n=>n.textContent==="20 images containing every selected tag"));
+    let stopped=false;
+    multi.handlers.keydown({key:"Delete",target:{closest:()=>true},preventDefault(){},stopPropagation(){}});
+    assert.equal(deleted.length,0);
+    multi.handlers.keydown({key:"Delete",target:orb("lion"),preventDefault(){},stopPropagation(){stopped=true;}});
+    assert.equal(stopped,true);
+    assert.deepEqual(deleted,[["feline","lion"]]);
+    key("feline");
+    assert.equal(orb("lion").attrs["aria-pressed"],"true");
+    assert.equal(orb("feline").attrs["aria-pressed"],"false");
+    multi.dispose();
+  }
+
   // No overview connection paths, even with many observed pairs.
   const oldCreate=global.document.createElement,oldCreateNS=global.document.createElementNS,oldStyle=global.getComputedStyle;
   let curveCalls=0,clearCalls=0;
