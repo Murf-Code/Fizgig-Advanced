@@ -23,3 +23,23 @@ User chose H7 next. Runner outer_scale_screen.py (7b3966fbcccbbaae97b42674e37644
 For efficiency the outer operator caches three coupled Gram blocks, rather than the pilot's repeated dense residual products. Orient T_p as row-scaled basis, transposing for column solve, and let h be local action matrix and k coupled action matrix (row: h=X,k=G; column: h=G,k=X). Blocks H_pq = wg*(T_p T_q^T).*(k^T k) + diag(wa*rowdot(T_p,T_q)+wl*rowdot((h T_p^T)^T,(h T_q^T)^T)). Compute RHS as adjoint action on residual and use diagonally normalized PCG. Four n-by-n FP64 matrix storage estimate <=2048 MiB default (key14 columns1152MiB, rows72MiB); guard covers Gram storage only, not all CPU allocations. Core source locally executed on tiny explicit 5x9 tests: row10 iterations residual3.34e-16, column18 iterations residual2.03e-11 at tol1e-10; BF16 rounding improvement, unchanged other fields, null atom and budget checks passed. No real-sized performance or GPU integration run here. No claim of GPU-free initialization; H6 parity uses GPU where available.
 
 Compare H6 weighted dev .170310 / dX .509698, fit J .174655 and H5 QAT .140023 / dX .485582. User command same raw/stock/key as H6, script outer_scale_screen.py, output littlebit-outer-scale.json. H8/H9 excluded for isolation. Two sweeps by default; third optional. Hybrid parked.
+
+
+## Completed real Krea2 H7 — 2026-11-27
+
+User report littlebit-outer-scale.json SHA256 348bf29dd1c9da32bbc5b57254d844125e88cafda90562a5599a31eb223ff0dd; protocol lb-h7-alternating-scales-v1 completed 179.812s; torch2.15.0+cu134, 8 threads. Key14 1536x6144; 597+597 rank, 1179348 B, .9997456868489584 bits. Raw hash f99bb0ff8e362b77342bc4994e0c50906fe7ef7074864b181b7d48d2fa6d03d7. Full split and initial/latent-only development dictionaries exactly match uploaded H6 report. 64 fit (2048 paired rows), 8 reused dev, 8 unscored confirmation. No QAT, sign changes or additional storage.
+
+| Stage | Dev J | Dev forward RMS | Dev dX RMS | Pooled fit FP64 J | Weight RMS |
+|---|---:|---:|---:|---:|---:|
+| Initial | .184095456213 | .332503964007 | .507574651008 | .186563092469 | .613900246594 |
+| Latent only | .170310003291 | .284302127305 | .509698250921 | .174654651100 | .622191460025 |
+| Sweep1 | .162626105688 | .262125275271 | .506500297572 | .165174371603 | .622965129376 |
+| Sweep2 | .162078364650 | .261141226839 | .505926861260 | .164625209517 | .622054899267 |
+
+Final dev improves 11.9596% vs init, 4.8333% vs H6, pooled fit improves 5.7424% vs H6. Sweep2 incremental dev improvement only .3368%; sweep1 delivered ~93% of the additional dev improvement beyond H6. All 8 dev captures improve joint objective vs init and dX vs H6; only 3/8 improve dX vs init. Weight error increases vs init. H5 weighted-50 QAT remains better (.140023255602, fwd .210373377675, dX .485581664779, verified from uploaded H5 report); H7 objective 15.751% higher. This is not a matched-runtime comparison.
+
+All 7 BF16-rounded updates accepted. PCG row/col iterations 34/30 and 37/28; residuals 8.3342e-9/5.8510e-9 and 8.5345e-9/6.4500e-9, all converged at 1e-8. Latent solves all 1194 modes retained, condition 2.4142/2.7756/2.8560, residuals <=5.913e-16. First-sweep fit J decreases .004324782 row, .004584083 col, .000571414 latent; second .000181315/.000313336/.000054511. All final coefficients positive, finite and nonzero; signs unchanged per report. Actual sign tensors not archived, no packed checkpoint. Gram bounds row72 MiB, col1152 MiB, not measured peak memory.
+
+Timed fitting substeps total16.703s (includes normal system, solve, round and fit guard); four dev evaluations51.234s, all listed phases87.782s, remainder92.030s unprofiled. H5 total1936.141s for multiple arms and QAT; do not interpret time ratio as equivalent-quality speedup.
+
+Decision: close standalone H7, no third sweep. Retain coupled scale fitting as H8 support; begin H8 from reproducible H7 checkpoint, compare fixed-sign control, direct sign-only and sign+scale at matched sign sweep counts, profile full-size residual updates, record BF16 fit guard/dev and packed checkpoints. H8 CPU pilot promising but actual Krea2 runner not yet ready. Reused dev only, no evidence of independent confirmation, full-model LoRA transfer, VRAM saving or deployment. Hybrid remains parked.
