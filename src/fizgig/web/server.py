@@ -5017,7 +5017,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": "Disable shared training helpers for the comparison."}, 400)
                 group = "littlebit-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
                 root = os.path.join(default_output_dir(), "littlebit_comparisons", group)
-                configs = lb.settings(root)
+                capture_bank = b.get("capture_bank", False)
+                if type(capture_bank) is not bool:
+                    return self.json({"error": "Invalid calibration bank mode."}, 400)
+                configs = lb.settings(root, capture_bank=capture_bank)
                 entries = []
                 for vals in configs:
                     _, inputs, plan = _plan("krea2", vals, folder)
