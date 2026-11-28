@@ -9,3 +9,31 @@ Geometry arms change normalized Sylvester transform width only (1 means identity
 Core Git blob 9f09ec5cdfd621568062fd55ad3a3c88e3381fd5 exactly matches locally tested source SHA256 f3831fbe5c19ff7060460bd96fa3b2c6d087dfe321692add488dceaa00fd3319. Local torch2.10.0+cpu, four threads: three seed 19x128 fit37 tests each FP64 and FP32. All six sweeps improved fit, isolated row delta discrepancy <=2.26e-17 FP64 and <=2.07e-9 FP32. Full synthetic 1536x6144, fit2048 FP32 CPU code sweep3.835s, fit .121035006102 -> .112974694206, 782265/1564537 accepted proposals, predicted/direct objective discrepancy8.34e-12. Synthetic results not actual Krea2 accuracy. Separate small CPU test copied existing butterfly and packing helpers: H1/H32/H64/H128 action parity, mixed archive exact BF16 decoded roundtrip (41x256,10 Q3 rows,3278B <=3280B cap). Full runner on actual Krea2 and CUDA not executed locally; peak memory and total runtime unmeasured. Independent reviewer pending. Prior one-bit archives preserved; pure LittleBit parked. Next lock promising configurations, evaluate fresh independent bank, extend projection coverage and eventually training and VRAM. Do not claim generalization from reused dev.
 
 Run hadamard_combined_screen.py with same raw/stock/key14 as QH-1, optional --reference output_loras/littlebit-rank-reference.json, --out output_loras/qh-combined.json. Do not run separate QH-1 first. Upload JSON, retain packed files. Use a new basename on repeats.
+
+
+## Completed real Krea2 combined test — 2026-11-28
+
+Parsed complete qh-combined.json SHA256 a2e5d0221f3b19e5cb5a5b97560b2ddd1688242d807dbb462d378bf0bf471833. Completed285.36s, torch2.15.0+cu134, CUDA,8 CPU threads. Key14 1536x6144, fit64/2048 rows, reused dev8, confirmation8 unscored. Raw SHA f99bb0ff8e362b77342bc4994e0c50906fe7ef7074864b181b7d48d2fa6d03d7. Exact zero Q2/Q3 legacy and H4 metric parity. All14 candidates completed.
+
+| Candidate | Effective bits | Dev J | Dev F RMS | Dev dX RMS | Common fit J | Fit dX RMS | Weight RMS |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| q2-baseline | 2.25 | .060113020 | .133682517 | .319929718 | .072133730 | .320321801 | .346404621 |
+| q2-task-scales | 2.25 | .059382568 | .114076219 | .325194944 | .062256039 | .278761343 | .360755642 |
+| q2-weight50-scales | 2.25 | .057622146 | .117786935 | .318387391 | .063991503 | .292858300 | .347612703 |
+| q3-baseline | 3.25 | .018077896 | .068012830 | .177567022 | .022028792 | .178556399 | .192978547 |
+| q2-task-codes | 2.25 | .063558182 | .150345444 | .323284104 | .069755902 | .300802402 | .350863073 |
+| q2-task-alternating | 2.25 | .059240358 | .112773797 | .325211912 | .052741320 | .231381759 | .362939127 |
+| q2-weight50-alternating | 2.25 | .056537691 | .117440758 | .315092131 | .051901208 | .233976810 | .350458675 |
+| q3-task-alternating | 3.25 | .018804872 | .062322076 | .183645589 | .016564819 | .129411023 | .204280849 |
+| q2-h1-g64 | 2.25 | .147851638 | .396194185 | .372469387 | .145341018 | .365418526 | .382326886 |
+| q2-h32-g64 | 2.25 | .060917632 | .137061782 | .321012977 | .072664128 | .320733719 | .346979256 |
+| q2-h128-g64 | 2.25 | .060462311 | .136238328 | .319943338 | .072664076 | .321153396 | .347031006 |
+| q2-h64-g32 | 2.5 | .057908124 | .136288917 | .311835822 | .069602931 | .313552266 | .338289460 |
+| mixed-q2q3-random | 2.499511719 | .049324320 | .121192218 | .289760394 | .059477509 | .290654787 | .315032754 |
+| mixed-q2q3-targeted | 2.499511719 | .032939902 | .112506500 | .230699136 | .043084670 | .222209154 | .302504599 |
+
+Pure Q2 best weight50-alternating dev J5.9477% lower than baseline, dX wins7/8, joint wins7/8; weight50 scales alone improves joint8/8 and dX7/8. Unregularized task alternating reduces fit J26.88% while dev J only1.45% and worsens dev dX on7/8. Q3 alternating worsens dev J4.02% despite lower fit. Fixed-code task scales and task alternating show fit/dev divergence; do not blindly increase sweeps. All8 code sweeps and all8 scale proposals passed independent fit guards. Three of eight CG solves converged to requested1e-5 (all weight50); remaining five hit30 iterations, true relative residual .000113735 to .000333675. No claim of exact scale optimum. Max code predicted/direct solver discrepancy1.52e-10. Code acceptance events across two sweeps: task-codes5397/10084160, task-alternating28477/6793694, weight50-alternating40654/3380098, Q3 alternating30692/8972486. Whole row block proposal coupling still strong; no need to chase optimizer acceptance alone. H64 best of tested fixed widths, H1 substantially worse; learned rotations not tested.
+
+Targeted mixed row allocation strongest finding: 383/1536 Q3 rows, 1153 Q2 rows, 2948544 payload bytes including192-byte row mask, 2.49951171875 bits; random exact matched budget. Targeted dev J45.2034% lower than Q2, 33.2177% lower than random, dX27.8907% lower than Q2. All8 dev captures improve forward, backward and joint versus both Q2 and random. Q2 group32 2.5 bits yields only3.6679% dev J improvement vs Q2. Q3 baseline still better than mixed (mixed J82.21% higher). Targeted mixed weight error lower and fit J40.27% lower vs Q2; evidence on reused dev only. 11.09% additional payload vs Q2, approximately23.1% smaller than Q3 payload. Fourteen archives reported, not independently opened here. Preserve all, especially q2-baseline, q2-weight50-alternating, q3-baseline and mixed-q2q3-targeted/random. Targeted archive SHA256 210a3438459cb36ac381682de30db505783c976f726a521bcb9b18ae96b477d9.
+
+Recommended next QH-4 extension: bounded precision allocation curve at fixed 2.375/2.5/2.75/3.0 bit caps, compare fit-targeted vs random vs weight-only selection, joint-aware row exchanges under same exact payload, optionally Q2 regularized alternate starting point versus original, and evaluate on other two captured projections (key0 and MLP up0). Prefer allocation over more unconstrained task fitting; retain H64. Then lock candidates before fresh independent bank; no training or actual VRAM/speed claim. This update records results and recommendation only, not a new runner or production integration. Independent review pending; pure LittleBit parked.
