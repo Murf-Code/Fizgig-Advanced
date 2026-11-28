@@ -82,3 +82,6 @@ Defer rank-aware NS investigation; preserve normalized replay observation in the
 
 ### Seven-rank CPU sweep completed
 See [full results](MUON_SEVEN_RANK_CPU_20261127.md). Similar normalized error curves confirmed approximately, especially INT8/Split-Max; damping and NS3 reduce relative errors vs their own uncompressed references but alter update maps. Defer further optimizer work, continue activation architecture.
+
+### Round 5 implementation ready for isolated GPU test
+[Async activation offload protocol and review request](ASYNC_ACTIVATION_OFFLOAD_20261127.md). Seven CPU tests pass, one CUDA skipped. Four paired arms, no compressed momentum, no new optimizer strategy. Click Test async activation, same dataset. Actual full-model parity and clean speed pending; backward live-memory profiling remains separate.
