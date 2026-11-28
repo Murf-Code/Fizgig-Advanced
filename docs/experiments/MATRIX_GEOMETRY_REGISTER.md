@@ -79,3 +79,6 @@ All six arms 13/13, 78 updates, complete telemetry and matched 264-module initia
 
 ### Next major milestone (user priority)
 Defer rank-aware NS investigation; preserve normalized replay observation in the CPU findings. Proceed with bounded asynchronous checkpoint-input offload and backward live-memory analysis as a separate experimental intervention. Prioritize transfer lifetime correctness, pinned host cap, event ordering and PCIe contention. Compare FP32 control/synchronous/asynchronous with actual activation telemetry; do not claim numerical equivalence from Round 4. Then combine only independently validated changes and test actual 0.75–1 MP at rank16/32, not merely nominal bucket target. No new implementation or GPU result in this documentation update.
+
+### Seven-rank CPU sweep completed
+See [full results](MUON_SEVEN_RANK_CPU_20261127.md). Similar normalized error curves confirmed approximately, especially INT8/Split-Max; damping and NS3 reduce relative errors vs their own uncompressed references but alter update maps. Defer further optimizer work, continue activation architecture.
